@@ -16,7 +16,10 @@ client-secret clients. It includes refresh and live credential replacement.
 Device flow, service accounts, arbitrary OAuth parameter overrides, provider-specific
 authentication adapters, automatic scope escalation, client ID metadata documents,
 and batch login are deferred. Servers requiring those features get an explicit
-unsupported-configuration error.
+unsupported-configuration error. In the 2026-07-28 authorization revision, dynamic
+registration is deprecated in favor of Client ID Metadata Documents. Keeping it
+as a compatibility path while deferring metadata-document hosting is a deliberate
+first-release limitation, not a claim of universal automatic registration.
 
 This is a capability for standards-compatible HTTP MCPs, not a guarantee that
 Atlassian, Slack, Vanta or AWS endpoints work. Real provider compatibility must be
@@ -26,9 +29,10 @@ verified independently before documenting examples as supported.
 
 Use [`oauth4webapi`](https://github.com/panva/oauth4webapi) as the single direct
 OAuth protocol dependency, behind a small Loom-owned adapter. It supports Deno
-and ESM and currently has no runtime dependencies. Pin a reviewed release in
-Loom's dependency configuration and lockfile during implementation; this spec
-does not select an untested version.
+and ESM and currently has no runtime dependencies. The
+[compatibility spike](mcp-oauth-spike.md) tested 3.8.8 on Deno 2.9.6; use that
+version as the initial implementation candidate and pin it in the application
+lockfile when integrating. The spike has its own lockfile.
 
 Delegate authorization-server and resource metadata discovery primitives,
 PKCE generation, authorization-response validation, code exchange, client
@@ -83,14 +87,14 @@ OAuth is available only under trusted `mcp_servers` HTTP definitions:
 }
 ```
 
-| Field                   | Behavior                                                                                                                                           |
-| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `oauth: {}`             | Discover authorization metadata; attempt dynamic registration; use challenge scopes when supplied, otherwise omit scope; allocate a loopback port. |
-| `client_id`             | Use an existing registration instead of registering a client.                                                                                      |
-| `client_secret_env`     | Read the named host environment variable during explicit login.                                                                                    |
-| `client_secret_command` | Run a nonempty argv array during explicit login, without a shell.                                                                                  |
-| `redirect_port`         | Fixed callback port, integer 1–65535. Omitted means an OS-assigned port.                                                                           |
-| `scopes`                | Explicit, case-sensitive scope strings; duplicates removed. Omitted differs from an explicit empty list.                                           |
+| Field                   | Behavior                                                                                                                                               |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `oauth: {}`             | Discover metadata; attempt dynamic registration; use challenge scopes, then protected-resource scopes, otherwise omit scope; allocate a loopback port. |
+| `client_id`             | Use an existing registration instead of registering a client.                                                                                          |
+| `client_secret_env`     | Read the named host environment variable during explicit login.                                                                                        |
+| `client_secret_command` | Run a nonempty argv array during explicit login, without a shell.                                                                                      |
+| `redirect_port`         | Fixed callback port, integer 1–65535. Omitted means an OS-assigned port.                                                                               |
+| `scopes`                | Explicit, case-sensitive scope strings; duplicates removed. Omitted differs from an explicit empty list.                                               |
 
 The two secret sources are mutually exclusive and require `client_id`. Inline
 client secrets are unsupported. OAuth cannot coexist with either bearer field.
@@ -177,13 +181,16 @@ Unselected definitions are syntax-validated but require no credential.
 
 ## Discovery and authorization
 
-Use the MCP authorization specification and its referenced OAuth standards:
-[authorization](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization),
-RFC 9728 (protected resource metadata), RFC 8414 (authorization-server metadata),
-RFC 7591 (registration), RFC 7636 (PKCE), RFC 8707 (resource indicators), RFC 8252
-(native applications), and RFC 7009 (revocation). The protocol implementation must
-have fixtures for the supported discovery paths; do not infer endpoints by
-appending provider-specific strings.
+Target the MCP **2026-07-28 authorization profile**, including its linked discovery,
+registration and security requirements:
+[authorization](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization).
+This does not change the MCP wire version negotiated by existing connectors.
+Retain compatibility with 2025-11-25 servers within the supported feature subset.
+Referenced standards include RFC 9728, RFC 8414, RFC 7591, RFC 7636, RFC 8707,
+RFC 8252, RFC 9207 and RFC 7009. Keep fixtures for supported discovery paths;
+do not infer endpoints by appending provider-specific strings. Loom's explicit
+login/no-replay policy deliberately does not implement automatic step-up and
+request retry; report insufficient scope for user-driven reauthorization.
 
 1. Probe the configured resource without credentials, using a safe discovery
    request; never execute an MCP tool to discover authentication.
@@ -197,19 +204,27 @@ appending provider-specific strings.
    token, registration and revocation URLs independently. Different origins are
    allowed; no credential is sent during metadata discovery.
 4. Use the configured client or a compatible saved dynamic registration.
-   Otherwise register a native client with the actual callback URI, authorization
-   code grant and refresh grant where supported. No registration endpoint means
+   Otherwise register with `application_type: "native"`, the actual callback URI,
+   authorization code grant and refresh grant where supported. No registration endpoint means
    an actionable request to configure `client_id`, not guessed credentials.
 5. Bind the callback listener before opening the browser. Generate cryptographically
-   random, single-use state and PKCE verifier; require S256. Request the resource
-   indicator in authorization and token requests as required by MCP.
-6. Use configured scopes when present. Otherwise use scopes requested by the
-   resource's authorization challenge. A metadata `scopes_supported` list describes
-   available scopes, not required scopes: do not request that entire list. Without
-   a challenge scope, omit scope and let the server apply its default. Insufficient
-   permission later requires user-driven configuration/login, not automatic escalation.
+   random, single-use state and PKCE verifier. Require metadata to advertise S256;
+   absent `code_challenge_methods_supported` or missing S256 fails before login.
+   Include the resource indicator in authorization and token requests, including refresh.
+6. Use configured scopes when present. Otherwise use the resource challenge's
+   scope; if absent, use `scopes_supported` from protected-resource metadata;
+   if that is absent, omit scope. Do not substitute the authorization server's
+   `scopes_supported` list. Show the resulting scope set during explicit login.
+   An explicit override that omits challenged scopes must produce an actionable
+   diagnostic rather than silently adding scopes. Do not automatically add
+   `offline_access`; users can configure it where needed for refresh issuance.
+   Later permission failures require user-driven configuration/login.
 7. Accept a single valid callback within ten minutes. Validate host, path, state,
-   unique query parameters and authorization-response issuer when supplied.
+   unique query parameters and authorization-response issuer. Compare `iss`
+   exactly to the issuer saved for that authorization attempt, without URL
+   normalization. Require it when metadata advertises
+   `authorization_response_iss_parameter_supported: true`; validate it whenever
+   present, including error responses, before exposing any remote error.
    Ignore invalid callbacks without consuming the login attempt. Accept either
    an error or a code, never both. Return a minimal no-store browser response
    without third-party resources or reflected credentials.
@@ -247,10 +262,18 @@ time; do not rely on a DNS precheck that can be bypassed by rebinding.
 
 The interactive host CLI may perform discovery and browser setup. The daemon
 retains `--deny-net`. Refresh runs in a child with network permission only for
-the pinned token host/port, no arbitrary subprocess or secret-command permission,
-and a cleared, explicitly constructed environment. Pass secrets over a private
-pipe, never command-line arguments. Prefer a helper with no credential-store
-access: it returns a bounded token result to the host owner for persistence.
+validated token endpoint addresses/port, no arbitrary subprocess or secret-command
+permission, and a cleared, explicitly constructed environment. Resolve DNS in a
+separate credential-free helper, validate its returned addresses, then launch
+the token helper with exact IP/port grants and a socket lookup callback that
+returns only those addresses. Preserve the original hostname for TLS SNI and
+certificate verification. Do not perform a second DNS lookup in the token helper
+or grant it unrestricted network access. Address selection/fallback must remain
+within the validated set, with no unchecked pooled sockets.
+Pass secrets over a private pipe, never command-line arguments. The token helper
+has no credential-store access and returns a bounded result for host persistence.
+See the spike report for the tested Deno permission behavior; integrating this
+transport with the controlled fetch adapter still needs production tests.
 
 Deno network permissions constrain host/port, not URL paths. The helper must also
 enforce the exact pinned endpoint and reject redirects in code. Refresh does not
