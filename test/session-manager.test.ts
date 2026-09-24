@@ -808,8 +808,18 @@ describe("session-manager", { concurrency: 4 }, () => {
     assert.equal(snap.stopping, undefined);
     assert.equal(snap.subagents[0]?.active, true);
     assert.equal(snap.backgroundTasks.length, 1);
-    fs.interrupt = async () => {};
-    await c.request("session.interrupt", { id });
+    let finishStop!: () => void;
+    fs.interrupt = () =>
+      new Promise<void>((resolve) => {
+        finishStop = resolve;
+      });
+    const retry = c.request("session.interrupt", { id });
+    await waitFor(async () => !!(await c.request<SessionSnapshot>("session.get", { id })).stopping);
+    snap = await c.request<SessionSnapshot>("session.get", { id });
+    assert.equal(snap.stopFailed, undefined, "retrying is stopping, not also failed");
+    await assert.rejects(c.request("session.send", { id, text: "retry racing send" }), /stopping/);
+    finishStop();
+    await retry;
     snap = await c.request<SessionSnapshot>("session.get", { id });
     assert.equal(snap.status.kind, "interrupted");
     assert.equal(snap.stopFailed, undefined);
@@ -824,6 +834,9 @@ describe("session-manager", { concurrency: 4 }, () => {
     snap = await c.request<SessionSnapshot>("session.get", { id });
     assert.ok(!snap.subagents.some((s) => s.active));
     assert.deepEqual(snap.backgroundTasks, []);
+    await c.request("session.send", { id, text: "continue after retry" });
+    assert.equal(await statusOf(c, id), "running");
+    assert.equal(fs.sends.at(-1), "continue after retry");
     await c.close();
   });
 

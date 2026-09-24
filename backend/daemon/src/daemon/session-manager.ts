@@ -124,9 +124,8 @@ interface Running {
    * keeps its own fallback overlay until the gate releases.
    */
   compaction: { startedAt: number; before: number; generated: number } | null;
-  stopping: boolean;
-  stopRequested: boolean;
-  stopFailed: boolean;
+  /** Cancellation is independent of turn state; failed stops must be retried before sending. */
+  cancellation: "none" | "stopping" | "failed" | "stopped";
   interruptOperation: Promise<void> | null;
 }
 
@@ -147,11 +146,11 @@ export class SessionManager {
   }
 
   isStopping(id: string): boolean {
-    return this.#running.get(id)?.stopping ?? false;
+    return this.#running.get(id)?.cancellation === "stopping";
   }
 
   stopFailed(id: string): boolean {
-    return this.#running.get(id)?.stopFailed ?? false;
+    return this.#running.get(id)?.cancellation === "failed";
   }
 
   has(id: string): boolean {
@@ -269,9 +268,7 @@ export class SessionManager {
       restructuringSince: null,
       rewinding: false,
       compaction: null,
-      stopping: false,
-      stopRequested: false,
-      stopFailed: false,
+      cancellation: "none",
       interruptOperation: null,
     };
     this.#running.set(id, run);
@@ -423,7 +420,7 @@ export class SessionManager {
    * reaches clients even though the session stays `awaiting_input` throughout.
    */
   #trackPending(run: Running, ev: HarnessEvent): boolean {
-    if (run.stopRequested) return false;
+    if (run.cancellation !== "none") return false;
     const request = interactionFor(ev);
     if (request) {
       run.pending.set(request.id, request);
@@ -460,7 +457,7 @@ export class SessionManager {
 
   #trackSubagents(run: Running, ev: HarnessEvent): boolean {
     if (ev.type === "subagent_started") {
-      if (run.stopRequested && !run.stopping && !run.stopFailed) return false;
+      if (run.cancellation === "stopped") return false;
       run.subagents.set(ev.subagentId, { name: ev.name, startedAt: ev.ts, active: true });
       return true;
     }
@@ -489,7 +486,7 @@ export class SessionManager {
    */
   #trackBackgroundTasks(run: Running, ev: HarnessEvent): boolean {
     if (ev.type !== "background_tasks") return false;
-    if (run.stopRequested && !run.stopping && !run.stopFailed) return false;
+    if (run.cancellation === "stopped") return false;
     run.backgroundTasks = ev.tasks;
     return true;
   }
@@ -550,9 +547,9 @@ export class SessionManager {
 
   /** Returns whether it published a transition. */
   #applyStatus(id: string, run: Running, ev: HarnessEvent): boolean {
-    if (run.stopRequested) {
+    if (run.cancellation !== "none") {
       if (ev.type === "error" && ev.fatal) {
-        run.stopFailed = true;
+        if (run.cancellation !== "stopping") run.cancellation = "failed";
         return this.#transition(id, run, stateError(ev.message));
       }
       return false;
@@ -655,13 +652,13 @@ export class SessionManager {
     // A send that reached the gate mid-restructure would otherwise park for the
     // whole (up-to-15-min) compaction.
     if (run.restructuring) throw new Error(`session is ${run.restructuring}ing`);
-    if (run.stopping || run.stopFailed)
+    if (run.cancellation === "stopping" || run.cancellation === "failed")
       throw new Error("cancellation is unresolved — retry interrupt before sending");
     return this.#enqueue(run, async () => {
       opts.signal?.throwIfAborted();
-      if (run.stopping || run.stopFailed)
+      if (run.cancellation === "stopping" || run.cancellation === "failed")
         throw new Error("cancellation is unresolved — retry interrupt before sending");
-      run.stopRequested = false;
+      run.cancellation = "none";
       const injected = isLiveState(run.state);
       const before = run.state;
       if (!injected) run.firstOutputSince = performance.now();
@@ -684,7 +681,7 @@ export class SessionManager {
     const run = this.#require(id);
     if (run.ended) throw new Error("session has ended");
     return this.#enqueue(run, async () => {
-      if (run.stopping || run.stopFailed)
+      if (run.cancellation === "stopping" || run.cancellation === "failed")
         throw new Error("cancellation is unresolved — retry interrupt first");
       run.restructuring = "compact";
       run.restructuringSince = Date.now();
@@ -717,7 +714,7 @@ export class SessionManager {
       run.ended ||
       (!compactOnly &&
         !isLiveState(run.state) &&
-        !run.stopFailed &&
+        run.cancellation !== "failed" &&
         !run.backgroundTasks.length &&
         ![...run.subagents.values()].some((s) => s.active))
     )
@@ -725,19 +722,16 @@ export class SessionManager {
     // Keep child activity until the provider confirms cancellation. Pending
     // requests are withdrawn as soon as the user requests a stop.
     run.pending.clear();
-    run.stopRequested = true;
-    run.stopping = true;
+    run.cancellation = "stopping";
     this.#hooks.onOverlay(id);
     const operation = Promise.resolve().then(async () => {
       try {
         await run.session.interrupt();
-        run.stopFailed = false;
-        run.stopping = false;
+        run.cancellation = "stopped";
         this.#clearOverlays(run);
         if (!run.ended && !compactOnly) this.#transition(id, run, stateInterrupted("user"), "user");
       } catch (err) {
-        run.stopping = false;
-        run.stopFailed = true;
+        run.cancellation = "failed";
         const message = `Could not stop all session work: ${err instanceof Error ? err.message : String(err)} — retry interrupt`;
         this.#hooks.log.warn("adapter interrupt failed", { id, err: message });
         if (!run.ended) {
@@ -752,7 +746,6 @@ export class SessionManager {
         }
         throw new Error(message);
       } finally {
-        run.stopping = false;
         run.interruptOperation = null;
         this.#hooks.onOverlay(id);
       }
@@ -769,7 +762,8 @@ export class SessionManager {
    *  transition carries it, and when the turn stays blocked the overlay hook
    *  does — otherwise the other clients keep offering an answered request. */
   #resumeAfterAnswer(id: string, run: Running): void {
-    const resume = !run.stopRequested && run.state.kind !== "interrupted" && run.pending.size === 0;
+    const resume =
+      run.cancellation === "none" && run.state.kind !== "interrupted" && run.pending.size === 0;
     if (resume && this.#transition(id, run, stateRunning)) return;
     this.#hooks.onOverlay(id);
   }
@@ -903,7 +897,7 @@ export class SessionManager {
    */
   async rewind(id: string, keep: number, at?: string): Promise<void> {
     const run = this.#require(id);
-    if (run.stopping || run.stopFailed)
+    if (run.cancellation === "stopping" || run.cancellation === "failed")
       throw new Error("cancellation is unresolved — retry interrupt first");
     if (run.ended) throw new Error("session has ended");
     // S13: only a settled, non-terminal session (`idle` / `error` /

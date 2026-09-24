@@ -4081,3 +4081,38 @@ test("overlapping creates completing in reverse order never change a manual sele
     teardown();
   }
 });
+
+test("failed cancellation explains retry and restores messaging after a successful stop", () => {
+  const fake = mkFakeClient();
+  const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+  const teardown = handle.effectStart();
+  try {
+    const session = testSession({
+      id: "a",
+      status: { kind: "error", message: "worker interrupt failed" },
+      stopFailed: true,
+    });
+    fake.deliver(fleetOf(session));
+    const frame = renderToString(
+      createElement(Detail, {
+        session,
+        fleet: fleetOf(session),
+        box: outboxOf({}, "a"),
+        mode: null,
+        width: 90,
+        now: Date.now(),
+      }),
+    );
+    assert.match(frame, /stop failed — press i to retry/);
+    handle.handleKey("", { return: true } as Key);
+    assert.equal(openPrompt(handle.getView().ui.overlay), null);
+    handle.handleKey("i", {} as Key);
+    assert.equal(fake.of("session.interrupt").length, 1);
+    const { stopFailed: _, ...stopped } = session;
+    fake.deliver(fleetOf({ ...stopped, status: { kind: "interrupted", by: "user" } }));
+    handle.handleKey("", { return: true } as Key);
+    assert.ok(openPrompt(handle.getView().ui.overlay));
+  } finally {
+    teardown();
+  }
+});

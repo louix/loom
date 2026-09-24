@@ -1407,7 +1407,9 @@ test("unresolved cancellation offers retry interrupt without starting new work",
     { ...snap({ status: "awaiting_input", awaitReason: "permission" }), stopping: true },
     { ...snap({ status: "error" }), stopFailed: true },
   ]) {
-    const acts = actionsFor(session).map((h) => h.act);
+    const hints = actionsFor(session);
+    assert.equal(hints[0]?.label, session.stopping ? "stopping…" : "retry interrupt");
+    const acts = hints.map((h) => h.act);
     assert.ok(acts.includes("interrupt"));
     assert.ok(!acts.includes("send"));
     assert.ok(!acts.includes("approve"));

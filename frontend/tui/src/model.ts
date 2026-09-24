@@ -1269,7 +1269,12 @@ export const actionsFor = (session: SessionSnapshot | null): KeyHint[] => {
     const { status } = session;
 
     if (session.stopping || session.stopFailed) {
-      local.push(commandHint("interrupt", { footer: true }));
+      local.push(
+        commandHint("interrupt", {
+          footer: true,
+          label: session.stopping ? "stopping…" : "retry interrupt",
+        }),
+      );
       return [...local, ...GLOBAL_HINTS];
     }
 

@@ -533,9 +533,9 @@ export const detailLayout = (
     if (s.parentId && s.forkTurn != null)
       addLine(`⑂ forked from ${shortId(s.parentId)} @ turn ${s.forkTurn}`);
     space();
-    let status = s.stopping
-      ? "◌ stopping…"
-      : `${look!.glyph} ${look!.label}${statusDetailSuffix(s)}`;
+    let status = `${look!.glyph} ${look!.label}${statusDetailSuffix(s)}`;
+    if (s.stopFailed) status = "⚠ stop failed — press i to retry";
+    if (s.stopping) status = "◌ stopping…";
     if (archiving) status = "◌ archiving…";
     const chip = `mode ${modeChipText(s.mode, mode)}`;
     rows.push({
