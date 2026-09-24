@@ -133,7 +133,13 @@ const controlledFetch: typeof fetch = async (input, init) => {
   }
   return new Response(bytes, { status: response.status, headers: response.headers });
 };
-const options = { [oauth.customFetch]: controlledFetch, [oauth.allowInsecureRequests]: true };
+const options = {
+  [oauth.customFetch]: (
+    url: string,
+    init: Omit<RequestInit, "body"> & { body?: BodyInit | null | undefined },
+  ) => controlledFetch(url, { ...init, body: init.body ?? null }),
+  [oauth.allowInsecureRequests]: true,
+};
 const passed: string[] = [];
 const check = async (name: string, fn: () => unknown | Promise<unknown>) => {
   await fn();

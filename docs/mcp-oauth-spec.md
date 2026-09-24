@@ -1,7 +1,9 @@
 # OAuth for HTTP MCP servers
 
-Status: proposed. This document specifies new behavior; OAuth support is not
-implemented. Existing bearer authentication and local MCP execution remain supported.
+Status: implementation started. The bounded OAuth transport and endpoint policy
+are implemented and tested; login, credential storage, discovery orchestration,
+refresh ownership and relay rotation remain proposed. Existing bearer authentication
+and local MCP execution remain supported.
 
 ## Purpose and scope
 
@@ -272,8 +274,13 @@ or grant it unrestricted network access. Address selection/fallback must remain
 within the validated set, with no unchecked pooled sockets.
 Pass secrets over a private pipe, never command-line arguments. The token helper
 has no credential-store access and returns a bounded result for host persistence.
-See the spike report for the tested Deno permission behavior; integrating this
-transport with the controlled fetch adapter still needs production tests.
+The combined adapter is implemented in `mcp-oauth-transport.ts`, with endpoint
+and address validation in `mcp-oauth-endpoint.ts`. It accepts pre-resolved plans;
+DNS-helper orchestration and the refresh worker are still to be built. Each call
+uses the first validated address with no fallback/retry and a new socket.
+Tests cover library GET/POST hooks, private/mixed address rejection, bounded
+bodies, TLS identity/trust failures and exact IP/port child permissions.
+IPv6 address policy is tested; live IPv6 connection behavior still needs validation.
 
 Deno network permissions constrain host/port, not URL paths. The helper must also
 enforce the exact pinned endpoint and reject redirects in code. Refresh does not

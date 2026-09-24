@@ -14,6 +14,7 @@
     "npm:jsonc-parser@3.3.1": "3.3.1",
     "npm:lowlight@3.3.0": "3.3.0",
     "npm:marked@16.3.0": "16.3.0",
+    "npm:oauth4webapi@3.8.8": "3.8.8",
     "npm:oxfmt@0.65.0": "0.65.0",
     "npm:oxlint@1.80.0": "1.80.0",
     "npm:react@19.2.8": "19.2.8",
@@ -875,6 +876,9 @@
         "content-type@2.1.0"
       ]
     },
+    "oauth4webapi@3.8.8": {
+      "integrity": "sha512-8N28E+a/oxfXWBgOMt+ZP/JUf/XR+IFbvkAEPP3gznXOMv9BpAAwiIj0TFNz3tGTPc0ZQ8zmWBNgN1nAys0gng=="
+    },
     "object-assign@4.1.1": {
       "integrity": "sha512-rJgTQnkUnH1sFw8yT6VSU3zD3sWmu6sZhIseY8VX+GRu3P6F7Fu+JNDoXfklElbLJSnc3FUQHVe4cU5hj+BcUg=="
     },
@@ -1235,6 +1239,7 @@
       "npm:jsonc-parser@3.3.1",
       "npm:lowlight@3.3.0",
       "npm:marked@16.3.0",
+      "npm:oauth4webapi@3.8.8",
       "npm:oxfmt@0.65.0",
       "npm:oxlint@1.80.0",
       "npm:react@19.2.8",
