@@ -78,15 +78,12 @@ export interface OAuthEndpoint {
   readonly net: readonly string[];
 }
 
-/** Reject every unsafe answer, rather than selecting a safe answer from a mixed set. */
-export const prepareOAuthEndpoint = (
-  input: OAuthEndpointInput,
-  allowLoopback = false,
-): OAuthEndpoint => {
-  if (input.url.length > 8192) throw new OAuthTransportError("endpoint_denied");
+/** Check URL policy before giving even the credential-free resolver a hostname. */
+export const validateOAuthUrl = (input: string, allowLoopback = false): URL => {
+  if (input.length > 8192) throw new OAuthTransportError("endpoint_denied");
   let url: URL;
   try {
-    url = new URL(input.url);
+    url = new URL(input);
   } catch {
     throw new OAuthTransportError("endpoint_denied");
   }
@@ -101,6 +98,16 @@ export const prepareOAuthEndpoint = (
       !(allowLoopback === true && isIP(hostname) && isLoopback(hostname)))
   )
     throw new OAuthTransportError("endpoint_denied");
+  return url;
+};
+
+/** Reject every unsafe answer, rather than selecting a safe answer from a mixed set. */
+export const prepareOAuthEndpoint = (
+  input: OAuthEndpointInput,
+  allowLoopback = false,
+): OAuthEndpoint => {
+  const url = validateOAuthUrl(input.url, allowLoopback);
+  const hostname = url.hostname.replace(/^\[|\]$/g, "");
   if (!input.addresses.length || input.addresses.length > 16)
     throw new OAuthTransportError("address_denied");
   const unique = [...new Set(input.addresses.map(canonicalAddress))];

@@ -1,9 +1,9 @@
 # OAuth for HTTP MCP servers
 
-Status: implementation started. The bounded OAuth transport and endpoint policy
-are implemented and tested; login, credential storage, discovery orchestration,
-refresh ownership and relay rotation remain proposed. Existing bearer authentication
-and local MCP execution remain supported.
+Status: implementation started. Bounded OAuth transport, endpoint policy and
+credential-free discovery through restricted DNS/HTTP helpers are implemented
+and tested. Login, credential storage, refresh ownership and relay rotation
+remain proposed. Existing bearer authentication and local MCP execution remain supported.
 
 ## Purpose and scope
 
@@ -274,13 +274,29 @@ or grant it unrestricted network access. Address selection/fallback must remain
 within the validated set, with no unchecked pooled sockets.
 Pass secrets over a private pipe, never command-line arguments. The token helper
 has no credential-store access and returns a bounded result for host persistence.
-The combined adapter is implemented in `mcp-oauth-transport.ts`, with endpoint
-and address validation in `mcp-oauth-endpoint.ts`. It accepts pre-resolved plans;
-DNS-helper orchestration and the refresh worker are still to be built. Each call
-uses the first validated address with no fallback/retry and a new socket.
+The adapter is implemented in `mcp-oauth-transport.ts`, with endpoint and address
+validation in `mcp-oauth-endpoint.ts`. `mcp-oauth-network.ts` runs credential-free
+DNS and GET workers through the existing restricted worker launcher, using
+bounded private pipes, cancellation and process deadlines. The DNS worker receives
+only a hostname. The parent validates all answers before granting exact IP/port
+permissions to the HTTP worker. Each HTTP call uses the first validated address
+with no fallback/retry and a new socket. The credential-bearing refresh worker
+remains to be built.
+
+`mcp-oauth-discovery.ts` implements challenge/well-known resource discovery,
+OAuth/OIDC issuer discovery, exact issuer consistency, scope selection and S256
+validation. It permits at most eight advertised issuers and forty endpoint
+resolutions within a sixty-second overall deadline. Metadata-location fallback
+occurs only for HTTP 404/410; malformed metadata, mismatched identity, redirects,
+network failures and denied destinations fail the attempt. Multiple Bearer
+challenges are rejected as ambiguous. Every returned endpoint is independently
+resolved and validated; endpoint plans are specific to the current attempt and
+must be resolved again for subsequent token operations.
+
 Tests cover library GET/POST hooks, private/mixed address rejection, bounded
-bodies, TLS identity/trust failures and exact IP/port child permissions.
-IPv6 address policy is tested; live IPv6 connection behavior still needs validation.
+bodies and helper output, TLS identity/trust failures, exact IP/port child
+permissions, and complete discovery from a network-denied parent. IPv6 address
+policy is tested; live IPv6 connection behavior still needs validation.
 
 Deno network permissions constrain host/port, not URL paths. The helper must also
 enforce the exact pinned endpoint and reject redirects in code. Refresh does not
