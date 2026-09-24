@@ -225,3 +225,26 @@ test("OAuth helper output overflow terminates a child that has not exited", asyn
   );
   assert(stopped);
 });
+
+test("OAuth POST worker receives secrets only on its private pipe", async () => {
+  const dns = mock({ addresses: ["8.8.8.8"] });
+  const plan = await createOAuthDiscoveryNetwork({ launch: dns.launch }).resolve(
+    "https://issuer.test/token",
+  );
+  const m = mock({ status: 200, headers: [], body: "{}" });
+  await createOAuthDiscoveryNetwork({ launch: m.launch }).post(plan, {
+    headers: [["authorization", "Basic fixture-secret"]],
+    body: "code=fixture-code",
+  });
+  assert(!JSON.stringify(m.launches).includes("fixture-secret"));
+  assert(!JSON.stringify(m.launches).includes("fixture-code"));
+  assert(JSON.stringify(m.inputs).includes("fixture-secret"));
+  assert(JSON.stringify(m.inputs).includes("fixture-code"));
+  assert.deepEqual(m.launches[0]!.permissions, {
+    read: [],
+    write: [],
+    net: ["8.8.8.8:443"],
+    env: [],
+    run: [],
+  });
+});

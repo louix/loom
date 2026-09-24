@@ -14,6 +14,13 @@ export interface OAuthDiscoveryNetwork {
   get(endpoint: OAuthEndpoint, signal?: AbortSignal): Promise<Response>;
 }
 
+export interface OAuthPostRequest {
+  headers: [string, string][];
+  body: string;
+}
+export interface OAuthLoginNetwork extends OAuthDiscoveryNetwork {
+  post(endpoint: OAuthEndpoint, request: OAuthPostRequest, signal?: AbortSignal): Promise<Response>;
+}
 interface NetworkOptions {
   /** Enable only when the configured MCP resource is itself loopback. */
   allowLoopback?: boolean;
@@ -22,9 +29,7 @@ interface NetworkOptions {
 }
 
 /** All DNS and HTTP happen in isolated children; callers need no network permission. */
-export const createOAuthDiscoveryNetwork = (
-  options: NetworkOptions = {},
-): OAuthDiscoveryNetwork => {
+export const createOAuthDiscoveryNetwork = (options: NetworkOptions = {}): OAuthLoginNetwork => {
   const allowLoopback = options.allowLoopback === true;
   const timeoutMs = options.timeoutMs ?? 30000;
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60000)
@@ -32,7 +37,7 @@ export const createOAuthDiscoveryNetwork = (
   const root = new URL("../../../../", import.meta.url);
   const launch = options.launch ?? launchLocalWorker;
   const run = async (
-    worker: "dns" | "discovery",
+    worker: "dns" | "discovery" | "post",
     net: readonly string[],
     input: unknown,
     limit: number,
@@ -83,6 +88,74 @@ export const createOAuthDiscoveryNetwork = (
       await child.cleanup?.();
     }
   };
+  const request = async (
+    endpoint: OAuthEndpoint,
+    signal?: AbortSignal,
+    post?: OAuthPostRequest,
+  ): Promise<Response> => {
+    if (
+      post &&
+      (new TextEncoder().encode(post.body).length > 65536 ||
+        new TextEncoder().encode(JSON.stringify(post.headers)).length > 16384)
+    )
+      throw new OAuthTransportError("request_too_large");
+    // Rebuild the plan; callers cannot supply broader grants through its net field.
+    const plan = prepareOAuthEndpoint(
+      {
+        url: endpoint.url,
+        addresses: endpoint.addresses.map((a) => a.address),
+      },
+      allowLoopback,
+    );
+    const reply = await run(
+      post ? "post" : "discovery",
+      plan.net,
+      {
+        url: plan.url,
+        addresses: plan.addresses.map((a) => a.address),
+        allowLoopback,
+        ...(post ? { headers: post.headers, body: post.body } : {}),
+      },
+      7 * 1024 * 1024,
+      signal,
+    );
+    if ("error" in reply) {
+      switch (reply.error) {
+        case "endpoint_denied":
+        case "address_denied":
+        case "invalid_request":
+        case "request_too_large":
+        case "response_too_large":
+        case "redirect_denied":
+        case "encoding_denied":
+        case "timeout":
+        case "aborted":
+        case "network_error":
+          throw new OAuthTransportError(reply.error);
+        default:
+          throw new OAuthTransportError("network_error");
+      }
+    }
+    if (
+      !Number.isInteger(reply.status) ||
+      Number(reply.status) < 200 ||
+      Number(reply.status) > 599 ||
+      typeof reply.body !== "string" ||
+      !Array.isArray(reply.headers) ||
+      !reply.headers.every(
+        (h) => Array.isArray(h) && h.length === 2 && h.every((s) => typeof s === "string"),
+      )
+    )
+      throw new OAuthTransportError("network_error");
+    try {
+      return new Response(reply.status === 204 || reply.status === 205 ? null : reply.body, {
+        status: Number(reply.status),
+        headers: reply.headers as [string, string][],
+      });
+    } catch {
+      throw new OAuthTransportError("network_error");
+    }
+  };
   return {
     async resolve(input, signal) {
       const url = validateOAuthUrl(input, allowLoopback);
@@ -96,62 +169,7 @@ export const createOAuthDiscoveryNetwork = (
         throw new OAuthTransportError("network_error");
       return prepareOAuthEndpoint({ url: url.href, addresses: reply.addresses }, allowLoopback);
     },
-    async get(endpoint, signal) {
-      // Rebuild the plan; callers cannot supply broader grants through its net field.
-      const plan = prepareOAuthEndpoint(
-        {
-          url: endpoint.url,
-          addresses: endpoint.addresses.map((a) => a.address),
-        },
-        allowLoopback,
-      );
-      const reply = await run(
-        "discovery",
-        plan.net,
-        {
-          url: plan.url,
-          addresses: plan.addresses.map((a) => a.address),
-          allowLoopback,
-        },
-        7 * 1024 * 1024,
-        signal,
-      );
-      if ("error" in reply) {
-        switch (reply.error) {
-          case "endpoint_denied":
-          case "address_denied":
-          case "invalid_request":
-          case "request_too_large":
-          case "response_too_large":
-          case "redirect_denied":
-          case "encoding_denied":
-          case "timeout":
-          case "aborted":
-          case "network_error":
-            throw new OAuthTransportError(reply.error);
-          default:
-            throw new OAuthTransportError("network_error");
-        }
-      }
-      if (
-        !Number.isInteger(reply.status) ||
-        Number(reply.status) < 200 ||
-        Number(reply.status) > 599 ||
-        typeof reply.body !== "string" ||
-        !Array.isArray(reply.headers) ||
-        !reply.headers.every(
-          (h) => Array.isArray(h) && h.length === 2 && h.every((s) => typeof s === "string"),
-        )
-      )
-        throw new OAuthTransportError("network_error");
-      try {
-        return new Response(reply.status === 204 || reply.status === 205 ? null : reply.body, {
-          status: Number(reply.status),
-          headers: reply.headers as [string, string][],
-        });
-      } catch {
-        throw new OAuthTransportError("network_error");
-      }
-    },
+    get: (endpoint, signal) => request(endpoint, signal),
+    post: (endpoint, post, signal) => request(endpoint, signal, post),
   };
 };

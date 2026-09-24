@@ -1,9 +1,10 @@
 # OAuth for HTTP MCP servers
 
-Status: implementation started. Bounded OAuth transport, endpoint policy and
-credential-free discovery through restricted DNS/HTTP helpers are implemented
-and tested. Login, credential storage, refresh ownership and relay rotation
-remain proposed. Existing bearer authentication and local MCP execution remain supported.
+Status: implementation started. Bounded transport, restricted discovery/POST
+helpers, Linux credential storage and the host login engine are implemented and
+tested. Public config/CLI wiring, macOS Keychain storage, runtime refresh ownership
+and relay rotation remain to be built. Existing bearer authentication and local
+MCP execution remain supported.
 
 ## Purpose and scope
 
@@ -275,13 +276,15 @@ within the validated set, with no unchecked pooled sockets.
 Pass secrets over a private pipe, never command-line arguments. The token helper
 has no credential-store access and returns a bounded result for host persistence.
 The adapter is implemented in `mcp-oauth-transport.ts`, with endpoint and address
-validation in `mcp-oauth-endpoint.ts`. `mcp-oauth-network.ts` runs credential-free
-DNS and GET workers through the existing restricted worker launcher, using
-bounded private pipes, cancellation and process deadlines. The DNS worker receives
-only a hostname. The parent validates all answers before granting exact IP/port
+validation in `mcp-oauth-endpoint.ts`. `mcp-oauth-network.ts` runs DNS, GET and
+POST workers through the existing restricted worker launcher, using bounded
+private pipes, cancellation and process deadlines. The DNS worker receives only a
+hostname. The parent validates all answers before granting exact IP/port
 permissions to the HTTP worker. Each HTTP call uses the first validated address
-with no fallback/retry and a new socket. The credential-bearing refresh worker
-remains to be built.
+with no fallback/retry and a new socket. The POST worker accepts credential-bearing
+headers/body only over stdin and has no environment, filesystem or subprocess
+grants. Registration and code exchange use this worker; refresh ownership remains
+to be built.
 
 `mcp-oauth-discovery.ts` implements challenge/well-known resource discovery,
 OAuth/OIDC issuer discovery, exact issuer consistency, scope selection and S256
@@ -337,6 +340,13 @@ into a path. Directories are 0700; Linux credential files and lock files are 060
 Use atomic replacement, reject symlinks and insecure ownership/permissions, and
 validate record versions and identity on read. Corrupt stores fail closed.
 
+The Linux implementation in `mcp-oauth-store.ts` uses a persistent OS-locked
+file, atomic credential/tombstone replacement, and file/directory sync. Login
+captures a generation before discovery and publishes with a compare-and-swap
+under that lock. Store reads currently initialize the private namespace/lock;
+a separate non-mutating status path is still needed. The current implementation
+returns `storage_unavailable` on macOS until its Keychain backend is available.
+
 On macOS store the secret record in a dedicated Loom Keychain item keyed by
 namespace and ID. Files contain only locks and nonsecret generation metadata.
 Use a Keychain API/helper that keeps secret payloads out of argv, including large
@@ -357,6 +367,14 @@ Keep a nonsecret tombstone/generation after logout. A helper result cannot
 resurrect a deleted credential. Atomic storage cannot make a remote token rotation
 transactional: if the server rotates a refresh token and the process crashes
 before persistence, recovery may require login. Report that honestly.
+
+The host engine in `mcp-oauth-login.ts` implements dynamic registration/reuse,
+pre-registered public/confidential clients, explicit secret resolution, loopback
+callback validation, PKCE exchange and conditional persistence. Its URL presenter
+is supplied by the invoking host UI. The engine requires loopback listen permission;
+it is not called by the network-denied daemon or exposed as a CLI command yet.
+A CLI entrypoint with the appropriate host callback boundary, browser opening,
+auth diagnostics and config integration remains to be implemented.
 
 ## Runtime owner and relay protocol
 
