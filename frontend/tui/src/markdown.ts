@@ -183,6 +183,9 @@ const inline = (tokens: readonly Token[], style: TextStyle = {}, depth = 0): Tex
         }
         break;
       }
+      case "checkbox":
+        // Task markers are rendered in the list prefix, including loose lists.
+        break;
       default:
         // HTML stays literal; extensions we don't understand remain readable.
         append(out, clean(t.raw), style);
@@ -358,6 +361,8 @@ const blocks = (tokens: readonly Token[], width: number, depth = 0): TextRow[] =
         out.push(row([{ text: "─".repeat(Math.min(width, 40)), role: "muted" }]));
         gap();
         break;
+      case "checkbox":
+      // Marked emits a block checkbox for tight task lists.
       case "def":
         break;
       default:

@@ -72,6 +72,16 @@ const server = Deno.serve({ hostname: "127.0.0.1", port: 0, onListen() {} }, asy
       refresh_token: "rotated-host-refresh",
     });
   }
+  if (path === "/backend-api/wham/accounts/check")
+    return Response.json({
+      accounts: [
+        {
+          id: "fixture-account",
+          workspace_backend_origin: "https://fixture.example.invalid",
+          account_routing_override: "NO_CONSTRAINT",
+        },
+      ],
+    });
   if (!path.endsWith("/responses")) return Response.json({ models: [], data: [] });
   if (req.headers.get("upgrade")) return new Response("Use HTTP streaming", { status: 426 });
   await req.arrayBuffer();
@@ -146,6 +156,10 @@ const server = Deno.serve({ hostname: "127.0.0.1", port: 0, onListen() {} }, asy
 });
 let activeSettled = false;
 const port = (server.addr as Deno.NetAddr).port;
+await Deno.writeTextFile(
+  join(profile, "config.toml"),
+  `chatgpt_base_url = "http://127.0.0.1:${port}/backend-api"\n`,
+);
 const wrapper = join(f.root, "codex-refresh");
 const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
 await Deno.writeTextFile(
@@ -155,7 +169,8 @@ await Deno.writeTextFile(
 );
 await Deno.writeTextFile(
   join(sessionDirectory, "profile/config.toml"),
-  `chatgpt_base_url = "http://127.0.0.1:3130/backend-api"\nmodel_provider = "fixture"\n[model_providers.fixture]\nbase_url = "http://127.0.0.1:3130/backend-api/codex"\nname = "OpenAI"\nwire_api = "responses"\nrequires_openai_auth = true\nsupports_websockets = false\n`,
+  // A distinct loopback origin keeps the custom model provider independent of workspace routing.
+  `chatgpt_base_url = "http://127.0.0.1:3130/backend-api"\nmodel_provider = "fixture"\n[model_providers.fixture]\nbase_url = "http://localhost:3130/backend-api/codex"\nname = "OpenAI"\nwire_api = "responses"\nrequires_openai_auth = true\nsupports_websockets = false\n`,
 );
 const owner = new CodexAuthOwner({ profile, cli: wrapper, pollMs: 100, refreshAheadMs: 1000 });
 let worker: Awaited<ReturnType<typeof launchSessionVm>> | undefined;
@@ -164,7 +179,7 @@ const timeout = Promise.withResolvers<never>();
 const timer = setTimeout(() => {
   worker?.terminate();
   timeout.reject(new Error("Codex auth VM deadline"));
-}, 90000);
+}, 240000);
 try {
   await Promise.race([
     (async () => {

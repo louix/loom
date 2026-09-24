@@ -81,6 +81,11 @@ test("tables wrap at wide widths and retain labelled content in narrow panes", (
   }
 });
 
+test("tight and loose task lists render each checkbox once", () => {
+  assert.equal(text("- [x] Done\n- [ ] Pending"), "• [x] Done\n• [ ] Pending");
+  assert.equal(text("- [x] Done\n\n- [ ] Pending"), "• [x] Done\n\n• [ ] Pending");
+});
+
 test("wrapping preserves styled content, Unicode graphemes, and code indentation", () => {
   const source = "**你好你好你好** 👨‍👩‍👧‍👦 éééééé";
   const rows = markdownText(source).layout(6);

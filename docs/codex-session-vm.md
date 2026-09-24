@@ -85,6 +85,8 @@ It holds a model stream open while the host performs a native refresh exchange,
 checks guest publication excludes the refresh token, then returns a 401 for the
 cached token and verifies recovery without restarting Codex. A second open stream
 survives until a deliberately short-lived credential expires; failed renewal must
-then stop the VM promptly. Verified with pinned Codex 0.149.0 on Linux/KVM.
+then stop the VM promptly. Verified with pinned Codex 0.156.1 and smolvm 1.18.2
+on Linux/KVM and Apple Silicon macOS. The synthetic backend also serves workspace
+routing discovery, required by current Codex app-server versions.
 This exercises controlled expiry and server rejection, not a wait for a real
 OpenAI-issued token to expire or a live OAuth authority exchange.
