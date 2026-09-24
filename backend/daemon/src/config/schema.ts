@@ -2,6 +2,8 @@
 import { z } from "zod";
 import { mcpSourceSchema, mcpGrantsSchema } from "../../../../core/src/mcp-config.ts";
 import { MCP_CAPABILITIES } from "@loom/core/types";
+import { mcpOAuthConfigSchema } from "../daemon/mcp-oauth-model.ts";
+import { validateOAuthUrl } from "../daemon/mcp-oauth-endpoint.ts";
 import { sessionEnvironmentSchema } from "../../../../core/src/session-environment.ts";
 import {
   networkPresetsSchema,
@@ -74,11 +76,30 @@ export const mcpDefinitionSchema = z
       .strictObject({
         bearer_token_env: requiredText.optional(),
         bearer_token: z.string().optional(),
+        oauth: mcpOAuthConfigSchema.optional(),
       })
       .optional(),
   })
   .superRefine((value, ctx) => {
+    if (
+      value.auth?.oauth &&
+      (value.auth.bearer_token !== undefined || value.auth.bearer_token_env !== undefined)
+    )
+      ctx.addIssue({
+        code: "custom",
+        message: "OAuth and bearer authentication are mutually exclusive",
+      });
     if (value.source.kind === "http") {
+      if (value.auth?.oauth) {
+        try {
+          validateOAuthUrl(value.source.url, true);
+        } catch {
+          ctx.addIssue({
+            code: "custom",
+            message: "OAuth requires HTTPS or a literal loopback HTTP URL",
+          });
+        }
+      }
       if (value.execution || value.grants)
         ctx.addIssue({
           code: "custom",
@@ -88,7 +109,7 @@ export const mcpDefinitionSchema = z
       if (value.execution !== "vm")
         ctx.addIssue({ code: "custom", message: "Local MCPs require execution: vm" });
       if (value.auth)
-        ctx.addIssue({ code: "custom", message: "Bearer auth is only supported for HTTP MCPs" });
+        ctx.addIssue({ code: "custom", message: "Authentication is only supported for HTTP MCPs" });
     }
   });
 export const toolSettingsSchema = z.object({

@@ -1,3 +1,4 @@
+import { mcpOAuthStatus, mcpOAuthDiagnostic } from "./mcp-oauth-status.ts";
 import type { LoomConfig } from "../config/config.ts";
 import { toolExecutionError } from "../config/tool-selection.ts";
 export { toolExecutionError } from "../config/tool-selection.ts";
@@ -19,7 +20,13 @@ export const preflightTools = async (
         `Required host tool ${m.name}: executable ${m.command} is unavailable. Install it or change session.local_tools.`,
       );
   }
-  for (const m of config.httpMcp)
+  for (const m of config.httpMcp) {
+    if (m.oauth) {
+      const auth = await mcpOAuthStatus(m.name, m.url, m.oauth);
+      if (!["ready", "refresh_required"].includes(auth.state))
+        throw new Error(mcpOAuthDiagnostic(m.name, auth.state));
+    }
     if (!m.bearerToken && m.bearerTokenEnv && !Deno.env.get(m.bearerTokenEnv))
       throw new Error(`Remote tool ${m.name}: ${m.bearerTokenEnv} is not set`);
+  }
 };

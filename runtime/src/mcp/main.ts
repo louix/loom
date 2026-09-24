@@ -1,12 +1,16 @@
 /** A fixed-endpoint Streamable HTTP relay. No SDK, filesystem, env or subprocess authority. */
-import { decodeMcpBinding, MCP_WORKER_VERSION } from "../../../core/src/mcp-worker.ts";
+import {
+  decodeMcpBinding,
+  MCP_WORKER_VERSION,
+  mcpOAuthUpdateSchema,
+} from "../../../core/src/mcp-worker.ts";
 import { FrameWriter, readFrames } from "../worker/transport.ts";
 
 const MAX_BODY = 1024 * 1024;
 const MAX_RESPONSE = 8 * MAX_BODY;
 const stop = new AbortController();
 const writer = new FrameWriter(Deno.stdout.writable);
-const frames = readFrames(Deno.stdin.readable, decodeMcpBinding);
+const frames = readFrames(Deno.stdin.readable, (value) => value);
 const bootstrap = setTimeout(() => Deno.exit(1), 10_000);
 let server: Deno.HttpServer<Deno.NetAddr> | undefined;
 let active = 0;
@@ -15,7 +19,11 @@ try {
   const first = await frames.next();
   if (first.done) throw new Error("missing binding");
   clearTimeout(bootstrap);
-  const binding = first.value;
+  const binding = decodeMcpBinding(first.value);
+  let auth = binding.oauth;
+  let authStop = new AbortController();
+  let reported401 = -1;
+  let reportedSuccess = -1;
   server = Deno.serve(
     { hostname: "127.0.0.1", port: 0, signal: stop.signal, onListen() {} },
     async (request) => {
@@ -28,9 +36,21 @@ try {
       if (!["GET", "POST", "DELETE"].includes(request.method))
         return new Response(null, { status: 405 });
       if (active >= 32) return new Response(null, { status: 503 });
+      const usedAuth = auth;
+      if (
+        usedAuth &&
+        (!usedAuth.accessToken ||
+          (usedAuth.expiresAt !== undefined && usedAuth.expiresAt <= Date.now()))
+      )
+        return new Response("MCP login required", { status: 503 });
       active++;
       let streaming = false;
-      const signal = AbortSignal.any([stop.signal, request.signal, AbortSignal.timeout(60_000)]);
+      const signal = AbortSignal.any([
+        stop.signal,
+        authStop.signal,
+        request.signal,
+        AbortSignal.timeout(60_000),
+      ]);
       try {
         const headers = new Headers();
         for (const name of [
@@ -44,6 +64,7 @@ try {
           if (value) headers.set(name, value);
         }
         for (const [name, value] of Object.entries(binding.headers)) headers.set(name, value);
+        if (usedAuth?.accessToken) headers.set("authorization", `Bearer ${usedAuth.accessToken}`);
         let body: Uint8Array<ArrayBuffer> | undefined;
         if (request.body) {
           const chunks: Uint8Array[] = [];
@@ -63,6 +84,12 @@ try {
             offset += chunk.length;
           }
         }
+        if (
+          usedAuth &&
+          ((usedAuth.expiresAt !== undefined && usedAuth.expiresAt <= Date.now()) ||
+            (auth?.generation === usedAuth.generation && !auth.accessToken))
+        )
+          return new Response("MCP login required", { status: 503 });
         const upstream = await fetch(binding.url, {
           method: request.method,
           headers,
@@ -70,6 +97,14 @@ try {
           redirect: "error",
           signal,
         });
+        if (usedAuth && upstream.status === 401 && reported401 !== usedAuth.generation) {
+          reported401 = usedAuth.generation;
+          if (auth?.generation === usedAuth.generation) auth = { generation: usedAuth.generation };
+          await writer.send({ kind: "unauthorized", generation: usedAuth.generation });
+        } else if (usedAuth && upstream.ok && reportedSuccess !== usedAuth.generation) {
+          reportedSuccess = usedAuth.generation;
+          await writer.send({ kind: "authorized", generation: usedAuth.generation });
+        }
         const responseHeaders = new Headers();
         for (const name of [
           "content-type",
@@ -124,8 +159,21 @@ try {
     },
   );
   await writer.send({ kind: "ready", version: MCP_WORKER_VERSION, port: server.addr.port });
-  // EOF (including abrupt daemon death) owns the worker's lifetime. No rebinds.
-  if (!(await frames.next()).done) throw new Error("MCP worker already bound");
+  // Only authorization can rotate. Destination and guest capability remain immutable.
+  for await (const frame of frames) {
+    const update = mcpOAuthUpdateSchema.parse(frame);
+    if (!auth) throw new Error("OAuth is not configured");
+    if (update.state.generation <= auth.generation) {
+      await writer.send({ kind: "token_ack", generation: update.state.generation });
+      continue;
+    }
+    if (update.abortActive) {
+      authStop.abort();
+      authStop = new AbortController();
+    }
+    auth = update.state;
+    await writer.send({ kind: "token_ack", generation: auth.generation });
+  }
 } catch {
   Deno.exitCode = 1;
 } finally {

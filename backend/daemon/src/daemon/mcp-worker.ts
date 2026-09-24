@@ -1,5 +1,10 @@
 import { fileURLToPath } from "node:url";
-import { MCP_WORKER_VERSION, decodeMcpBinding } from "../../../../core/src/mcp-worker.ts";
+import {
+  MCP_WORKER_VERSION,
+  decodeMcpBinding,
+  mcpOAuthUpdateSchema,
+  type McpOAuthRelayState,
+} from "../../../../core/src/mcp-worker.ts";
 import type { McpServerHandle } from "@loom/core/types";
 import { FrameWriter, readFrames } from "../../../../runtime/src/worker/transport.ts";
 import {
@@ -37,12 +42,17 @@ export interface ManagedMcp {
   pid: number;
   exited: Promise<unknown>;
   close(): Promise<void>;
+  updateOAuth?(state: McpOAuthRelayState, abortActive: boolean): Promise<void>;
 }
 
 export const startMcpWorker = async (
   name: string,
   spec: HttpSpec,
   launch: WorkerLauncher = launchLocalWorker,
+  oauth?: {
+    initial: McpOAuthRelayState;
+    report(kind: "authorized" | "unauthorized", generation: number): void;
+  },
 ): Promise<ManagedMcp> => {
   const child = launch(mcpWorkerSpec(spec.url));
   const writer = new FrameWriter(child.input);
@@ -50,9 +60,12 @@ export const startMcpWorker = async (
     if (!value || typeof value !== "object") throw new Error("invalid MCP worker frame");
     return value as Record<string, unknown>;
   });
+  const pending = new Map<number, { resolve(): void; reject(error: Error): void }>();
   let closing: Promise<void> | undefined;
   const close = (): Promise<void> =>
     (closing ??= (async () => {
+      for (const ack of pending.values()) ack.reject(new Error("MCP worker closed"));
+      pending.clear();
       const kill = setTimeout(() => child.terminate(), 1000);
       try {
         await writer.close().catch(() => {});
@@ -81,6 +94,7 @@ export const startMcpWorker = async (
           url: spec.url,
           headers: spec.headers ?? {},
           token,
+          ...(oauth ? { oauth: oauth.initial } : {}),
         });
         const ready = await frames.next();
         if (
@@ -98,7 +112,56 @@ export const startMcpWorker = async (
         timer = setTimeout(() => reject(new Error("MCP worker startup timed out")), 10_000);
       }),
     ]);
+    // One consumer owns the worker's output after the handshake.
+    void (async () => {
+      try {
+        for await (const frame of frames) {
+          if (
+            !oauth ||
+            !Number.isSafeInteger(frame.generation) ||
+            Number(frame.generation) < 0 ||
+            Object.keys(frame).some((key) => key !== "kind" && key !== "generation")
+          )
+            throw new Error("invalid MCP auth frame");
+          const generation = Number(frame.generation);
+          if (frame.kind === "token_ack") {
+            const ack = pending.get(generation);
+            if (!ack) throw new Error("unexpected MCP auth acknowledgement");
+            pending.delete(generation);
+            ack.resolve();
+          } else if (frame.kind === "authorized" || frame.kind === "unauthorized")
+            oauth.report(frame.kind, generation);
+          else throw new Error("invalid MCP auth frame");
+        }
+      } catch {
+        child.terminate();
+      } finally {
+        for (const ack of pending.values()) ack.reject(new Error("MCP worker closed"));
+        pending.clear();
+      }
+    })();
     return {
+      ...(oauth
+        ? {
+            async updateOAuth(state: McpOAuthRelayState, abortActive: boolean) {
+              const frame = mcpOAuthUpdateSchema.parse({ kind: "token", state, abortActive });
+              let deadline: ReturnType<typeof setTimeout> | undefined;
+              try {
+                const acknowledged = new Promise<void>((resolve, reject) => {
+                  pending.set(state.generation, { resolve, reject });
+                  deadline = setTimeout(() => reject(new Error("MCP auth update timed out")), 5000);
+                });
+                await Promise.all([writer.send(frame), acknowledged]);
+              } catch (error) {
+                child.terminate();
+                throw error;
+              } finally {
+                clearTimeout(deadline);
+                pending.delete(state.generation);
+              }
+            },
+          }
+        : {}),
       handle: {
         name,
         spec: {

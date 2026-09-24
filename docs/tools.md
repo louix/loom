@@ -36,6 +36,55 @@ environments. No Kagi-specific tools or argument adapters are involved.
 Existing inline credentials can use `auth.bearer_token`; a nonempty inline token
 takes precedence over `auth.bearer_token_env`.
 
+## OAuth for hosted servers
+
+Use `auth.oauth` instead of bearer authentication for a standards-compatible
+OAuth MCP server:
+
+```jsonc
+{
+  "mcp_servers": {
+    "work": {
+      "source": { "kind": "http", "url": "https://mcp.example.com/mcp" },
+      "auth": { "oauth": {} },
+    },
+  },
+  "session": { "mcp_servers": ["work"] },
+}
+```
+
+```sh
+loom mcp login work
+loom mcp login work --no-browser
+loom mcp status work --json
+loom mcp logout work
+```
+
+An empty OAuth block uses MCP discovery and dynamic client registration.
+For a pre-registered application, set `client_id`, optionally `client_secret_env`
+or `client_secret_command` (an argv array), `redirect_port`, and `scopes`.
+Secret commands run only during explicit login. Register the callback as
+`http://127.0.0.1:<redirect_port>/callback`. Without a fixed port, Loom chooses one.
+`--no-browser` prints the login URL; the callback still runs on this host.
+
+Login stores credentials on the host and refreshes them for selected sessions.
+Linux uses private state files; macOS uses a dedicated Keychain item without a
+plaintext fallback. Native Keychain behavior still needs validation on macOS.
+Only the access token reaches Loom's host relay; the guest receives a separate
+session capability. Status reads local state without contacting the server.
+
+Missing credentials fail preflight with a login command. A changed URL or OAuth
+configuration requires a new login. Refresh preserves live streams; logout clears
+authorization and aborts upstream requests. Requests are never replayed.
+Logout reports local deletion separately from remote revocation and exits nonzero
+if live relay invalidation could not be confirmed. It also works after removing
+the definition from config.
+
+Use distinct server names for different accounts. Login is explicit and requires
+one name; device flow, batch login and client ID metadata documents are not
+supported. Named provider compatibility has not yet been verified. See the
+[OAuth specification](mcp-oauth-spec.md) for protocol and storage details.
+
 ## Permissions
 
 Local definitions require `execution: "vm"`. Omitted grants mean

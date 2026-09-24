@@ -230,6 +230,8 @@ export const loginMcpOAuth = async (input: {
           : {}),
       },
       accessToken: tokens.access_token,
+      issuedAt: Date.now(),
+      loginId: crypto.randomUUID(),
       ...(tokens.refresh_token === undefined ? {} : { refreshToken: tokens.refresh_token }),
       ...(tokens.expires_in === undefined
         ? {}

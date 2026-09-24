@@ -4029,11 +4029,12 @@ export class Daemon {
         m.bearerToken || (m.bearerTokenEnv ? Deno.env.get(m.bearerTokenEnv) : undefined);
       if (m.bearerTokenEnv && !token)
         throw new Error("MCP " + m.name + ": " + m.bearerTokenEnv + " is not set");
+      const credentialEnv = m.oauth?.client_secret_env || m.bearerTokenEnv;
       return {
         name: m.name,
         ...(m.required ? { required: true } : {}),
         defaultFor: m.defaultFor,
-        ...(m.bearerTokenEnv ? { credentialEnv: m.bearerTokenEnv } : {}),
+        ...(credentialEnv ? { credentialEnv } : {}),
         spec: {
           transport: "http",
           url: m.url,
@@ -4091,14 +4092,22 @@ export class Daemon {
     );
 
     for (const m of this.config.httpMcp) {
-      const missing = !m.bearerToken && m.bearerTokenEnv && !Deno.env.get(m.bearerTokenEnv);
+      const auth = m.oauth
+        ? await (await import("./mcp-oauth-status.ts")).mcpOAuthStatus(m.name, m.url, m.oauth)
+        : undefined;
+      const missing = auth
+        ? !["ready", "refresh_required"].includes(auth.state)
+        : !m.bearerToken && m.bearerTokenEnv && !Deno.env.get(m.bearerTokenEnv);
+      const authNote = auth
+        ? (await import("./mcp-oauth-status.ts")).mcpOAuthDiagnostic(m.name, auth.state)
+        : m.bearerTokenEnv + " is not set";
       mcp.push({
         name: m.name,
         command: "HTTP MCP",
         resolved: new URL(m.url).origin,
         status: missing ? "missing" : "ok",
         note: missing
-          ? m.bearerTokenEnv + " is not set"
+          ? authNote
           : "Isolated HTTP relay; preferred for: " +
             (m.defaultFor.join(", ") || "none") +
             (m.required ? ". Required remote tool." : ""),

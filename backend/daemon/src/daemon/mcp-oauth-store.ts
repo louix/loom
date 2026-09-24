@@ -1,6 +1,7 @@
 import { dirname, isAbsolute, join, parse, resolve } from "node:path";
 import { homedir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
+import { oauthKeychain } from "./mcp-oauth-keychain-host.ts";
 import {
   McpOAuthError,
   mcpOAuthStateSchema,
@@ -30,13 +31,13 @@ const check = (stat: Deno.FileInfo, directory: boolean) => {
   )
     throw new McpOAuthError("storage_unsafe");
 };
-const directories = async (path: string): Promise<void> => {
+const directories = async (path: string, create = true): Promise<void> => {
   // Reject symlinks in the entire path, including a configured state namespace.
   let parent = parse(path).root;
   for (const segment of path.slice(parent.length).split("/").filter(Boolean)) {
     parent = join(parent, segment);
     try {
-      await Deno.mkdir(parent, { mode: 0o700 });
+      if (create) await Deno.mkdir(parent, { mode: 0o700 });
     } catch (e) {
       if (!(e instanceof Deno.errors.AlreadyExists)) throw e;
     }
@@ -133,6 +134,13 @@ const publish = async (path: string, state: McpOAuthState, signal?: AbortSignal)
 
 export interface McpOAuthStore {
   read(signal?: AbortSignal): Promise<McpOAuthState>;
+  peek(signal?: AbortSignal): Promise<McpOAuthState>;
+  readonly directory: string;
+  /** Hold the process lock across refresh/revocation decisions and persistence. undefined means no write. */
+  transact(
+    update: (state: McpOAuthState) => Promise<{ credential?: McpOAuthCredential } | undefined>,
+    signal?: AbortSignal,
+  ): Promise<McpOAuthState>;
   commit(
     expectedGeneration: number,
     credential: McpOAuthCredential,
@@ -149,21 +157,47 @@ export const matchingOAuthCredential = (
   return state.credential;
 };
 
-/** Linux storage. macOS fails closed until the separate Keychain backend is installed. */
+/** Atomic host storage; macOS uses a namespaced Keychain item, never a plaintext fallback. */
 export const createMcpOAuthStore = (
   name: string,
   root = mcpOAuthStateDirectory(),
+  keychain:
+    | ((service: string, value?: string) => string | undefined | Promise<string | undefined>)
+    | undefined = Deno.build.os === "darwin" ? oauthKeychain : undefined,
 ): McpOAuthStore => {
   const namespace = resolve(root);
   const directory = join(namespace, oauthHash(name));
   const path = join(directory, "credential.json");
-  const locked = async <T>(run: () => Promise<T>, signal?: AbortSignal): Promise<T> => {
-    if (Deno.build.os !== "linux") throw new McpOAuthError("storage_unavailable");
+  const service = "loom.mcp-oauth." + oauthHash(namespace) + "." + oauthHash(name);
+  const load = async (): Promise<McpOAuthState> => {
+    if (!keychain) return await readState(path, name);
+    const raw = await keychain(service);
+    if (raw === undefined) return { version: 1, generation: 0 };
+    try {
+      const state = mcpOAuthStateSchema.parse(JSON.parse(raw));
+      if (state.credential && state.credential.identity.name !== name) throw new Error();
+      return state;
+    } catch {
+      throw new McpOAuthError("storage_corrupt");
+    }
+  };
+  const save = async (state: McpOAuthState, signal?: AbortSignal) => {
+    if (signal?.aborted) throw new McpOAuthError("cancelled");
+    if (keychain) await keychain(service, JSON.stringify(state));
+    else await publish(path, state, signal);
+  };
+  const locked = async <T>(
+    run: () => Promise<T>,
+    signal?: AbortSignal,
+    create = true,
+  ): Promise<T> => {
+    if (!["linux", "darwin"].includes(Deno.build.os))
+      throw new McpOAuthError("storage_unavailable");
     let lock: Deno.FsFile | undefined;
     try {
-      await directories(namespace);
-      await directories(directory);
-      lock = await openFile(join(directory, "lock"), true);
+      await directories(namespace, create);
+      await directories(directory, create);
+      lock = await openFile(join(directory, "lock"), create);
       const deadline = Date.now() + 30000;
       while (!(await lock.tryLock(true))) {
         if (signal?.aborted) throw new McpOAuthError("cancelled");
@@ -174,34 +208,47 @@ export const createMcpOAuthStore = (
       return await run();
     } catch (e) {
       if (signal?.aborted) throw new McpOAuthError("cancelled");
+      if (!create && e instanceof Deno.errors.NotFound) throw e;
       throw e instanceof McpOAuthError ? e : new McpOAuthError("storage_unavailable");
     } finally {
       lock?.close();
     }
   };
-  const replace = (
-    expected: number | undefined,
-    credential?: McpOAuthCredential,
-    signal?: AbortSignal,
-  ) =>
+  const transact: McpOAuthStore["transact"] = (update, signal) =>
     locked(async () => {
-      const current = await readState(path, name);
-      if (expected !== undefined && expected !== current.generation)
-        throw new McpOAuthError("stale_login");
+      const current = await load();
+      const next = await update(structuredClone(current));
+      if (next === undefined) return current;
       const parsed = mcpOAuthStateSchema.safeParse({
         version: 1,
         generation: current.generation + 1,
-        ...(credential ? { credential } : {}),
+        ...next,
       });
-      if (!parsed.success || (credential && credential.identity.name !== name))
+      if (
+        !parsed.success ||
+        (parsed.data.credential && parsed.data.credential.identity.name !== name)
+      )
         throw new McpOAuthError("storage_corrupt");
-      if (signal?.aborted) throw new McpOAuthError("cancelled");
-      await publish(path, parsed.data, signal);
+      await save(parsed.data, signal);
       return parsed.data;
     }, signal);
   return {
-    read: (signal) => locked(() => readState(path, name), signal),
-    commit: (expected, credential, signal) => replace(expected, credential, signal),
-    clear: (signal) => replace(undefined, undefined, signal),
+    directory,
+    read: (signal) => locked(load, signal),
+    async peek(signal) {
+      try {
+        return await locked(load, signal, false);
+      } catch (e) {
+        if (e instanceof Deno.errors.NotFound) return { version: 1, generation: 0 };
+        throw e;
+      }
+    },
+    transact,
+    commit: (expected, credential, signal) =>
+      transact(async (current) => {
+        if (current.generation !== expected) throw new McpOAuthError("stale_login");
+        return { credential };
+      }, signal),
+    clear: (signal) => transact(async () => ({}), signal),
   };
 };

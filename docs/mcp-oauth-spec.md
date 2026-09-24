@@ -1,10 +1,11 @@
 # OAuth for HTTP MCP servers
 
-Status: implementation started. Bounded transport, restricted discovery/POST
-helpers, Linux credential storage and the host login engine are implemented and
-tested. Public config/CLI wiring, macOS Keychain storage, runtime refresh ownership
-and relay rotation remain to be built. Existing bearer authentication and local
-MCP execution remain supported.
+Status: implemented through CLI, trusted config, runtime refresh/relay rotation,
+cross-process logout and session diagnostics. Linux integration tests use local
+OAuth/MCP fixtures. A native macOS Keychain backend is implemented without a
+plaintext fallback; its platform behavior still needs macOS validation.
+Real provider compatibility is unverified. Existing bearer authentication and
+local MCP execution remain supported.
 
 ## Purpose and scope
 
@@ -340,12 +341,10 @@ into a path. Directories are 0700; Linux credential files and lock files are 060
 Use atomic replacement, reject symlinks and insecure ownership/permissions, and
 validate record versions and identity on read. Corrupt stores fail closed.
 
-The Linux implementation in `mcp-oauth-store.ts` uses a persistent OS-locked
-file, atomic credential/tombstone replacement, and file/directory sync. Login
-captures a generation before discovery and publishes with a compare-and-swap
-under that lock. Store reads currently initialize the private namespace/lock;
-a separate non-mutating status path is still needed. The current implementation
-returns `storage_unavailable` on macOS until its Keychain backend is available.
+The store uses a persistent OS-locked file and generation compare-and-swap.
+Linux credential/tombstone replacement includes file and directory sync. Status
+uses a non-mutating read path that does not create the namespace or lock.
+macOS stores the entire versioned record in a namespaced Keychain item.
 
 On macOS store the secret record in a dedicated Loom Keychain item keyed by
 namespace and ID. Files contain only locks and nonsecret generation metadata.
@@ -371,10 +370,9 @@ before persistence, recovery may require login. Report that honestly.
 The host engine in `mcp-oauth-login.ts` implements dynamic registration/reuse,
 pre-registered public/confidential clients, explicit secret resolution, loopback
 callback validation, PKCE exchange and conditional persistence. Its URL presenter
-is supplied by the invoking host UI. The engine requires loopback listen permission;
-it is not called by the network-denied daemon or exposed as a CLI command yet.
-A CLI entrypoint with the appropriate host callback boundary, browser opening,
-auth diagnostics and config integration remains to be implemented.
+is supplied by the invoking host UI. The dedicated CLI login child has loopback
+listen permission; remote exchanges still run through restricted helpers. The
+network-denied daemon cannot initiate login.
 
 ## Runtime owner and relay protocol
 
@@ -396,7 +394,7 @@ daemon-to-relay messages can only:
 - Clear upstream authorization and mark the relay unavailable.
 
 Use strictly validated frames and monotonically increasing generations; ignore
-stale updates. Acknowledge applied generations. Never permit these messages to
+stale updates while acknowledging them. Acknowledge applied generations. Never permit these messages to
 change URL, arbitrary headers, guest token, or network authority. Keep static
 bearer handling unchanged.
 
@@ -445,13 +443,15 @@ initialization/tool requests automatically.
 Logout must work for stored names whose configuration has been removed.
 
 Under the per-name lock, capture the old record for best-effort revocation,
-write a new tombstone generation, and delete locally usable secrets. Notify
-active daemons and wait for relay clear acknowledgements, closing a relay if it
-cannot acknowledge. Other owners observe the tombstone through polling.
-Return success only after known live owners acknowledge invalidation or are
-confirmed stopped; otherwise report local deletion plus incomplete live
-invalidation with a nonzero exit. An implementation needs owner registration/
-liveness tracking to make this guarantee across daemon processes.
+write a new tombstone generation, and delete locally usable secrets. Active
+owners observe the tombstone through polling and wait for relay clear
+acknowledgements, closing a relay if it cannot acknowledge. Owners register under
+the store lock before publishing a relay. A held OS lock tracks owner liveness;
+adjacent nonsecret files record acknowledged generations and published relay PIDs.
+Return success only after live owners acknowledge invalidation or their relays
+are confirmed stopped; otherwise report local deletion plus incomplete live
+invalidation with a nonzero exit. PID reuse can cause an incomplete result but
+never causes a recorded process to be terminated.
 
 Attempt revocation using the captured pinned endpoint and client authentication,
 with a bounded timeout, after local invalidation. Revoke the refresh token and
@@ -520,3 +520,16 @@ Use a local fake resource/authorization server for deterministic integration tes
 Live compatibility tests are opt-in and use dedicated accounts. Record provider,
 date, discovery/registration behavior, callback constraints, scopes, token lifetime,
 refresh and revocation results; do not commit credentials or authorization URLs.
+
+## Validation status
+
+The Linux fixture suite covers public CLI login/status/logout, registration and
+PKCE exchange, host storage, refresh coalescing and backoff, expiry enforcement,
+401 recovery without replay, cross-process logout acknowledgements, and live
+stream rotation/abort. Existing MCP, Claude and Codex auth regressions pass.
+
+Before packaging a macOS release, validate native Keychain read/write behavior
+(including locked/unavailable Keychain) and run `deno task runtime:hashes` on an
+Apple Silicon Mac with Nix. That maintainer task explicitly rejects Linux.
+Real dynamically registered and confidential-client provider checks also remain
+required before advertising named provider compatibility.

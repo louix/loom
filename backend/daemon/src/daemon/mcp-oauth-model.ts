@@ -18,7 +18,10 @@ export type McpOAuthErrorCode =
   | "registration_failed"
   | "client_auth_unsupported"
   | "secret_failed"
-  | "exchange_failed";
+  | "exchange_failed"
+  | "refresh_failed"
+  | "login_required"
+  | "invalidation_incomplete";
 export class McpOAuthError extends Error {
   readonly code: McpOAuthErrorCode;
   constructor(code: McpOAuthErrorCode) {
@@ -154,6 +157,13 @@ export const mcpOAuthCredentialSchema = z.strictObject({
   accessToken: text,
   refreshToken: text.optional(),
   expiresAt: z.number().finite().positive().optional(),
+  issuedAt: z.number().finite().positive().optional(),
+  loginId: z.string().uuid().optional(),
+  rejected: z.boolean().optional(),
+  recoveryPending: z.boolean().optional(),
+  retryAt: z.number().finite().nonnegative().optional(),
+  refreshFailures: z.number().int().nonnegative().max(8).optional(),
+  lastForcedAt: z.number().finite().nonnegative().optional(),
   scopes: oauthScopesSchema.optional(),
 });
 export type McpOAuthCredential = z.infer<typeof mcpOAuthCredentialSchema>;

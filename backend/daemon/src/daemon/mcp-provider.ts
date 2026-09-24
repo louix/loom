@@ -9,6 +9,8 @@ import type {
 } from "@loom/core/types";
 import { mcpToolPreferences } from "@loom/runtime/instructions";
 import { startMcpWorker, type ManagedMcp } from "./mcp-worker.ts";
+import { startOAuthMcp } from "./mcp-oauth-owner.ts";
+import type { LoomConfig } from "../config/config.ts";
 import { startRuntimeMcp } from "./runtime-mcp.ts";
 
 export const withExternalMcp = async (
@@ -17,6 +19,7 @@ export const withExternalMcp = async (
   start = startMcpWorker,
   startRuntime = startRuntimeMcp,
   repoRoot?: string,
+  httpDefinitions: LoomConfig["httpMcp"] = [],
 ): Promise<AgentProvider> => {
   const base = await create(context);
   const open = async (
@@ -24,6 +27,12 @@ export const withExternalMcp = async (
     resume: boolean,
   ): Promise<AgentSession> => {
     const workers: ManagedMcp[] = [];
+    const notices: string[] = [];
+    let wake: (() => void) | undefined;
+    const notice = (message: string) => {
+      if (!notices.includes(message)) notices.push(message);
+      wake?.();
+    };
     // Reject incompatible selections before starting any external MCP workers.
     if (context.config.sessionVm && !("oneShot" in input && input.oneShot)) {
       const host = input.mcpServers?.find((h) => h.spec.transport === "stdio");
@@ -45,15 +54,27 @@ export const withExternalMcp = async (
     try {
       const mount = async (handle: McpServerHandle): Promise<McpServerHandle> => {
         if (handle.spec.transport === "stdio") return handle;
-        const worker =
-          handle.spec.transport === "runtime"
-            ? await startRuntime(handle.name, handle.spec.runtime, input.cwd, undefined, {
-                sessionId: input.sessionId,
-                provider: context.id,
-                repo: repoRoot ?? context.config.sessionVm?.repoRoot,
-                ...(handle.spec.grants ? { grants: handle.spec.grants } : {}),
-              })
-            : await start(handle.name, handle.spec);
+        const definition = httpDefinitions.find(
+          (m) =>
+            m.name === handle.name && handle.spec.transport === "http" && m.url === handle.spec.url,
+        );
+        let worker: ManagedMcp;
+        if (handle.spec.transport === "runtime")
+          worker = await startRuntime(handle.name, handle.spec.runtime, input.cwd, undefined, {
+            sessionId: input.sessionId,
+            provider: context.id,
+            repo: repoRoot ?? context.config.sessionVm?.repoRoot,
+            ...(handle.spec.grants ? { grants: handle.spec.grants } : {}),
+          });
+        else if (definition?.oauth)
+          worker = await startOAuthMcp(
+            handle.name,
+            handle.spec.url,
+            definition.oauth,
+            start,
+            notice,
+          );
+        else worker = await start(handle.name, handle.spec);
         workers.push(worker);
         return { ...handle, spec: worker.handle.spec };
       };
@@ -96,8 +117,34 @@ export const withExternalMcp = async (
           if (prop === "close") return close;
           if (prop === "events")
             return async function* () {
+              const events = target.events()[Symbol.asyncIterator]();
               try {
-                yield* target.events();
+                let next = events.next();
+                void next.catch(() => {});
+                while (true) {
+                  if (notices.length) {
+                    yield {
+                      type: "error" as const,
+                      sessionId: target.id,
+                      ts: Date.now(),
+                      fatal: false,
+                      message: notices.shift()!,
+                    };
+                    continue;
+                  }
+                  const result = await Promise.race([
+                    next.then((event) => ({ event })),
+                    new Promise<{ notice: true }>((resolve) => {
+                      wake = () => resolve({ notice: true });
+                    }),
+                  ]);
+                  wake = undefined;
+                  if ("notice" in result) continue;
+                  if (result.event.done) break;
+                  yield result.event.value;
+                  next = events.next();
+                  void next.catch(() => {});
+                }
                 if (failed)
                   yield {
                     type: "error",
@@ -107,7 +154,12 @@ export const withExternalMcp = async (
                     message: "External MCP worker exited; resume the session to reconnect.",
                   };
               } finally {
-                await close();
+                wake = undefined;
+                try {
+                  await close();
+                } finally {
+                  await events.return?.();
+                }
               }
             };
           const value = Reflect.get(target, prop, target);

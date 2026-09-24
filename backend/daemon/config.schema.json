@@ -111,6 +111,45 @@
               },
               "bearer_token": {
                 "type": "string"
+              },
+              "oauth": {
+                "type": "object",
+                "properties": {
+                  "client_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 65536
+                  },
+                  "client_secret_env": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                  },
+                  "client_secret_command": {
+                    "minItems": 1,
+                    "maxItems": 64,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "maxLength": 8192
+                    }
+                  },
+                  "redirect_port": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 65535
+                  },
+                  "scopes": {
+                    "maxItems": 128,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1024,
+                      "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$"
+                    }
+                  }
+                },
+                "additionalProperties": false
               }
             },
             "additionalProperties": false
@@ -1395,6 +1434,45 @@
                     },
                     "bearer_token": {
                       "type": "string"
+                    },
+                    "oauth": {
+                      "type": "object",
+                      "properties": {
+                        "client_id": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 65536
+                        },
+                        "client_secret_env": {
+                          "type": "string",
+                          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                        },
+                        "client_secret_command": {
+                          "minItems": 1,
+                          "maxItems": 64,
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "maxLength": 8192
+                          }
+                        },
+                        "redirect_port": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 65535
+                        },
+                        "scopes": {
+                          "maxItems": 128,
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 1024,
+                            "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$"
+                          }
+                        }
+                      },
+                      "additionalProperties": false
                     }
                   },
                   "additionalProperties": false

@@ -258,6 +258,7 @@ export class ProviderRegistry {
       undefined,
       undefined,
       this.#repoRoot,
+      effectiveConfig.httpMcp,
     );
     this.#loaded.add(pkg);
     const initStop = new AbortController();

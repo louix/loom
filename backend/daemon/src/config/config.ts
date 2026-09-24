@@ -1,6 +1,7 @@
 import type { McpGrants } from "../../../../core/src/mcp-config.ts";
 import type { z } from "zod";
 import type { mcpDefinitionSchema } from "./schema.ts";
+import type { McpOAuthConfig } from "../daemon/mcp-oauth-model.ts";
 import {
   normalizeSessionEnvironment,
   type SessionEnvironment,
@@ -331,6 +332,7 @@ export interface LoomConfig {
     bearerTokenEnv: string;
     /** Inline credential, when supplied, takes precedence over the environment. */
     bearerToken?: string;
+    oauth?: McpOAuthConfig;
     defaultFor: McpCapability[];
   }>;
   titles: {

@@ -52,6 +52,7 @@ export const resolveToolSelection = (raw: ToolSettings): Pick<LoomConfig, "mcp" 
         url: entry.source.url,
         bearerTokenEnv: entry.auth?.bearer_token_env ?? "",
         ...(entry.auth?.bearer_token !== undefined ? { bearerToken: entry.auth.bearer_token } : {}),
+        ...(entry.auth?.oauth ? { oauth: entry.auth.oauth } : {}),
       });
     } else {
       mcp.push({

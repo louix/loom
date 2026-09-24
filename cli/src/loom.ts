@@ -72,6 +72,8 @@ const USAGE: Record<string, string> = {
   --repo <path>                select the repository from any directory`,
 
   mcp: `loom mcp prepare|status|update [name] [--smolvm PATH] [--json]
+loom mcp login <name> [--no-browser] [--json]
+loom mcp logout <name> [--json]
 
   Prepare a configured local MCP without changing the repository environment.
   Without a name, operate on selected MCP servers. HTTP servers need no package.
@@ -196,6 +198,7 @@ const main = async (): Promise<void> => {
       force: { type: "boolean", default: false },
       wide: { type: "boolean" },
       "dry-run": { type: "boolean" },
+      "no-browser": { type: "boolean" },
       json: { type: "boolean", default: false },
       help: { type: "boolean", default: false },
       version: { type: "boolean", default: false },
@@ -263,6 +266,7 @@ const main = async (): Promise<void> => {
     writeOut(
       await mcpCommand(positionals.slice(1), repoRoot, {
         json: values.json,
+        ...(values["no-browser"] ? { noBrowser: true } : {}),
         ...(values.smolvm ? { smolvm: values.smolvm } : {}),
       }),
     );
