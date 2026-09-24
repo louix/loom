@@ -49,14 +49,14 @@ OAuth is available only under trusted `mcp_servers` HTTP definitions:
 }
 ```
 
-| Field                   | Behavior                                                                                                                                                     |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `oauth: {}`             | Discover authorization metadata; attempt dynamic registration; use resource-required scopes when advertised, otherwise omit scope; allocate a loopback port. |
-| `client_id`             | Use an existing registration instead of registering a client.                                                                                                |
-| `client_secret_env`     | Read the named host environment variable during explicit login.                                                                                              |
-| `client_secret_command` | Run a nonempty argv array during explicit login, without a shell.                                                                                            |
-| `redirect_port`         | Fixed callback port, integer 1–65535. Omitted means an OS-assigned port.                                                                                     |
-| `scopes`                | Explicit, case-sensitive scope strings; duplicates removed. Omitted differs from an explicit empty list.                                                     |
+| Field                   | Behavior                                                                                                                                           |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `oauth: {}`             | Discover authorization metadata; attempt dynamic registration; use challenge scopes when supplied, otherwise omit scope; allocate a loopback port. |
+| `client_id`             | Use an existing registration instead of registering a client.                                                                                      |
+| `client_secret_env`     | Read the named host environment variable during explicit login.                                                                                    |
+| `client_secret_command` | Run a nonempty argv array during explicit login, without a shell.                                                                                  |
+| `redirect_port`         | Fixed callback port, integer 1–65535. Omitted means an OS-assigned port.                                                                           |
+| `scopes`                | Explicit, case-sensitive scope strings; duplicates removed. Omitted differs from an explicit empty list.                                           |
 
 The two secret sources are mutually exclusive and require `client_id`. Inline
 client secrets are unsupported. OAuth cannot coexist with either bearer field.
@@ -316,9 +316,11 @@ bounded jitter and backoff. Unknown expiry refreshes only after an authenticatio
 failure. No refresh token means no proactive refresh attempt. Enforce known
 expiry independently in the relay even if the owner/helper is stalled.
 
-On upstream 401, return the response to the caller and report the request's
-credential generation to the owner. Do not expose upstream challenges as an
-agent-driven login mechanism. Never replay the failed request. The owner ignores
+The relay reports the first successful authenticated response for each generation
+to reset the owner's recovery guard. On upstream 401, return the response to the
+caller and report the request's credential generation to the owner. Do not expose
+upstream challenges as an agent-driven login mechanism. Never replay the failed
+request. The owner ignores
 401s for superseded generations and coalesces concurrent failures. Allow at most
 one forced refresh per generation, with at least a 30-second cooldown per owner.
 If the replacement token is rejected before any successful authenticated response,
