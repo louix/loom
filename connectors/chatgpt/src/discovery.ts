@@ -2,7 +2,7 @@
  * Short-lived `codex app-server` discovery: list models and their reasoning
  * efforts through the same subprocess mechanism (and the same resolved
  * `CODEX_HOME`) session startup uses, rather than a separate REST credential
- * path. See `docs/chatgpt-provider-plan.md` Phase 2.
+ * path. See `docs/connectors.md#codex-subscription`.
  */
 import type { DiscoveredModel } from "@loom/core/types";
 import { CodexRpcClient } from "./rpc.ts";

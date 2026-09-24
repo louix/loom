@@ -145,9 +145,8 @@ that IP explicitly allowed, then unreachable with the default network policy.
 Host firewall rules can make the positive control fail. Failed runs retain their
 fixture paths for diagnosis. These checks replace the removed tilth spike suite.
 
-Linux x86_64 and Apple Silicon validation use Tilth 0.10.1 and smolvm 1.8.1. See
-the [macOS validation record](review-2026-09/macos.md) for exact coverage and
-remaining live checks. Unified command MCP definitions can grant exact DNS names through smolvm;
+Linux x86_64 and Apple Silicon packaging and synthetic VM checks have been
+exercised; remaining live checks are in the [roadmap](roadmap.md#validation). Unified command MCP definitions can grant exact DNS names through smolvm;
 these resolve to IP allowlists at startup, permitting all ports on those IPs.
 
 ## Host and guest packaging boundary

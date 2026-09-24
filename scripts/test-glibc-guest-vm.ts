@@ -1,4 +1,4 @@
-/** Offline glibc guest feasibility check; see docs/glibc-guest-experiment.md. */
+/** Offline glibc guest feasibility check with a dedicated Node closure and rootfs. */
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { vmEnvironment } from "../runtime/src/packaged/vm.ts";

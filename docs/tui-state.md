@@ -16,7 +16,8 @@ Session startup and cold resume publish `starting` before launching a worker or
 VM. Submitting a new message closes the composer so the STARTING state is visible.
 A structurally valid create request gets a row and opening message before provider,
 model or worktree setup. Startup/send failures are persisted in session events;
-the TUI selects that session without restoring a draft. Malformed requests and
+a notice reports the failure without changing the current selection or restoring
+a draft. Malformed requests and
 transport failures still retain draft recovery. Ambiguous timeout/disconnect outcomes
 require review before resending; the client does not automatically replay the request.
 
@@ -41,3 +42,27 @@ See [keybindings](keybindings.md) for controls. Regression coverage lives in
 `test/tui-model.test.ts`, `test/tui-render.test.ts`, `test/session-manager.test.ts`
 and the client/daemon transport tests. Historical migration plans and benchmark
 reports are retained in Git history.
+
+## Fleet ordering and focus
+
+Daemon and TUI share `core/src/session-order.ts`: status group, then creation
+time descending, then ID ascending. Activity does not reshuffle peers.
+Rows can still move when groups change, children expand or the viewport scrolls.
+Search retains relevance ordering. Selection tracks a session ID, not a row index.
+
+Creating a session keeps the current selection. Completion, cancellation and
+accepted startup failure report a notice without selecting that session later.
+Users can select its STARTING row explicitly. An empty fleet selects its first
+arriving row through normal reconciliation.
+
+## Forks and undo
+
+Undo/rewind depends on provider capabilities. Native history forks retain
+provider identity where supported. Continuation forks start a fresh session with
+saved context when the provider changes, is unavailable, or isolation changes;
+the source remains readable.
+
+Worktree continuation forks start at the source's actual HEAD and copy staged,
+unstaged and nonignored untracked work separately. In-progress Git operations
+and submodule changes are rejected. Private-clone forks instead start from the
+published tip; see [repository access](repository-mounts.md#clone-mode).

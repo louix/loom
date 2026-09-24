@@ -38,19 +38,18 @@ runs on the host. Files and secrets inside the repo are not isolated from agents
 Unmounted home directories, provider profiles and private VM state remain outside
 the repo mount. Network allowlists and per-session VM lifetimes are unchanged.
 
-Stop the old daemon before upgrading and rebuild runtime artifacts. Old prepared
-disks require a compatible runtime; this change invalidates the old artifact.
-
 Validate with test/workspace-mounts.test.ts and scripts/test-real-git-vm.ts.
 
 ## Clone mode
 
 Everything above describes `session.isolation.checkout.mode = "mount"`, the
 default. With `"clone"`, a new VM session mounts none of this. It works in a
-private clone whose only remote is a host relay that lets it read its base
-branch and its own branch and push its own branch only, so hooks and config the
+private clone whose only remote is a host relay that advertises its base
+branch and its own branch and accepts pushes to its own branch only, so hooks and config the
 agent writes never reach host Git. The session branch in your repository is
-kept current at every turn end; take commits from it with ordinary Git.
+updated by automatic publication at turn end; take published commits from it
+with ordinary Git. Publication failures are reported in the conversation.
+Repository history must be considered readable regardless of advertised refs.
 
 ```jsonc
 { "session": { "isolation": { "checkout": { "mode": "clone" } } } }
@@ -63,8 +62,11 @@ notification hooks stay on the host. Manual rebase resumes a sleeping session,
 and refuses to run while the agent, background work, checks or open shells are
 active. Git state is last-observed while a VM is stopped; before the first
 successful guest probe it is unknown. Undo's worktree restore remains unavailable
-for clones. See [guest checkouts](guest-checkout-plan.md) for the design and
-the current status. Validate with test/git-relay.test.ts,
+for clones. Forks start from the parent's published tip and do not carry over
+uncommitted clone work. The `commit` tool commits locally; automatic publication
+runs at turn end. Archiving retains clone files unless forced.
+See [private prepared workspaces](session-environments.md#private-prepared-workspaces)
+for storage and lifecycle. Validate with test/git-relay.test.ts,
 test/guest-checkout.test.ts, test/clone-session.test.ts, test/clone-git.test.ts,
 test/clone-features.test.ts, scripts/test-guest-checkout-vm.ts and
 scripts/test-clone-git-vm.ts.

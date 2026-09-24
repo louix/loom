@@ -1,6 +1,6 @@
 /** Reproduce shared-filesystem descriptor pressure without a live provider or real credentials.
  * Usage: deno run -A scripts/spike-vm-fd-pressure.ts ARTIFACT SMOLVM [FILES=120000]
- * See docs/claude-vm-auth-investigation.md for the reduced-limit reproduction.
+ * See docs/claude-session-vm.md#file-limit-failures for troubleshooting.
  */
 import { join } from "node:path";
 import assert from "node:assert/strict";

@@ -55,7 +55,7 @@ discovery, permission/question/plan callbacks, filesystem and Loom Git tools,
 compaction, persisted SDK rewind, resume, profile sharing and process cleanup.
 This does not validate live provider authentication or token refresh.
 
-See [isolation](isolation-plan.md) for current boundaries and remaining provider
+See [isolation](isolation.md) for current boundaries and remaining provider
 and daemon/TUI work. The connector-authoring
 interface below remains the worker-side interface during this migration.
 

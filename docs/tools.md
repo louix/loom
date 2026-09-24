@@ -83,7 +83,7 @@ the definition from config.
 Use distinct server names for different accounts. Login is explicit and requires
 one name; device flow, batch login and client ID metadata documents are not
 supported. Named provider compatibility has not yet been verified. See the
-[OAuth specification](mcp-oauth-spec.md) for protocol and storage details.
+[OAuth internals](mcp-oauth.md) for protocol and storage details.
 
 ## Permissions
 

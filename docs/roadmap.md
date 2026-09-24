@@ -1,32 +1,41 @@
 # Remaining work
 
-Loom implements multi-provider sessions, worktrees, compaction, titles, plan
-review, subagents, usage accounting and the terminal UI. Current behavior and
-configuration live in [README](../README.md), [connectors](connectors.md) and
-[isolation](isolation-plan.md). Completed milestone plans are in Git history.
+This is the single backlog for documentation purposes. Proposals below are not
+claims that existing features are missing. Check current code before reviving a
+historical finding; completed plans and investigation reports remain in Git history.
 
-## Isolation
+## Validation
 
-- Live AISDK Google/native Anthropic checks. Codex controlled rotation/expiry VM
-  checks pass; natural live OAuth expiry remains untested.
-- Standard daemon/TUI launches now allow only Unix IPC; provider/catalog/title
-  network calls run in children. Native subprocess confinement still requires VMs.
-- Complete the remaining [macOS validation](review-2026-09/macos.md); Intel Mac
-  packaging remains unsupported.
+- Live Google and native Anthropic VM checks, plus natural live Codex OAuth
+  expiry. Controlled Codex rotation, 401 recovery and expiry fixtures exist.
+- Apple Silicon live Claude response/MCP/resume and live Codex account checks.
+  Native packaging, VM lifecycle, recovery and synthetic provider checks have
+  been exercised; Intel macOS is unsupported.
+- HTTP MCP OAuth: native macOS Keychain behavior (including locked/unavailable
+  storage), live IPv6 connections, and real dynamic-registration and confidential
+  clients. Do not advertise named service compatibility before testing it.
+  See [OAuth](mcp-oauth.md).
+- After guest source changes, regenerate Apple Silicon runtime hashes on a Mac
+  with Nix; see [packaging](packaged-runtimes.md).
 
-## Follow-up reviews
+## Product proposals
 
-- Provider interaction lifecycle: stale/concurrent plan resolution, retry only
-  before a known application boundary, cancellation of parked interactions.
-- Control-event overflow and duplicate runtime registration.
-- Settings and deferred tools: see [settings](settings-plan.md),
-  [tools](tools-plan.md), and [task backlog](todo.md). Those are proposals; check
-  current code before treating a historical finding as an outstanding defect.
+- Settings UI for persistent verbosity, an explicit default permission mode,
+  branch-deletion preference and provider selection. Explicit defaults should
+  stay pinned when a session changes. Provider/model/mode memory and configured
+  provider restrictions already exist.
+- A branch-only working mode alongside existing in-place and worktree modes.
+- Account identity details to distinguish personal and work Claude profiles.
+- Provider/model defaults for titles, summaries and plan implementation.
+- A named `check` tool with bounded output for configured project checks.
+- Measure package size before dependency-pruning or standalone-distribution work.
+- Consider a standalone isolation launcher as a separate product.
 
-## Verification
+## Engineering follow-ups
 
-Run `deno task typecheck`, `deno task lint`, and `deno task test:silent`. Native
-VM and live-auth acceptance commands are documented with the runtime they test.
-Live checks are separate from deterministic tests and may consume provider usage.
-
-Latest bounded review: [isolation and TUI follow-ups](review-2026-09/session-isolation-followups.md).
+- Review stale/concurrent plan resolution, cancellation of parked interactions,
+  control-event overflow and duplicate runtime registration.
+- Reduce initial private-workspace copy cost on filesystems without reflinks.
+  Idle VM shutdown preserves workspace data; automatic cache eviction needs a
+  separate policy.
+- Evaluate macOS disk-template caching and broader MCP reconnect behavior.

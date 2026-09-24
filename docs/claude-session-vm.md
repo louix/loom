@@ -2,9 +2,11 @@
 
 The opt-in runtime runs the existing Claude connector worker and native Claude
 inside one smolvm guest. The normal framed worker protocol travels through
-smolvm's exec/vsock transport. The guest mounts the host repository, selected session worktree, a private
-persistent Claude profile and a private credential snapshot. Real Git runs inside
-the VM; commits, hooks and configuration are immediately visible to host Git.
+smolvm's exec/vsock transport. The guest has a private persistent Claude profile and credential snapshot.
+The default mounted checkout exposes the host repository and selected worktree;
+Git changes there are immediately visible to host Git. Opt-in clone mode exposes
+a private workspace and publishes commits through a host relay instead. See
+[repository access](repository-mounts.md).
 
 IP networking stays disabled. A loopback proxy in the guest relays through a
 separate Unix/vsock endpoint to a host CONNECT proxy. The default permitted target
@@ -200,8 +202,7 @@ The Linux Nix package bundles the runtime. Opt in for all providers in this proj
 ```
 
 Each regular Claude session gets its own VM. Discovery and one-shot title jobs
-still use host workers. The host Claude executable is also needed for OAuth
-refresh; initial login stays on the host. API-key and explicit OAuth-token
+still use host workers. Initial login stays on the host; the credential owner handles renewal. API-key and explicit OAuth-token
 environment overrides use static snapshots instead of managed refresh.
 
 The private profile lives under
@@ -219,27 +220,10 @@ cleanup if ownership was lost before reaping could be confirmed. Startup and
 session operations now attempt recovery before releasing that block. Empty directories and lock files
 remain after deletion to avoid races caused by replacing lock inodes.
 
-Sessions whose saved history cannot resume under the current isolation setting
-are read-only in the TUI, with the reason in DETAIL. This covers host sessions
-after enabling VM isolation and VM sessions after disabling it. Press `F` to
-continue in a fresh session using the current configuration. The parent stays
-untouched and its history remains readable.
-
-This continuation fork copies the parent's current HEAD, staged and unstaged
-changes, and non-ignored untracked files into a separate worktree. Ignored files
-are omitted; submodules and unfinished Git operations are refused. Archived
-sessions fork from their retained branch. It supplies the most recent saved
-conversation and tool events as context (up to 120,000 characters from the latest
-5,000 events, with an omission notice when truncated). This is not a native Claude
-history fork. The new agent acknowledges the context and waits for instructions.
-
-Submitting a new message closes the composer, exposing the session's STARTING
-state. Accepted startup/send failures are saved beside the attempted message in
-session events; the TUI selects that chat without restoring a draft. Up-arrow
-history queries that session's latest user messages independently of transcript
-pages. Provider/model/worktree setup failures already have a chat row; malformed
-requests and uncertain transport outcomes still retain draft recovery. A timeout or lost connection
-requires reviewing the session before retrying: the send may have succeeded.
+Sessions retain their saved execution choice when the configured default changes.
+Unavailable histories remain readable; use a continuation fork to change provider
+or execution environment. See [isolation](isolation.md) and
+[TUI state](tui-state.md) for fork and startup behavior.
 
 Configured HTTP MCP workers and packaged MCP runtimes are forwarded into the VM
 through individual Unix/vsock endpoints. Each relay connects only to its assigned
@@ -283,7 +267,7 @@ Records from the earlier process-tracking implementation require manual recovery
 Recovery uses the same supervisor contract on Linux and Apple Silicon macOS.
 On macOS, temporary state uses canonical paths and a short directory name to
 leave room for smolvm's Unix sockets. See [packaging](packaged-runtimes.md) and
-the [macOS validation record](review-2026-09/macos.md).
+the [remaining validation work](roadmap.md#validation).
 
 Credential-free acceptance test for a ready VM whose two owners are killed:
 
@@ -297,27 +281,18 @@ substitution and locking.
 
 ## Project controls
 
-Use exact `"path": "~/dev/project"` entries in the `repos` array.
-`repos[].session.isolation.enabled = false` disables inherited VM isolation for every provider;
-`enabled = true` uses the package-bundled runtime unless artifact/smolvm paths
-are explicitly configured or inherited. Remove development pins to follow package upgrades.
-`"provider_access": {"only": ["claude:work"]}` under the entry’s `session` restricts the project to that
-provider; `disabled = ["claude:work"]` leaves other providers available. An omitted
-`only` allows all configured providers; `only = []` allows none. Restart the daemon
-after changing provider or isolation policy. Missing and disabled providers leave
-their sessions read-only, with an explanation and a continuation fork using an
-enabled provider. `session.fork` accepts an explicit `provider` override.
+Repository overrides and execution defaults are described in [isolation](isolation.md).
+Set `repos[].session.provider_access.only` to restrict a project to selected profiles,
+or `disabled` to exclude profiles. Remove development runtime pins to follow package
+upgrades. Restart the daemon after changing provider or isolation policy.
 
 ## Startup timing
 
-The host retains immutable smolvm base disk templates in a private cache keyed
-by the resolved smolvm executable. Session overlays, credentials and worktrees
-remain private. With the current Linux artifact, connector-worker readiness
-measured about 9.6 seconds on the first boot and 0.7 seconds with cached templates.
-These measurements exclude native Claude initialization and the first API reply.
-The cache is disposable and a missing or unusable cache falls back to normal boot.
+The host caches immutable smolvm base disk templates keyed by the smolvm executable.
+Session overlays, credentials and workspaces remain private. A missing or unusable
+cache falls back to normal boot.
 
-Logs now distinguish `session_start` / `session_resume_start`, `worker_ready`,
+Logs distinguish `session_start` / `session_resume_start`, `worker_ready`,
 `adapter_ready` and `first_output` by session id. Worker readiness measures its
 connect/initialize phase; adapter readiness includes provider create/resume (and
 VM/auth setup); first output measures from create or the latest idle-session send.
@@ -329,5 +304,15 @@ timers. Durations use a monotonic clock. No provider request bodies are logged.
 The host credential owner reads Claude Code's macOS Keychain entry, falling back
 to the profile's `.credentials.json` when no usable Keychain entry is available.
 Named profiles use their own service names; they never borrow the default
-profile's credentials. Claude's native host CLI owns refresh and persistence.
+profile's credentials. The host credential owner refreshes and persists tokens
+through the same storage backend.
 Only access-token snapshots enter session VMs.
+
+## File-limit failures
+
+Large dependency installs can exhaust the Linux host VM backend's file-descriptor
+limit, causing unrelated guest reads—including credential reads—to fail with
+`EMFILE`. Raising only the guest limit does not help. Follow the host-limit
+[troubleshooting guidance](session-environments.md#advanced-vm-setup).
+Re-login does not address descriptor exhaustion. A generic authentication failure
+alone is insufficient evidence that this is the cause.
