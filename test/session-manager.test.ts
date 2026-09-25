@@ -1,3 +1,4 @@
+import { VmTerminationError, type VmTermination } from "../core/src/vm-termination.ts";
 import { signalOf } from "../backend/daemon/src/daemon/startup.ts";
 import assert from "node:assert/strict";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -2091,5 +2092,45 @@ test("concurrent compactions share a suspended session's revival", async () => {
     FakeProviderClass.prototype.resumeSession = resume;
     await c.close();
     await other.close();
+  }
+});
+
+test("a VM failure after a completed turn persists structured termination details", async () => {
+  const c = await client();
+  const create = FakeProviderClass.prototype.createSession;
+  const termination: VmTermination = {
+    reason: "stdout_closed",
+    phase: "running",
+    at: Date.now(),
+    activity: "idle",
+    guestExit: { code: 17, signal: null },
+    lastNetworkWarning: { host: "mcp-proxy.anthropic.com:443", at: Date.now() - 103000 },
+  };
+  try {
+    FakeProviderClass.prototype.createSession = async function (opts) {
+      const session = await create.call(this, opts);
+      const events = session.events.bind(session);
+      session.events = async function* () {
+        yield* events();
+        throw new VmTerminationError(termination);
+      };
+      return session;
+    };
+    const { id, fs } = await createFake(c);
+    FakeProviderClass.prototype.createSession = create;
+    fs.finishTurn({});
+    await waitFor(async () => (await statusOf(c, id)) === "idle");
+    fs.endStream();
+    await waitFor(async () => (await statusOf(c, id)) === "error");
+    const page = await c.request<{
+      items: Array<{ event: import("../core/src/events.ts").HarnessEvent }>;
+    }>("session.events", { id });
+    const error = page.items.map((item) => item.event).find((event) => event.type === "error");
+    assert(error?.type === "error");
+    assert.deepEqual(error.termination, termination);
+    assert.match(error.message, /stdout closed while idle/);
+  } finally {
+    FakeProviderClass.prototype.createSession = create;
+    await c.close();
   }
 });

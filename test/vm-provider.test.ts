@@ -21,6 +21,7 @@ for (const kind of ["claude", "codex", "aisdk"] as const) {
     Deno.env.set("XDG_STATE_HOME", root);
     const launches: SessionVmOptions[] = [];
     const requests: string[] = [];
+    const stopReasons: string[] = [];
     let cleaned = 0;
     const workers: Array<
       Awaited<ReturnType<ReturnType<typeof createSessionVmLauncher>["launch"]>>
@@ -39,6 +40,9 @@ for (const kind of ["claude", "codex", "aisdk"] as const) {
         let done = false;
         const worker = {
           ...proc,
+          setStopReason(reason: string) {
+            stopReasons.push(reason);
+          },
           input: new WritableStream<Uint8Array>({
             async write(chunk) {
               requests.push(new TextDecoder().decode(chunk));
@@ -135,7 +139,8 @@ for (const kind of ["claude", "codex", "aisdk"] as const) {
       await utility.close();
       assert.equal(launches.length, 0);
       const created = await provider.createSession(options);
-      await created.close();
+      await created.close("idle_suspension");
+      assert.deepEqual(stopReasons, ["idle_suspension"]);
       assert.deepEqual(launches[0]!.mcpRelays, [{ port: 4567, guestPort: 3130 }]);
       assert.deepEqual(launches[0]!.clone, clone);
       assert.deepEqual(launches[0]!.extraAllowedHosts, ["registry.npmjs.org"]);

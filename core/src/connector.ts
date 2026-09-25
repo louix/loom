@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { VmTermination } from "./vm-termination.ts";
 import type { SessionEnvironment } from "./session-environment.ts";
 /**
  * The plugin seam. A connector package (`@loom/connector-*`) exports
@@ -110,7 +111,7 @@ export interface ConnectorContext {
       | undefined;
   };
   onVmStarted?: (sessionId: string, generation: string) => void;
-  onStartupProgress?: (sessionId: string, message: string) => void;
+  onStartupProgress?: (sessionId: string, message: string, termination?: VmTermination) => void;
   /** The provider id this instance serves. */
   id: string;
   config: ConnectorConfig;

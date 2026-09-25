@@ -1,3 +1,4 @@
+import { VmTerminationError } from "../../../../core/src/vm-termination.ts";
 import { runSessionCommand } from "./session-command.ts";
 import { changesCommand, vmMonitorText } from "./session-inspection.ts";
 import { executeShellHook } from "../../../../core/src/shell-hook.ts";
@@ -366,8 +367,14 @@ export class Daemon {
       this.#pmsgs,
       opts.connectors,
       opts.repoRoot,
-      (sessionId, message) =>
-        this.emitEvent({ type: "startup_progress", sessionId, ts: Date.now(), message }),
+      (sessionId, message, termination) =>
+        this.emitEvent({
+          type: "startup_progress",
+          sessionId,
+          ts: Date.now(),
+          message,
+          ...(termination ? { termination } : {}),
+        }),
       (id, generation) => this.#vmGenerations.set(id, generation),
       {
         activity: (id) => this.#registry.get(id)?.status.kind ?? "starting",
@@ -390,7 +397,7 @@ export class Daemon {
           this.#sessions.setKeepWarm(id, false);
           await this.#queue.run(id, async () => {
             if (!isCurrent()) return;
-            await this.#sessions.close(id);
+            await this.#sessions.close(id, "user_stop");
             this.#vmGenerations.delete(id);
             this.#registry.setStatus(id, stateInterrupted("user"));
             this.#publishState(id);
@@ -1520,6 +1527,7 @@ export class Daemon {
           ts: Date.now(),
           message: failure,
           fatal: true,
+          ...(err instanceof VmTerminationError ? { termination: err.termination } : {}),
         });
         this.#publishState(id);
         throw new RpcError(err instanceof RpcError ? err.code : "provider_error", failure, {
@@ -2475,6 +2483,7 @@ export class Daemon {
                 ts: Date.now(),
                 message: `Environment update failed: ${message}`,
                 fatal: true,
+                ...(error instanceof VmTerminationError ? { termination: error.termination } : {}),
               });
             }
             throw error;
@@ -3735,7 +3744,7 @@ export class Daemon {
           );
         }
         this.#hooks.forget(id);
-        if (this.#sessions.has(id)) await this.#sessions.close(id);
+        if (this.#sessions.has(id)) await this.#sessions.close(id, "user_stop");
         return await withStoppedSessionVm(this.repoRoot, id, async () => {
           if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
           this.#lastSend.delete(id);
@@ -3803,7 +3812,7 @@ export class Daemon {
           );
         }
         this.#hooks.forget(id);
-        if (this.#sessions.has(id)) await this.#sessions.close(id);
+        if (this.#sessions.has(id)) await this.#sessions.close(id, "user_stop");
         return await withStoppedSessionVm(this.repoRoot, id, async () => {
           this.#lastSend.delete(id);
           this.#cacheTtlSeen.delete(id);

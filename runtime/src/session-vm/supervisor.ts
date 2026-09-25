@@ -3,6 +3,7 @@ import {
   type SessionEnvironment,
 } from "../../../core/src/session-environment.ts";
 /** Trusted host supervisor. Its stdin lifetime owns the VM and its relays. */
+import { type VmTermination, type VmStopReason } from "../../../core/src/vm-termination.ts";
 import { join } from "node:path";
 import { attachDiskTemplates, retainDiskTemplates } from "../packaged/disk-templates.ts";
 import { writeSessionAuth, type SessionAuth } from "./auth.ts";
@@ -67,20 +68,27 @@ let ended = false;
 let machineDirectory: string | undefined;
 const cancelled = new AbortController();
 const done = Promise.withResolvers<void>();
-const stop = () => {
+let phase: "starting" | "running" = "starting";
+let termination: VmTermination | undefined;
+let guestExit: VmTermination["guestExit"];
+let cleaning = false;
+const recordStop = (reason: VmStopReason, signal?: string) => {
+  termination ??= { reason, at: Date.now(), phase, ...(signal ? { signal } : {}) };
+};
+const stop = (reason: VmStopReason, signal?: string) => {
+  recordStop(reason, signal);
   ended = true;
   cancelled.abort();
   done.resolve();
 };
-Deno.addSignalListener("SIGTERM", stop);
-Deno.addSignalListener("SIGINT", stop);
+Deno.addSignalListener("SIGTERM", () => stop("signal", "SIGTERM"));
+Deno.addSignalListener("SIGINT", () => stop("signal", "SIGINT"));
 const deadline = setTimeout(
-  stop,
+  () => stop("startup_timeout"),
   sessionStartupTimeout(environment) + prepareHooks.reduce((sum, h) => sum + h.timeoutMs, 0),
 );
 const network: Array<{ host: string; allowed: boolean }> = [];
 const blockedHosts = new Set<string>();
-let phase = "starting";
 const status = () => {
   Deno.writeTextFileSync(
     join(binding.state, "status.json.tmp"),
@@ -109,12 +117,12 @@ const parent = (async () => {
         .then(() => {
           queued -= chunk.length;
         });
-      void pending.catch(stop);
+      void pending.catch(() => stop("input_error"));
     }
   } catch {
     /* Parent closed. */
   } finally {
-    stop();
+    stop("parent_disconnected");
   }
 })();
 void parent;
@@ -280,7 +288,7 @@ try {
         (stage, elapsed) => reportStartup(stage, elapsed),
         (code) => console.error(JSON.stringify({ loomStartupFailure: code })),
       );
-  void diagnostics.catch(stop);
+  void diagnostics.catch(() => stop("diagnostics_error"));
   const output = child.stdout
     .pipeThrough(
       new TransformStream<Uint8Array, Uint8Array>({
@@ -294,11 +302,32 @@ try {
       }),
     )
     .pipeTo(Deno.stdout.writable, { preventClose: true });
-  void output.catch(stop);
+  void output.catch(() => stop("output_error"));
+  const guestStatus = child.status.then((result) => {
+    if (!cleaning) guestExit = { code: result.code, signal: result.signal };
+    return result;
+  });
   phase = "running";
   status();
   clearTimeout(deadline);
-  await Promise.race([done.promise, child.status, output]);
+  await Promise.race([
+    done.promise,
+    guestStatus.then(() => recordStop("guest_exit")),
+    output.then(
+      () => recordStop("stdout_closed"),
+      () => stop("output_error"),
+    ),
+  ]);
+  // stdout EOF often precedes the process exit notification. Observe it briefly,
+  // without confusing a later cleanup SIGKILL with the original guest failure.
+  let exitTimer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    guestStatus,
+    new Promise<void>((resolve) => {
+      exitTimer = setTimeout(resolve, 100);
+    }),
+  ]);
+  clearTimeout(exitTimer);
   if (binding.preparationOnly) {
     if (ended) throw new Error("Preparation cancelled");
     const result = await child.status;
@@ -311,6 +340,7 @@ try {
     }
   }
 } catch (error) {
+  stop("supervisor_error");
   Deno.exitCode = 1;
   // Explicit preparation has no provider credentials. Report the command's
   // failure, without resource sampling or console/backend log dumps.
@@ -320,7 +350,17 @@ try {
   console.error(`Session VM stopped during ${phase}; state: ${binding.state}`);
 } finally {
   clearTimeout(deadline);
-  stop();
+  stop("connection_closed");
+  cleaning = true;
+  // Emit before deleting runtime state or killing any remaining process.
+  console.error(
+    JSON.stringify({
+      loomTermination: {
+        ...termination!,
+        ...(guestExit ? { guestExit } : {}),
+      },
+    }),
+  );
   try {
     await cleanupSessionVm({
       stop: async () => {

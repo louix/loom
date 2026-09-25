@@ -7,6 +7,13 @@ import {
   type VmOwner,
   type VmRecord,
 } from "../../../../runtime/src/session-vm/inventory.ts";
+import {
+  VmTerminationError,
+  vmTerminationMessage,
+  vmTerminationSchema,
+  type VmTermination,
+  type HostStopReason,
+} from "../../../../core/src/vm-termination.ts";
 import { normalizeExtraHosts } from "../../../../runtime/src/session-vm/network-policy.ts";
 /** Opt-in VM launcher using the existing connector WorkerProcess contract. */
 import { spawn } from "node:child_process";
@@ -49,7 +56,7 @@ export interface SessionVmOptions {
   provider?: string;
   onStop?: (isCurrent: () => boolean) => Promise<void>;
   activity?: () => string;
-  onProgress?: (message: string) => void;
+  onProgress?: (message: string, termination?: VmTermination) => void;
   workspace: string;
   artifact: string;
   smolvm: string;
@@ -90,7 +97,7 @@ export const createSessionVmLauncher = () => {
       if (closed) throw new Error("Session VM provider is shutting down");
       const pending = launchSessionVm(options).then(async (worker) => {
         if (closed) {
-          worker.terminate();
+          worker.terminate("daemon_shutdown");
           await worker.cleanup?.();
           throw new Error("Session VM provider is shutting down");
         }
@@ -110,7 +117,7 @@ export const createSessionVmLauncher = () => {
         [...launches].map(async (pending) => {
           const worker = await pending.catch(() => undefined);
           if (!worker) return;
-          worker.terminate();
+          worker.terminate("daemon_shutdown");
           await worker.cleanup?.();
         }),
       );
@@ -320,15 +327,46 @@ const launchSessionVmOwned = async (
     );
     let lastStage: StartupStage = "runtime";
     let failure: Error | undefined;
+    let termination: VmTermination | undefined;
+    let hostReason: HostStopReason | undefined;
+    let lastNetworkWarning: VmTermination["lastNetworkWarning"];
+    const diagnosis = (): VmTermination => {
+      const activity = vmTerminationSchema.shape.activity.safeParse(options.activity?.());
+      return {
+        ...(termination ?? { reason: "connection_closed", at: Date.now(), phase: "unknown" }),
+        stage: lastStage,
+        ...(activity.success && activity.data ? { activity: activity.data } : {}),
+        ...(hostReason ? { hostReason } : {}),
+        ...(lastNetworkWarning ? { lastNetworkWarning } : {}),
+        ...(child.exitCode !== null || child.signalCode !== null
+          ? { supervisorExit: { code: child.exitCode, signal: child.signalCode } }
+          : {}),
+      };
+    };
+    let reported = false;
+    const reportTermination = () => {
+      if (reported) return;
+      reported = true;
+      const info = diagnosis();
+      options.onProgress?.(vmTerminationMessage(info), info);
+    };
     const startup = !options.preparationOnly
       ? readStartupProgress(
           Readable.toWeb(child.stderr) as ReadableStream<Uint8Array>,
           (stage, elapsed, host) => {
-            lastStage = stage;
+            if (stage === "networkBlocked") {
+              if (host) lastNetworkWarning = { host, at: Date.now() };
+            } else {
+              lastStage = stage;
+            }
             options.onProgress?.(startupMessage(stage, elapsed, host));
           },
           (code) => {
             failure = new Error(startupFailures[code]);
+          },
+          (info) => {
+            termination ??= info;
+            reportTermination();
           },
         ).catch(() => {})
       : Promise.resolve();
@@ -353,6 +391,8 @@ const launchSessionVmOwned = async (
     const clean = () =>
       (cleanup ??= (async () => {
         await exited.catch(() => {});
+        await startup;
+        if (!options.preparationOnly) reportTermination();
         clearTimeout(timer);
         await unsubscribe?.();
         await publication.catch(() => {});
@@ -413,14 +453,18 @@ const launchSessionVmOwned = async (
       exitCode: exited.then(() => child.exitCode ?? 1),
       failure: async () => {
         await startup;
-        return (
-          failure ?? new Error(`Session VM connection ended during: ${startupMessage(lastStage)}`)
-        );
+        await exited.catch(() => {});
+        return new VmTerminationError(diagnosis(), failure?.message);
       },
       ...(options.preparationOnly
         ? { diagnostics: Readable.toWeb(child.stderr) as ReadableStream<Uint8Array> }
         : {}),
-      terminate() {
+      setStopReason(reason: HostStopReason) {
+        if (!termination && child.exitCode === null && child.signalCode === null)
+          hostReason ??= reason;
+      },
+      terminate(reason?: HostStopReason) {
+        if (reason) worker.setStopReason(reason);
         if (stopping) return;
         stopping = true;
         if (child.exitCode !== null || child.signalCode !== null) return;
@@ -431,6 +475,7 @@ const launchSessionVmOwned = async (
     };
     inventory.serve(
       async () => {
+        worker.setStopReason("user_stop");
         await options.onStop?.(() => !ended.signal.aborted);
         worker.terminate();
         await clean();
@@ -480,11 +525,11 @@ const launchSessionVmOwned = async (
             publication = writeSessionAuth(join(state, "private"), value);
             await publication;
           },
-          () => worker.terminate(),
+          () => worker.terminate("credential_expired"),
         );
         if (ended.signal.aborted) await unsubscribe();
       })();
-      void subscribing.catch(() => worker.terminate());
+      void subscribing.catch(() => worker.terminate("credential_setup_failed"));
     }
     return worker;
   } catch (error) {

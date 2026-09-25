@@ -7,6 +7,7 @@
  * per session through `#enqueue`; `interrupt` / `close` deliberately preempt
  * that chain rather than queue behind it.
  */
+import { VmTerminationError, type HostStopReason } from "../../../../core/src/vm-termination.ts";
 import { signalOf } from "./startup.ts";
 import type { BackgroundTaskInfo, HarnessEvent } from "@loom/core/events";
 import { interactionFor, type SessionInteraction } from "@loom/core/interaction";
@@ -370,7 +371,14 @@ export class SessionManager {
       this.#clearOverlays(run);
       const message = err instanceof Error ? err.message : String(err);
       this.#hooks.log.warn("session pump failed", { id, err: message });
-      this.#hooks.emitEvent({ type: "error", sessionId: id, ts: Date.now(), message, fatal: true });
+      this.#hooks.emitEvent({
+        type: "error",
+        sessionId: id,
+        ts: Date.now(),
+        message,
+        fatal: true,
+        ...(err instanceof VmTerminationError ? { termination: err.termination } : {}),
+      });
       this.#transition(id, run, stateError(message.slice(0, 120)));
     }
   }
@@ -946,7 +954,7 @@ export class SessionManager {
     const run = this.#require(id);
     run.ended = true;
     try {
-      await this.close(id);
+      await this.close(id, "idle_suspension");
     } finally {
       // Even a cleanup failure leaves this adapter unusable. A later resume
       // must recover its VM instead of sending into the retired session.
@@ -958,10 +966,10 @@ export class SessionManager {
   }
 
   /** Close and forget a single session (e.g. tearing down a failed fork). */
-  async close(id: string): Promise<void> {
+  async close(id: string, reason: HostStopReason = "session_close"): Promise<void> {
     const run = this.#running.get(id);
     if (!run) return;
-    await run.session.close();
+    await run.session.close(reason);
     this.#running.delete(id);
     this.#keepWarm.delete(id);
     this.#warmPings.delete(id);
@@ -980,7 +988,7 @@ export class SessionManager {
     await Promise.all(
       runs.map(async (run) => {
         try {
-          await run.session.close();
+          await run.session.close("daemon_shutdown");
         } catch {
           // best effort
         }

@@ -171,7 +171,8 @@ export const withVmSessions = async <T extends AgentProvider>(
       signalOf(input)?.throwIfAborted();
       const worker = own(
         await launches.launch({
-          onProgress: (message) => ctx.onStartupProgress?.(input.sessionId, message),
+          onProgress: (message, termination) =>
+            ctx.onStartupProgress?.(input.sessionId, message, termination),
           workspace: input.cwd,
           sessionId: input.sessionId,
           provider: ctx.id,

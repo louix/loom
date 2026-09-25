@@ -1,3 +1,4 @@
+import type { HostStopReason } from "../../../../core/src/vm-termination.ts";
 import { startWorker } from "./startup.ts";
 import { makeLogger } from "@loom/core/logger";
 import {
@@ -274,7 +275,8 @@ export class RemoteWorkerSession implements AgentSession {
     return frame.sessions;
   }
 
-  close(): Promise<void> {
+  close(reason: HostStopReason = "session_close"): Promise<void> {
+    if (!this.#failure) this.#process.setStopReason?.(reason);
     return (this.#closing ??= this.#close().catch((error) => {
       this.#closing = undefined;
       throw error;

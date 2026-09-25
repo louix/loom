@@ -1,4 +1,5 @@
 /** Daemon-owned external MCP lifetime, tied to a single connector session. */
+import type { HostStopReason } from "../../../../core/src/vm-termination.ts";
 import type { ConnectorContext, CreateProvider } from "@loom/core/connector";
 import type {
   AgentProvider,
@@ -95,10 +96,10 @@ export const withExternalMcp = async (
       if (workers.length === 0) return session;
       let closing: Promise<void> | undefined;
       let failed = false;
-      const close = (): Promise<void> =>
+      const close = (reason?: HostStopReason): Promise<void> =>
         (closing ??= (async () => {
           try {
-            await session.close();
+            await session.close(reason);
           } finally {
             await cleanup();
           }
@@ -109,7 +110,7 @@ export const withExternalMcp = async (
       // Unexpected MCP death closes only its owning session. Never replay a tool call.
       const died = () => {
         if (!closing) failed = true;
-        return close();
+        return close("worker_failure");
       };
       for (const worker of workers) void worker.exited.then(died, died).catch(() => {});
       return new Proxy(session, {

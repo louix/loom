@@ -1,3 +1,4 @@
+import type { HostStopReason } from "./vm-termination.ts";
 import { mcpGrantsSchema } from "./mcp-config.ts";
 import { z } from "zod";
 import { opaqueSchema } from "./schema.ts";
@@ -316,7 +317,7 @@ export interface AgentSession {
    * {@link interrupt}) and MUST NOT emit an event or write persistence after it
    * returns. After `close()` the `events()` iterator is ended.
    */
-  close(): Promise<void>;
+  close(reason?: HostStopReason): Promise<void>;
 }
 
 export interface AgentProvider {

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { vmTerminationSchema } from "./vm-termination.ts";
 import { opaqueSchema } from "./schema.ts";
 import { cacheCreationSchema } from "./cache.ts";
 /**
@@ -248,6 +249,7 @@ export type StatusChangedEvent = z.infer<typeof statusChangedEventSchema>;
 export const startupProgressEventSchema = harnessEventBaseSchema.extend({
   type: z.literal("startup_progress"),
   message: z.string(),
+  termination: vmTerminationSchema.optional(),
 });
 export type StartupProgressEvent = z.infer<typeof startupProgressEventSchema>;
 
@@ -255,6 +257,7 @@ export const errorEventSchema = harnessEventBaseSchema.extend({
   type: z.literal("error"),
   message: z.string(),
   fatal: z.boolean(),
+  termination: vmTerminationSchema.optional(),
 });
 export type ErrorEvent = z.infer<typeof errorEventSchema>;
 

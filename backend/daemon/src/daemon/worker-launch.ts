@@ -1,3 +1,4 @@
+import type { HostStopReason } from "../../../../core/src/vm-termination.ts";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { Readable, Writable } from "node:stream";
@@ -24,7 +25,8 @@ export interface WorkerProcess {
   output: ReadableStream<Uint8Array>;
   exited: Promise<unknown>;
   pid: number;
-  terminate(): void;
+  terminate(reason?: HostStopReason): void;
+  setStopReason?(reason: HostStopReason): void;
   cleanup?(): Promise<void>;
   /** Credential-free supervisor diagnosis, drained before interpreting worker EOF. */
   failure?(): Promise<Error | undefined>;

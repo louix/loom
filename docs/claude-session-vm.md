@@ -316,3 +316,23 @@ limit, causing unrelated guest reads—including credential reads—to fail with
 [troubleshooting guidance](session-environments.md#advanced-vm-setup).
 Re-login does not address descriptor exhaustion. A generic authentication failure
 alone is insufficient evidence that this is the cause.
+
+## VM termination diagnostics
+
+Session events retain structured `termination` metadata when a VM stops, before
+temporary runtime state is removed. Unexpected connection failures include the
+same metadata on their fatal error event. Expected stops retain a nonfatal
+lifecycle breadcrumb using the existing `startup_progress` event.
+
+The record distinguishes guest execution exit, stdout closure, parent disconnect,
+signals, startup timeout and stream errors. Host requests also identify idle
+suspension, credential expiry, user stop or daemon shutdown. `guestExit` describes
+the smolvm guest execution process, not necessarily the provider process inside
+the VM. It is captured before cleanup; a later cleanup SIGKILL is not reported as
+the original failure. Missing exit metadata means the status was not observed,
+not that the process exited successfully.
+
+Blocked requests remain separate warnings. Their host and timestamp can accompany
+a stop record as context, but never determine the stop reason. Raw provider stderr,
+request bodies and credentials are not retained. A supervisor killed before it can
+report falls back to `connection_closed` with its exit code or signal when available.
