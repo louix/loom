@@ -1670,10 +1670,12 @@ export const mkFleetHandle = ({
     };
 
     if (p.t === "new" || sendTo !== null) dispatch({ t: "pushHistory", text });
-    // Let the session's STARTING state show while create/resume runs. Keep
-    // the submitted draft only for failures before a session accepts it.
-    if (p.t === "new" || sendTo !== null) dispatch({ t: "closePrompt" });
-    else show({ t: "prompt", prompt: pendingPrompt });
+    // Startup and compaction can take minutes; their snapshots show progress
+    // while the user keeps navigating. Failures preserve the submitted draft.
+    if (p.t === "new" || sendTo !== null || kind === "compact") {
+      dispatch({ t: "closePrompt" });
+      if (kind === "compact") note("compaction requested", "dim");
+    } else show({ t: "prompt", prompt: pendingPrompt });
 
     const runSession = async (k: SessionPromptKind, sessionId: string): Promise<string> => {
       switch (k) {
@@ -1707,7 +1709,7 @@ export const mkFleetHandle = ({
             id: sessionId,
             ...(text ? { instructions: text } : {}),
           });
-          return text ? "compacting — focused" : "compacting context";
+          return text ? "context compacted — focused" : "context compacted";
         default:
           return absurd(k);
       }

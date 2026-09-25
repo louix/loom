@@ -4121,3 +4121,48 @@ test("failed cancellation explains retry and restores messaging after a successf
     teardown();
   }
 });
+
+for (const failure of [false, true]) {
+  test(`compact submission allows navigation and preserves a new prompt on ${failure ? "failure" : "completion"}`, async () => {
+    const fake = mkFakeClient();
+    const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+    const teardown = handle.effectStart();
+    try {
+      const a = testSession({
+        id: "a",
+        status: stateIdle,
+        contextUsed: 80_000,
+        contextLimit: 100_000,
+      });
+      const b = testSession({ id: "b", status: stateIdle });
+      fake.deliver(fleetOf(a, b));
+      handle.handleKey("c", {} as Key);
+      assert.equal(openPrompt(handle.getView().ui.overlay)?.t, "session");
+      handle.handleKey("keep the plan", {} as Key);
+      handle.handleKey("", { return: true } as Key);
+      const call = fake.of("session.compact")[0]!;
+      assert.ok(call);
+      assert.deepEqual(call.params, { id: "a", instructions: "keep the plan" });
+      assert.equal(openPrompt(handle.getView().ui.overlay), null);
+      fake.deliver(fleetOf({ ...a, status: { kind: "starting" } }, b));
+      handle.handleKey("j", {} as Key);
+      assert.equal(handle.getView().sel?.id, "b");
+      await delay(110);
+      handle.handleKey("", { return: true } as Key);
+      handle.handleKey("another task", {} as Key);
+      const prompt = openPrompt(handle.getView().ui.overlay);
+      assert.equal(prompt?.buffer.text, "another task");
+      if (failure) call.reject(new Error("Could not resume session"));
+      else call.resolve({});
+      await delay(0);
+      assert.equal(handle.getView().sel?.id, "b");
+      assert.equal(openPrompt(handle.getView().ui.overlay), prompt);
+      if (failure) {
+        assert.equal(handle.getView().ui.drafts.last, "keep the plan");
+        assert.match(handle.getView().ui.notice?.text ?? "", /Could not resume session/);
+      }
+    } finally {
+      teardown();
+    }
+  });
+}
