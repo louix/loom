@@ -586,9 +586,9 @@ describe("session-manager", { concurrency: 4 }, () => {
     await c.close();
   });
 
-  test("session.compact on a session that isn't running is not_found", async () => {
+  test("session.compact on an unknown session is not_found", async () => {
     const c = await client();
-    await assert.rejects(c.request("session.compact", { id: "nope" }), /session not running/);
+    await assert.rejects(c.request("session.compact", { id: "nope" }), /no such session/);
     await c.close();
   });
 
@@ -1411,7 +1411,7 @@ describe("session-manager", { concurrency: 4 }, () => {
     await c.close();
   });
 
-  test("setMode after stream end throws /session has ended/", async () => {
+  test("setMode after stream end persists for the next resume", async () => {
     const c = await client();
     const { id, fs } = await createFake(c);
     fs.emit({ type: "assistant_text", text: "x" });
@@ -1419,7 +1419,10 @@ describe("session-manager", { concurrency: 4 }, () => {
     fs.endStream();
     await waitFor(async () => (await statusOf(c, id)) === "interrupted");
 
-    await assert.rejects(c.request("session.setMode", { id, mode: "plan" }), /session has ended/);
+    const snap = await c.request<SessionSnapshot>("session.setMode", { id, mode: "plan" });
+    assert.equal(snap.mode, "plan");
+    await c.request("session.resume", { id });
+    assert.equal(fake().session(id)!.snapshot().mode, "plan");
     await c.close();
   });
   // --- snapshot-complete outstanding requests (state-sync §1) ------------
@@ -1851,7 +1854,7 @@ test("interrupt cancels a session before its provider is ready", async () => {
 });
 
 for (const failure of [false, true]) {
-  for (const command of ["session.resume", "session.send"] as const) {
+  for (const command of ["session.resume", "session.send", "session.compact"] as const) {
     test(`${command} recovers ${failure ? "a failed" : "an ended"} stream without restarting the daemon`, async () => {
       const c = await client();
       try {
@@ -1878,6 +1881,7 @@ for (const failure of [false, true]) {
         assert.deepEqual(fresh.sends, command === "session.send" ? ["continue after login"] : []);
         assert.equal(result.status.kind, command === "session.send" ? "running" : "idle");
         if (command === "session.send") assert.equal(result.injected, false);
+        if (command === "session.compact") assert.deepEqual(fresh.compacts, [undefined]);
       } finally {
         await c.close();
       }
@@ -1980,5 +1984,112 @@ test("a crashed stream remains resumable after a failed authentication retry", a
     FakeProviderClass.prototype.createSession = create;
     FakeProviderClass.prototype.resumeSession = resume;
     await c.close();
+  }
+});
+
+for (const ended of [false, true]) {
+  test(`settings and compact work with a ${ended ? "ended" : "suspended"} adapter`, async () => {
+    const c = await client();
+    try {
+      const { id, fs } = await createFake(c);
+      fs.finishTurn({ contextUsed: 80_000, cacheTtlMinutes: 5 });
+      await waitFor(async () => (await statusOf(c, id)) === "idle");
+      if (ended) {
+        fs.endStream();
+        await waitFor(() => harness().daemon.sessions.isEnded(id));
+      } else {
+        assert.equal(await harness().daemon.sessions.suspendIdle(id), true);
+      }
+      await c.request("session.setMode", { id, mode: "plan" });
+      await c.request("session.setModel", { id, model: "new-model" });
+      await c.request("session.setEffort", { id, effort: "high" });
+      await c.request("session.setProvider", {
+        id,
+        provider: "fake",
+        model: "chosen-model",
+        effort: "low",
+      });
+      await c.request("session.setKeepWarm", { id, on: false });
+      assert.equal(fake().session(id), fs, "settings should not wake the adapter");
+      await c.request("session.compact", { id, instructions: "keep the plan" });
+      const fresh = fake().session(id)!;
+      assert.notEqual(fresh, fs);
+      assert.equal(fresh.snapshot().mode, "plan");
+      assert.equal(fresh.snapshot().model, "chosen-model");
+      assert.equal((await c.request<SessionSnapshot>("session.get", { id })).effort, "low");
+      assert.deepEqual(fresh.compacts, ["keep the plan"]);
+      assert.deepEqual(fresh.sends, []);
+      assert.equal(await statusOf(c, id), "idle");
+      fresh.finishTurn({ usage: { cacheWrite: 4000 }, cacheTtlMinutes: 5 });
+      await waitFor(
+        async () =>
+          (await c.request<SessionSnapshot>("session.get", { id })).cache.ttlMinutes === 5,
+      );
+      assert.equal(await harness().daemon.sessions.suspendIdle(id), true);
+      const warm = await c.request<SessionSnapshot>("session.setKeepWarm", { id, on: true });
+      assert.equal(warm.keepWarm, true);
+      assert.notEqual(fake().session(id), fresh);
+    } finally {
+      await c.close();
+    }
+  });
+}
+
+test("undo wakes a suspended adapter without sending a message", async () => {
+  const c = await client();
+  try {
+    const { id, fs } = await createFake(c);
+    fs.finishTurn();
+    await waitFor(
+      async () => (await c.request<SessionSnapshot>("session.get", { id })).turns === 1,
+    );
+    await c.request("session.send", { id, text: "second turn" });
+    fs.finishTurn();
+    await waitFor(
+      async () => (await c.request<SessionSnapshot>("session.get", { id })).turns === 2,
+    );
+    assert.equal(await harness().daemon.sessions.suspendIdle(id), true);
+    await c.request("session.rewind", { id, toTurn: 1 });
+    const fresh = fake().session(id)!;
+    assert.notEqual(fresh, fs);
+    assert.deepEqual(fresh.sends, []);
+    assert.deepEqual(fresh.rewinds, [{ keep: 0, at: "fake-turn-1" }]);
+    assert.equal((await c.request<SessionSnapshot>("session.get", { id })).turns, 1);
+  } finally {
+    await c.close();
+  }
+});
+
+test("concurrent compactions share a suspended session's revival", async () => {
+  const c = await client();
+  const other = await client();
+  const resume = FakeProviderClass.prototype.resumeSession;
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let resumes = 0;
+  try {
+    const { id, fs } = await createFake(c);
+    fs.finishTurn();
+    await waitFor(async () => (await statusOf(c, id)) === "idle");
+    assert.equal(await harness().daemon.sessions.suspendIdle(id), true);
+    FakeProviderClass.prototype.resumeSession = async function (ref) {
+      resumes++;
+      entered.resolve();
+      await release.promise;
+      return resume.call(this, ref);
+    };
+    const first = c.request("session.compact", { id, instructions: "first" });
+    await entered.promise;
+    const second = other.request("session.compact", { id, instructions: "second" });
+    release.resolve();
+    await Promise.all([first, second]);
+    assert.equal(resumes, 1);
+    assert.deepEqual(fake().session(id)!.compacts.sort(), ["first", "second"]);
+    assert.deepEqual(fake().session(id)!.sends, []);
+  } finally {
+    release.resolve();
+    FakeProviderClass.prototype.resumeSession = resume;
+    await c.close();
+    await other.close();
   }
 });

@@ -987,7 +987,7 @@ test("session.rewind: toTurn 0 wipes the transcript; range guard covers the ends
   }
 });
 
-test("session.rewind: a harness-driven (non-aisdk) provider can't wipe-to-zero or rewind cold", async () => {
+test("session.rewind: a harness-driven provider needs resumable history and cannot wipe-to-zero", async () => {
   const hh = await makeHarness();
   try {
     const c = await LoomClient.connect({
@@ -996,7 +996,7 @@ test("session.rewind: a harness-driven (non-aisdk) provider can't wipe-to-zero o
       autospawn: false,
     });
     // a `fake` session: capabilities.rewind is true, but it isn't aisdk, so it
-    // takes the harness-restart path — which needs a loaded session and a
+    // takes the harness-restart path — which needs a provider ref and a
     // turn-1 fork point to keep.
     const s = await c.request<SessionSnapshot>("session.createStub", {
       prompt: "x",
@@ -1009,8 +1009,8 @@ test("session.rewind: a harness-driven (non-aisdk) provider can't wipe-to-zero o
     ).run(s.id);
     db.prepare("UPDATE usage SET turns = 2 WHERE session_id = ?").run(s.id);
 
-    // cold (never `create`d live) → refused with a "load it first" message
-    await assert.rejects(c.request("session.rewind", { id: s.id, toTurn: 1 }), /isn't loaded/);
+    // A stub was never started, so there is no provider history to resume.
+    await assert.rejects(c.request("session.rewind", { id: s.id, toTurn: 1 }), /no provider ref/);
 
     // toTurn 0 (undo the very first turn) is refused for this provider class
     await assert.rejects(

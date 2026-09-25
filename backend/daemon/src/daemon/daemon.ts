@@ -1536,6 +1536,15 @@ export class Daemon {
     return snap;
   }
 
+  /** Wake on demand for operations that need an adapter, sharing concurrent revivals. */
+  async #ensureSessionLoaded(id: string): Promise<void> {
+    while (this.#revivals.has(id)) await this.#revivals.get(id);
+    if (!this.#sessions.has(id) || this.#sessions.isEnded(id)) {
+      const snap = await this.#reviveSession(id);
+      this.#publishState(snap.id);
+      this.#onActivityChange("session-resumed");
+    }
+  }
   /**
    * Re-instantiate the adapter for a session that is absent or whose event stream
    * ended. The old adapter is cleaned up under the revival gate before replacement.
@@ -2971,12 +2980,7 @@ export class Daemon {
             "can't undo the first turn of this session — start a new one instead",
           );
         }
-        if (!this.#sessions.has(id)) {
-          throw new RpcError(
-            "bad_request",
-            "send this session a message before undoing it — it isn't loaded",
-          );
-        }
+        await this.#ensureSessionLoaded(id);
       }
 
       // The fork point: a message count for aisdk, a chain-entry ref for Claude.
@@ -3065,7 +3069,7 @@ export class Daemon {
       // Do the rewind, *then* truncate the bookkeeping — a rewind that throws
       // (a refused resume, say) must not leave the row claiming fewer turns
       // than the transcript actually has.
-      if (this.#sessions.has(id)) {
+      if (this.#sessions.has(id) && !this.#sessions.isEnded(id)) {
         this.#hooks.forget(id);
         await this.#sessions.rewind(id, keep, at);
       } else {
@@ -3335,7 +3339,7 @@ export class Daemon {
       const id = params.id;
       const p = params;
       const instructions = p.instructions?.trim() || undefined;
-      if (!this.#sessions.has(id)) throw new RpcError("not_found", `session not running: ${id}`);
+      await this.#ensureSessionLoaded(id);
       if (instructions) {
         const row = this.#registry.get(id);
         const caps = row && this.#providers.capsOf(row.provider, row.isolation);
@@ -3381,7 +3385,6 @@ export class Daemon {
       const id = params.id;
       const p = params;
       const on = p["on"] === true;
-      if (!this.#sessions.has(id)) throw new RpcError("not_found", `session not running: ${id}`);
       const snap = this.#enrich(this.#registry.mustGet(id), false);
       // Gate on the TTL the countdown will actually run on — the measured one,
       // or the config pin standing in for it — not on the provider or on the
@@ -3395,6 +3398,7 @@ export class Daemon {
             "provider first, or pin one with prompt_cache_ttl",
         );
       }
+      if (on) await this.#ensureSessionLoaded(id);
       this.#sessions.setKeepWarm(id, on);
       this.#publishState(id);
       return this.#enrich(this.#registry.mustGet(id));
@@ -3496,7 +3500,7 @@ export class Daemon {
         // Rechecked *inside* the queue: the session may have been removed, or a
         // plan review raised, while this command waited its turn.
         if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
-        if (this.#sessions.has(id)) {
+        if (this.#sessions.has(id) && !this.#sessions.isEnded(id)) {
           const r = await this.#sessions.setMode(id, mode);
           // Rejected: leave the registry and the defaults alone. Publishing the
           // requested mode here would advertise a value the adapter refused.
@@ -3523,7 +3527,8 @@ export class Daemon {
         // the provider (and with it which defaults store to write).
         const row = this.#registry.get(id);
         if (!row) throw new RpcError("not_found", `no such session: ${id}`);
-        if (this.#sessions.has(id)) await this.#sessions.setModel(id, model);
+        if (this.#sessions.has(id) && !this.#sessions.isEnded(id))
+          await this.#sessions.setModel(id, model);
         const snap = this.#registry.setFields(id, { model });
         // Later commits carry the model that runs them — re-point the worktree
         // identity after a deliberate switch.
@@ -3543,7 +3548,8 @@ export class Daemon {
       return this.#queue.run(id, async () => {
         const row = this.#registry.get(id);
         if (!row) throw new RpcError("not_found", `no such session: ${id}`);
-        if (this.#sessions.has(id)) await this.#sessions.setEffort(id, effort);
+        if (this.#sessions.has(id) && !this.#sessions.isEnded(id))
+          await this.#sessions.setEffort(id, effort);
         const snap = this.#registry.setFields(id, { effort });
         // A deliberate switch is also "the last effort used" for this provider.
         if (isClaudeId(row.provider) || this.config.providers.aisdk[row.provider]) {
@@ -3599,7 +3605,7 @@ export class Daemon {
 
         // Same provider: this is a model / effort change, nothing more.
         if (provider === row.provider) {
-          if (this.#sessions.has(id)) {
+          if (this.#sessions.has(id) && !this.#sessions.isEnded(id)) {
             if (model) await this.#sessions.setModel(id, model);
             if (effort) await this.#sessions.setEffort(id, effort);
           }
@@ -3634,12 +3640,7 @@ export class Daemon {
         if (!model) {
           throw new RpcError("bad_request", `no model available for ${provider}`);
         }
-        if (!this.#sessions.has(id)) {
-          throw new RpcError(
-            "bad_request",
-            "send the session a message to revive it before switching its provider",
-          );
-        }
+        // Cold transcript-owning sessions pick up the provider on their next resume.
 
         const cwd = row.worktree ?? this.repoRoot;
         const mcpHandles = this.#mcpHandles();
@@ -3661,7 +3662,8 @@ export class Daemon {
         };
 
         try {
-          await this.#sessions.setProvider(id, toProvider, ref);
+          if (this.#sessions.has(id) && !this.#sessions.isEnded(id))
+            await this.#sessions.setProvider(id, toProvider, ref);
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           if (/interrupt the session/.test(message)) {
