@@ -1164,6 +1164,82 @@ export const PromptPane = ({
 // confirm overlay
 // ---------------------------------------------------------------------------
 
+type DeleteConfirmState = Extract<ConfirmState, { action: "deleteSession" }>;
+
+// Use the same wrapped copy to size and paint the dialog.
+const deletionLayout = (confirm: DeleteConfirmState, width: number) => {
+  const room = Math.max(1, width - 6);
+  const history = wrapText("Session history will be permanently deleted.", room);
+  const worktree = confirm.deleteWorktree
+    ? wrapText(
+        confirm.force
+          ? "Worktree and uncommitted changes will be lost."
+          : "Worktree will be removed.",
+        room,
+      )
+    : [];
+  return {
+    history,
+    worktree,
+    height: 9 + history.length + worktree.length + (confirm.branchName ? 4 : 0),
+  };
+};
+
+const DeleteSessionConfirm = ({
+  confirm,
+  width,
+  height,
+}: {
+  confirm: DeleteConfirmState;
+  width: number;
+  height?: number;
+}): ReactNode => {
+  const content = deletionLayout(confirm, width);
+  const compact = height !== undefined && height < content.height;
+  const gap = compact ? 0 : 1;
+  return (
+    <Panel
+      width={width}
+      {...(height !== undefined ? { height } : {})}
+      flexShrink={0}
+      tone="bad"
+      overlay
+      paddingY={gap}
+      overflow="hidden"
+      title={confirm.title}
+    >
+      <Line tone="text" bold>
+        {confirm.body}
+      </Line>
+      <Box flexDirection="column" marginTop={gap} flexShrink={0}>
+        <Lines tone="text" lines={content.history} />
+        <Lines tone={confirm.force ? "warn" : "dim"} lines={content.worktree} />
+      </Box>
+      {confirm.branchName ? (
+        <Box flexDirection="column" marginTop={gap} flexShrink={0}>
+          <Line tone={confirm.deleteBranch ? "warn" : "dim"}>
+            <Text bold>{confirm.deleteBranch ? "[x]" : "[ ]"}</Text>
+            {" Also delete branch"}
+          </Line>
+          <Line tone="dim">
+            {"    "}
+            {confirm.branchName}
+          </Line>
+        </Box>
+      ) : null}
+      <Box flexDirection="column" marginTop={gap} flexShrink={0}>
+        {confirm.branchName ? <Hints items={[{ keys: "b", label: "toggle branch" }]} /> : null}
+        <Hints
+          items={[
+            { keys: "enter", label: "delete" },
+            { keys: "esc", label: "cancel" },
+          ]}
+        />
+      </Box>
+    </Panel>
+  );
+};
+
 export const Confirm = ({
   confirm,
   width,
@@ -1173,11 +1249,18 @@ export const Confirm = ({
   width: number;
   height?: number;
 }): ReactNode => {
+  if (confirm.action === "deleteSession") {
+    return (
+      <DeleteSessionConfirm
+        confirm={confirm}
+        width={width}
+        {...(height !== undefined ? { height } : {})}
+      />
+    );
+  }
   const compact = height !== undefined && height < 12;
-  const branch = confirm.action === "deleteSession" && confirm.branchName;
   const body = wrapText(confirm.body ?? "", Math.max(1, width - 6));
-  const capacity =
-    height === undefined ? body.length : Math.max(0, height - (compact ? 5 : 7) - (branch ? 2 : 0));
+  const capacity = height === undefined ? body.length : Math.max(0, height - (compact ? 5 : 7));
   const shownBody = body.slice(0, capacity);
   if (body.length > capacity && shownBody.length) {
     shownBody[shownBody.length - 1] = truncate(`${shownBody.at(-1)} …`, Math.max(1, width - 6));
@@ -1187,8 +1270,6 @@ export const Confirm = ({
   else if (confirm.action === "forkSession")
     actionText = `fork with ${confirm.isolation === "vm" ? "VM" : "Local"} isolation (i to change)`;
   else if (confirm.action === "gc") actionText = "remove the worktrees";
-  else if (confirm.action === "deleteSession")
-    actionText = confirm.deleteBranch ? "delete the session + branch" : "delete the session";
   return (
     <Panel
       width={width}
@@ -1201,16 +1282,6 @@ export const Confirm = ({
       title={confirm.title}
     >
       {confirm.body ? <Lines tone="warn" lines={shownBody} /> : null}
-      {confirm.action === "deleteSession" && confirm.branchName ? (
-        <Box gap={1} marginTop={1}>
-          <Text tone="accent">{"b"}</Text>
-          <Line tone={confirm.deleteBranch ? "bad" : "dim"}>
-            {confirm.deleteBranch
-              ? `will also delete branch ${confirm.branchName}`
-              : `keep branch ${confirm.branchName}`}
-          </Line>
-        </Box>
-      ) : null}
       <Box height={1} />
       <Hints
         gap={2}
@@ -1789,9 +1860,9 @@ export const SelectionModal = ({
       ? Math.min(available, 11 + Math.max(1, Math.min(8, o.picker.items.length)))
       : Math.min(
           available,
-          8 +
-            wrapText(o.confirm.body ?? "", Math.max(1, width - 6)).length +
-            (o.confirm.action === "deleteSession" && o.confirm.branchName ? 2 : 0),
+          o.confirm.action === "deleteSession"
+            ? deletionLayout(o.confirm, width).height
+            : 8 + wrapText(o.confirm.body ?? "", Math.max(1, width - 6)).length,
         );
   return (
     <FloatingLayer {...modalPosition(cols, rows, width, height)} width={width} height={height}>

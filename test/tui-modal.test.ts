@@ -49,30 +49,67 @@ test("every picker floats over the fleet with the selected row and actions in vi
   }
 });
 
-test("confirmation dialogs keep their border and action inside a short terminal", () => {
-  const state = {
-    ...initialState(),
-    overlay: {
-      t: "confirm" as const,
-      confirm: {
-        action: "deleteSession" as const,
-        sessionId: "a",
-        title: "Delete session?",
-        danger: true,
-        body: "Uncommitted changes will be lost. ".repeat(10),
-        branchName: "feature",
-        deleteBranch: false,
-      },
-    },
-  };
-  const frame = renderToString(
-    h(Box, { width: 60, height: 16 }, h(SelectionModal, { state, cols: 60, rows: 16 })),
-    { columns: 60 },
-  );
-  assert.equal(frame.split("\n").length, 16);
-  assert.match(frame, /Delete session/);
-  assert.match(frame, /enter/);
-  assert.match(frame, /╰.*╯/);
+test("delete confirmation keeps consequences, branch choice and actions visible", () => {
+  for (const [cols, rows] of [
+    [120, 40],
+    [80, 24],
+    [60, 16],
+    [44, 18],
+    [32, 12],
+  ]) {
+    for (const branch of [undefined, false, true]) {
+      for (const worktree of [undefined, false, true]) {
+        const state = {
+          ...initialState(),
+          overlay: {
+            t: "confirm" as const,
+            confirm: {
+              action: "deleteSession" as const,
+              sessionId: "a",
+              title: "Delete session?",
+              danger: true,
+              body: "A very long session title ".repeat(10),
+              ...(branch !== undefined
+                ? { branchName: "feature/" + "long-branch-name".repeat(10), deleteBranch: branch }
+                : {}),
+              ...(worktree !== undefined ? { deleteWorktree: true, force: worktree } : {}),
+            },
+          },
+        };
+        const frame = renderToString(
+          h(
+            Box,
+            { width: cols, height: rows },
+            h(SelectionModal, { state, cols: cols!, rows: rows! }),
+          ),
+          { columns: cols! },
+        );
+        const copy = frame.replace(/[│\n]/g, " ").replace(/\s+/g, " ");
+        assert.equal(frame.split("\n").length, rows);
+        assert.match(frame, /Delete session/);
+        assert.match(copy, /Session history will be permanently deleted\./);
+        if (worktree !== undefined) {
+          assert.match(
+            copy,
+            worktree
+              ? /Worktree and uncommitted changes will be lost\./
+              : /Worktree will be removed\./,
+          );
+        } else {
+          assert.doesNotMatch(frame, /Worktree/);
+        }
+        if (branch !== undefined) {
+          assert.match(frame, branch ? /\[x\] Also delete branch/ : /\[ \] Also delete branch/);
+          assert.match(frame, /feature\//);
+          assert.match(frame, /b toggle branch/);
+        } else {
+          assert.doesNotMatch(frame, /Also delete branch|toggle branch/);
+        }
+        assert.match(frame, /enter delete · esc cancel/);
+        assert.match(frame, /╰.*╯/);
+      }
+    }
+  }
 });
 
 test("isolation feedback is visible inside the modal without hiding the draft", () => {

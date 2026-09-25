@@ -489,7 +489,7 @@ describe("tui-render", { concurrency: 4 }, () => {
       // a stub has no branch → the confirm offers no branch toggle
       stdin.feed("X");
       await delay(80);
-      assert.doesNotMatch(stdout.last, /also delete branch/i);
+      assert.doesNotMatch(stdout.last, /(?:keep|delete) branch/i);
 
       stdin.feed("\r"); // confirm
       await delay(150);
@@ -517,11 +517,16 @@ describe("tui-render", { concurrency: 4 }, () => {
       stdin.feed("X");
       await delay(100);
       assert.match(stdout.last, /Delete session/);
-      assert.match(stdout.last, /will also delete branch/i);
+      assert.match(stdout.last, /Worktree will be removed\./);
+      assert.match(stdout.last, /Session history will be permanently deleted\./);
+      assert.match(stdout.last, /\[x\] Also delete branch/);
+      assert.match(stdout.last, /b\s+toggle branch/i);
 
-      stdin.feed("b"); // disarm it
+      stdin.feed("b"); // keep the branch
       await delay(80);
-      assert.match(stdout.last, /keep branch/i);
+      assert.match(stdout.last, /\[ \] Also delete branch/);
+      assert.match(stdout.last, /b\s+toggle branch/i);
+      assert.match(stdout.last, /Session history will be permanently deleted\./);
 
       stdin.feed("\r"); // confirm
       await delay(200);

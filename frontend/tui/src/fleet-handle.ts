@@ -1926,17 +1926,13 @@ export const mkFleetHandle = ({
     const name = `“${(s.title ?? "").split("\n")[0]?.trim() || "untitled"}”`;
     const canBranch = !s.inPlace && !!s.branch;
     const dirty = s.git?.dirty === true;
-    const what = canBranch
-      ? "its worktree, stored transcript, and branch"
-      : "its worktree and stored transcript";
     return {
       title: `Delete session ${shortId(s.id)}?`,
-      body:
-        `${name} — ${what} go too${dirty ? ", including uncommitted changes" : ""}.` +
-        (canBranch ? " Press b to keep the branch." : ""),
+      body: name,
       danger: true,
       action: "deleteSession",
       sessionId: s.id,
+      ...(s.worktree ? { deleteWorktree: true } : {}),
       ...(dirty ? { force: true } : {}),
       ...(canBranch ? { branchName: s.branch as string, deleteBranch: true } : {}),
     };

@@ -166,6 +166,8 @@ export type Confirm = {
   | {
       action: "deleteSession";
       sessionId: string;
+      /** Whether this session owns a worktree that will be removed. */
+      deleteWorktree?: boolean;
       /** The session's branch, when it has one — b toggles its deletion. */
       branchName?: string;
       deleteBranch?: boolean;
