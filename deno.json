@@ -61,8 +61,8 @@
     "test:silent": "NO_COLOR=1 deno run -A scripts/fail-only-reporter.ts test/",
     "test:timing": "NO_COLOR=1 deno run -A scripts/timing-reporter.ts test/",
     "lint": "deno run -A npm:oxlint@1.85.0 .",
-    "format": "deno run -A npm:oxfmt@0.70.0 .",
-    "format:check": "deno run -A npm:oxfmt@0.70.0 --check .",
+    "format": "deno run -A npm:oxfmt@0.70.0 --no-error-on-unmatched-pattern .",
+    "format:check": "deno run -A npm:oxfmt@0.70.0 --check --no-error-on-unmatched-pattern .",
     "prepare": "git config core.hooksPath .githooks"
   }
 }

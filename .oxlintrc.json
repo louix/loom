@@ -4,6 +4,7 @@
     "correctness": "error"
   },
   "rules": {
+    "unicorn/no-empty-file": "off",
     "no-nested-ternary": "error",
     "default-case-last": "error",
     "no-lonely-if": "error",
