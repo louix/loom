@@ -1,6 +1,6 @@
 {
   "source": "/nix/store/z7czr7jbp9s9q1a9kwxv4axr3vdlgni9-source",
-  "recipe": "13a71645198991d8783c5a2e3e77858000630cae77b504576696c537ec41d473",
+  "recipe": "8606eed85f7cc11d46892c54c5bc6318be72c8ac73977d1d4f3144cde247b290",
   "runtimes": {
     "session-runtime": "sha256-ivK7dkwAU9dCSMH2lFUUjan+VP/8YqUs+rdrTgIJcRo="
   }

@@ -59,9 +59,9 @@ let
   set -eu
   export PATH=${pkgs.lib.makeBinPath [ smolvm pkgs.coreutils pkgs.gnutar pkgs.findutils ]}:/usr/bin:/bin
   out="$1"
-  # Darwin's Unix socket limit includes the Nix build directory. Keep both
-  # the derivation's name and private smolvm paths short.
-  vm_tmp=$(mktemp -d "''${TMPDIR:-/tmp}/v.XXXXXX")
+  # libkrun creates a control socket below the VM state directory. Nix's
+  # build TMPDIR is long enough to exceed Darwin's Unix socket path limit.
+  vm_tmp=$(mktemp -d /tmp/v.XXXXXX)
   export HOME="$vm_tmp/h"
   export XDG_CACHE_HOME="$vm_tmp/c"
   export XDG_DATA_HOME="$vm_tmp/d"
