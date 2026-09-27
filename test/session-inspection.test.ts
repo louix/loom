@@ -102,6 +102,7 @@ test("VM monitor filters sessions, includes MCPs, and tolerates unavailable coun
           memoryTotal: 2097152,
           diskUsed: 3145728,
           diskTotal: 4194304,
+          hostFiles: { pid: 4321, open: 12345, softLimit: 1048576, hardLimit: 1048576 },
         };
       },
     );
@@ -112,6 +113,9 @@ test("VM monitor filters sessions, includes MCPs, and tolerates unavailable coun
     assert.match(text, /RAM\s+1 MiB \/ 2 MiB/);
     assert.match(text, /DISK\s+3 MiB \/ 4 MiB/);
     assert.match(text, /CPU\s+—/);
+    assert.match(text, /HOST FDs\s+12,345 \/ 1,048,576 \(1.2%\)/);
+    assert.match(text, /hard limit 1,048,576 · PID 4321/);
+    assert.match(text, /HOST FDs\s+— \/ —/);
     assert.deepEqual(sampled.sort(), ["mcp", "session"]);
     const empty = await vmMonitorText(home, "absent", new AbortController().signal, (repo) =>
       listVms(repo, home),
@@ -215,6 +219,86 @@ esac
       await assert.rejects(sampleVmUsage({ ...vm, state: "stopped" }, signal), /unavailable/);
       await assert.rejects(sampleVmUsage(vm, AbortSignal.abort()));
     }
+  } finally {
+    await Deno.remove(home, { recursive: true });
+  }
+});
+
+test("host file counters count descriptors, parse inherited limits and tolerate missing proc data", async () => {
+  const { sampleHostFileUsage, parseFileLimits } =
+    await import("../runtime/src/session-vm/host-files.ts");
+  assert.deepEqual(
+    parseFileLimits("Max open files            1048576              unlimited            files"),
+    {
+      softLimit: 1048576,
+      hardLimit: "unlimited",
+    },
+  );
+  assert.deepEqual(parseFileLimits("Max open files nope 20 files"), {
+    softLimit: null,
+    hardLimit: null,
+  });
+  const home = await Deno.makeTempDir();
+  const signal = new AbortController().signal;
+  try {
+    const directory = join(home, "42");
+    await Deno.mkdir(join(directory, "fd"), { recursive: true });
+    await Deno.writeTextFile(
+      join(directory, "stat"),
+      "42 (libkrun worker)) " + ["S", ...Array(18).fill("0"), "123456"].join(" "),
+    );
+    await Deno.writeTextFile(join(directory, "limits"), "Max open files 100000 1048576 files\n");
+    for (const fd of ["0", "1", "17", "not-an-fd"])
+      await Deno.writeTextFile(join(directory, "fd", fd), "");
+    assert.deepEqual(await sampleHostFileUsage(42, signal, home), {
+      pid: 42,
+      open: 3,
+      softLimit: 100000,
+      hardLimit: 1048576,
+    });
+    await Deno.remove(join(directory, "fd"), { recursive: true });
+    assert.deepEqual(await sampleHostFileUsage(42, signal, home), {
+      pid: 42,
+      open: null,
+      softLimit: 100000,
+      hardLimit: 1048576,
+    });
+    assert.equal(await sampleHostFileUsage(43, signal, home), null);
+    assert.equal(await sampleHostFileUsage("../42", signal, home), null);
+    await assert.rejects(sampleHostFileUsage(42, AbortSignal.abort(), home));
+  } finally {
+    await Deno.remove(home, { recursive: true });
+  }
+});
+
+test("host counters remain available when executing guest metrics fails", async () => {
+  const { sampleVmUsage } = await import("../runtime/src/session-vm/usage.ts");
+  const home = await Deno.makeTempDir();
+  try {
+    const executable = join(home, "smolvm");
+    await Deno.writeTextFile(
+      executable,
+      `#!/bin/sh
+case "$2" in
+ls) printf '[{"name":"loom-session","pid":4321}]' ;;
+exec) exit 24 ;;
+*) exit 1 ;;
+esac
+`,
+      { mode: 0o700 },
+    );
+    const files = { pid: 4321, open: 900000, softLimit: 1048576, hardLimit: 1048576 };
+    const vm = {
+      state: "running",
+      smolvm: executable,
+      paths: { state: home },
+    } as import("../runtime/src/session-vm/inventory.ts").VmRecord;
+    const result = await sampleVmUsage(vm, new AbortController().signal, async (pid) => {
+      assert.equal(pid, 4321);
+      return files;
+    });
+    assert.equal(result.cpuPercent, null);
+    assert.deepEqual(result.hostFiles, Deno.build.os === "linux" ? files : null);
   } finally {
     await Deno.remove(home, { recursive: true });
   }

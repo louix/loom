@@ -1,4 +1,5 @@
 /** On-demand guest counters. Inspection never starts or recovers a VM. */
+import { sampleHostFileUsage } from "./host-files.ts";
 import type { VmRecord } from "./inventory.ts";
 import { vmEnvironment } from "../packaged/vm.ts";
 
@@ -8,6 +9,8 @@ export interface VmUsage {
   memoryTotal: number | null;
   diskUsed: number | null;
   diskTotal: number | null;
+  /** Host process serving shared files; absent on unsupported or inaccessible hosts. */
+  hostFiles?: import("./host-files.ts").HostFileUsage | null;
 }
 
 export const vmUsageCommand = `head -n 1 /proc/stat
@@ -50,7 +53,11 @@ export const parseVmUsage = (text: string): VmUsage => {
   };
 };
 
-export const sampleVmUsage = async (vm: VmRecord, signal: AbortSignal): Promise<VmUsage> => {
+export const sampleVmUsage = async (
+  vm: VmRecord,
+  signal: AbortSignal,
+  sampleHost = sampleHostFileUsage,
+): Promise<VmUsage> => {
   if (vm.state !== "running" || !vm.smolvm) throw new Error("VM metrics unavailable");
   const cancel = new AbortController();
   const abort = () => cancel.abort();
@@ -89,22 +96,31 @@ export const sampleVmUsage = async (vm: VmRecord, signal: AbortSignal): Promise<
     const name: unknown = machines[0]?.name;
     if (typeof name !== "string" || !/^(loom-session|vm-[a-z0-9]+)$/.test(name))
       throw new Error("VM metrics unavailable");
-    return parseVmUsage(
-      await run([
-        "machine",
-        "exec",
-        "--name",
-        name,
-        "--timeout",
-        "1s",
-        "-w",
-        "/",
-        "--",
-        "/bin/sh",
-        "-c",
-        vmUsageCommand,
-      ]),
-    );
+    const host =
+      Deno.build.os === "linux"
+        ? sampleHost(machines[0]?.pid, cancel.signal).catch(() => null)
+        : Promise.resolve(null);
+    // Guest execution may be the operation failing under descriptor pressure.
+    // Sample the host independently so that failure does not hide its counters.
+    const guest = run([
+      "machine",
+      "exec",
+      "--name",
+      name,
+      "--timeout",
+      "1s",
+      "-w",
+      "/",
+      "--",
+      "/bin/sh",
+      "-c",
+      vmUsageCommand,
+    ])
+      .then(parseVmUsage)
+      .catch(() => parseVmUsage(""));
+    const [hostFiles, guestUsage] = await Promise.all([host, guest]);
+    signal.throwIfAborted();
+    return { ...guestUsage, hostFiles };
   } finally {
     clearTimeout(timer);
     signal.removeEventListener("abort", abort);

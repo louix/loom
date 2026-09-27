@@ -150,6 +150,13 @@ Set an adequate soft and hard limit for the login or service that launches Loom,
 then restart that launcher and its VMs. Raising a guest limit alone will not
 change the host limit. Loom does not raise host hard limits itself.
 
+The session's **VM MONITOR** tab shows `HOST FDs` on Linux: the live host VM
+process's open descriptor count, soft-limit utilization, hard limit and PID.
+These are host counters, separate from the guest's CPU/RAM/disk metrics, and can
+remain available when guest commands fail. The tab refreshes roughly every three
+seconds while visible; counts are not retained in the session database, and
+short spikes between samples can be missed. Unavailable counters display `—`.
+
 ## Migrating older configuration
 
 Replace `session.environment.nix.auto_activate` with `session.auto_nix`, and

@@ -48,12 +48,21 @@ export const vmMonitorText = async (
       }
       const mib = (n: number | null | undefined) =>
         n == null ? "—" : (n / 1048576).toFixed(0) + " MiB";
+      const count = (n: number | "unlimited" | null | undefined) =>
+        typeof n === "number" ? n.toLocaleString("en-US") : (n ?? "—");
+      const files = usage?.hostFiles;
+      const percent =
+        files?.open != null && typeof files.softLimit === "number" && files.softLimit > 0
+          ? ` (${((100 * files.open) / files.softLimit).toFixed(1)}%)`
+          : "";
       const kind = { session: "AGENT", mcp: "MCP", prepare: "PREPARATION" }[vm.kind];
       return [
         `${kind} · ${vm.kind === "mcp" ? vm.workload : (vm.provider ?? vm.workload)} · ${vm.id.slice(0, 8)} · ${vm.state}`,
         `CPU   ${usage?.cpuPercent == null ? "—" : usage.cpuPercent.toFixed(1) + "%"}`,
         `RAM   ${mib(usage?.memoryUsed)} / ${mib(usage?.memoryTotal)}`,
         `DISK  ${mib(usage?.diskUsed)} / ${mib(usage?.diskTotal)}`,
+        `HOST FDs  ${count(files?.open)} / ${count(files?.softLimit)}${percent}`,
+        `          hard limit ${count(files?.hardLimit)}${files ? ` · PID ${files.pid}` : ""}`,
         ...(vm.error ? [vm.error] : []),
       ].join("\n");
     }),
@@ -62,6 +71,7 @@ export const vmMonitorText = async (
     ...sections,
     "CPU: % of VM capacity · RAM: guest used / total",
     "DISK: guest /storage used / total · — unavailable",
+    "HOST FDs: live host VM descriptors / soft limit (Linux); counts are not retained.",
     ...errors.map((error) => "Inventory unavailable: " + error),
   ].join("\n\n");
 };
