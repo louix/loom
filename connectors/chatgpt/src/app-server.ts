@@ -29,7 +29,11 @@ import { verifyChatGptAccount } from "./account.ts";
 import { rateLimitEvents } from "./rate-limits.ts";
 import type { CodexHome } from "./codex-home.ts";
 import { spawnCodex, type CodexLauncher } from "./launch.ts";
-import { localToolDispatcher, type ToolDispatcher } from "./tool-dispatch.ts";
+import {
+  localToolDispatcher,
+  type ToolDispatcher,
+  type ToolDispatchResult,
+} from "./tool-dispatch.ts";
 
 const zeroUsage = (): TokenUsage => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
 const now = (): number => Date.now();
@@ -218,6 +222,12 @@ export class CodexAppServerSession implements AgentSession {
   readonly #rpc: CodexRpcClient;
   #events = new AsyncChannel<HarnessEvent>();
   readonly #pending = new PendingInteractions<PermissionDecision, PlanDecision>();
+  // Dispatch owns both execution and transcript state for locally handled tools.
+  // Provider item notifications are only mirrors, never a second completion source.
+  readonly #dynamicCalls = new Map<
+    string,
+    { phase: "running" } | { phase: "settled"; result: ToolDispatchResult }
+  >();
   /** Sub-agent thread ids observed via `subAgentActivity` items — together
    *  with `#threadId`, the set of threads this session recognizes requests
    *  from (see `#serverRequest`'s guard). This only fixes *routing* once a
@@ -322,6 +332,12 @@ export class CodexAppServerSession implements AgentSession {
     this.#rpc.onServerRequest((method, params, id) => this.#serverRequest(method, params, id));
     this.#rpc.onNotification((method, params) => this.#notification(method, params));
     this.#rpc.onClose((err) => {
+      this.#turnAbort.abort();
+      this.#pending.failAll(
+        { behavior: "deny", message: "the provider connection closed" },
+        "(the provider connection closed before this was answered)",
+        { action: "discuss", message: "the provider connection closed" },
+      );
       if (!this.#closing)
         this.#events.push({
           type: "error",
@@ -1024,7 +1040,32 @@ export class CodexAppServerSession implements AgentSession {
     // turn happens to be live by the time this dispatch actually reaches
     // `ctx.askUser`/etc. (see `#turnAbort`'s doc comment).
     const signal = this.#turnAbort?.signal;
+    if (this.#dynamicCalls.has(callId)) {
+      this.#rpc.respondError(id, `duplicate dynamic tool call: ${callId}`);
+      return;
+    }
+    this.#dynamicCalls.set(callId, { phase: "running" });
+    this.#events.push({
+      type: "tool_call",
+      sessionId: this.id,
+      ts: now(),
+      id: callId,
+      name: tool,
+      input: args,
+    });
     const respond = (text: string, success: boolean): void => {
+      const call = this.#dynamicCalls.get(callId);
+      if (call?.phase !== "running") return;
+      const result = { text, ok: success };
+      this.#dynamicCalls.set(callId, { phase: "settled", result });
+      this.#events.push({
+        type: "tool_result",
+        sessionId: this.id,
+        ts: now(),
+        id: callId,
+        ok: result.ok,
+        output: result.text,
+      });
       this.#rpc.respond(id, { contentItems: [{ type: "inputText", text }], success });
     };
     this.#dispatch(tool, args, {
@@ -1143,6 +1184,13 @@ export class CodexAppServerSession implements AgentSession {
       // over rather than proceed to park a new interaction nothing will ever
       // answer — so the signal aborts here too, same as `interrupt()`.
       this.#turnAbort.abort();
+      // A completed turn cannot own an unanswered interaction. Drain through
+      // the same dispatch completion path used for answers and interrupts.
+      this.#pending.failAll(
+        { behavior: "deny", message: "the turn ended before this was answered" },
+        "(the turn ended before this was answered)",
+        { action: "discuss", message: "the turn ended before this was answered" },
+      );
       this.#turns++;
       if (turn?.status === "failed")
         this.#events.push({
@@ -1224,6 +1272,14 @@ export class CodexAppServerSession implements AgentSession {
         output: item["result"] ?? item["error"] ?? "",
       });
     } else if (type === "dynamicToolCall") {
+      if (this.#dynamicCalls.has(id)) return;
+      // Items without a local dispatch (e.g. replay) must still carry an
+      // explicit terminal outcome. null means unknown, not failure.
+      if (
+        (item["status"] !== "completed" && item["status"] !== "failed") ||
+        typeof item["success"] !== "boolean"
+      )
+        return;
       const contentItems = (item["contentItems"] as Array<Record<string, unknown>> | null) ?? [];
       const output = contentItems
         .map((c) => (c["type"] === "inputText" ? String(c["text"] ?? "") : ""))

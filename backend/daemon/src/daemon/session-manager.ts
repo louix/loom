@@ -16,6 +16,7 @@ import {
   sameSessionState,
   type SessionState,
   stateError,
+  stateAwaitingInput,
   stateIdle,
   stateInterrupted,
   stateRunning,
@@ -567,8 +568,19 @@ export class SessionManager {
     return this.#transition(
       id,
       run,
-      deriveStatus(run.state, ev, { backgroundTasks: run.backgroundTasks.length }),
+      this.#interactionState(
+        run,
+        deriveStatus(run.state, ev, { backgroundTasks: run.backgroundTasks.length }),
+      ),
     );
+  }
+
+  /** Blocked state is a projection of the outstanding requests, not a second
+   * independently maintained reason. Adapter settlement uses this too. */
+  #interactionState(run: Running, state: SessionState): SessionState {
+    if (state.kind !== "awaiting_input" && state.kind !== "running") return state;
+    const request = [...run.pending.values()].at(-1);
+    return request ? stateAwaitingInput(request.kind) : stateRunning;
   }
 
   /** Apply a state transition. A `note` is an audit breadcrumb and always fires.
@@ -770,9 +782,9 @@ export class SessionManager {
    *  transition carries it, and when the turn stays blocked the overlay hook
    *  does — otherwise the other clients keep offering an answered request. */
   #resumeAfterAnswer(id: string, run: Running): void {
-    const resume =
-      run.cancellation === "none" && run.state.kind !== "interrupted" && run.pending.size === 0;
-    if (resume && this.#transition(id, run, stateRunning)) return;
+    if (run.cancellation === "none" && run.state.kind !== "interrupted") {
+      if (this.#transition(id, run, this.#interactionState(run, stateRunning))) return;
+    }
     this.#hooks.onOverlay(id);
   }
 

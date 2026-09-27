@@ -2239,3 +2239,143 @@ test("ChatGPT legacy limits preserve percentages and ignore malformed or absent 
     ],
   );
 });
+
+test("dynamic dispatch owns question completion despite contradictory provider item notifications", async () => {
+  for (const success of [null, false, true]) {
+    const directory = await mkdtemp(join(tmpdir(), "loom-question-lifecycle-"));
+    const resultFile = join(directory, "response.json");
+    Deno.env.set("LOOM_TEST_HOLD_TURN", "1");
+    Deno.env.set(
+      "LOOM_TEST_TOOL_CALL_SPEC",
+      JSON.stringify({
+        tool: "ask_user",
+        arguments: { question: "Continue?" },
+      }),
+    );
+    Deno.env.set("LOOM_TEST_TOOL_CALL_RESULT_FILE", resultFile);
+    Deno.env.set(
+      "LOOM_TEST_PRE_NOTIFICATION",
+      JSON.stringify({
+        method: "item/completed",
+        params: {
+          item: {
+            type: "dynamicToolCall",
+            id: "fake-call-1",
+            tool: "ask_user",
+            status: success === null ? "inProgress" : "completed",
+            success,
+            contentItems: null,
+          },
+        },
+      }),
+    );
+    let session: CodexAppServerSession | undefined;
+    try {
+      session = await CodexAppServerSession.start(
+        {
+          sessionId: "lifecycle",
+          cwd: directory,
+          prompt: "go",
+          mode: "default",
+          mcpServers: [],
+          loomServer: true,
+        },
+        { dir: directory, authJsonPath: join(directory, "auth.json") },
+        FAKE_CODEX,
+      );
+      const events = session.events()[Symbol.asyncIterator]();
+      const seen = [];
+      while (true) {
+        const { value: event } = await events.next();
+        assert(event);
+        seen.push(event);
+        if (event.type === "assistant_text" && event.text === "notification delivered") break;
+      }
+      assert.equal(seen.filter((e) => e.type === "tool_call").length, 1);
+      assert.equal(seen.filter((e) => e.type === "question").length, 1);
+      assert.equal(seen.filter((e) => e.type === "tool_result").length, 0);
+      await session.answerQuestion("fake-call-1", "yes");
+      while (true) {
+        const { value: event } = await events.next();
+        assert(event);
+        seen.push(event);
+        if (event.type === "tool_result") {
+          assert.equal(event.ok, true);
+          assert.equal(event.output, "yes");
+          break;
+        }
+      }
+      const response = JSON.parse(await waitForFile(resultFile));
+      assert.equal(response.contentItems[0].text, "yes");
+      assert.equal(seen.filter((e) => e.type === "answer").length, 1);
+    } finally {
+      await session?.close();
+      for (const name of [
+        "LOOM_TEST_HOLD_TURN",
+        "LOOM_TEST_TOOL_CALL_SPEC",
+        "LOOM_TEST_TOOL_CALL_RESULT_FILE",
+        "LOOM_TEST_PRE_NOTIFICATION",
+      ])
+        Deno.env.delete(name);
+      await rm(directory, { recursive: true, force: true });
+    }
+  }
+});
+
+test("natural turn completion settles an unanswered dynamic question", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "loom-question-end-"));
+  const resultFile = join(directory, "response.json");
+  const release = join(directory, "complete");
+  Deno.env.set("LOOM_TEST_HOLD_TURN", "1");
+  Deno.env.set("LOOM_TEST_COMPLETE_TURN_FILE", release);
+  Deno.env.set(
+    "LOOM_TEST_TOOL_CALL_SPEC",
+    JSON.stringify({
+      tool: "ask_user",
+      arguments: { question: "Continue?" },
+    }),
+  );
+  Deno.env.set("LOOM_TEST_TOOL_CALL_RESULT_FILE", resultFile);
+  let session: CodexAppServerSession | undefined;
+  try {
+    session = await CodexAppServerSession.start(
+      {
+        sessionId: "lifecycle",
+        cwd: directory,
+        prompt: "go",
+        mode: "default",
+        mcpServers: [],
+        loomServer: true,
+      },
+      { dir: directory, authJsonPath: join(directory, "auth.json") },
+      FAKE_CODEX,
+    );
+    const events = session.events()[Symbol.asyncIterator]();
+    while ((await events.next()).value?.type !== "question") {
+      /* await admission */
+    }
+    await writeFile(release, "");
+    const response = JSON.parse(await waitForFile(resultFile));
+    assert.match(response.contentItems[0].text, /turn ended before this was answered/);
+    await session.answerQuestion("fake-call-1", "too late");
+    while (true) {
+      const { value: event } = await events.next();
+      assert(event);
+      assert.notEqual(event.type, "answer");
+      if (event.type === "tool_result") {
+        assert.equal(event.output, response.contentItems[0].text);
+        break;
+      }
+    }
+  } finally {
+    await session?.close();
+    for (const name of [
+      "LOOM_TEST_HOLD_TURN",
+      "LOOM_TEST_COMPLETE_TURN_FILE",
+      "LOOM_TEST_TOOL_CALL_SPEC",
+      "LOOM_TEST_TOOL_CALL_RESULT_FILE",
+    ])
+      Deno.env.delete(name);
+    await rm(directory, { recursive: true, force: true });
+  }
+});

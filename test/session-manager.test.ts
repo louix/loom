@@ -2134,3 +2134,19 @@ test("a VM failure after a completed turn persists structured termination detail
     await c.close();
   }
 });
+
+test("adapter settlement derives the blocked state from remaining requests", async () => {
+  const c = await client();
+  try {
+    const { id, fs } = await createFake(c);
+    fs.emit({ type: "question", id: "q1", question: "Continue?" });
+    fs.emit({ type: "permission_request", id: "p1", tool: "bash", input: {} });
+    await waitFor(async () => (await awaitReasonOf(c, id)) === "permission");
+    fs.emit({ type: "tool_result", id: "p1", ok: false, output: "cancelled" });
+    await waitFor(async () => (await awaitReasonOf(c, id)) === "question");
+    fs.emit({ type: "tool_result", id: "q1", ok: false, output: "cancelled" });
+    await waitFor(async () => (await statusOf(c, id)) === "running");
+  } finally {
+    await c.close();
+  }
+});

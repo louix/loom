@@ -178,7 +178,19 @@ const handle = (req) => {
     const preNotification = process.env["LOOM_TEST_PRE_NOTIFICATION"];
     if (preNotification) {
       const { method, params } = JSON.parse(preNotification);
-      setTimeout(() => send({ jsonrpc: "2.0", method, params }), 0);
+      setTimeout(() => {
+        send({ jsonrpc: "2.0", method, params });
+        send({
+          method: "item/completed",
+          params: {
+            item: {
+              type: "agentMessage",
+              id: "notification-marker",
+              text: "notification delivered",
+            },
+          },
+        });
+      }, 0);
     }
 
     const spec = process.env["LOOM_TEST_TOOL_CALL_SPEC"];
@@ -301,7 +313,7 @@ const handle = (req) => {
       // A real turn finishes asynchronously via a notification, not the reply.
       // LOOM_TEST_HOLD_TURN=1 skips this so a test can act (e.g. call
       // `setMode`) while the turn is still genuinely open.
-      if (!process.env["LOOM_TEST_HOLD_TURN"]) {
+      if (!process.env["LOOM_TEST_HOLD_TURN"] && pendingOutgoing.size === 0) {
         setTimeout(() => {
           if (process.env["LOOM_TEST_TITLE_REPLY"])
             send({
