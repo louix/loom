@@ -1,5 +1,5 @@
 /** On-demand guest counters. Inspection never starts or recovers a VM. */
-import { sampleHostFileUsage } from "./host-files.ts";
+import { sampleHostFileUsage, unavailableHostFiles } from "./host-files.ts";
 import type { VmRecord } from "./inventory.ts";
 import { vmEnvironment } from "../packaged/vm.ts";
 
@@ -9,7 +9,7 @@ export interface VmUsage {
   memoryTotal: number | null;
   diskUsed: number | null;
   diskTotal: number | null;
-  /** Host process serving shared files; absent on unsupported or inaccessible hosts. */
+  /** Host process counters, including a reason when sampling is unavailable. */
   hostFiles?: import("./host-files.ts").HostFileUsage | null;
 }
 
@@ -98,8 +98,15 @@ export const sampleVmUsage = async (
       throw new Error("VM metrics unavailable");
     const host =
       Deno.build.os === "linux"
-        ? sampleHost(machines[0]?.pid, cancel.signal).catch(() => null)
-        : Promise.resolve(null);
+        ? sampleHost(machines[0]?.pid, cancel.signal).catch(() =>
+            unavailableHostFiles(
+              cancel.signal.aborted ? "host sampling timed out" : "host sampling failed",
+              typeof machines[0]?.pid === "number" ? machines[0].pid : null,
+            ),
+          )
+        : Promise.resolve(
+            unavailableHostFiles("host counters require Linux (host: " + Deno.build.os + ")"),
+          );
     // Guest execution may be the operation failing under descriptor pressure.
     // Sample the host independently so that failure does not hide its counters.
     const guest = run([

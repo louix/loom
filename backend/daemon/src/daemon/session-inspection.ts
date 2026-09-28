@@ -62,7 +62,8 @@ export const vmMonitorText = async (
         `RAM   ${mib(usage?.memoryUsed)} / ${mib(usage?.memoryTotal)}`,
         `DISK  ${mib(usage?.diskUsed)} / ${mib(usage?.diskTotal)}`,
         `HOST FDs  ${count(files?.open)} / ${count(files?.softLimit)}${percent}`,
-        `          hard limit ${count(files?.hardLimit)}${files ? ` · PID ${files.pid}` : ""}`,
+        `          hard limit ${count(files?.hardLimit)}${files?.pid != null ? ` · PID ${files.pid}` : ""}`,
+        ...(files?.unavailable ? [`          ${files.unavailable}`] : []),
         ...(vm.error ? [vm.error] : []),
       ].join("\n");
     }),

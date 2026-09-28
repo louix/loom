@@ -117,6 +117,20 @@ test("VM monitor filters sessions, includes MCPs, and tolerates unavailable coun
     assert.match(text, /hard limit 1,048,576 · PID 4321/);
     assert.match(text, /HOST FDs\s+— \/ —/);
     assert.deepEqual(sampled.sort(), ["mcp", "session"]);
+    const { unavailableHostFiles } = await import("../runtime/src/session-vm/host-files.ts");
+    const { parseVmUsage } = await import("../runtime/src/session-vm/usage.ts");
+    const diagnostic = await vmMonitorText(
+      home,
+      "selected",
+      new AbortController().signal,
+      (repo) => listVms(repo, home),
+      async () => ({
+        ...parseVmUsage(""),
+        hostFiles: unavailableHostFiles("host process identity: permission denied", 4321),
+      }),
+    );
+    assert.match(diagnostic, /hard limit — · PID 4321/);
+    assert.match(diagnostic, /host process identity: permission denied/);
     const empty = await vmMonitorText(home, "absent", new AbortController().signal, (repo) =>
       listVms(repo, home),
     );
@@ -216,6 +230,10 @@ esac
       assert.equal(usage.cpuPercent, 25);
       assert.equal(usage.memoryUsed, 1048576);
       assert.equal(usage.diskUsed, null);
+      assert.match(
+        usage.hostFiles!.unavailable!,
+        /smolvm did not report a valid host PID|host counters require Linux/,
+      );
       await assert.rejects(sampleVmUsage({ ...vm, state: "stopped" }, signal), /unavailable/);
       await assert.rejects(sampleVmUsage(vm, AbortSignal.abort()));
     }
@@ -262,9 +280,16 @@ test("host file counters count descriptors, parse inherited limits and tolerate 
       open: null,
       softLimit: 100000,
       hardLimit: 1048576,
+      unavailable: "descriptor count: process or proc entry disappeared",
     });
-    assert.equal(await sampleHostFileUsage(43, signal, home), null);
-    assert.equal(await sampleHostFileUsage("../42", signal, home), null);
+    assert.match(
+      (await sampleHostFileUsage(43, signal, home)).unavailable!,
+      /host process identity: process or proc entry disappeared/,
+    );
+    assert.match(
+      (await sampleHostFileUsage("../42", signal, home)).unavailable!,
+      /smolvm did not report a valid host PID/,
+    );
     await assert.rejects(sampleHostFileUsage(42, AbortSignal.abort(), home));
   } finally {
     await Deno.remove(home, { recursive: true });
@@ -298,8 +323,22 @@ esac
       return files;
     });
     assert.equal(result.cpuPercent, null);
-    assert.deepEqual(result.hostFiles, Deno.build.os === "linux" ? files : null);
+    if (Deno.build.os === "linux") assert.deepEqual(result.hostFiles, files);
+    else assert.match(result.hostFiles!.unavailable!, /host counters require Linux/);
   } finally {
     await Deno.remove(home, { recursive: true });
   }
 });
+
+test(
+  "host file sampler reads a real Linux proc entry",
+  { skip: Deno.build.os !== "linux" },
+  async () => {
+    const { sampleHostFileUsage } = await import("../runtime/src/session-vm/host-files.ts");
+    const files = await sampleHostFileUsage(Deno.pid, new AbortController().signal);
+    assert.equal(files.pid, Deno.pid);
+    assert.equal(files.unavailable, undefined);
+    assert.ok(files.open! > 0);
+    assert.ok(files.softLimit === "unlimited" || files.softLimit! > 0);
+  },
+);

@@ -155,7 +155,9 @@ process's open descriptor count, soft-limit utilization, hard limit and PID.
 These are host counters, separate from the guest's CPU/RAM/disk metrics, and can
 remain available when guest commands fail. The tab refreshes roughly every three
 seconds while visible; counts are not retained in the session database, and
-short spikes between samples can be missed. Unavailable counters display `—`.
+short spikes between samples can be missed. Unavailable counters display `—`, with
+an explanation for missing host PIDs, unreadable proc entries, timeouts or unsupported
+hosts. A known PID stays visible even when its counters cannot be read.
 
 ## Migrating older configuration
 
