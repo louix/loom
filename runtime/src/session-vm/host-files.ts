@@ -90,3 +90,42 @@ export const sampleHostFileUsage = async (
     return unavailableHostFiles("host process identity: " + failure(error), pid);
   }
 };
+
+/**
+ * Deno requires --allow-all for /proc even with --allow-read. The daemon
+ * deliberately uses individual grants to restrict networking to Unix IPC.
+ * Keep that policy and use its existing subprocess capability for this fixed,
+ * dependency-free reader. Only a validated PID crosses the process boundary.
+ */
+export const sampleHostFileUsageViaProcess = async (
+  pid: unknown,
+  signal: AbortSignal,
+): Promise<HostFileUsage> => {
+  signal.throwIfAborted();
+  if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0)
+    return unavailableHostFiles("smolvm did not report a valid host PID");
+  const result = await new Deno.Command(Deno.execPath(), {
+    args: [
+      "run",
+      "--no-config",
+      "--no-lock",
+      "--no-prompt",
+      "--allow-all",
+      import.meta.url,
+      String(pid),
+    ],
+    clearEnv: true,
+    stdin: "null",
+    stdout: "piped",
+    stderr: "null",
+    signal,
+  }).output();
+  signal.throwIfAborted();
+  if (!result.success) return unavailableHostFiles("host counter reader failed", pid);
+  return JSON.parse(new TextDecoder().decode(result.stdout)) as HostFileUsage;
+};
+
+if (import.meta.main) {
+  const files = await sampleHostFileUsage(Number(Deno.args[0]), new AbortController().signal);
+  console.log(JSON.stringify(files));
+}

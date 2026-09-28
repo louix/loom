@@ -342,3 +342,46 @@ test(
     assert.ok(files.softLimit === "unlimited" || files.softLimit! > 0);
   },
 );
+
+test(
+  "host counters work with the daemon's scoped IPC permissions",
+  { skip: Deno.build.os !== "linux" },
+  async () => {
+    const { ipcPermissions } = await import("../core/src/network-permissions.ts");
+    const directory = await Deno.makeTempDir();
+    try {
+      const entry = join(directory, "sample.ts");
+      const reader = new URL("../runtime/src/session-vm/host-files.ts", import.meta.url).href;
+      await Deno.writeTextFile(
+        entry,
+        `
+      import {sampleHostFileUsage, sampleHostFileUsageViaProcess} from ${JSON.stringify(reader)};
+      const signal = new AbortController().signal;
+      const direct = await sampleHostFileUsage(Deno.pid, signal);
+      const viaProcess = await sampleHostFileUsageViaProcess(Deno.pid, signal);
+      console.log(JSON.stringify({direct, viaProcess}));
+    `,
+      );
+      const result = await new Deno.Command(Deno.execPath(), {
+        args: [
+          "run",
+          "--no-config",
+          "--no-lock",
+          ...ipcPermissions(join(directory, "daemon.sock")),
+          entry,
+        ],
+        stdout: "piped",
+        stderr: "piped",
+      }).output();
+      assert.equal(result.code, 0, new TextDecoder().decode(result.stderr));
+      const { direct, viaProcess } = JSON.parse(new TextDecoder().decode(result.stdout));
+      assert.match(direct.unavailable, /permission denied/);
+      assert.equal(viaProcess.pid, direct.pid);
+      assert.equal(viaProcess.unavailable, undefined);
+      assert.ok(viaProcess.open > 0);
+      assert.ok(viaProcess.softLimit === "unlimited" || viaProcess.softLimit > 0);
+    } finally {
+      await Deno.remove(directory, { recursive: true });
+    }
+  },
+);

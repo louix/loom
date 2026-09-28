@@ -1,5 +1,5 @@
 /** On-demand guest counters. Inspection never starts or recovers a VM. */
-import { sampleHostFileUsage, unavailableHostFiles } from "./host-files.ts";
+import { sampleHostFileUsageViaProcess, unavailableHostFiles } from "./host-files.ts";
 import type { VmRecord } from "./inventory.ts";
 import { vmEnvironment } from "../packaged/vm.ts";
 
@@ -56,7 +56,7 @@ export const parseVmUsage = (text: string): VmUsage => {
 export const sampleVmUsage = async (
   vm: VmRecord,
   signal: AbortSignal,
-  sampleHost = sampleHostFileUsage,
+  sampleHost = sampleHostFileUsageViaProcess,
 ): Promise<VmUsage> => {
   if (vm.state !== "running" || !vm.smolvm) throw new Error("VM metrics unavailable");
   const cancel = new AbortController();
