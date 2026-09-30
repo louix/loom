@@ -24,6 +24,8 @@ import {
 import { startGuestRelay } from "./guest-relay.ts";
 import { reportStartup } from "./progress.ts";
 import { guestShellEnvironmentPath, shellEnvironment } from "./shell.ts";
+import { installWorkerDiagnostics } from "../worker/diagnostics.ts";
+installWorkerDiagnostics();
 // Package caches outlive VM replacement; installed dependencies stay in the worktree.
 const cache = await Deno.readTextFile("/run/loom/private/cache-path").catch((error) => {
   if (error instanceof Deno.errors.NotFound) return "/storage/loom-cache";

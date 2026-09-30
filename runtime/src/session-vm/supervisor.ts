@@ -71,6 +71,7 @@ const done = Promise.withResolvers<void>();
 let phase: "starting" | "running" = "starting";
 let termination: VmTermination | undefined;
 let guestExit: VmTermination["guestExit"];
+let workerFailure: VmTermination["workerFailure"];
 let cleaning = false;
 const recordStop = (reason: VmStopReason, signal?: string) => {
   termination ??= { reason, at: Date.now(), phase, ...(signal ? { signal } : {}) };
@@ -287,6 +288,10 @@ try {
         child.stderr,
         (stage, elapsed) => reportStartup(stage, elapsed),
         (code) => console.error(JSON.stringify({ loomStartupFailure: code })),
+        undefined,
+        (info) => {
+          workerFailure ??= info;
+        },
       );
   void diagnostics.catch(() => stop("diagnostics_error"));
   const output = child.stdout
@@ -322,7 +327,8 @@ try {
   // without confusing a later cleanup SIGKILL with the original guest failure.
   let exitTimer: ReturnType<typeof setTimeout> | undefined;
   await Promise.race([
-    guestStatus,
+    // Drain final diagnostics as well as observing exit, within the same deadline.
+    Promise.allSettled([guestStatus, diagnostics]),
     new Promise<void>((resolve) => {
       exitTimer = setTimeout(resolve, 100);
     }),
@@ -358,6 +364,7 @@ try {
       loomTermination: {
         ...termination!,
         ...(guestExit ? { guestExit } : {}),
+        ...(workerFailure ? { workerFailure } : {}),
       },
     }),
   );

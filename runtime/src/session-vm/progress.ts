@@ -1,5 +1,6 @@
 /** Fixed startup messages shared by the host supervisor and guest bootstrap. */
 import { vmTerminationSchema, type VmTermination } from "../../../core/src/vm-termination.ts";
+import { workerFailureSchema, type WorkerFailure } from "../../../core/src/worker-failure.ts";
 import { decodeTextStream } from "../../../core/src/text-stream.ts";
 import { isFileLimitError, fileLimitDiagnostic } from "./file-limit.ts";
 import { fileLimitScanner } from "./file-limit-scanner.ts";
@@ -74,6 +75,7 @@ export const readStartupProgress = async (
   report: (stage: StartupStage, elapsedSeconds?: number, host?: string) => void,
   failure?: (code: StartupFailure) => void,
   termination?: (info: VmTermination) => void,
+  workerFailure?: (info: WorkerFailure) => void,
 ) => {
   let line = "";
   let overflow = false;
@@ -96,6 +98,8 @@ export const readStartupProgress = async (
           const value = JSON.parse(line);
           const stopped = vmTerminationSchema.safeParse(value?.loomTermination);
           if (stopped.success) termination?.(stopped.data);
+          const failed = workerFailureSchema.safeParse(value?.loomWorkerFailure);
+          if (failed.success) workerFailure?.(failed.data);
           if (
             typeof value?.loomStartup === "string" &&
             Object.hasOwn(startupStages, value.loomStartup)

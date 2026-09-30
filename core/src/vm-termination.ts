@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { workerFailureSchema } from "./worker-failure.ts";
 
 /** Only fixed categories and process metadata cross the VM credential boundary. */
 export const vmStopReasonSchema = z.enum([
@@ -41,6 +42,7 @@ export const vmTerminationSchema = z.object({
   /** Status of smolvm's guest execution process, observed before cleanup. */
   guestExit: vmExitSchema.optional(),
   supervisorExit: vmExitSchema.optional(),
+  workerFailure: workerFailureSchema.optional(),
   hostReason: hostStopReasonSchema.optional(),
   stage: z
     .string()
@@ -75,7 +77,11 @@ export const vmTerminationMessage = (info: VmTermination): string => {
   const warning = info.lastNetworkWarning
     ? `; last network warning: ${info.lastNetworkWarning.host}, ${Math.max(0, Math.round((info.at - info.lastNetworkWarning.at) / 1000))}s earlier (not an established cause)`
     : "";
-  return `Session VM stopped: ${reason}${info.activity ? ` while ${info.activity}` : ` during ${info.phase}`}${status}${warning}.`;
+  const failure = info.workerFailure;
+  const detail = failure
+    ? `; worker ${failure.origin.replaceAll("_", " ")}: ${failure.name}${failure.code === "unknown" ? "" : ` (${failure.code})`}${failure.frames.length ? ` at ${failure.frames.map((f) => `${f.module}:${f.line}:${f.column}`).join(", ")}` : ""}`
+    : "";
+  return `Session VM stopped: ${reason}${info.activity ? ` while ${info.activity}` : ` during ${info.phase}`}${status}${detail}${warning}.`;
 };
 
 export class VmTerminationError extends Error {

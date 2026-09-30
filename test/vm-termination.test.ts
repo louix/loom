@@ -111,7 +111,7 @@ Deno.test("supervisor records exit, stdout EOF, parent EOF and signals before cl
       await Deno.mkdir(state);
       const script = root + "/backend-" + mode;
       const behavior = {
-        exit: "exit 17",
+        exit: `echo '{"loomWorkerFailure":{"origin":"unhandled_rejection","name":"ConnectionReset","code":"ECONNRESET","frames":[],"message":"secret-token"}}' >&2; exit 17`,
         stdout: "exec 1>&-; while read -r line; do :; done",
         parent: "while read -r line; do :; done",
         signal: "while read -r line; do :; done",
@@ -194,6 +194,14 @@ esac
         if (mode === "exit") {
           assert(["guest_exit", "stdout_closed"].includes(info.reason));
           assert.deepEqual(info.guestExit, { code: 17, signal: null });
+          assert.deepEqual(info.workerFailure, {
+            origin: "unhandled_rejection",
+            name: "ConnectionReset",
+            code: "ECONNRESET",
+            frames: [],
+          });
+          assert.match(new VmTerminationError(info).message, /ConnectionReset \(ECONNRESET\)/);
+          assert(!JSON.stringify(info).includes("secret-token"));
         } else {
           assert.equal(
             info.reason,
