@@ -72,3 +72,77 @@ Deno.test("guest relay queues bursts before dialing the bridge and releases slot
     await Deno.remove(state, { recursive: true });
   }
 });
+
+Deno.test("guest relay survives transient accept failures and forwards later connections", async () => {
+  const state = await Deno.makeTempDir({ dir: "/tmp" });
+  const socket = state + "/bridge.sock";
+  const bridge = Deno.listen({ transport: "unix", path: socket });
+  const listener = Deno.listen({ hostname: "127.0.0.1", port: 0 });
+  const accept = listener.accept.bind(listener);
+  const failures = [
+    new Deno.errors.NotConnected("Transport endpoint is not connected"),
+    new Deno.errors.ConnectionAborted(),
+    new Deno.errors.ConnectionReset(),
+    new Deno.errors.Interrupted(),
+  ];
+  let injected = 0;
+  listener.accept = () => {
+    const error = failures[injected++];
+    return error ? Promise.reject(error) : accept();
+  };
+  const relay = startGuestRelay(listener, socket);
+  const failed = relay.finished.then(() => {
+    throw new Error("Relay stopped unexpectedly");
+  });
+  // Observe a rejection even while connecting or cleaning up.
+  void failed.catch(() => {});
+  let client: Deno.Conn | undefined;
+  let peer: Deno.Conn | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("Relay did not recover")), 5000);
+  });
+  try {
+    client = await Deno.connect({ hostname: "127.0.0.1", port: listener.addr.port });
+    peer = await Promise.race([bridge.accept(), failed, expired]);
+    assert(injected >= failures.length);
+    await client.write(new Uint8Array([42]));
+    const bytes = new Uint8Array(1);
+    assert.equal(await Promise.race([peer.read(bytes), failed, expired]), 1);
+    assert.equal(bytes[0], 42);
+    await peer.write(new Uint8Array([43]));
+    assert.equal(await Promise.race([client.read(bytes), failed, expired]), 1);
+    assert.equal(bytes[0], 43);
+  } finally {
+    clearTimeout(timer);
+    await relay.close();
+    client?.close();
+    peer?.close();
+    bridge.close();
+    await Deno.remove(state, { recursive: true });
+  }
+});
+
+Deno.test("guest relay can close during repeated transient accept failures", async () => {
+  const listener = Deno.listen({ hostname: "127.0.0.1", port: 0 });
+  let attempts = 0;
+  const retried = Promise.withResolvers<void>();
+  listener.accept = () => {
+    if (++attempts === 2) retried.resolve();
+    return Promise.reject(new Deno.errors.NotConnected());
+  };
+  const relay = startGuestRelay(listener, "/unused");
+  await Promise.race([retried.promise, relay.finished]);
+  await relay.close();
+  await relay.finished;
+  assert.equal(attempts, 2);
+});
+
+Deno.test("guest relay still reports non-transient accept failures", async () => {
+  const listener = Deno.listen({ hostname: "127.0.0.1", port: 0 });
+  const error = new Deno.errors.PermissionDenied("listener failure");
+  listener.accept = () => Promise.reject(error);
+  const relay = startGuestRelay(listener, "/unused");
+  await assert.rejects(relay.finished, (caught) => caught === error);
+  await assert.rejects(relay.close(), (caught) => caught === error);
+});

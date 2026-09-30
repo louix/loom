@@ -47,7 +47,24 @@ export const startGuestRelay = (listener: Deno.Listener, socket: string, maxConn
         // vsock connections that the host egress limit immediately rejects.
         if (tasks.size >= maxConnections) await Promise.race(tasks);
         if (stopped) break;
-        const client = await listener.accept();
+        let client: Deno.Conn;
+        try {
+          client = await listener.accept();
+        } catch (error) {
+          if (stopped) break;
+          // A pending connection can disappear before accept completes (including
+          // ENOTCONN from the guest networking layer). The listener is still usable.
+          if (
+            !(error instanceof Deno.errors.NotConnected) &&
+            !(error instanceof Deno.errors.ConnectionAborted) &&
+            !(error instanceof Deno.errors.ConnectionReset) &&
+            !(error instanceof Deno.errors.Interrupted)
+          )
+            throw error;
+          // Avoid spinning if the networking layer repeatedly reports a failure.
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          continue;
+        }
         clients.add(client);
         const task = relay(client);
         tasks.add(task);
