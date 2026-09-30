@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { workerFailureSchema } from "./worker-failure.ts";
+import { relayDiagnosticSchema, relayDiagnosticMessage } from "./relay-diagnostic.ts";
 
 /** Only fixed categories and process metadata cross the VM credential boundary. */
 export const vmStopReasonSchema = z.enum([
@@ -43,6 +44,7 @@ export const vmTerminationSchema = z.object({
   guestExit: vmExitSchema.optional(),
   supervisorExit: vmExitSchema.optional(),
   workerFailure: workerFailureSchema.optional(),
+  relayFailure: relayDiagnosticSchema.optional(),
   hostReason: hostStopReasonSchema.optional(),
   stage: z
     .string()
@@ -81,7 +83,8 @@ export const vmTerminationMessage = (info: VmTermination): string => {
   const detail = failure
     ? `; worker ${failure.origin.replaceAll("_", " ")}: ${failure.name}${failure.code === "unknown" ? "" : ` (${failure.code})`}${failure.frames.length ? ` at ${failure.frames.map((f) => `${f.module}:${f.line}:${f.column}`).join(", ")}` : ""}`
     : "";
-  return `Session VM stopped: ${reason}${info.activity ? ` while ${info.activity}` : ` during ${info.phase}`}${status}${detail}${warning}.`;
+  const relay = info.relayFailure ? `; ${relayDiagnosticMessage(info.relayFailure)}` : "";
+  return `Session VM stopped: ${reason}${info.activity ? ` while ${info.activity}` : ` during ${info.phase}`}${status}${detail}${relay}${warning}.`;
 };
 
 export class VmTerminationError extends Error {

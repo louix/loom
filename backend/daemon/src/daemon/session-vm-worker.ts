@@ -14,6 +14,7 @@ import {
   type VmTermination,
   type HostStopReason,
 } from "../../../../core/src/vm-termination.ts";
+import { relayDiagnosticMessage } from "../../../../core/src/relay-diagnostic.ts";
 import { normalizeExtraHosts } from "../../../../runtime/src/session-vm/network-policy.ts";
 /** Opt-in VM launcher using the existing connector WorkerProcess contract. */
 import { spawn } from "node:child_process";
@@ -368,6 +369,8 @@ const launchSessionVmOwned = async (
             termination ??= info;
             reportTermination();
           },
+          undefined,
+          (info) => options.onProgress?.(relayDiagnosticMessage(info)),
         ).catch(() => {})
       : Promise.resolve();
     let timer: ReturnType<typeof setTimeout> | undefined;

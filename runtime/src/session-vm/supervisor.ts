@@ -72,6 +72,7 @@ let phase: "starting" | "running" = "starting";
 let termination: VmTermination | undefined;
 let guestExit: VmTermination["guestExit"];
 let workerFailure: VmTermination["workerFailure"];
+let relayFailure: VmTermination["relayFailure"];
 let cleaning = false;
 const recordStop = (reason: VmStopReason, signal?: string) => {
   termination ??= { reason, at: Date.now(), phase, ...(signal ? { signal } : {}) };
@@ -292,6 +293,12 @@ try {
         (info) => {
           workerFailure ??= info;
         },
+        (info) => {
+          const record = { ...info, hostStopping: ended || cleaning };
+          if (info.event === "accept_exhausted" || info.event === "accept_fatal")
+            relayFailure ??= record;
+          console.error(JSON.stringify({ loomRelay: record }));
+        },
       );
   void diagnostics.catch(() => stop("diagnostics_error"));
   const output = child.stdout
@@ -365,6 +372,7 @@ try {
         ...termination!,
         ...(guestExit ? { guestExit } : {}),
         ...(workerFailure ? { workerFailure } : {}),
+        ...(relayFailure ? { relayFailure } : {}),
       },
     }),
   );

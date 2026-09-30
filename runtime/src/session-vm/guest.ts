@@ -96,13 +96,14 @@ await Deno.writeTextFile(
   JSON.stringify({ hasCompletedOnboarding: true }),
 );
 const listener = Deno.listen({ hostname: "127.0.0.1", port: 3128 });
-void startGuestRelay(listener, "/run/loom/egress.sock").finished;
+void startGuestRelay(listener, "/run/loom/egress.sock", 32, { kind: "egress" }).finished;
 const mcp: Array<{ guestPort: number }> = JSON.parse(
   await Deno.readTextFile("/run/loom/private/mcp.json"),
 );
 for (const [index, spec] of mcp.entries()) {
   const endpoint = Deno.listen({ hostname: "127.0.0.1", port: spec.guestPort });
-  void startGuestRelay(endpoint, `/run/loom/mcp-${index}.sock`).finished;
+  void startGuestRelay(endpoint, `/run/loom/mcp-${index}.sock`, 32, { kind: "mcp", index })
+    .finished;
 }
 // Clone sessions reach the host repository only through this relay.
 let checkout: Checkout | undefined;
@@ -111,7 +112,7 @@ try {
     JSON.parse(await Deno.readTextFile("/run/loom/private/checkout.json")),
   );
   const endpoint = Deno.listen({ hostname: "127.0.0.1", port: guestGitPort });
-  void startGuestRelay(endpoint, guestGitSocket).finished;
+  void startGuestRelay(endpoint, guestGitSocket, 32, { kind: "git" }).finished;
 } catch (error) {
   if (!(error instanceof Deno.errors.NotFound)) throw error;
 }

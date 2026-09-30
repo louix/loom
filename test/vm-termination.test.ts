@@ -111,7 +111,7 @@ Deno.test("supervisor records exit, stdout EOF, parent EOF and signals before cl
       await Deno.mkdir(state);
       const script = root + "/backend-" + mode;
       const behavior = {
-        exit: `echo '{"loomWorkerFailure":{"origin":"unhandled_rejection","name":"ConnectionReset","code":"ECONNRESET","frames":[],"message":"secret-token"}}' >&2; exit 17`,
+        exit: `echo '{"loomRelay":{"kind":"mcp","index":2,"event":"accept_exhausted","at":123,"incident":1,"error":"NotConnected","consecutive":100,"failures":100,"active":0,"elapsedMs":24000,"stopping":false,"suppressed":0,"message":"secret-token"}}' >&2; echo '{"loomWorkerFailure":{"origin":"unhandled_rejection","name":"ConnectionReset","code":"ECONNRESET","frames":[],"message":"secret-token"}}' >&2; exit 17`,
         stdout: "exec 1>&-; while read -r line; do :; done",
         parent: "while read -r line; do :; done",
         signal: "while read -r line; do :; done",
@@ -201,6 +201,10 @@ esac
             frames: [],
           });
           assert.match(new VmTerminationError(info).message, /ConnectionReset \(ECONNRESET\)/);
+          assert.equal(info.relayFailure?.event, "accept_exhausted");
+          assert.equal(info.relayFailure?.kind, "mcp");
+          assert.equal(info.relayFailure?.index, 2);
+          assert.equal(info.relayFailure?.hostStopping, false);
           assert(!JSON.stringify(info).includes("secret-token"));
         } else {
           assert.equal(
