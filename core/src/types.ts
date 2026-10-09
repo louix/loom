@@ -334,9 +334,11 @@ export interface AgentProvider {
   /**
    * Models this provider can run right now, discovered live (e.g. the Claude
    * CLI's own catalog, an OpenAI `/models` probe). Optional — a provider with
-   * no catalog omits it and callers fall back to configured `models`.
+   * no catalog omits it and callers fall back to configured `models`. Metadata
+   * only: discovery never starts a conversation. `signal` cancels it, and an
+   * implementation that runs a subprocess must stop that process on abort.
    */
-  listModels?(): Promise<DiscoveredModel[]>;
+  listModels?(signal?: AbortSignal): Promise<DiscoveredModel[]>;
 }
 
 export const discoveredModelSchema = z.object({
@@ -344,6 +346,10 @@ export const discoveredModelSchema = z.object({
   id: z.string(),
   /** A friendly display name, when the provider gives one. */
   label: z.string().optional(),
+  /** The provider's description of the model, when it gives one. */
+  description: z.string().optional(),
+  /** The provider marks this as its default model. */
+  isDefault: z.boolean().optional(),
   /** Context-window size in tokens, when known. */
   context: z.number().optional(),
   /** Whether this model accepts a thinking-effort level. */

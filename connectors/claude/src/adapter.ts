@@ -1560,6 +1560,9 @@ export class ClaudeProvider implements AgentProvider {
         tools: [],
         mcpServers: {},
         strictMcpConfig: true,
+        // A metadata probe: no transcript, and none of the user's hooks.
+        persistSession: false,
+        settings: { disableAllHooks: true },
         ...(cli ? { pathToClaudeCodeExecutable: cli } : {}),
         env,
         stderr: (data) => log.debug("listModels cli stderr", { data: data.slice(0, 500) }),
@@ -1589,6 +1592,7 @@ export class ClaudeProvider implements AgentProvider {
         out.push({
           id,
           ...(m.displayName ? { label: m.displayName } : {}),
+          ...(m.description ? { description: m.description } : {}),
           ...(ctx ? { context: ctx } : {}),
           ...(m.supportsEffort ? { supportsEffort: true } : {}),
           ...(m.supportedEffortLevels && m.supportedEffortLevels.length > 0

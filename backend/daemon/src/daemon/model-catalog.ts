@@ -17,6 +17,8 @@ export interface ProbedModel {
   context?: number;
   /** Display name, when the endpoint gives one (`display_name` / `name`). */
   label?: string;
+  /** The endpoint's description of the model, when it gives one. */
+  description?: string;
   /** Advertised USD-per-million prices, when the endpoint lists them. */
   pricing?: PriceRow;
   /** Reasoning-effort levels the endpoint advertises for this model
@@ -153,11 +155,13 @@ export const parseModelRows = (body: unknown): ProbedModel[] => {
       const context = advertisedContext(m);
       const pricing = advertisedPricing(m);
       const label = nonEmptyString(m["display_name"]) ?? nonEmptyString(m["name"]);
+      const description = nonEmptyString(m["description"]);
       const efforts = advertisedEfforts(m);
       return {
         id: m.id,
         ...(context !== undefined ? { context } : {}),
         ...(label !== undefined ? { label } : {}),
+        ...(description !== undefined ? { description } : {}),
         ...(pricing !== undefined ? { pricing } : {}),
         ...(efforts
           ? {
@@ -176,11 +180,15 @@ export const parseModelRows = (body: unknown): ProbedModel[] => {
     });
 };
 
-/** `GET {base_url}/models` → parsed rows. Throws on a non-OK / dead endpoint. */
+/** `GET {base_url}/models` → parsed rows, from a worker whose only network
+ *  grant is the endpoint's host. Throws on a non-OK / dead endpoint; `signal`
+ *  stops the worker. */
 export const probeOpenAiModels = async (
   baseUrl: string,
   apiKey: string,
+  signal?: AbortSignal,
 ): Promise<ProbedModel[]> => {
+  signal?.throwIfAborted();
   const endpoint = new URL(baseUrl);
   if (!["http:", "https:"].includes(endpoint.protocol) || endpoint.username || endpoint.password)
     throw new Error("Model catalog requires an HTTP(S) endpoint without URL credentials");
@@ -191,15 +199,19 @@ export const probeOpenAiModels = async (
   spec.permissions.net = [endpoint.host];
   const child = launchLocalWorker(spec);
   const timeout = setTimeout(() => child.terminate(), 10_000);
+  const stop = () => child.terminate();
+  signal?.addEventListener("abort", stop, { once: true });
   const frames = readFrames(child.output, (value) => value);
   try {
     await new FrameWriter(child.input).send({ baseUrl, apiKey });
     const result = await frames.next();
+    signal?.throwIfAborted();
     if (result.done) throw new Error("Model catalog worker stopped before replying");
     const value = result.value as { models?: ProbedModel[]; error?: string };
     if (!Array.isArray(value.models)) throw new Error(value.error || "Invalid catalog response");
     return value.models;
   } finally {
+    signal?.removeEventListener("abort", stop);
     clearTimeout(timeout);
     child.terminate();
     await frames.return(undefined);

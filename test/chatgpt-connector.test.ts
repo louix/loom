@@ -12,7 +12,8 @@ import { spawn } from "node:child_process";
 import { createProvider, codeModeInstructions } from "@loom/connector-chatgpt";
 import { ChatGPTCatalog } from "@loom/connector-chatgpt/catalog";
 import { resolveCodexHome } from "@loom/connector-chatgpt/codex-home";
-import { discoverCodexModels } from "@loom/connector-chatgpt/discovery";
+import { CODEX_MODEL_PAGES, discoverCodexModels } from "@loom/connector-chatgpt/discovery";
+import { catalogueFromDiscovered } from "@loom/core/model-catalogue";
 import { CodexRpcClient } from "@loom/connector-chatgpt/rpc";
 import { makeLogger } from "@loom/core/logger";
 import type { HarnessEvent } from "@loom/core/events";
@@ -282,12 +283,83 @@ test("discoverCodexModels paginates model/list, keeping the account's hidden fla
       id: "gpt-5.6-sol",
       hidden: false,
       label: "GPT-5.6-Sol",
+      description: "Frontier coding model",
+      isDefault: true,
       supportsEffort: true,
       effortLevels: ["low", "high"],
       defaultEffort: "low",
     },
     { id: "gpt-5.6-hidden", hidden: true },
   ]);
+});
+
+test("the Codex catalogue uses native displayName and efforts, drops hidden rows and marks the default", async () => {
+  const codexHome = {
+    dir: "/tmp/loom-codex-home-test",
+    authJsonPath: "/tmp/loom-codex-home-test/auth.json",
+  };
+  const discovered = await discoverCodexModels({ cliPath: FAKE_CODEX, codexHome });
+  // The provider's automatic list: hidden rows filtered, as `listModels` does.
+  const catalogue = catalogueFromDiscovered(
+    discovered.filter((m) => !m.hidden).map(({ hidden: _h, ...m }) => m),
+  );
+  assert.deepEqual(catalogue, {
+    models: [
+      {
+        id: "gpt-5.6-sol",
+        label: "GPT-5.6-Sol",
+        description: "Frontier coding model",
+        supportsEffort: true,
+        effortLevels: ["low", "high"],
+        defaultEffort: "low",
+      },
+    ],
+    defaultModel: "gpt-5.6-sol",
+  });
+});
+
+test("Codex model discovery is bounded: endless paging and a repeated cursor both fail", async () => {
+  const codexHome = {
+    dir: "/tmp/loom-codex-home-test",
+    authJsonPath: "/tmp/loom-codex-home-test/auth.json",
+  };
+  const previous = Deno.env.get("LOOM_TEST_MODEL_LIST");
+  const requested: number[] = [];
+  const launch: CodexLauncher = (spec) => {
+    requested.push(1);
+    return spawnCodex(spec);
+  };
+  try {
+    Deno.env.set("LOOM_TEST_MODEL_LIST", "endless");
+    await assert.rejects(
+      discoverCodexModels({ cliPath: FAKE_CODEX, codexHome, launch }),
+      /exceeds discovery bounds/,
+    );
+    Deno.env.set("LOOM_TEST_MODEL_LIST", "repeat");
+    await assert.rejects(
+      discoverCodexModels({ cliPath: FAKE_CODEX, codexHome, launch }),
+      /repeated a model catalogue cursor/,
+    );
+    assert.equal(requested.length, 2);
+    assert.ok(CODEX_MODEL_PAGES >= 2);
+  } finally {
+    if (previous === undefined) Deno.env.delete("LOOM_TEST_MODEL_LIST");
+    else Deno.env.set("LOOM_TEST_MODEL_LIST", previous);
+  }
+});
+
+test("Codex discovery switches off the user's MCP servers for the probe", async () => {
+  const codexHome = {
+    dir: "/tmp/loom-codex-home-test",
+    authJsonPath: "/tmp/loom-codex-home-test/auth.json",
+  };
+  const specs: CodexLaunchSpec[] = [];
+  const launch: CodexLauncher = (spec) => {
+    specs.push(spec);
+    return spawnCodex(spec);
+  };
+  await discoverCodexModels({ cliPath: FAKE_CODEX, codexHome, launch });
+  assert.deepEqual(specs[0]?.args.slice(-2), ["-c", "mcp_servers={}"]);
 });
 
 test("discovery and session startup spawn the app-server with the same resolved CODEX_HOME", async () => {

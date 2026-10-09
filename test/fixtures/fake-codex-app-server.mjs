@@ -599,6 +599,21 @@ const handle = (req) => {
     return;
   }
   if (method === "model/list") {
+    // LOOM_TEST_MODEL_LIST=endless pages forever with fresh cursors; =repeat
+    // keeps handing back the same cursor — both for the discovery bounds.
+    const mode = process.env["LOOM_TEST_MODEL_LIST"];
+    if (mode === "endless" || mode === "repeat") {
+      const n = Number(String(params?.cursor ?? "c0").slice(1)) + 1;
+      send({
+        jsonrpc: "2.0",
+        id,
+        result: {
+          data: [{ model: `m-${n}`, displayName: `M ${n}`, supportedReasoningEfforts: [] }],
+          nextCursor: mode === "endless" ? `c${n}` : "c1",
+        },
+      });
+      return;
+    }
     const page =
       params?.cursor === "page2" ? fixture("model-list-page2") : fixture("model-list-page1");
     send({ jsonrpc: "2.0", id, result: page });

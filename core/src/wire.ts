@@ -4,6 +4,7 @@ import { backgroundTaskKindSchema, harnessEventSchema, tokenUsageSchema } from "
 import { sessionStateSchema } from "./session-state.ts";
 import { sessionInteractionSchema } from "./interaction.ts";
 import { sessionModeSchema } from "./types.ts";
+import { modelChoiceSchema } from "./model-catalogue.ts";
 
 /**
  * Loom's client<->daemon wire protocol: newline-delimited JSON over a Unix
@@ -431,43 +432,34 @@ export const helloParamsSchema = z.object({
 });
 export type HelloParams = z.infer<typeof helloParamsSchema>;
 
-/** One row in the model picker — a canonical id plus display trimmings. */
-export const modelChoiceSchema = z.object({
-  id: z.string(),
-  /** Friendly name; falls back to `id` when the provider gives none. */
-  label: z.string(),
-  /** Context-window size in tokens, when the provider reports it. */
-  context: z.number().optional(),
-  /** Whether this model accepts a thinking-effort level. */
-  supportsEffort: z.boolean().optional(),
-  /** The effort levels it accepts, when the provider enumerates them.
-   *  Endpoint-advertised lists pass through verbatim — they may name levels
-   *  outside Loom's own effort-level union (OpenAI's `minimal`, …). */
-  effortLevels: z.array(z.string()).optional(),
-  /** The effort the provider defaults to for this model, when advertised —
-   *  the picker marks it, and a session created without a choice sends it. */
-  defaultEffort: z.string().optional(),
-});
-export type ModelChoice = z.infer<typeof modelChoiceSchema>;
+/** One row in the model picker; defined with the catalogue it belongs to. */
+export { modelChoiceSchema };
+export type { ModelChoice } from "./model-catalogue.ts";
 
 /** A configured provider, for the TUI's creation flow and model switcher. */
 export const providerInfoSchema = z.object({
   id: z.string(),
   /** Canonical model ids — used for defaults, dedupe, and the aisdk picker.
-   *  For `claude` this is the CLI-reported catalog (discovered at daemon
-   *  start-up); for aisdk it's the configured / `/models`-probed list. */
+   *  This provider's own catalogue (each Claude profile and each aisdk
+   *  profile discovers separately), or its configured pins. */
   models: z.array(z.string()),
-  /** Richer picker rows (labels, context sizes) when the provider has them —
-   *  Claude does. Parallel to `models`; the picker falls back to a bare `id`. */
+  /** Picker rows (labels, descriptions, context sizes, efforts) when the
+   *  provider has them. Parallel to `models`; the picker falls back to a bare
+   *  `id`. Every selector reads these, so one id shows one label everywhere. */
   modelChoices: z.array(modelChoiceSchema).optional(),
   /**
-   * The start-up model discovery is still running (the Claude CLI catalog
-   * probe). The picker shows a loading state instead of the list; the next
-   * state snapshot carries the settled list when it lands.
+   * Model discovery is running for this provider — at start-up or an explicit
+   * `providers.refreshModels`. While it runs, `models` / `modelChoices` keep
+   * the previous catalogue (empty before the first one); the next state
+   * snapshot carries the settled list.
    */
   modelsLoading: z.boolean().optional(),
-  /** Actionable diagnostic when automatic model discovery fails. */
+  /** Actionable diagnostic when the last model discovery failed. The previous
+   *  catalogue, if any, stays in `models` / `modelChoices`. */
   modelsError: z.string().optional(),
+  /** Why `providers.refreshModels` cannot run for this provider (models pinned
+   *  in config, no discovery for this SDK); absent when it can. */
+  modelsRefreshUnavailable: z.string().optional(),
   /**
    * Model a new session gets when none is chosen: the last one run on this
    * provider (remembered across restarts), else a config pin, else the first
