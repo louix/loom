@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { join } from "node:path";
 import { gitFixture } from "../scripts/lib/git-fixture.ts";
-import { changesCommand, vmMonitorText } from "../backend/daemon/src/daemon/session-inspection.ts";
+import {
+  changesCommand,
+  leasedVmUsage,
+  vmMonitorText,
+} from "../backend/daemon/src/daemon/session-inspection.ts";
 import { executeShellHook } from "../core/src/shell-hook.ts";
 
 test("Changes includes committed, staged, unstaged and untracked files without altering Git state", async () => {
@@ -325,6 +329,64 @@ esac
     assert.equal(result.cpuPercent, null);
     if (Deno.build.os === "linux") assert.deepEqual(result.hostFiles, files);
     else assert.match(result.hostFiles!.unavailable!, /host counters require Linux/);
+  } finally {
+    await Deno.remove(home, { recursive: true });
+  }
+});
+
+test("on the isolation launcher, agent VM counters run under the environment's lease", async () => {
+  const { vmUsageCommand } = await import("../runtime/src/session-vm/usage.ts");
+  const home = await Deno.makeTempDir();
+  try {
+    // A direct guest exec would leave a marker; only machine ls is a host-side query.
+    const executable = join(home, "smolvm");
+    await Deno.writeTextFile(
+      executable,
+      `#!/bin/sh
+case "$2" in
+ls) printf '[{"name":"loom-session"}]' ;;
+exec) : > "${home}/direct-exec"; exit 1 ;;
+*) exit 1 ;;
+esac
+`,
+      { mode: 0o700 },
+    );
+    const vm = (kind: "session" | "mcp") =>
+      ({
+        kind,
+        state: "running",
+        smolvm: executable,
+        paths: { state: home },
+      }) as import("../runtime/src/session-vm/inventory.ts").VmRecord;
+    const commands: string[] = [];
+    const executions = {
+      workspace: home,
+      command: async (command: string) => {
+        commands.push(command);
+        return {
+          code: 0,
+          output: "cpu 0 0 0 100\ncpu 25 0 0 175\nMemTotal: 2048 kB\nMemAvailable: 1024 kB\n",
+          timedOut: false,
+        };
+      },
+      open: () => {
+        throw new Error("unused");
+      },
+      close: () => {},
+    };
+    const signal = new AbortController().signal;
+    const usage = await leasedVmUsage(executions)(vm("session"), signal);
+    assert.equal(usage.cpuPercent, 25);
+    assert.equal(usage.memoryUsed, 1048576);
+    assert.deepEqual(commands, [vmUsageCommand]);
+    // A stopping environment has withdrawn its executions: counters are unavailable,
+    // never sampled beside it.
+    assert.equal((await leasedVmUsage(undefined)(vm("session"), signal)).cpuPercent, null);
+    await assert.rejects(Deno.stat(join(home, "direct-exec")), Deno.errors.NotFound);
+    // MCP VMs have no session environment and keep their own transport.
+    await leasedVmUsage(executions)(vm("mcp"), signal);
+    await Deno.stat(join(home, "direct-exec"));
+    assert.equal(commands.length, 1);
   } finally {
     await Deno.remove(home, { recursive: true });
   }

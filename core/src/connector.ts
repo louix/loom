@@ -1,6 +1,8 @@
 import { z } from "zod";
 import type { VmTermination } from "./vm-termination.ts";
 import type { SessionEnvironment } from "./session-environment.ts";
+import type { ExecutionOptions, ExecutionTarget } from "./execution.ts";
+import type { HookAttempt } from "./shell-hook.ts";
 /**
  * The plugin seam. A connector package (`@loom/connector-*`) exports
  * `createProvider`; the CLI hands the daemon a {@link ConnectorManifest} of lazy
@@ -94,6 +96,25 @@ export interface ConnectorConfig extends ConnectorWireConfig {
   };
 }
 
+/**
+ * Host-only: one live isolated session environment's executions. Each holds its
+ * own lease beside the session worker's, and ends when the session's VM stops.
+ */
+export interface SessionExecutions {
+  /** The host workspace the environment was started for. */
+  readonly workspace: string;
+  /** A bounded guest shell command; its lease is held until the process settles. */
+  command(
+    command: string,
+    timeoutMs: number,
+    signal: AbortSignal,
+    env?: Record<string, string>,
+  ): Promise<HookAttempt>;
+  /** Hand a foreground execution to a connected client; its lease ends with the owner. */
+  open(options: ExecutionOptions, owner: { readonly signal: AbortSignal }): ExecutionTarget;
+  close(token: string, owner: { readonly signal: AbortSignal }): void;
+}
+
 export interface ConnectorContext {
   /** Set by the local bootstrap, never accepted from serialized connector config. */
   executionEnvironment?: "host" | "session-vm";
@@ -111,6 +132,11 @@ export interface ConnectorContext {
           maxPushBytes?: number;
         }
       | undefined;
+    /**
+     * Isolation launcher only: publish a live environment's executions for the
+     * session's shells, hooks and inspection. Returns the withdrawal.
+     */
+    executions?(sessionId: string, executions: SessionExecutions): () => void;
   };
   onVmStarted?: (sessionId: string, generation: string) => void;
   onStartupProgress?: (sessionId: string, message: string, termination?: VmTermination) => void;

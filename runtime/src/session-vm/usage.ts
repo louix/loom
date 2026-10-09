@@ -57,6 +57,8 @@ export const sampleVmUsage = async (
   vm: VmRecord,
   signal: AbortSignal,
   sampleHost = sampleHostFileUsageViaProcess,
+  /** Runs the guest counters through the environment's owner, under its own lease. */
+  runGuest?: (command: string, signal: AbortSignal) => Promise<string>,
 ): Promise<VmUsage> => {
   if (vm.state !== "running" || !vm.smolvm) throw new Error("VM metrics unavailable");
   const cancel = new AbortController();
@@ -109,20 +111,24 @@ export const sampleVmUsage = async (
           );
     // Guest execution may be the operation failing under descriptor pressure.
     // Sample the host independently so that failure does not hide its counters.
-    const guest = run([
-      "machine",
-      "exec",
-      "--name",
-      name,
-      "--timeout",
-      "1s",
-      "-w",
-      "/",
-      "--",
-      "/bin/sh",
-      "-c",
-      vmUsageCommand,
-    ])
+    const guest = (
+      runGuest
+        ? runGuest(vmUsageCommand, cancel.signal)
+        : run([
+            "machine",
+            "exec",
+            "--name",
+            name,
+            "--timeout",
+            "1s",
+            "-w",
+            "/",
+            "--",
+            "/bin/sh",
+            "-c",
+            vmUsageCommand,
+          ])
+    )
       .then(parseVmUsage)
       .catch(() => parseVmUsage(""));
     const [hostFiles, guestUsage] = await Promise.all([host, guest]);

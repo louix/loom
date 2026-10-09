@@ -1,6 +1,7 @@
 import { listVms, type VmRecord } from "../../../../runtime/src/session-vm/inventory.ts";
 import { sampleVmUsage, type VmUsage } from "../../../../runtime/src/session-vm/usage.ts";
 import { shellQuote } from "./clone-git.ts";
+import type { SessionExecutions } from "@loom/core/connector";
 
 /** Includes committed session work plus staged/unstaged changes; untracked names are listed separately. */
 export const changesCommand = (base: string | null, patch: boolean): string => `
@@ -21,6 +22,26 @@ else
 fi
 git -c core.quotePath=true --no-pager diff --no-ext-diff --no-textconv --no-color ${patch ? "--patch" : "--numstat --shortstat"} "$start" --
 `;
+
+/**
+ * The isolation launcher's sampler: an agent VM's guest counters run as a command
+ * under the environment's own lease, never beside it. Host counters are unchanged.
+ */
+export const leasedVmUsage =
+  (executions: SessionExecutions | undefined) => (vm: VmRecord, signal: AbortSignal) =>
+    sampleVmUsage(
+      vm,
+      signal,
+      undefined,
+      vm.kind !== "session"
+        ? undefined
+        : async (command, signal) => {
+            if (!executions) throw new Error("VM metrics unavailable");
+            const result = await executions.command(command, 1500, signal);
+            if (result.code !== 0 || result.timedOut) throw new Error("VM metrics unavailable");
+            return result.output;
+          },
+    );
 
 export const vmMonitorText = async (
   repo: string,

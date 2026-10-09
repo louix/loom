@@ -13,6 +13,12 @@
  * worker and releases its lease before the environment stops. The library has no
  * idle timer, so the daemon's grace period and keep-warm exclusions remain the only
  * ones.
+ *
+ * While the worker runs, the environment's other executions are published to the
+ * daemon: session shells, daemon-run hooks, guest Git and inspection each hold their
+ * own lease beside the worker's. They neither keep the environment alive nor stop
+ * it; as with the session VM, they end when the worker's environment stops, and the
+ * daemon keeps idle suspension away from open shells and running hooks.
  */
 import { dirname, join } from "node:path";
 import type { StopReason } from "@loom/isolation/environment";
@@ -41,9 +47,14 @@ import {
 } from "../../../../runtime/src/session-vm/progress.ts";
 import { sessionVmDirectory, withStoppedSessionVm } from "./session-vm-state.ts";
 import type { WorkerProcess } from "./worker-launch.ts";
+import type { SessionExecutions } from "@loom/core/connector";
 
 type EnvironmentVm = Awaited<ReturnType<typeof launchEnvironmentVm>>;
-export type IsolatedLaunchOptions = SessionVmOptions & { signal?: AbortSignal };
+export type IsolatedLaunchOptions = SessionVmOptions & {
+  signal?: AbortSignal;
+  /** Publish the environment's executions while its worker runs; returns the withdrawal. */
+  executions?: (executions: SessionExecutions) => () => void;
+};
 export type IsolatedWorker = WorkerProcess & {
   binding: EnvironmentVm["binding"];
   /** Resolves once the execution is reaped and its lease released. */
@@ -109,7 +120,16 @@ interface Generation {
   worker?: IsolatedWorker;
   /** This adapter asked the coordinator to stop the environment. */
   stopping?: boolean;
+  /** Withdraws the published executions; set while the worker runs. */
+  withdraw?: () => void;
 }
+
+const notRunning = () => new Error("The session VM is not running. Resume it first.");
+const withdraw = (generation: Generation) => {
+  const published = generation.withdraw;
+  delete generation.withdraw;
+  published?.();
+};
 
 /** Same contract as createSessionVmLauncher, over one coordinator per provider. */
 export const createIsolatedWorkerLauncher = (
@@ -145,6 +165,11 @@ export const createIsolatedWorkerLauncher = (
             generation.worker.terminate("user_stop");
             await generation.worker.settled;
           }
+          // As with a session VM, open shells and commands end with the VM.
+          if (isCurrent() && generations.get(generation.id) === generation) {
+            withdraw(generation);
+            await coordinator.leases.cancel(generation.id);
+          }
           await options.onStop!(isCurrent);
         },
       });
@@ -157,7 +182,12 @@ export const createIsolatedWorkerLauncher = (
   const stopEnvironment = async (generation: Generation, reason: HostStopReason) => {
     if (generations.get(generation.id) !== generation) return;
     generation.stopping = true;
+    withdraw(generation);
     generation.environment?.setStopReason?.(reason);
+    // The environment exists for its worker. Shells and commands still open on it
+    // end with it, as they did with the session VM; the daemon's lifecycle checks
+    // keep idle suspension and refreshes away from open shells and running hooks.
+    await coordinator.leases.cancel(generation.id);
     await coordinator.stop(generation.id, coordinatorReason(reason));
     if (generations.get(generation.id) === generation) generations.delete(generation.id);
   };
@@ -166,6 +196,7 @@ export const createIsolatedWorkerLauncher = (
     generation: Generation,
     argv: string[],
     onProgress: SessionVmOptions["onProgress"],
+    publish: IsolatedLaunchOptions["executions"],
   ): IsolatedWorker => {
     const { id } = generation;
     const environment = generation.environment!;
@@ -211,6 +242,7 @@ export const createIsolatedWorkerLauncher = (
     let ended = false;
     const reaped = () => {
       ended = true;
+      withdraw(generation);
       clearTimeout(killTimer);
       lease.release();
     };
@@ -296,6 +328,24 @@ export const createIsolatedWorkerLauncher = (
       },
     };
     generation.worker = worker;
+    // Shells, hooks and inspection: independent executions on the same environment,
+    // each under its own lease, available only while this generation's worker runs.
+    const live = () => {
+      if (ended || generation.stopping || generations.get(id) !== generation) throw notRunning();
+    };
+    const executions: SessionExecutions = {
+      workspace: environment.binding.workspace,
+      async command(command, timeoutMs, signal, env) {
+        live();
+        return await coordinator.command(id, command, timeoutMs, { signal }, env);
+      },
+      open(options, owner) {
+        live();
+        return coordinator.openExecution(id, options, owner);
+      },
+      close: (token, owner) => coordinator.closeExecution(token, owner),
+    };
+    if (publish) generation.withdraw = publish(executions);
     return worker;
   };
 
@@ -304,6 +354,7 @@ export const createIsolatedWorkerLauncher = (
       if (closed) throw new Error("Session VM provider is shutting down");
       const {
         signal,
+        executions,
         onStop,
         sessionId: id,
         sessionDirectory,
@@ -339,7 +390,7 @@ export const createIsolatedWorkerLauncher = (
         });
         signal?.throwIfAborted();
         if (closed) throw new Error("Session VM provider is shutting down");
-        return startWorker(generation, argv, configuration.onProgress);
+        return startWorker(generation, argv, configuration.onProgress, executions);
       } catch (error) {
         // The coordinator already reaped a failed start; this covers later failures.
         await stopEnvironment(generation, "user_stop").catch(() => {});

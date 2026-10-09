@@ -1,6 +1,6 @@
 import { VmTerminationError } from "../../../../core/src/vm-termination.ts";
 import { runSessionCommand } from "./session-command.ts";
-import { changesCommand, vmMonitorText } from "./session-inspection.ts";
+import { changesCommand, leasedVmUsage, vmMonitorText } from "./session-inspection.ts";
 import { executeShellHook } from "../../../../core/src/shell-hook.ts";
 import { CloneGit, type CloneFacts } from "./clone-git.ts";
 import { vmCommand } from "../../../../runtime/src/session-vm/command.ts";
@@ -114,7 +114,7 @@ import { cheapModelFor, generateTitle } from "./titler.ts";
 import { WorktreeManager, commitIdentity, type RebaseOutcome } from "./worktrees.ts";
 import { resolveGitIdentity } from "../config/git-identity.ts";
 import { ProviderRegistry } from "./provider-registry.ts";
-import type { ConnectorManifest } from "@loom/core/connector";
+import type { ConnectorManifest, SessionExecutions } from "@loom/core/connector";
 import {
   isSessionMode,
   SESSION_MODES,
@@ -278,6 +278,12 @@ export class Daemon {
   #hygiene: HygieneReport | null = null;
   readonly #vmGenerations = new Map<string, string>();
   readonly #shells = new SessionShells();
+  /** Live isolation-launcher environments, published while their workers run. */
+  readonly #vmExecutions = new Map<string, SessionExecutions>();
+  /** Fixed for the daemon's life: changing the launcher needs a restart. */
+  get #isolatedVms(): boolean {
+    return this.config.isolation.launcher === "isolation";
+  }
   #environmentPoll: NodeJS.Timeout | undefined;
   #checkingEnvironment = false;
   #onConfigChange = (): void => this.#reloadConfig();
@@ -305,20 +311,19 @@ export class Daemon {
     this.#guestCommand =
       opts.guestCommand ??
       (async (session, command, timeoutMs, signal, env) => {
+        const workspace = session.inPlace ? opts.repoRoot : session.worktree;
+        const stop = AbortSignal.any([signal, this.#guestStop.signal]);
+        // On the isolation launcher, a command holds its own lease on the environment.
+        if (this.#isolatedVms) {
+          const executions = this.#vmExecutions.get(session.id);
+          if (!executions || executions.workspace !== workspace)
+            throw new Error("The session VM is not running. Resume it first.");
+          return executions.command(command, timeoutMs, stop, env);
+        }
         const binding = await readRecovery(sessionVmDirectory(opts.repoRoot, session.id));
-        if (
-          !binding?.recovery.ready ||
-          binding.recovery.reaped ||
-          binding.workspace !== (session.inPlace ? opts.repoRoot : session.worktree)
-        )
+        if (!binding?.recovery.ready || binding.recovery.reaped || binding.workspace !== workspace)
           throw new Error("The session VM is not running. Resume it first.");
-        return vmCommand(
-          binding,
-          command,
-          timeoutMs,
-          AbortSignal.any([signal, this.#guestStop.signal]),
-          env,
-        );
+        return vmCommand(binding, command, timeoutMs, stop, env);
       });
     opts = { ...opts, repoRoot: tryFindRepoRoot(opts.repoRoot) ?? opts.repoRoot };
     this.repoRoot = opts.repoRoot;
@@ -410,6 +415,12 @@ export class Daemon {
             this.#registry.setStatus(id, stateInterrupted("user"));
             this.#publishState(id);
           });
+        },
+        executions: (id, executions) => {
+          this.#vmExecutions.set(id, executions);
+          return () => {
+            if (this.#vmExecutions.get(id) === executions) this.#vmExecutions.delete(id);
+          };
         },
       },
     );
@@ -3229,8 +3240,12 @@ export class Daemon {
         if (!session) throw new RpcError("not_found", `no such session: ${params.id}`);
         if (this.#revivals.has(params.id)) throw new RpcError("busy", "The session is starting.");
         this.#vmIdleSince.delete(params.id);
-        return await this.#shells.open(this.repoRoot, session, conn, (cwd) =>
-          this.#providers.shellEnvironment(session.id, cwd, conn.signal),
+        return await this.#shells.open(
+          this.repoRoot,
+          session,
+          conn,
+          (cwd) => this.#providers.shellEnvironment(session.id, cwd, conn.signal),
+          this.#isolatedVms ? (id) => this.#vmExecutions.get(id) : undefined,
         );
       }),
     );
@@ -3244,7 +3259,13 @@ export class Daemon {
       const s = this.#registry.mustGet(params.id);
       if (params.tab === "monitor") {
         return {
-          text: await vmMonitorText(this.repoRoot, s.id, conn.signal),
+          text: await vmMonitorText(
+            this.repoRoot,
+            s.id,
+            conn.signal,
+            undefined,
+            this.#isolatedVms ? leasedVmUsage(this.#vmExecutions.get(s.id)) : undefined,
+          ),
           sampledAt: Date.now(),
         };
       }

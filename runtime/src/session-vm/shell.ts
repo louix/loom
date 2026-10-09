@@ -20,6 +20,9 @@ export const shellEnvironment = (env: Record<string, string>): string =>
     .map(([key, value]) => `export ${key}='${value.replaceAll("'", "'\\''")}'`)
     .join("\n") + "\n";
 
+/** The same interactive shell as an execution, whose wrapper has loaded the environment. */
+export const guestShellArgv = ["/bin/sh", "-c", 'exec "$SHELL" -i'];
+
 export const vmShellCommand = (binding: VmBinding) => ({
   executable: binding.smolvm,
   args: [

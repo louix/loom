@@ -6,7 +6,7 @@ import { withVmDiagnostics } from "./vm-diagnostics.ts";
 import { workspaceMount } from "../../../../runtime/src/session-vm/workspace.ts";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import type { ConnectorContext } from "@loom/core/connector";
+import type { ConnectorContext, SessionExecutions } from "@loom/core/connector";
 import type { WorkerProfile } from "../../../../core/src/worker.ts";
 import type {
   AgentProvider,
@@ -22,7 +22,7 @@ import { createSessionVmLauncher, sessionVmGeneration } from "./session-vm-worke
 import { sessionVmDirectory, stoppedSessionVm } from "./session-vm-state.ts";
 import { RemoteWorkerSession } from "./worker-provider.ts";
 import { mockLaunchSpec, type WorkerProcess } from "./worker-launch.ts";
-import { createIsolatedWorkerLauncher } from "./isolated-worker.ts";
+import { createIsolatedWorkerLauncher, type IsolatedLaunchOptions } from "./isolated-worker.ts";
 import { sessionGitIdentity, type SessionGitIdentity } from "../config/git-identity.ts";
 const executable = async (name: string) => {
   for (const path of name.includes("/")
@@ -40,9 +40,7 @@ const executable = async (name: string) => {
 };
 /** A provider's VM launches: the current session-vm-worker path or the isolation adapter. */
 export type SessionVmLauncher = {
-  launch(
-    options: SessionVmOptions & { signal?: AbortSignal },
-  ): Promise<WorkerProcess & { binding: { state: string } }>;
+  launch(options: IsolatedLaunchOptions): Promise<WorkerProcess & { binding: { state: string } }>;
   close(): Promise<void>;
 };
 type SessionVmPolicy = NonNullable<ConnectorContext["config"]["sessionVm"]>;
@@ -200,6 +198,13 @@ export const withVmSessions = async <T extends AgentProvider>(
         await launches.launch({
           // The isolation adapter returns only after the environment is ready.
           ...(isolated && signal ? { signal } : {}),
+          // Its shells, hooks and inspection share the environment's leases.
+          ...(isolated && ctx.vmLifecycle?.executions
+            ? {
+                executions: (executions: SessionExecutions) =>
+                  ctx.vmLifecycle!.executions!(input.sessionId, executions),
+              }
+            : {}),
           onProgress: (message, termination) =>
             ctx.onStartupProgress?.(input.sessionId, message, termination),
           workspace: input.cwd,
