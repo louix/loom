@@ -240,16 +240,16 @@ transcript's own totals reliable. That is outside A7.
   `get_usage` round-trip, which includes a claude.ai rate-limit fetch for
   subscription logins. That is normally well under a second, with a hard
   10 s cap.
-- **Stale provider ref after undo or `/clear`. This is pre-existing and not
-  changed.**
-  - `SessionManager.#trackRef` reports a session's provider ref once per
-    attach. After an undo or `/clear`, the CLI moves to a new session id, but
-    `sessions.provider_ref` keeps the old one, so a later revive resumes the
-    pre-undo or pre-clear transcript.
-  - Accounting stays correct: `get_usage` reports what that resume restores,
-    and the persisted fallback is ignored because its `ref` differs.
-  - The conversation itself is wrong after such a revive. This deserves its
-    own fix.
+- **Stale provider ref after undo or `/clear`. Fixed after A7.**
+  - `SessionManager.#trackRef` used to report a session's provider ref once
+    per attach. After an undo, a `/clear` or a fresh implementation, the CLI
+    moves to a new session id, but `sessions.provider_ref` kept the old one,
+    so a later revive resumed the pre-undo or pre-clear transcript.
+  - It now reports every change of ref (and nothing while the ref is
+    steady). The undo path sets the fork's id as soon as the fork exists,
+    and `SessionManager.rewind` persists it before any event arrives.
+  - The persisted fallback follows: each result keys its total to the ref it
+    was observed under, which is now the ref a revive resumes.
 - The fixtures model the CLI from its documentation and the probe above, not
   from captured model traffic.
 

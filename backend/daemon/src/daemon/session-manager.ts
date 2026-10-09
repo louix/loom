@@ -111,7 +111,14 @@ interface Running {
   /** Live, non-ambient background tasks — last `background_tasks` event's set. */
   backgroundTasks: BackgroundTaskInfo[];
   ended: boolean;
-  refReported: boolean;
+  /**
+   * The provider ref last handed to `onProviderRef`. Compared, not latched: a
+   * provider may move to another native session within one attach (Claude
+   * resumes a fork on undo, and starts a new CLI session on `/clear` and on a
+   * fresh plan implementation), and a revive must resume where the
+   * conversation now lives.
+   */
+  reportedRef: string | null;
   firstOutputSince: number | null;
   pump: Promise<void>;
   /** Per-session op chain — `send` / `compact` / `rewind` run one at a time through {@link SessionManager.#enqueue}. */
@@ -275,7 +282,7 @@ export class SessionManager {
       subagents: new Map(),
       backgroundTasks: [],
       ended: false,
-      refReported: false,
+      reportedRef: null,
       pump: Promise.resolve(),
       gate: Promise.resolve(),
       operations: 0,
@@ -427,13 +434,15 @@ export class SessionManager {
     return changed;
   }
 
+  /**
+   * Report the provider ref whenever it differs from the one last reported —
+   * once per change, so a steady ref costs no write per event.
+   */
   #trackRef(id: string, run: Running): void {
-    if (run.refReported) return;
     const ref = run.session.providerRef;
-    if (ref) {
-      run.refReported = true;
-      this.#hooks.onProviderRef(id, ref);
-    }
+    if (!ref || ref === run.reportedRef) return;
+    run.reportedRef = ref;
+    this.#hooks.onProviderRef(id, ref);
   }
 
   /**
@@ -974,7 +983,7 @@ export class SessionManager {
       try {
         const session = await newProvider.resumeSession(ref);
         // #attach replaces #running[id] with a fresh Running (new gate,
-        // refReported=false) and starts its own drain.
+        // reportedRef=null) and starts its own drain.
         this.#attach(newProvider.id, id, session, stateIdle, undefined, ref.mode);
       } catch (err) {
         this.#running.delete(id);
@@ -1010,7 +1019,21 @@ export class SessionManager {
       run.rewinding = true;
       try {
         await run.session.rewind(keep, at);
-        if (this.#running.get(id) === run) this.#transition(id, run, stateIdle, "rewind");
+        if (this.#running.get(id) === run) {
+          // The rewind may have moved the provider onto another native session
+          // (Claude resumes a fork) with no event for the drain to notice yet.
+          // The rewind itself has happened; a store hiccup here must not
+          // report it as failed.
+          try {
+            this.#trackRef(id, run);
+          } catch (err) {
+            this.#hooks.log.error("provider ref persist failed after rewind", {
+              id,
+              err: err instanceof Error ? err.message : String(err),
+            });
+          }
+          this.#transition(id, run, stateIdle, "rewind");
+        }
       } finally {
         run.restructuring = null;
         run.restructuringSince = null;

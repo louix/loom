@@ -322,6 +322,10 @@ class Pipeline {
   store!: SessionStore;
   mgr!: SessionManager;
   q!: FakeQuery;
+  /** Every `onProviderRef` write, in order, across daemon restarts. */
+  readonly refWrites: string[] = [];
+  /** The `resume` ref of every query started with one. */
+  readonly resumed: string[] = [];
   readonly dbPath: string;
   /** User messages the test has handed the current query. */
   #used = 0;
@@ -337,6 +341,7 @@ class Pipeline {
         this.#used = 0;
         this.#initPending = true;
         this.#needsSend = Boolean(args.options.resume);
+        if (args.options.resume) this.resumed.push(args.options.resume);
         return this.q;
       }) as never,
       forkSession: (async () => ({ sessionId: this.forkId })) as never,
@@ -354,7 +359,10 @@ class Pipeline {
       onResult: () => {},
       onTurnCompleted: () => {},
       onOverlay: () => {},
-      onProviderRef: (id, ref) => this.store.setFields(id, { providerRef: ref }),
+      onProviderRef: (id, ref) => {
+        this.refWrites.push(ref);
+        this.store.setFields(id, { providerRef: ref });
+      },
       onMode: () => {},
       log: makeLogger("test"),
     });
@@ -601,6 +609,75 @@ test("undo: a resumed sdk.forkSession() fork restarts at zero and onQuerySwap ca
     await p.turn("b1");
     await p.turn("b2");
     near(p.row().costUsd, p.cli.billedUsd, "undo");
+  });
+});
+
+// --- the provider ref a revive resumes -----------------------------------------
+
+test("a steady provider ref is written once per attach, not per event", async () => {
+  await withPipeline(async (p) => {
+    await p.turn("a1");
+    await p.turn("a2");
+    await p.turn("a3");
+    assert.deepEqual(p.refWrites, ["claude-1"]);
+    await p.revive();
+    await p.turn("a4");
+    assert.deepEqual(p.resumed, ["claude-1"]);
+    assert.deepEqual(p.refWrites, ["claude-1", "claude-1"]);
+    near(p.row().costUsd, p.cli.billedUsd, "unchanged ref");
+  });
+});
+
+test("undo: the fork's ref is persisted at once, so a revive resumes the post-undo transcript", async () => {
+  await withPipeline(async (p) => {
+    await p.turn("a1");
+    await p.turn("a2");
+    p.cli.exit();
+    p.cli.start(p.forkId, "fork");
+    await p.mgr.rewind(ID, 0, "a1");
+    // No turn has run on the fork yet, so no `init` has named it.
+    assert.equal(p.store.providerRef(ID), p.forkId);
+    await p.revive();
+    assert.deepEqual(p.resumed, [p.forkId, p.forkId]);
+    await p.turn("b1");
+    near(p.row().costUsd, p.cli.billedUsd, "undo, then revive");
+  });
+});
+
+test("undo: the persisted total follows the fork's ref into a revive", async () => {
+  await withPipeline(async (p) => {
+    await p.turn("a1");
+    await p.turn("a2");
+    p.cli.exit();
+    p.cli.start(p.forkId, "fork");
+    await p.mgr.rewind(ID, 0, "a1");
+    await p.turn("b1");
+    assert.equal(p.store.providerTotal(ID)?.ref, p.forkId);
+    // Without get_usage the fallback is the only seed: resuming the pre-undo
+    // ref would restore its larger stamp and find no total for it.
+    p.usage = "fail";
+    await p.revive();
+    assert.deepEqual(p.resumed, [p.forkId, p.forkId]);
+    await p.turn("b2");
+    near(p.row().costUsd, p.cli.billedUsd, "undo, turn, revive without get_usage");
+  });
+});
+
+test("/clear: the new CLI session's ref is persisted, and a revive resumes it with its total", async () => {
+  await withPipeline(async (p) => {
+    await p.turn("a1");
+    await p.turn("a2");
+    await p.next("/clear");
+    await p.feed(...p.cli.clear("claude-2"));
+    assert.equal(p.store.providerRef(ID), "claude-2");
+    await p.turn("b1");
+    assert.deepEqual(p.refWrites, ["claude-1", "claude-2"]);
+    assert.ok(p.store.providerTotal(ID, "claude-2"), "the total is keyed to the new ref");
+    p.usage = "fail";
+    await p.revive();
+    assert.deepEqual(p.resumed, ["claude-2"]);
+    await p.turn("b2");
+    near(p.row().costUsd, p.cli.billedUsd, "/clear, then revive without get_usage");
   });
 });
 

@@ -1317,6 +1317,10 @@ class ClaudeSession implements AgentSession {
       // into `#startOpts` at creation — a `setModel` / `setMode` / `setEffort`
       // before the undo would otherwise be silently reverted.
       this.#mapper.onQuerySwap();
+      // The conversation now lives in the fork. Its `init` would say so, but
+      // only once the next turn starts; a revive before then must not resume
+      // the pre-undo transcript.
+      this.#mapper.state.providerRef = forkedId;
       this.start(
         {
           ...this.#startOpts,
