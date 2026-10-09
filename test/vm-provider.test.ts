@@ -12,6 +12,10 @@ import { FakeProvider } from "../connectors/mock/src/fake.ts";
 import { WorkerTranscript } from "../runtime/src/worker/transcript.ts";
 import { makeLogger } from "../core/src/logger.ts";
 import type { AgentProvider, CreateSessionOptions } from "../core/src/types.ts";
+import {
+  sessionGitIdentity,
+  type SessionGitIdentity,
+} from "../backend/daemon/src/config/git-identity.ts";
 
 const cwd = fileURLToPath(new URL("../", import.meta.url));
 for (const kind of ["claude", "codex", "aisdk"] as const) {
@@ -108,7 +112,14 @@ for (const kind of ["claude", "codex", "aisdk"] as const) {
       kind,
       createLauncher,
     );
-    const options: CreateSessionOptions = {
+    // A custom committer: the clone's config default keeps the daemon's author fallback.
+    const gitIdentity = {
+      GIT_AUTHOR_EMAIL: "author@example.com",
+      GIT_COMMITTER_NAME: "Committer",
+      GIT_COMMITTER_EMAIL: "committer@example.com",
+    };
+    const options: CreateSessionOptions & SessionGitIdentity = {
+      [sessionGitIdentity]: gitIdentity,
       sessionId: "session",
       cwd: join(root, "workspace/checkout"),
       workspaceRoot: join(root, "workspace/checkout"),
@@ -142,7 +153,12 @@ for (const kind of ["claude", "codex", "aisdk"] as const) {
       await created.close("idle_suspension");
       assert.deepEqual(stopReasons, ["idle_suspension"]);
       assert.deepEqual(launches[0]!.mcpRelays, [{ port: 4567, guestPort: 3130 }]);
-      assert.deepEqual(launches[0]!.clone, clone);
+      assert.deepEqual(launches[0]!.clone, {
+        ...clone,
+        identity: { name: "Loom (test)", email: "author@example.com" },
+      });
+      assert.deepEqual(launches[0]!.gitIdentity, gitIdentity);
+      assert.ok(!requests.join("").includes("committer@example.com"), "identity stays host-side");
       assert.deepEqual(launches[0]!.extraAllowedHosts, ["registry.npmjs.org"]);
       assert.equal(
         !!launches[0]!.authOwner,

@@ -9,6 +9,7 @@ import {
 import { matchGlob } from "./hooks.ts";
 import type { CreateSessionOptions, SessionRef } from "@loom/core/types";
 import { withVmSessions } from "./vm-provider.ts";
+import { resolveGitIdentity, sessionGitIdentity } from "../config/git-identity.ts";
 /**
  * Instantiates providers by id, on demand, from a {@link ConnectorManifest} of
  * lazy thunks the CLI supplies. Nothing in the daemon's graph imports a vendor
@@ -278,6 +279,14 @@ export class ProviderRegistry {
             const progress = (message: string) =>
               context.onStartupProgress?.(options.sessionId, message);
             if (!oneShot) this.#localEnvironments.delete(options.sessionId);
+            // Every session commit path (agent shell, commit tool, VM guest, private
+            // clone) inherits this launch-time identity; one-shot utilities never commit.
+            const gitIdentity = oneShot
+              ? undefined
+              : resolveGitIdentity(this.#repoRoot, this.#config.git, {
+                  ...(options.model ? { model: options.model } : {}),
+                  profile: id,
+                });
             const environment =
               !context.config.sessionVm && !oneShot
                 ? await activateLocalEnvironment(
@@ -291,6 +300,7 @@ export class ProviderRegistry {
             options = {
               ...options,
               ...(environment ? { [localSessionEnvironment]: environment } : {}),
+              ...(gitIdentity ? { [sessionGitIdentity]: gitIdentity } : {}),
             };
             const hooks =
               "oneShot" in options && options.oneShot
@@ -324,7 +334,7 @@ export class ProviderRegistry {
                   configured,
                   (message) => context.onStartupProgress?.(options.sessionId, message),
                   signal ? AbortSignal.any([initStop.signal, signal]) : initStop.signal,
-                  applyEnvironmentChanges(Deno.env.toObject(), environment),
+                  { ...applyEnvironmentChanges(Deno.env.toObject(), environment), ...gitIdentity },
                   [CLAUDE, GENERIC, GEMINI].includes(pkg),
                 );
             signal?.throwIfAborted();

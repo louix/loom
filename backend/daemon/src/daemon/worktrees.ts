@@ -1,8 +1,9 @@
 import { canonicalHostPath } from "../../../../core/src/host-path.ts";
 /**
  * Per-session git worktrees (design spec §6). On session create we branch a
- * fresh worktree off the configured base; each tree gets a distinct commit
- * identity and a pre-push hook that hard-blocks pushing. Loom never runs a
+ * fresh worktree off the configured base; each tree gets a pre-push hook that
+ * hard-blocks pushing. Commit identity comes from the session's environment
+ * (see `config/git-identity.ts`), never from tree config. Loom never runs a
  * remote operation itself. `gc` removes trees for sessions the user has marked
  * done; branches are never auto-deleted.
  */
@@ -22,9 +23,9 @@ import type { Logger } from "@loom/core/logger";
 import type { GitFacts } from "@loom/core/wire";
 
 /**
- * The worktree-scoped commit identity: `Loom (<model>) <loom+<model>@localhost>`
- * — commits carry the model that ran the session, not just "claude". No model
- * (the daemon couldn't resolve one) falls back to the bare `Loom` identity.
+ * The former session identity, `Loom (<model>) <loom+<model>@localhost>`. Now
+ * only a private clone's config default for values Git could not resolve on
+ * the host; the session environment's identity always outranks it.
  */
 export const commitIdentity = (model: string): { name: string; email: string } => {
   if (!model) return { name: "Loom", email: "loom@localhost" };
@@ -240,15 +241,15 @@ export class WorktreeManager {
 
   /**
    * `git worktree add <trees>/<shortId> -b loom/<shortId> <base>`, then pin the
-   * commit identity and hooks path for that tree. `opts.baseRef` branches
-   * off something other than the configured base (a parent session's branch,
-   * for a hard fork). `opts.model` is the session's model — it names the
-   * commit identity (`Loom (<model>)`), so a commit says what ran it. `id` is
+   * hooks path for that tree. `opts.baseRef` branches off something other than
+   * the configured base (a parent session's branch, for a hard fork). Commit
+   * identity is not pinned: sessions receive it in their environment, and the
+   * user's own commits in the tree keep their ordinary Git identity. `id` is
    * the session's own id — both the directory and the branch are named after it
    * (truncated to the fleet view's short id) so a tree is traceable back to the
    * session.
    */
-  create(id: string, opts: { baseRef?: string; model?: string } = {}): WorktreeInfo {
+  create(id: string, opts: { baseRef?: string } = {}): WorktreeInfo {
     this.ensureSetup();
     let baseRef: string;
     const baseRefOverride = opts.baseRef;
@@ -275,28 +276,20 @@ export class WorktreeManager {
       throw new Error(`git worktree add failed: ${add.stderr.trim() || add.stdout.trim()}`);
     }
 
-    // These three are the "sessions always commit as Loom, never push" guarantee.
-    // A failure here is fatal: a worktree with no `core.hooksPath` has no
-    // push-block hook, and one with no `user.email` commits under whatever
-    // ambient identity git finds. Tear the tree down rather than run it unsafe.
-    const ident = commitIdentity(opts.model ?? "");
-    for (const [key, value] of [
-      ["user.name", ident.name],
-      ["user.email", ident.email],
-      ["core.hooksPath", this.#hooksDir],
-    ] as const) {
-      const res = this.#git(["config", "--worktree", key, value], path);
-      if (!res.ok) {
-        try {
-          this.remove(path, { force: true });
-          this.deleteBranch(branch);
-        } catch {
-          this.#git(["worktree", "prune"]); // best-effort cleanup
-        }
-        throw new Error(
-          `worktree config --worktree ${key} failed: ${res.stderr.trim() || res.stdout.trim()}`,
-        );
+    // The "sessions never push" guarantee. A failure here is fatal: a worktree
+    // with no `core.hooksPath` has no push-block hook. Tear the tree down
+    // rather than run it unsafe.
+    const res = this.#git(["config", "--worktree", "core.hooksPath", this.#hooksDir], path);
+    if (!res.ok) {
+      try {
+        this.remove(path, { force: true });
+        this.deleteBranch(branch);
+      } catch {
+        this.#git(["worktree", "prune"]); // best-effort cleanup
       }
+      throw new Error(
+        `worktree config --worktree core.hooksPath failed: ${res.stderr.trim() || res.stdout.trim()}`,
+      );
     }
 
     this.#log.info("worktree created", { slug, branch, baseRef, path });
@@ -305,14 +298,14 @@ export class WorktreeManager {
 
   /**
    * `git worktree add <trees>/<shortId> <branch>` — check an *existing* branch
-   * back out into a fresh tree, then re-pin the commit identity and hooks the
-   * same way {@link create} does. Used when an archived (`done`) session is
-   * messaged again: its worktree was removed but the branch was kept, so the
-   * session resumes on a new tree carved from that branch. `id` names the
-   * directory (the session's short id); `model` names the commit identity.
-   * Throws if the branch no longer resolves (deleted in the user's own git).
+   * back out into a fresh tree, then re-pin the hooks the same way
+   * {@link create} does. Used when an archived (`done`) session is messaged
+   * again: its worktree was removed but the branch was kept, so the session
+   * resumes on a new tree carved from that branch. `id` names the directory
+   * (the session's short id). Throws if the branch no longer resolves (deleted
+   * in the user's own git).
    */
-  reattach(id: string, branch: string, opts: { model?: string } = {}): WorktreeInfo {
+  reattach(id: string, branch: string): WorktreeInfo {
     this.ensureSetup();
     if (!this.#git(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]).ok) {
       throw new Error(`branch "${branch}" no longer exists`);
@@ -329,25 +322,18 @@ export class WorktreeManager {
       throw new Error(`git worktree add failed: ${add.stderr.trim() || add.stdout.trim()}`);
     }
 
-    // Same "always commit as Loom, never push" guarantee as `create` — and
-    // just as fatal if it can't be established.
-    const ident = commitIdentity(opts.model ?? "");
-    for (const [key, value] of [
-      ["user.name", ident.name],
-      ["user.email", ident.email],
-      ["core.hooksPath", this.#hooksDir],
-    ] as const) {
-      const res = this.#git(["config", "--worktree", key, value], path);
-      if (!res.ok) {
-        try {
-          this.remove(path, { force: true });
-        } catch {
-          this.#git(["worktree", "prune"]); // best-effort cleanup
-        }
-        throw new Error(
-          `worktree config --worktree ${key} failed: ${res.stderr.trim() || res.stdout.trim()}`,
-        );
+    // Same "never push" guarantee as `create` — and just as fatal if it can't
+    // be established.
+    const res = this.#git(["config", "--worktree", "core.hooksPath", this.#hooksDir], path);
+    if (!res.ok) {
+      try {
+        this.remove(path, { force: true });
+      } catch {
+        this.#git(["worktree", "prune"]); // best-effort cleanup
       }
+      throw new Error(
+        `worktree config --worktree core.hooksPath failed: ${res.stderr.trim() || res.stdout.trim()}`,
+      );
     }
 
     this.#log.info("worktree reattached", { slug, branch, path });
@@ -355,24 +341,30 @@ export class WorktreeManager {
   }
 
   /**
-   * Re-point an existing worktree's commit identity — after a deliberate
-   * mid-session model switch, so later commits carry the model that actually
-   * runs. Best-effort: a failure keeps the previous identity (warn, don't tear
-   * the session down — {@link create} is fatal instead because a *fresh* tree
-   * must never run unconfigured).
+   * Drop the `Loom (<model>)` identity older versions pinned in a session
+   * tree's own config, so the user's commits there use their ordinary
+   * identity. Only values of {@link commitIdentity}'s shape are removed; the
+   * session's environment outranks them either way. Best-effort.
    */
-  setIdentity(path: string, model: string): void {
-    const ident = commitIdentity(model);
-    for (const [key, value] of [
-      ["user.name", ident.name],
-      ["user.email", ident.email],
+  clearLegacyIdentity(path: string): void {
+    // The main worktree's `--worktree` config is the user's own; only linked trees qualify.
+    const dirs = this.#gitOut(
+      ["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"],
+      path,
+    );
+    const [gitDir, commonDir] = dirs.split("\n");
+    if (!gitDir || !commonDir || gitDir === commonDir) return;
+    for (const [key, legacy] of [
+      ["user.name", /^Loom( \(.*\))?$/],
+      ["user.email", /^loom(\+.*)?@localhost$/],
     ] as const) {
-      const res = this.#git(["config", "--worktree", key, value], path);
-      if (!res.ok) {
+      const value = this.#git(["config", "--worktree", "--get", key], path);
+      if (!value.ok || !legacy.test(value.stdout.trim())) continue;
+      const res = this.#git(["config", "--worktree", "--unset-all", key], path);
+      if (!res.ok)
         this.#log.warn(
-          `worktree config --worktree ${key} failed: ${res.stderr.trim() || res.stdout.trim()}`,
+          `worktree config --worktree --unset-all ${key} failed: ${res.stderr.trim() || res.stdout.trim()}`,
         );
-      }
     }
   }
 
@@ -782,9 +774,15 @@ export class WorktreeManager {
    *
    * `base` is the base branch name and `baseHead` its short SHA (so a caller can
    * de-dupe repeated nudges for the same base commit); `behind` is how many
-   * base commits the branch was missing.
+   * base commits the branch was missing. `identity` is the session's
+   * `GIT_AUTHOR_*` / `GIT_COMMITTER_*`, so replayed and merge commits carry it.
    */
-  syncOntoBase(path: string, baseBranch: string | null, mode: "rebase" | "merge"): RebaseOutcome {
+  syncOntoBase(
+    path: string,
+    baseBranch: string | null,
+    mode: "rebase" | "merge",
+    identity: Record<string, string> = {},
+  ): RebaseOutcome {
     const base = baseBranch ?? this.#baseBranch;
     if (!base || !this.#git(["rev-parse", "--verify", "--quiet", base], path).ok) {
       return { outcome: "no-base" };
@@ -808,7 +806,12 @@ export class WorktreeManager {
       return { outcome: "dirty", ...info };
     }
 
-    const run = this.#git([mode, ...(mode === "merge" ? ["--no-edit"] : []), base], path, 90_000);
+    const run = this.#git(
+      [mode, ...(mode === "merge" ? ["--no-edit"] : []), base],
+      path,
+      90_000,
+      identity,
+    );
     if (run.ok) {
       this.invalidateFacts(path);
       const head = this.#gitOut(["rev-parse", "--short", "HEAD"], path);
@@ -891,11 +894,12 @@ export class WorktreeManager {
     }
   }
 
-  #git(args: string[], cwd?: string, timeout = 15_000): GitResult {
+  #git(args: string[], cwd?: string, timeout = 15_000, env?: Record<string, string>): GitResult {
     const res = spawnSync("git", ["-C", this.#hostOnly(cwd ?? this.#repoRoot), ...args], {
       encoding: "utf8",
       timeout,
       maxBuffer: GIT_MAX_BUFFER,
+      ...(env ? { env: { ...Deno.env.toObject(), ...env } } : {}),
     });
     const error = res.error ? (res.error.message ?? String(res.error)) : "";
     if (error) this.#log.warn("git spawn error", { args: args.slice(0, 2), error });

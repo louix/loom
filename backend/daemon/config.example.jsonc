@@ -7,6 +7,11 @@
   // Override per repo with an absolute, ~/ or repo-relative directory.
   "worktree_dir": "",
   "daemon": { "idle_shutdown_minutes": 30 },
+  // Session commits use your normal Git identity (Git config and GIT_AUTHOR_* /
+  // GIT_COMMITTER_* / EMAIL). name/email override both roles; author/committer
+  // override one. Literal {model}, {modelSlug} and {profile} are filled at launch.
+  // Signing settings and keys are never copied. Override per repo under repos[].git.
+  // "git": { "committer": { "name": "Loom ({model})", "email": "loom+{modelSlug}@localhost" } },
   // Include the event log as a second file on Alt+E (Vim/Neovim may need :wq!).
   "tui": { "include_event_log_in_editor": false },
   "providers": {
@@ -82,6 +87,7 @@
     // {
     //   "path": "~/dev/my-project",
     //   "worktree_dir": "/mnt/fast-drive/loom/my-project",
+    //   "git": { "author": { "email": "me@work.example" } },
     //   "session": {
     //     "auto_nix": true,
     //     "isolation": { "enabled": true, "network_presets": ["nix", "javascript"] },

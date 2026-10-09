@@ -81,6 +81,8 @@ export interface SessionVmOptions {
   /** Work in a private clone served by the Git relay instead of mounting the repository. */
   clone?: SessionClone;
   privateWorkspace?: string;
+  /** `GIT_AUTHOR_*` / `GIT_COMMITTER_*` for the guest worker and its shells. */
+  gitIdentity?: Record<string, string>;
 }
 export interface SessionVmStatus {
   phase: string;
@@ -253,6 +255,9 @@ const launchSessionVmOwned = async (
     ...(sessionDirectory ? { sessionDirectory } : {}),
     ...(options.mcpRelays ? { mcpRelays: options.mcpRelays } : {}),
     ...(git ? { git } : {}),
+    ...(options.gitIdentity && !options.preparationOnly
+      ? { gitIdentity: options.gitIdentity }
+      : {}),
     ...(privateWorkspace ? { privateWorkspace } : {}),
     ...(options.preparationOnly ? { preparationOnly: true } : {}),
     ...(options.repoRoot ? { repoBaseDirectory: repoBaseDirectory(options.repoRoot) } : {}),

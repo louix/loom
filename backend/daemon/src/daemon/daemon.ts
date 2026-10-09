@@ -102,6 +102,7 @@ import { SessionShells } from "./session-shell.ts";
 import { mkSessionQueue, type SessionQueue } from "./session-queue.ts";
 import { cheapModelFor, generateTitle } from "./titler.ts";
 import { WorktreeManager, commitIdentity, type RebaseOutcome } from "./worktrees.ts";
+import { resolveGitIdentity } from "../config/git-identity.ts";
 import { ProviderRegistry } from "./provider-registry.ts";
 import type { ConnectorManifest } from "@loom/core/connector";
 import {
@@ -384,6 +385,7 @@ export class Daemon {
             branch: row.branch,
             base: row.baseBranch ?? this.config.baseBranch,
             visible: checkout?.visibleRefs ?? [],
+            // Only the clone config's default; the session's resolved identity replaces it.
             identity: commitIdentity(row.model || row.provider),
             ...(checkout ? { maxPushBytes: checkout.maxPushBytes } : {}),
           };
@@ -816,13 +818,6 @@ export class Daemon {
       repoRoot: this.repoRoot,
       epoch: this.epoch,
     };
-  }
-
-  /** A clone's identity lives in its spec; the guest adopts it at the next turn end or start. */
-  #setCommitIdentity(row: SessionSnapshot, model: string): void {
-    if (!row.worktree) return;
-    if (row.checkout === "clone") void this.#publishCloneBranch(row.id).catch(() => {});
-    else this.#worktrees.setIdentity(row.worktree, model);
   }
 
   /**
@@ -1451,7 +1446,7 @@ export class Daemon {
           }
         } else if (o.wantWorktree) {
           try {
-            wt = this.#worktrees.create(id, { model: o.model || o.providerId });
+            wt = this.#worktrees.create(id);
           } catch (cause) {
             throw new RpcError(
               "worktree_error",
@@ -1618,7 +1613,7 @@ export class Daemon {
       this.#registry.setFields(id, { worktree });
     } else if (!worktree && row.branch && !row.inPlace) {
       try {
-        const wt = this.#worktrees.reattach(id, row.branch, { model: row.model || row.provider });
+        const wt = this.#worktrees.reattach(id, row.branch);
         worktree = wt.path;
         this.#registry.setFields(id, { worktree });
       } catch (err) {
@@ -1628,6 +1623,15 @@ export class Daemon {
           `could not restore the archived session's worktree: ${m}`,
         );
       }
+    } else if (
+      worktree &&
+      row.branch &&
+      !row.inPlace &&
+      row.checkout !== "clone" &&
+      worktree !== this.repoRoot
+    ) {
+      // Never the user's checkout: only a Loom-made session tree has its own config.
+      this.#worktrees.clearLegacyIdentity(worktree);
     }
     const providerRef = this.#registry.store.providerRef(id);
     if (!providerRef)
@@ -1855,7 +1859,12 @@ export class Daemon {
     if (!snap?.worktree || snap.checkout === "clone") return { outcome: null, nudged: false };
 
     const { mode } = this.config.autoRebase;
-    const res = this.#worktrees.syncOntoBase(snap.worktree, snap.baseBranch, mode);
+    const res = this.#worktrees.syncOntoBase(
+      snap.worktree,
+      snap.baseBranch,
+      mode,
+      this.#gitIdentity(snap),
+    );
     return this.#reportBaseSync(id, snap, mode, res, nudge);
   }
 
@@ -2031,12 +2040,28 @@ export class Daemon {
     });
     const running = await readRecovery(directory).catch(() => undefined);
     if (!running?.git || running.recovery.reaped) return;
+    // The launch-time identity stays: the guest worker's environment cannot change.
     await writeRecoveryFile(join(running.state, "private"), "checkout.json", {
       ...running.git.checkout,
       branch: row.branch,
       base,
-      identity: commitIdentity(row.model || row.provider),
     });
+  }
+
+  /** A session's `GIT_AUTHOR_*` / `GIT_COMMITTER_*`, for commits the daemon makes on its behalf. */
+  #gitIdentity(row: SessionSnapshot): Record<string, string> {
+    try {
+      return resolveGitIdentity(this.repoRoot, this.config.git, {
+        ...(row.model ? { model: row.model } : {}),
+        profile: row.provider,
+      });
+    } catch (err) {
+      this.#log.warn("could not resolve the session's Git identity", {
+        id: row.id,
+        err: String(err),
+      });
+      return {};
+    }
   }
 
   /**
@@ -3187,11 +3212,7 @@ export class Daemon {
             branch: made.branch,
             baseRef: inherited,
           };
-        } else
-          wt = this.#worktrees.create(newId, {
-            ...(baseRef ? { baseRef } : {}),
-            model: model || providerId,
-          });
+        } else wt = this.#worktrees.create(newId, baseRef ? { baseRef } : {});
       } catch (err) {
         const m = err instanceof Error ? err.message : String(err);
         throw new RpcError("worktree_error", `could not create the fork's worktree: ${m}`);
@@ -3539,9 +3560,8 @@ export class Daemon {
         if (this.#sessions.has(id) && !this.#sessions.isEnded(id))
           await this.#sessions.setModel(id, model);
         const snap = this.#registry.setFields(id, { model });
-        // Later commits carry the model that runs them — re-point the worktree
-        // identity after a deliberate switch.
-        this.#setCommitIdentity(row, model);
+        // Commit identity is fixed when the worker launches; a `{model}` Git
+        // identity template picks up this switch at the next start.
         // A deliberate switch is also "the last model used" for this provider.
         if (isClaudeId(row.provider) || this.config.providers.aisdk[row.provider]) {
           this.#providerDefaults.remember(row.provider, model);
@@ -3622,7 +3642,6 @@ export class Daemon {
             ...(model ? { model } : {}),
             ...(effort ? { effort } : {}),
           });
-          if (model) this.#setCommitIdentity(row, model);
           if (isClaudeId(row.provider) || this.config.providers.aisdk[row.provider]) {
             if (model) this.#providerDefaults.remember(row.provider, model);
             if (effort) this.#providerDefaults.rememberEffort(row.provider, effort);
@@ -3682,7 +3701,6 @@ export class Daemon {
         }
 
         const snap = this.#registry.setFields(id, { provider, model, effort });
-        this.#setCommitIdentity(row, model);
         this.#providerDefaults.remember(provider, model);
         if (effort) this.#providerDefaults.rememberEffort(provider, effort);
         this.#providerDefaults.rememberProvider(provider);

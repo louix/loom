@@ -38,6 +38,8 @@ export interface VmBinding {
       identity: { name: string; email: string };
     };
   };
+  /** Host-resolved `GIT_AUTHOR_*` / `GIT_COMMITTER_*` for the guest worker; values only. */
+  gitIdentity?: Record<string, string>;
 }
 export const sessionVmName = "loom-session";
 // Guest UID differs from host file ownership. All mounted repositories are
@@ -50,6 +52,20 @@ const guestGitEnvironment = [
   "-e",
   "GIT_CONFIG_VALUE_0=*",
 ];
+const GIT_IDENTITY_KEYS = [
+  "GIT_AUTHOR_NAME",
+  "GIT_AUTHOR_EMAIL",
+  "GIT_COMMITTER_NAME",
+  "GIT_COMMITTER_EMAIL",
+];
+/** The guest has no host Git config; commit identity arrives as these four values only. */
+const guestIdentityEnvironment = (b: Pick<VmBinding, "gitIdentity">) =>
+  Object.entries(b.gitIdentity ?? {}).flatMap(([key, value]) => {
+    // oxlint-disable-next-line no-control-regex -- identity values are single-line text.
+    if (!GIT_IDENTITY_KEYS.includes(key) || /[\x00-\x1f\x7f]/.test(value))
+      throw new Error("Invalid guest Git identity");
+    return ["-e", `${key}=${value}`];
+  });
 /** Keep the archive timestamp stable when smolvm hard-links its private cache.
  * Its copy fallback from the root-owned Nix store resets mtime, unnecessarily
  * invalidating the extracted image on every clone of a prepared disk.
@@ -272,6 +288,7 @@ export const vmExecArguments = (b: VmBinding) => [
   "-e",
   "XDG_CACHE_HOME=/tmp/loom-cache",
   ...guestGitEnvironment,
+  ...guestIdentityEnvironment(b),
   "-e",
   "PATH=/usr/bin:/bin",
   "--",

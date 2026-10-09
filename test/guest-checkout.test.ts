@@ -73,6 +73,48 @@ Deno.test("first start builds the clone beside provider files and publishes comm
   }
 });
 
+Deno.test("private clones commit and publish with the host-supplied identity", async () => {
+  const { f, options, path, spec } = await setup();
+  try {
+    await prepareCheckout(spec, options);
+    const commit = async (message: string, identity: Record<string, string>) => {
+      const env = { ...options.env, ...identity };
+      const done = await new Deno.Command("git", {
+        args: ["commit", "--allow-empty", "-qm", message],
+        cwd: path,
+        clearEnv: true,
+        env,
+      }).output();
+      assert.ok(done.success, new TextDecoder().decode(done.stderr));
+      await publishCheckout(spec, { ...options, env });
+      const object = await f.git(f.host, "cat-file", "-p", "loom/own");
+      const person = (role: string) =>
+        object.match(new RegExp(`^${role} (.+ <[^>]*>) \\d+ [+-]\\d{4}$`, "m"))?.[1];
+      return `${person("author")}|${person("committer")}`;
+    };
+    // The guest worker's environment outranks the clone's config identity.
+    assert.equal(
+      await commit("host identity", {
+        GIT_AUTHOR_NAME: "Host Author",
+        GIT_AUTHOR_EMAIL: "author@example.com",
+        GIT_COMMITTER_NAME: "Host Committer",
+        GIT_COMMITTER_EMAIL: "committer@example.com",
+      }),
+      "Host Author <author@example.com>|Host Committer <committer@example.com>",
+    );
+    // A committer-only identity leaves the author to the clone's configured default.
+    assert.equal(
+      await commit("committer only", {
+        GIT_COMMITTER_NAME: "Host Committer",
+        GIT_COMMITTER_EMAIL: "committer@example.com",
+      }),
+      `${identity.name} <${identity.email}>|Host Committer <committer@example.com>`,
+    );
+  } finally {
+    await f.close();
+  }
+});
+
 Deno.test("resume keeps unpublished work and repairs the remote", async () => {
   const { f, options, path, spec, commit } = await setup();
   try {

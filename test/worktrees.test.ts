@@ -54,11 +54,11 @@ test("slugify keeps it short, kebab, and never empty", () => {
   assert.equal(slugify("one two three four five six seven").split("-").length, 5);
 });
 
-test("create makes a worktree + branch off base, with identity and a push block", () => {
+test("create makes a worktree + branch off base with a push block and no pinned identity", () => {
   const { root, cleanup } = repo();
   try {
     const m = mgr(root);
-    const wt = m.create(fakeId("aaaaaaaa"), { model: "claude-sonnet-5" });
+    const wt = m.create(fakeId("aaaaaaaa"));
     assert.equal(wt.slug, "aaaaaaaa"); // dir is named after the session id
     assert.equal(wt.branch, "loom/aaaaaaaa"); // branch is named after the session id
     assert.equal(wt.baseRef, "main");
@@ -66,13 +66,14 @@ test("create makes a worktree + branch off base, with identity and a push block"
 
     const cfg = (path: string, k: string) =>
       execFileSync("git", ["-C", path, "config", "--worktree", k], { encoding: "utf8" }).trim();
-    assert.equal(cfg(wt.path, "user.name"), "Loom (claude-sonnet-5)");
-    assert.equal(cfg(wt.path, "user.email"), "loom+claude-sonnet-5@localhost");
     assert.equal(cfg(wt.path, "core.hooksPath"), Deno.realPathSync(join(root, ".loom", "hooks")));
-    // no model → the bare fallback identity
-    const bare = m.create(fakeId("bbbbbbbb"));
-    assert.equal(cfg(bare.path, "user.name"), "Loom");
-    assert.equal(cfg(bare.path, "user.email"), "loom@localhost");
+    // Identity is the session environment's; the user's own commits keep theirs.
+    assert.throws(() => cfg(wt.path, "user.name"));
+    assert.throws(() => cfg(wt.path, "user.email"));
+    assert.equal(
+      execFileSync("git", ["-C", wt.path, "config", "user.name"], { encoding: "utf8" }).trim(),
+      "t",
+    );
 
     const hook = join(root, ".loom", "hooks", "pre-push");
     assert.ok(existsSync(hook));
@@ -86,20 +87,29 @@ test("create makes a worktree + branch off base, with identity and a push block"
   }
 });
 
-test("setIdentity re-points the commit identity after a model switch", () => {
+test("clearLegacyIdentity drops only the old Loom identity, and only in a session tree", () => {
   const { root, cleanup } = repo();
   try {
     const m = mgr(root);
-    const wt = m.create(fakeId("aaaaaaaa"), { model: "claude-sonnet-5" });
-    m.setIdentity(wt.path, "claude-haiku-4-5-20251001");
-    const cfg = (k: string) =>
-      execFileSync("git", ["-C", wt.path, "config", "--worktree", k], { encoding: "utf8" }).trim();
-    assert.equal(cfg("user.name"), "Loom (claude-haiku-4-5-20251001)");
-    assert.equal(cfg("user.email"), "loom+claude-haiku-4-5-20251001@localhost");
-    // The name keeps the model id verbatim; the address is flattened for git.
-    m.setIdentity(wt.path, "openai/gpt-5:free");
-    assert.equal(cfg("user.name"), "Loom (openai/gpt-5:free)");
-    assert.equal(cfg("user.email"), "loom+openai-gpt-5-free@localhost");
+    const wt = m.create(fakeId("aaaaaaaa"));
+    const git = (path: string, ...a: string[]) =>
+      execFileSync("git", ["-C", path, ...a], { encoding: "utf8" }).trim();
+    // What older versions pinned in every session tree.
+    git(wt.path, "config", "--worktree", "user.name", "Loom (openai/gpt-5:free)");
+    git(wt.path, "config", "--worktree", "user.email", "loom+openai-gpt-5-free@localhost");
+    m.clearLegacyIdentity(wt.path);
+    assert.throws(() => git(wt.path, "config", "--worktree", "user.name"));
+    assert.throws(() => git(wt.path, "config", "--worktree", "user.email"));
+    assert.equal(git(wt.path, "config", "user.name"), "t");
+    assert.ok(git(wt.path, "config", "core.hooksPath").endsWith(join(".loom", "hooks")));
+    // A user's deliberate per-tree identity is not Loom's to remove.
+    git(wt.path, "config", "--worktree", "user.name", "Someone");
+    m.clearLegacyIdentity(wt.path);
+    assert.equal(git(wt.path, "config", "--worktree", "user.name"), "Someone");
+    // The main checkout's per-worktree config is the user's own.
+    git(root, "config", "--worktree", "user.name", "Loom");
+    m.clearLegacyIdentity(root);
+    assert.equal(git(root, "config", "--worktree", "user.name"), "Loom");
   } finally {
     if (existsSync(root)) cleanup();
   }
@@ -288,6 +298,40 @@ test("syncOntoBase: replays the branch onto an advanced base", () => {
     assert.ok(existsSync(join(wt.path, "base.txt")));
     assert.ok(existsSync(join(wt.path, "branch.txt")));
     assert.equal(mgr(root).facts(wt.path, "main")?.behindBase, 0);
+  } finally {
+    cleanup();
+  }
+});
+
+test("syncOntoBase: replayed and merge commits carry the session's identity", () => {
+  const { root, cleanup } = repo();
+  try {
+    const m = mgr(root);
+    const identity = {
+      GIT_AUTHOR_NAME: "Session Author",
+      GIT_AUTHOR_EMAIL: "author@example.com",
+      GIT_COMMITTER_NAME: "Session Committer",
+      GIT_COMMITTER_EMAIL: "committer@example.com",
+    };
+    const log = (path: string, rev: string) =>
+      execFileSync("git", ["-C", path, "log", "-1", "--format=%an <%ae>|%cn <%ce>", rev], {
+        encoding: "utf8",
+      }).trim();
+    for (const mode of ["rebase", "merge"] as const) {
+      const wt = m.create(fakeId(mode === "rebase" ? "aaaaaaaa" : "bbbbbbbb"));
+      writeFileSync(join(wt.path, `${mode}.txt`), "mine");
+      execFileSync("git", ["-C", wt.path, "add", "-A"]);
+      execFileSync("git", ["-C", wt.path, "commit", "-q", "-m", "branch work"]);
+      advanceMain(root, `${mode}-base.txt`, "theirs");
+      assert.equal(m.syncOntoBase(wt.path, "main", mode, identity).outcome, "updated");
+      // A rebase keeps the original author; the merge commit is wholly the session's.
+      assert.equal(
+        log(wt.path, "HEAD"),
+        mode === "rebase"
+          ? "t <t@example.com>|Session Committer <committer@example.com>"
+          : "Session Author <author@example.com>|Session Committer <committer@example.com>",
+      );
+    }
   } finally {
     cleanup();
   }
@@ -536,7 +580,8 @@ for (const layout of [
       writeFileSync(join(wt.path, "created.txt"), "session work\n");
       git(wt.path, "add", "created.txt");
       git(wt.path, "-c", "commit.gpgsign=false", "commit", "-qm", "session commit");
-      assert.equal(git(wt.path, "log", "-1", "--format=%an"), "Loom");
+      // No pinned tree identity: the repository's own applies outside a session.
+      assert.equal(git(wt.path, "log", "-1", "--format=%an"), "t");
       m.remove(wt.path);
       const restored = mgr(source).reattach(fakeId("dddddddd"), wt.branch);
       assert.ok(existsSync(join(restored.path, "created.txt")));
@@ -651,7 +696,7 @@ test("host Git refuses to open a session clone, even one that redirects Git", as
       () => m.pendingGitOp(clone),
       () => m.restoreTo(clone, "HEAD"),
       () => m.syncOntoBase(clone, "main", "rebase"),
-      () => m.setIdentity(clone, "model"),
+      () => m.clearLegacyIdentity(clone),
       () => m.remove(clone, { force: true }),
       () => m.copyChanges(clone, root),
     ])

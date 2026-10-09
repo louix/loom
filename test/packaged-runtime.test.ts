@@ -134,6 +134,32 @@ test("manifest cannot grant authority; VM mount and environment policies are fix
   assert.deepEqual(guestExec.slice(-3), [manifest.entrypoint, "$(touch /tmp/unsafe)", "a b"]);
   assert(guestExec[guestExec.indexOf("-c") + 1]!.includes("mount -t erofs"));
   assert(createArgs.includes(`${b.artifact}:/run/loom/code:ro`));
+  // Commit identity reaches the guest worker as values only, never as Git config.
+  const identity = { GIT_AUTHOR_NAME: "A <b> c", GIT_COMMITTER_EMAIL: "c@example.com" };
+  const identityExec = vmExecArguments({ ...guestBinding, gitIdentity: identity });
+  assert.deepEqual(
+    identityExec.slice(0, identityExec.indexOf("--")).filter((a, i, all) => all[i - 1] === "-e"),
+    [
+      "HOME=/tmp/loom-home",
+      "XDG_CACHE_HOME=/tmp/loom-cache",
+      "GIT_CONFIG_COUNT=1",
+      "GIT_CONFIG_KEY_0=safe.directory",
+      "GIT_CONFIG_VALUE_0=*",
+      "GIT_AUTHOR_NAME=A <b> c",
+      "GIT_COMMITTER_EMAIL=c@example.com",
+      "PATH=/usr/bin:/bin",
+    ],
+  );
+  assert(
+    !vmCreateArguments({ ...guestBinding, gitIdentity: identity }).includes(
+      "GIT_AUTHOR_NAME=A <b> c",
+    ),
+  );
+  for (const gitIdentity of [{ GIT_CONFIG_GLOBAL: "/x" }, { GIT_AUTHOR_NAME: "a\nb" }])
+    assert.throws(
+      () => vmExecArguments({ ...guestBinding, gitIdentity }),
+      /Invalid guest Git identity/,
+    );
   assert.throws(() => vmArguments({ ...b, writableNix: true }), /requires a session runtime/);
   assert.deepEqual(Object.keys(vmEnvironment(b.state)).sort(), [
     "HOME",

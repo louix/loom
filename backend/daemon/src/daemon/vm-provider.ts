@@ -22,6 +22,7 @@ import { createSessionVmLauncher, sessionVmGeneration } from "./session-vm-worke
 import { sessionVmDirectory, stoppedSessionVm } from "./session-vm-state.ts";
 import { RemoteWorkerSession } from "./worker-provider.ts";
 import { mockLaunchSpec } from "./worker-launch.ts";
+import { sessionGitIdentity, type SessionGitIdentity } from "../config/git-identity.ts";
 const executable = async (name: string) => {
   for (const path of name.includes("/")
     ? [resolve(name)]
@@ -145,7 +146,17 @@ export const withVmSessions = async <T extends AgentProvider>(
           );
         }
       }
-      const clone = ctx.vmLifecycle?.clone?.(input.sessionId);
+      const gitIdentity = (input as SessionGitIdentity)[sessionGitIdentity];
+      const lifecycleClone = ctx.vmLifecycle?.clone?.(input.sessionId);
+      // The guest worker's environment carries the exact identity; the clone's own
+      // config only needs a sensible default for anything Git could not resolve.
+      const clone = lifecycleClone && {
+        ...lifecycleClone,
+        identity: {
+          name: gitIdentity?.GIT_AUTHOR_NAME ?? lifecycleClone.identity.name,
+          email: gitIdentity?.GIT_AUTHOR_EMAIL ?? lifecycleClone.identity.email,
+        },
+      };
       const guestCwd = clone ? workspaceMount(input.cwd).checkout : input.cwd;
       const relays: Array<{ port: number; guestPort: number }> = [];
       const servers = (input.mcpServers ?? []).map((server): McpServerHandle => {
@@ -188,9 +199,8 @@ export const withVmSessions = async <T extends AgentProvider>(
           sessionDirectory,
           repoRoot: vm.repoRoot,
           mcpRelays: relays,
-          ...(ctx.vmLifecycle?.clone?.(input.sessionId)
-            ? { clone: ctx.vmLifecycle.clone(input.sessionId)! }
-            : {}),
+          ...(clone ? { clone } : {}),
+          ...(gitIdentity ? { gitIdentity } : {}),
           ...(vm.extraAllowedHosts ? { extraAllowedHosts: vm.extraAllowedHosts } : {}),
           ...(vm.environment ? { environment: vm.environment } : {}),
           ...(owner ? { authOwner: owner } : { auth }),

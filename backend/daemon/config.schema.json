@@ -546,6 +546,63 @@
       "default": ".loom/loom.db",
       "type": "string"
     },
+    "git": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "pattern": "^[^\\x00-\\x1f\\x7f<>]+$"
+        },
+        "email": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "pattern": "^[^\\x00-\\x1f\\x7f<>]+$"
+        },
+        "author": {
+          "description": "Overrides name/email for the commit author only.",
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200,
+              "pattern": "^[^\\x00-\\x1f\\x7f<>]+$"
+            },
+            "email": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200,
+              "pattern": "^[^\\x00-\\x1f\\x7f<>]+$"
+            }
+          },
+          "additionalProperties": false
+        },
+        "committer": {
+          "description": "Overrides name/email for the committer only.",
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200,
+              "pattern": "^[^\\x00-\\x1f\\x7f<>]+$"
+            },
+            "email": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200,
+              "pattern": "^[^\\x00-\\x1f\\x7f<>]+$"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false,
+      "description": "Session commit identity. Omit to use your normal Git identity. name/email set both roles; author/committer override one role. Values may use {model}, {modelSlug} and {profile}."
+    },
     "default_provider": {
       "default": "claude",
       "type": "string"
@@ -1868,6 +1925,63 @@
           "db": {
             "default": ".loom/loom.db",
             "type": "string"
+          },
+          "git": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[^\\x00-\\x1f\\x7f<>]+$"
+              },
+              "email": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[^\\x00-\\x1f\\x7f<>]+$"
+              },
+              "author": {
+                "description": "Overrides name/email for the commit author only.",
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200,
+                    "pattern": "^[^\\x00-\\x1f\\x7f<>]+$"
+                  },
+                  "email": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200,
+                    "pattern": "^[^\\x00-\\x1f\\x7f<>]+$"
+                  }
+                },
+                "additionalProperties": false
+              },
+              "committer": {
+                "description": "Overrides name/email for the committer only.",
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200,
+                    "pattern": "^[^\\x00-\\x1f\\x7f<>]+$"
+                  },
+                  "email": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200,
+                    "pattern": "^[^\\x00-\\x1f\\x7f<>]+$"
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false,
+            "description": "Session commit identity. Omit to use your normal Git identity. name/email set both roles; author/committer override one role. Values may use {model}, {modelSlug} and {profile}."
           },
           "default_provider": {
             "default": "claude",

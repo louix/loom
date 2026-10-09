@@ -15,6 +15,8 @@ try {
     smolvm,
     auth: {},
     providerHosts: [],
+    // An author-only session identity; the committer falls through to Git config.
+    gitIdentity: { GIT_AUTHOR_NAME: "VM Author", GIT_AUTHOR_EMAIL: "author@example.com" },
   });
   try {
     const { session } = await RemoteWorkerSession.connect(
@@ -74,7 +76,10 @@ git -C /storage/dependency.git rev-parse HEAD > dependency-head`,
         ],
       });
       assert.equal((await Deno.readTextFile(f.workspace + "/git-root")).trim(), f.workspace);
-      assert.equal(await f.git("-C", f.workspace, "log", "-1", "--format=%s"), "Commit from VM");
+      assert.equal(
+        await f.git("-C", f.workspace, "log", "-1", "--format=%s|%an <%ae>|%cn <%ce>"),
+        "Commit from VM|VM Author <author@example.com>|VM test <vm@example.invalid>",
+      );
       assert.equal(
         (await Deno.readTextFile(f.workspace + "/dependency-head")).trim(),
         await f.git("-C", f.workspace, "rev-parse", "HEAD"),

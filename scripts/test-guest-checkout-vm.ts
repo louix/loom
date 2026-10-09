@@ -10,6 +10,13 @@ const [artifact, smolvm] = Deno.args;
 assert(artifact && smolvm, "Pass rebuilt session runtime and smolvm");
 const f = await gitFixture();
 const identity = { name: "Loom (vm-test)", email: "loom+vm-test@localhost" };
+// The host-resolved session identity outranks the clone's configured default.
+const gitIdentity = {
+  GIT_AUTHOR_NAME: "VM Author",
+  GIT_AUTHOR_EMAIL: "author@example.com",
+  GIT_COMMITTER_NAME: "VM Committer",
+  GIT_COMMITTER_EMAIL: "committer@example.com",
+};
 try {
   // The fixture's linked worktree stands in for a sibling session the guest must not see.
   await Deno.writeTextFile(join(f.workspace, "sibling.txt"), "sibling\n");
@@ -30,6 +37,7 @@ try {
     auth: {},
     providerHosts: [],
     clone: { branch: "loom/livetest", base: "main", identity },
+    gitIdentity,
   });
   try {
     const { session } = await RemoteWorkerSession.connect(
@@ -88,8 +96,8 @@ echo enforced > policy`,
       await assert.rejects(Deno.stat(join(checkout, "repo-visible")), Deno.errors.NotFound);
       // Host assertions read host refs only; host Git never opens the clone.
       assert.equal(
-        await f.git("-C", f.repo, "log", "-1", "--format=%s|%an|%ae", "loom/livetest"),
-        `Commit from VM|${identity.name}|${identity.email}`,
+        await f.git("-C", f.repo, "log", "-1", "--format=%s|%an <%ae>|%cn <%ce>", "loom/livetest"),
+        "Commit from VM|VM Author <author@example.com>|VM Committer <committer@example.com>",
       );
       assert.equal(await f.git("-C", f.repo, "rev-parse", "main"), main);
       assert.equal(await f.git("-C", f.repo, "rev-parse", "session"), sibling);

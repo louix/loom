@@ -6,6 +6,7 @@ import {
   localSessionEnvironment,
   type LocalSessionEnvironment,
 } from "./local-environment.ts";
+import { sessionGitIdentity, type SessionGitIdentity } from "../config/git-identity.ts";
 import type { TranscriptStore } from "../../../../core/src/transcript.ts";
 import type { HarnessEvent } from "../../../../core/src/events.ts";
 import type {
@@ -469,11 +470,14 @@ export class WorkerProvider implements AgentProvider {
       const opts = command.args[0];
       const role = command.method === "create" && command.args[0].oneShot ? "title" : "session";
       const spec = this.spec(opts.cwd, role);
-      if (role === "session")
+      if (role === "session") {
         applyLocalSessionEnvironment(
           spec,
           (opts as LocalSessionEnvironment)[localSessionEnvironment],
         );
+        // Applied last: an explicit Loom identity outranks any project shell's exports.
+        Object.assign(spec.env, (opts as SessionGitIdentity)[sessionGitIdentity]);
+      }
       // Only assigned MCP loopback endpoints are added to this session's grant.
       for (const server of opts.mcpServers ?? []) {
         if (server.spec.transport === "http")

@@ -37,8 +37,9 @@ export const commitInWorktree = (
     };
   }
 
-  // Never sign: these are automated commits under Loom's own identity, and a
-  // machine-wide `commit.gpgsign = true` would block on a passphrase prompt.
+  // Never sign: these are automated commits, and a machine-wide
+  // `commit.gpgsign = true` would block on a passphrase prompt. Identity comes
+  // from the session's inherited `GIT_AUTHOR_*` / `GIT_COMMITTER_*`.
   const co = git(cwd, ["-c", "commit.gpgsign=false", "commit", "-m", msg]);
   if (!co.ok) return { ok: false, text: `git commit failed: ${co.err || co.out}` };
 

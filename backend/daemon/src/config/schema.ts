@@ -11,6 +11,7 @@ import {
 } from "../../../../runtime/src/session-vm/network-policy.ts";
 import { gitVisibleRefsSchema } from "../../../../runtime/src/session-vm/git-relay.ts";
 import type { HookEvent, LoomConfig } from "./config.ts";
+import { gitIdentitySchema } from "./git-identity.ts";
 
 const record = (v: unknown): Record<string, unknown> =>
   v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
@@ -249,6 +250,7 @@ export const createConfigSchema = (d: LoomConfig, events: readonly HookEvent[]) 
       "Exact worktree directory (absolute, ~/ or relative to the repository). Empty uses $XDG_DATA_HOME/loom/worktrees/<repo>-<hash>, defaulting to ~/.local/share. Existing sessions keep their paths. Restart to apply.",
     ),
     db: text(d.db),
+    git: gitIdentitySchema.optional(),
     default_provider: text(d.defaultProvider),
     daemon: section({ idle_shutdown_minutes: nonNegative(d.daemon.idleShutdownMinutes) }),
     tui: section({

@@ -20,6 +20,7 @@ import { isClaudeId } from "@loom/core/provider-id";
 import type { McpCapability } from "@loom/core/types";
 import { createConfigSchema, providerSchema, parseSettings } from "./schema.ts";
 import { userConfigPath } from "../config-path.ts";
+import type { GitIdentityConfig } from "./git-identity.ts";
 import type { PriceRow } from "./pricing.ts";
 import { resolveToolSelection, toolExecutionError } from "./tool-selection.ts";
 
@@ -280,6 +281,11 @@ export interface LoomConfig {
    */
   commitReminder: { enabled: boolean };
   db: string;
+  /**
+   * Session commit identity overrides; absent uses the user's ordinary Git
+   * identity. A matching `repos[].git` merges over the global `git` field by field.
+   */
+  git?: GitIdentityConfig;
   /** Provider id new sessions use when the client doesn't name one. */
   defaultProvider: string;
   daemon: {
@@ -749,6 +755,7 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
     autoResume: settings.session.auto_resume,
     commitReminder: settings.session.commit_reminder,
     db: settings.db,
+    ...(settings.git ? { git: settings.git } : {}),
     defaultProvider,
     daemon: {
       idleShutdownMinutes: settings.daemon.idle_shutdown_minutes,
