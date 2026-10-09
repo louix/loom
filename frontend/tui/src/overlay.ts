@@ -137,6 +137,22 @@ export interface PlanReview {
   impl: { provider: string; model: string | null; effort: string | null } | null;
 }
 
+/**
+ * A fork's destination as the fork wizard settles it, step by step: provider,
+ * then how the conversation crosses (`native` history only on the source's
+ * own provider), the model and effort for a handoff, then whether the
+ * workspace is copied or shared. Null is "not chosen yet".
+ */
+export interface ForkPlan {
+  sessionId: string;
+  provider: string | null;
+  history: "native" | "handoff" | null;
+  model: string | null;
+  effort: string | null;
+  workspace: "copy" | "share" | null;
+  isolation: "vm" | "local";
+}
+
 // ---------------------------------------------------------------------------
 // confirmation
 // ---------------------------------------------------------------------------
@@ -148,7 +164,7 @@ export type Confirm = {
 } & (
   | { action: "restart" | "quitAll" | "gc" }
   | { action: "archiveSession"; sessionId: string }
-  | { action: "forkSession"; sessionId: string; isolation: "vm" | "local" }
+  | { action: "forkSession"; fork: ForkPlan }
   | {
       action: "deleteSession";
       sessionId: string;
@@ -177,7 +193,15 @@ export interface PickItem {
 }
 
 /** Which list the picker is showing. */
-export type PickerStep = "provider" | "model" | "effort" | "undo" | "command" | "repository";
+export type PickerStep =
+  | "provider"
+  | "model"
+  | "effort"
+  | "forkHistory"
+  | "forkWorkspace"
+  | "undo"
+  | "command"
+  | "repository";
 
 /**
  * What the picker is choosing *for*: where a pick lands, and what to put back
@@ -196,6 +220,9 @@ export type PickerDest =
   | { t: "planImpl"; plan: PlanReview }
   /** `u` — rewind to a turn on this session. */
   | { t: "undo"; sessionId: string }
+  /** `F` — the fork wizard; its provider / model / effort steps are the
+   *  shared ones, staged onto the plan rather than applied. */
+  | { t: "fork"; fork: ForkPlan }
   /** The command palette, bound to the session selected when it opened; it
    *  resolves in the keymap, not here. */
   | { t: "command"; target: string | null }
@@ -370,6 +397,8 @@ export const overlayTarget = (
         case "session":
         case "undo":
           return { sessionId: o.picker.dest.sessionId, requestId: null };
+        case "fork":
+          return { sessionId: o.picker.dest.fork.sessionId, requestId: null };
         default:
           return none;
       }

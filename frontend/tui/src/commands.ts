@@ -22,6 +22,7 @@ import type { KeyLike } from "./editor.ts";
 import type { Outboxes } from "./composer.ts";
 import { liveQNav, questionsOf } from "./interactions.ts";
 import { nextThemeMode } from "./theme.ts";
+import { startingForkOf } from "./fork-flow.ts";
 import {
   childrenOf,
   defaultProviderId,
@@ -159,7 +160,8 @@ const COMMANDS = {
     scope: "session",
     keys: "F",
     label: "fork",
-    description: "Start a new session from this one's history.",
+    description:
+      "Start a new session from this one: native history or a portable handoff to any provider, in a copied or shared workspace.",
   },
   rebase: {
     scope: "session",
@@ -571,10 +573,14 @@ const sessionAvailability = (
         ),
       };
     case "fork":
+      // A fork of this session still starting: the command cancels it.
+      if (startingForkOf(ctx, s)) return { label: "cancel fork" };
       return {
         disabled: first(
           settled,
           s.inPlace && s.resumable !== false && "An in-place session cannot be forked.",
+          !["idle", "interrupted", "done", "error"].includes(kind) &&
+            "Stop the turn before forking; a fork copies a settled conversation.",
         ),
         // A read-only session continues only through a fork: say so up front.
         bar: s.resumable === false,

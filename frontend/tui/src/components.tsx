@@ -54,6 +54,7 @@ import {
 } from "./model.ts";
 import { parseAskUserQuestions, type AskUserQuestionItem } from "./interactions.ts";
 import { pendingMode } from "./mode-control.ts";
+import { forkIsolationLocked } from "./fork-flow.ts";
 import {
   openPrompt,
   pickerCurrent,
@@ -438,6 +439,12 @@ const BG_KIND_GLYPH: Record<string, string> = {
   other: "•",
 };
 
+/** How a fork carried its parent's conversation, as DETAIL's lineage line says it. */
+const FORK_KIND = {
+  native: " · native history",
+  handoff: " · handoff (summary, not native history)",
+} as const;
+
 /** Fleet-row glyph for a child — its task kind, or the sub-agent fork. */
 const childGlyph = (c: FleetChild): string =>
   c.source === "sub" ? "⑂" : (BG_KIND_GLYPH[c.taskKind ?? "other"] ?? "•");
@@ -545,8 +552,12 @@ export const detailLayout = (
     );
     if (account) addLine(account);
     addLine(truncate(titleLine(s.title), w), "text");
-    if (s.parentId && s.forkTurn != null)
-      addLine(`⑂ forked from ${shortId(s.parentId)} @ turn ${s.forkTurn}`);
+    if (s.parentId && s.forkTurn != null) {
+      const how = s.forkKind ? FORK_KIND[s.forkKind] : "";
+      addLine(truncate(`⑂ forked from ${shortId(s.parentId)} @ turn ${s.forkTurn}${how}`, w));
+    }
+    if (s.worktreeOwner)
+      addLine(truncate(`⑂ shares the worktree of ${shortId(s.worktreeOwner)}`, w));
     space();
     let status = `${look!.glyph} ${look!.label}${statusDetailSuffix(s)}`;
     if (s.stopFailed) status = "⚠ stop failed — press i to retry";
@@ -1318,7 +1329,10 @@ export const Confirm = ({
     );
   }
   const compact = height !== undefined && height < 12;
-  const body = wrapText(confirm.body ?? "", Math.max(1, width - 6));
+  // A body may hold several lines (the fork summary); each wraps on its own.
+  const body = (confirm.body ?? "")
+    .split("\n")
+    .flatMap((line) => wrapText(line, Math.max(1, width - 6)));
   const capacity = height === undefined ? body.length : Math.max(0, height - (compact ? 5 : 7));
   const shownBody = body.slice(0, capacity);
   if (body.length > capacity && shownBody.length) {
@@ -1327,7 +1341,9 @@ export const Confirm = ({
   let actionText = "quit and stop the daemon";
   if (confirm.action === "restart") actionText = "restart the daemon";
   else if (confirm.action === "forkSession")
-    actionText = `fork with ${confirm.isolation === "vm" ? "VM" : "Local"} isolation (i to change)`;
+    actionText = `fork with ${confirm.fork.isolation === "vm" ? "VM" : "Local"} isolation${
+      forkIsolationLocked(confirm.fork) ? "" : " (i to change)"
+    }`;
   else if (confirm.action === "gc") actionText = "remove the worktrees";
   return (
     <Panel

@@ -38,6 +38,8 @@ interface SessionRow {
   provider_ref: string | null;
   title_locked: number;
   fork_turn: number | null;
+  fork_kind: "native" | "handoff" | null;
+  worktree_owner: string | null;
   created_at: number;
   updated_at: number;
   turn_completed_at: number | null;
@@ -243,6 +245,9 @@ export class SessionStore {
       checkout: "worktree" | "clone" | null;
       providerRef: string | null;
       forkTurn: number | null;
+      forkKind: "native" | "handoff" | null;
+      forkHandoff: string | null;
+      worktreeOwner: string | null;
     }>,
   ): void {
     const cols: string[] = [];
@@ -262,6 +267,9 @@ export class SessionStore {
       checkout: "checkout",
       providerRef: "provider_ref",
       forkTurn: "fork_turn",
+      forkKind: "fork_kind",
+      forkHandoff: "fork_handoff",
+      worktreeOwner: "worktree_owner",
     };
     for (const [k, col] of Object.entries(map)) {
       if (k in fields) {
@@ -604,6 +612,14 @@ export class SessionStore {
     }
   }
 
+  /** The portable handoff a `handoff` fork started from (JSON), or null. */
+  forkHandoff(id: string): string | null {
+    const row = this.#db.prepare("SELECT fork_handoff FROM sessions WHERE id = ?").get(id) as
+      | { fork_handoff: string | null }
+      | undefined;
+    return row?.fork_handoff ?? null;
+  }
+
   /** Which backend owns this session's history (`""` = the provider's own
    *  native thread; `"aisdk"` = a legacy, pre-cutover ChatGPT transcript).
    *  Immutable after create — see migration 20. */
@@ -902,6 +918,8 @@ const toSnapshot = (row: SessionRow, usage: UsageRow | undefined): SessionSnapsh
     id: row.id,
     parentId: row.parent_id,
     forkTurn: row.fork_turn,
+    ...(row.fork_kind ? { forkKind: row.fork_kind } : {}),
+    ...(row.worktree_owner ? { worktreeOwner: row.worktree_owner } : {}),
     provider: row.provider,
     model: row.model,
     effort: row.effort,

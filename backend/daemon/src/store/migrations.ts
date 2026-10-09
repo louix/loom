@@ -383,4 +383,14 @@ export const MIGRATIONS: string[] = [
   // `ProviderTotal`), so a resume can seed its baseline when the provider
   // cannot report what it restored. NULL until a provider reports one.
   `ALTER TABLE usage ADD COLUMN provider_total TEXT;`,
+  // 30 — fork lineage beyond `parent_id` / `fork_turn`: how the fork carried
+  // its parent's conversation (`native` provider history, or a portable
+  // `handoff`), the handoff itself (JSON, so a fork of a handoff fork carries
+  // the original messages rather than its opening prompt), and the session
+  // whose worktree a sharing fork works in. NULL on older rows.
+  /* sql */ `
+  ALTER TABLE sessions ADD COLUMN fork_kind TEXT CHECK (fork_kind IN ('native', 'handoff'));
+  ALTER TABLE sessions ADD COLUMN fork_handoff TEXT;
+  ALTER TABLE sessions ADD COLUMN worktree_owner TEXT;
+  `,
 ];

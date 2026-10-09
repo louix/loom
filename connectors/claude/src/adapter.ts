@@ -245,6 +245,42 @@ export const __setClaudeSdk = (partial: Partial<typeof sdk>): void => {
  */
 let forkLock: Promise<unknown> = Promise.resolve();
 
+/**
+ * Copy Claude session `sourceId` into a new session file (through
+ * `upToMessageId`, inclusive, when given) and return the copy's id. Undo and
+ * native history forks both use it. `forkSession` reads the transcript from
+ * `CLAUDE_CONFIG_DIR` in-process (not a subprocess), so this points Deno's
+ * process-wide env at the profile dir for the call. That global mutation is
+ * held across an `await`, so every fork in the process is serialised through
+ * `forkLock` — two concurrent multi-profile forks would otherwise interleave
+ * and fork from the wrong profile (C4).
+ *
+ * The copy carries the conversation chain only, not the source's `cost-state`
+ * stamp, so a resume of it starts its own ledger.
+ */
+const forkClaudeSession = (
+  configDir: string | undefined,
+  sourceId: string,
+  upToMessageId?: string,
+): Promise<string> => {
+  const run = forkLock.then(async () => {
+    const key = "CLAUDE_CONFIG_DIR";
+    const prev = Deno.env.get(key);
+    if (configDir) Deno.env.set(key, expandTilde(configDir));
+    try {
+      const { sessionId } = await sdk.forkSession(sourceId, upToMessageId ? { upToMessageId } : {});
+      return sessionId;
+    } finally {
+      if (configDir) {
+        if (prev === undefined) Deno.env.delete(key);
+        else Deno.env.set(key, prev);
+      }
+    }
+  });
+  forkLock = run.catch(() => {});
+  return run;
+};
+
 /** Module logger for provider-level work that isn't tied to a session. */
 const log = makeLogger("claude");
 
@@ -1336,34 +1372,14 @@ class ClaudeSession implements AgentSession {
     }
   }
 
-  /**
-   * `forkSession` reads the transcript from `CLAUDE_CONFIG_DIR` in-process (not
-   * a subprocess), so `#forkTruncatedUnlocked` points Deno's process-wide env at this
-   * session's profile dir for the call. That global mutation is held across an
-   * `await`, so every fork in the process is serialised through `forkLock` —
-   * two concurrent multi-profile undos would otherwise interleave and fork from
-   * the wrong profile (C4).
-   */
   #forkTruncated(sourceId: string, upToMessageId: string): Promise<string> {
-    const run = forkLock.then(() => this.#forkTruncatedUnlocked(sourceId, upToMessageId));
-    forkLock = run.catch(() => {});
-    return run;
+    return forkClaudeSession(this.#startExtra.configDir, sourceId, upToMessageId);
   }
 
-  async #forkTruncatedUnlocked(sourceId: string, upToMessageId: string): Promise<string> {
-    const dir = this.#startExtra.configDir;
-    const key = "CLAUDE_CONFIG_DIR";
-    const prev = Deno.env.get(key);
-    if (dir) Deno.env.set(key, expandTilde(dir));
-    try {
-      const { sessionId } = await sdk.forkSession(sourceId, { upToMessageId });
-      return sessionId;
-    } finally {
-      if (dir) {
-        if (prev === undefined) Deno.env.delete(key);
-        else Deno.env.set(key, prev);
-      }
-    }
+  /** A native history fork resumes a copy whose id the daemon records before
+   *  the CLI has reported it (the CLI says nothing until its first turn). */
+  adoptProviderRef(ref: string): void {
+    this.#mapper.state.providerRef = ref;
   }
 
   async setMode(mode: SessionMode): Promise<void> {
@@ -1523,10 +1539,17 @@ export class ClaudeProvider implements AgentProvider {
       ...(ref.effort ? { effort: ref.effort } : {}),
       ...(ref.systemPromptAppend ? { systemPromptAppend: ref.systemPromptAppend } : {}),
     };
+    // A native history fork resumes a full copy of the source session. The
+    // source's observed totals describe the source, never the copy, and the
+    // copy's own ledger is seeded at start like any other resume.
+    const resume = ref.forkHistory
+      ? await forkClaudeSession(this.#configDir, ref.providerRef)
+      : ref.providerRef;
     const s = new ClaudeSession(opts);
+    if (ref.forkHistory) s.adoptProviderRef(resume);
     s.start(opts, {
-      resume: ref.providerRef,
-      ...(ref.usageBaseline ? { usageBaseline: ref.usageBaseline } : {}),
+      resume,
+      ...(ref.usageBaseline && !ref.forkHistory ? { usageBaseline: ref.usageBaseline } : {}),
       ...this.#extra(cli),
     });
     return s;

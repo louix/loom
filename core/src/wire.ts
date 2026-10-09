@@ -241,6 +241,18 @@ export const sessionSnapshotSchema = z.object({
   parentId: z.union([z.string(), z.null()]),
   /** For a hard fork: the parent turn it branched at. null for a root session. */
   forkTurn: z.union([z.number(), z.null()]),
+  /** How a fork carried its parent's conversation: `native` resumed a copy of
+   *  the provider's own history; `handoff` started a fresh provider session
+   *  from a portable summary of Loom's stored transcript. Absent for a root
+   *  session and for forks recorded before the distinction existed. */
+  forkKind: z.enum(["native", "handoff"]).optional(),
+  /** This session works in another session's worktree (a fork that chose to
+   *  share it): that session's id. It never removes the tree itself. */
+  worktreeOwner: z.string().optional(),
+  /** Why this session cannot be forked with its native provider history, when
+   *  it cannot; absent when a native fork onto its own provider is possible.
+   *  A portable handoff is always possible. Runtime-only. */
+  nativeForkBlockedReason: z.string().optional(),
   provider: z.string(),
   model: z.union([z.string(), z.null()]),
   effort: z.union([z.string(), z.null()]),

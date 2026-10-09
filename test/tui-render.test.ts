@@ -1949,10 +1949,22 @@ describe("tui-render", { concurrency: 4 }, () => {
     const { stdout, stdin, app } = mount(client);
     try {
       await delay(200);
-      stdin.feed("F"); // choose isolation before forking
-      await waitFor(stdout, /fork with Local isolation/);
+      // The wizard: provider (when there is a choice), history, workspace, confirm.
+      stdin.feed("F");
+      await waitFor(stdout, /fork · (provider|history)/i);
+      if (/fork · provider/i.test(stdout.last)) {
+        stdin.feed("\r"); // the source's own provider is preselected
+        await waitFor(stdout, /fork · history/i);
+      }
+      assert.match(stdout.last, /native history/);
+      assert.match(stdout.last, /portable handoff/);
       stdin.feed("\r");
-      await waitFor(stdout, /forked from .* @ turn 0/); // Detail lineage line
+      await waitFor(stdout, /copy workspace/);
+      stdin.feed("\r");
+      await waitFor(stdout, /fork with Local isolation/);
+      assert.match(stdout.last, /History: native/);
+      stdin.feed("\r");
+      await waitFor(stdout, /forked from .* @ turn 0 · native history/); // Detail lineage line
       assert.match(stdout.last, /⑂/); // the fork's id carries a fork glyph in the fleet
     } finally {
       app.unmount();
@@ -3283,9 +3295,16 @@ test("isolation-incompatible Claude session is read-only with a visible reason a
       }),
     );
     assert.match(frame, /Read-only: No VM history/);
+    // A read-only session can only hand off: model (its catalogue is empty
+    // here), workspace, confirm.
     handle.handleKey("F", {} as Key);
+    const first = handle.getView().ui.overlay;
+    assert(first.t === "picker" && first.picker.step === "model");
+    handle.handleKey("", { return: true } as Key);
+    handle.handleKey("", { return: true } as Key);
     handle.handleKey("", { return: true } as Key);
     assert.equal(fake.of("session.fork").length, 1);
+    assert.equal(fake.of("session.fork")[0]?.params["history"], "handoff");
   } finally {
     teardown();
   }
@@ -3651,14 +3670,240 @@ test("fork selector inherits isolation and sends an explicit override", () => {
   const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
   const teardown = handle.effectStart();
   try {
-    fake.deliver(fleetOf(testSession({ status: stateIdle, isolation: "vm" })));
+    fake.deliver(
+      fleetOf(
+        testSession({
+          status: stateIdle,
+          isolation: "vm",
+          nativeForkBlockedReason: "Native history forks need Local isolation.",
+        }),
+      ),
+    );
     handle.handleKey("F", {} as Key);
+    handle.handleKey("", { return: true } as Key); // model: the provider default
+    handle.handleKey("", { return: true } as Key); // workspace: copy
     const overlay = handle.getView().ui.overlay;
     assert(overlay.t === "confirm" && overlay.confirm.action === "forkSession");
-    assert.equal(overlay.confirm.isolation, "vm");
+    assert.equal(overlay.confirm.fork.isolation, "vm");
     handle.handleKey("i", {} as Key);
     handle.handleKey("", { return: true } as Key);
     assert.equal(fake.of("session.fork")[0]?.params["isolation"], "local");
+  } finally {
+    teardown();
+  }
+});
+/** Two providers, each with its own catalogue; Claude's models take effort. */
+const forkProviders = [
+  {
+    id: "claude",
+    models: ["claude-opus-5"],
+    modelChoices: [
+      {
+        id: "claude-opus-5",
+        label: "Opus",
+        supportsEffort: true,
+        effortLevels: ["low", "high"],
+        defaultEffort: "high",
+      },
+    ],
+    defaultModel: "claude-opus-5",
+    defaultEffort: "",
+    defaultMode: "default" as const,
+    tag: "Claude",
+    color: "",
+    isDefault: true,
+  },
+  {
+    id: "codex",
+    models: ["gpt-6"],
+    modelChoices: [
+      {
+        id: "gpt-6",
+        label: "GPT-6",
+        supportsEffort: true,
+        effortLevels: ["low", "medium"],
+        defaultEffort: "low",
+      },
+    ],
+    defaultModel: "gpt-6",
+    defaultEffort: "",
+    defaultMode: "default" as const,
+    tag: "Codex",
+    color: "",
+    isDefault: false,
+  },
+];
+
+const forkFleet = (...sessions: SessionSnapshot[]): ClientState =>
+  loadableLoaded({ daemon: testDaemon, providers: forkProviders, sessions });
+
+const overlayOf = (handle: ReturnType<typeof mkFleetHandle>) => handle.getView().ui.overlay;
+const stepOf = (handle: ReturnType<typeof mkFleetHandle>) => {
+  const o = overlayOf(handle);
+  return o.t === "picker" ? o.picker.step : o.t;
+};
+const enter = (handle: ReturnType<typeof mkFleetHandle>) =>
+  handle.handleKey("", { return: true } as Key);
+const down = (handle: ReturnType<typeof mkFleetHandle>) =>
+  handle.handleKey("", { downArrow: true } as Key);
+
+test("fork wizard: a handoff to another provider takes that catalogue's model and effort", () => {
+  const fake = mkFakeClient();
+  const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+  const teardown = handle.effectStart();
+  try {
+    fake.deliver(
+      forkFleet(testSession({ status: stateIdle, provider: "claude", model: "claude-opus-5" })),
+    );
+    handle.handleKey("F", {} as Key);
+    const providers = overlayOf(handle);
+    assert(providers.t === "picker" && providers.picker.step === "provider");
+    // The source's provider is preselected and says what it can carry.
+    assert.equal(pickerCurrent(providers.picker)?.id, "claude");
+    assert.match(providers.picker.items[0]!.hint ?? "", /native history or handoff/);
+    assert.match(providers.picker.items[1]!.hint ?? "", /handoff/);
+    down(handle);
+    enter(handle);
+    // Another provider can only be a handoff: straight to its catalogue.
+    const models = overlayOf(handle);
+    assert(models.t === "picker" && models.picker.step === "model");
+    assert.equal(models.picker.title, "fork · model · Codex");
+    assert.deepEqual(
+      models.picker.items.map((i) => i.label),
+      ["GPT-6"],
+    );
+    enter(handle);
+    const efforts = overlayOf(handle);
+    assert(efforts.t === "picker" && efforts.picker.step === "effort");
+    assert.deepEqual(
+      efforts.picker.items.map((i) => i.id),
+      ["low", "medium"],
+    );
+    down(handle);
+    enter(handle);
+    assert.equal(stepOf(handle), "forkWorkspace");
+    enter(handle); // copy
+    const confirm = overlayOf(handle);
+    assert(confirm.t === "confirm" && confirm.confirm.action === "forkSession");
+    assert.match(
+      confirm.confirm.body ?? "",
+      /History: handoff — a fresh Codex session \(gpt-6 · medium\)/,
+    );
+    assert.match(confirm.confirm.body ?? "", /provider state are not carried/);
+    enter(handle);
+    const params = fake.of("session.fork")[0]?.params;
+    assert.equal(params?.["history"], "handoff");
+    assert.equal(params?.["provider"], "codex");
+    assert.equal(params?.["model"], "gpt-6");
+    assert.equal(params?.["effort"], "medium");
+    assert.equal(params?.["workspace"], "copy");
+    assert.match(String(params?.["forkId"]), /^[0-9a-f-]{36}$/);
+  } finally {
+    teardown();
+  }
+});
+
+test("fork wizard: native history on the source's provider, sharing its worktree", () => {
+  const fake = mkFakeClient();
+  const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+  const teardown = handle.effectStart();
+  try {
+    fake.deliver(
+      forkFleet(
+        testSession({
+          status: stateIdle,
+          provider: "claude",
+          model: "claude-opus-5",
+          isolation: "local",
+          worktree: "/tmp/wt/a",
+          branch: "loom/a",
+        }),
+      ),
+    );
+    handle.handleKey("F", {} as Key);
+    enter(handle); // claude
+    const history = overlayOf(handle);
+    assert(history.t === "picker" && history.picker.step === "forkHistory");
+    assert.deepEqual(
+      history.picker.items.map((i) => i.label),
+      ["native history", "portable handoff"],
+    );
+    assert.match(history.picker.items[0]!.hint ?? "", /resumes a copy of its own session/);
+    assert.match(history.picker.items[1]!.hint ?? "", /hidden provider state is not carried/);
+    enter(handle); // native: no model step
+    const workspace = overlayOf(handle);
+    assert(workspace.t === "picker" && workspace.picker.step === "forkWorkspace");
+    assert.equal(workspace.picker.items[1]!.disabled, undefined);
+    // Esc steps back one step, not out of the wizard.
+    handle.handleKey("", { escape: true } as Key);
+    assert.equal(stepOf(handle), "forkHistory");
+    enter(handle);
+    down(handle);
+    enter(handle); // share
+    const confirm = overlayOf(handle);
+    assert(confirm.t === "confirm" && confirm.confirm.action === "forkSession");
+    assert.match(confirm.confirm.body ?? "", /History: native/);
+    assert.match(confirm.confirm.body ?? "", /Workspace: shared/);
+    // Isolation is fixed for native history.
+    handle.handleKey("i", {} as Key);
+    const still = overlayOf(handle);
+    assert(still.t === "confirm" && still.confirm.action === "forkSession");
+    assert.equal(still.confirm.fork.isolation, "local");
+    enter(handle);
+    const params = fake.of("session.fork")[0]?.params;
+    assert.equal(params?.["history"], "native");
+    assert.equal(params?.["workspace"], "share");
+    assert.equal(params?.["model"], undefined);
+  } finally {
+    teardown();
+  }
+});
+
+test("fork wizard: blocked choices say why, and a starting fork can be cancelled", () => {
+  const fake = mkFakeClient();
+  const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+  const teardown = handle.effectStart();
+  try {
+    const source = testSession({
+      status: stateIdle,
+      provider: "claude",
+      isolation: "vm",
+      worktree: "/tmp/wt/a",
+      nativeForkBlockedReason: "Native history forks need Local isolation.",
+    });
+    fake.deliver(forkFleet(source));
+    handle.handleKey("F", {} as Key);
+    const providers = overlayOf(handle);
+    assert(providers.t === "picker");
+    assert.match(
+      providers.picker.items[0]!.hint ?? "",
+      /handoff · Native history forks need Local/,
+    );
+    enter(handle); // claude: no native choice, so the catalogue
+    assert.equal(stepOf(handle), "model");
+    enter(handle);
+    enter(handle); // effort
+    const workspace = overlayOf(handle);
+    assert(workspace.t === "picker" && workspace.picker.step === "forkWorkspace");
+    assert.match(workspace.picker.items[1]!.disabled ?? "", /Local isolation/);
+    handle.handleKey("", { escape: true } as Key);
+    handle.handleKey("", { escape: true } as Key);
+    handle.handleKey("", { escape: true } as Key);
+    handle.handleKey("", { escape: true } as Key);
+    assert.equal(overlayOf(handle).t, "browse");
+
+    // While a fork of this session is starting, F cancels it.
+    const starting = testSession({
+      id: "b",
+      parentId: "a",
+      forkTurn: 0,
+      status: snap({ status: "starting" }).status,
+      provider: "claude",
+    });
+    fake.deliver(forkFleet(source, starting));
+    handle.handleKey("F", {} as Key);
+    assert.equal(fake.of("session.interrupt")[0]?.params["id"], "b");
+    assert.equal(fake.of("session.fork").length, 0);
   } finally {
     teardown();
   }

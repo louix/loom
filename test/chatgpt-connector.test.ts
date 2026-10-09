@@ -100,7 +100,8 @@ test("ChatGPT provider capabilities reflect a Codex-owned thread, not a Loom-own
     config: { configDir: "/definitely/not" },
     logger: makeLogger("test"),
   });
-  assert.equal(provider.capabilities.forking, false);
+  // Native history forks go through Codex's own `thread/fork`.
+  assert.equal(provider.capabilities.forking, true);
   assert.equal(provider.capabilities.rewind, false);
   assert.equal(provider.capabilities.ownsTranscript, false);
   assert.equal(provider.capabilities.liveModelSwitch, false);
@@ -1628,7 +1629,7 @@ test("native ChatGPT launch receives a relay token without the configured upstre
   }
 });
 
-test("Codex usage counts deltas, ignores duplicates and other threads, and resumes without rebilling", async () => {
+test("Codex usage counts deltas, ignores duplicates and other threads, and resumes or forks without rebilling", async () => {
   const usage = (input: number, cached: number, output: number) => ({
     inputTokens: input,
     cachedInputTokens: cached,
@@ -1636,7 +1637,10 @@ test("Codex usage counts deltas, ignores duplicates and other threads, and resum
     reasoningOutputTokens: output,
     totalTokens: input + output,
   });
-  for (const resumed of [false, true]) {
+  for (const how of ["start", "resume", "fork"] as const) {
+    // A native fork (`thread/fork`) replays the copied thread's cumulative
+    // usage like a resume does: it seeds the baseline, it is never charged.
+    const resumed = how !== "start";
     const baseline = usage(1000, 600, 200);
     const total = resumed ? usage(1100, 640, 220) : usage(100, 40, 20);
     const update = { total, last: usage(100, 40, 20), modelContextWindow: 10000 };
@@ -1661,10 +1665,17 @@ test("Codex usage counts deltas, ignores duplicates and other threads, and resum
       };
       if (resumed) {
         s = await CodexAppServerSession.resume(
-          { sessionId: "usage", providerRef: "fake-thread-1", cwd: "/tmp" },
+          {
+            sessionId: "usage",
+            providerRef: "fake-thread-1",
+            cwd: "/tmp",
+            ...(how === "fork" ? { forkHistory: true } : {}),
+          },
           home,
           FAKE_CODEX,
         );
+        // A fork is a new thread; the source thread is not resumed.
+        assert.equal(s.providerRef, how === "fork" ? "fake-thread-1-fork" : "fake-thread-1");
         await s.send("go");
       } else {
         s = await CodexAppServerSession.start(

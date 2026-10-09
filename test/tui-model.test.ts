@@ -1406,10 +1406,11 @@ test("the command model enables the right verbs per session state", () => {
     ["answer", "deny", "interrupt"].sort(),
   );
   // compact rides along on any live session (running / idle / working_background),
-  // whatever the context meter reads. A provider switch waits for the turn.
+  // whatever the context meter reads. A provider switch and a fork wait for
+  // the turn (the daemon refuses to fork mid-turn).
   assert.deepEqual(
     [...acts({ status: "running" })].sort(),
-    ["interrupt", "send", "compact", ...S.filter((a) => a !== "provider")].sort(),
+    ["interrupt", "send", "compact", ...S.filter((a) => a !== "provider" && a !== "fork")].sort(),
   );
   assert.deepEqual([...acts({ status: "idle" })].sort(), ["send", "done", "compact", ...S].sort());
   // a stopped session: `send` (the daemon revives it) — no separate "resume"
@@ -1424,6 +1425,22 @@ test("the command model enables the right verbs per session state", () => {
       id,
     );
   assert.ok(!none.some((a) => (a.id as string) === "help"), "the ? help view is gone");
+});
+
+test("fork waits for a settled turn, and turns into a cancel while a fork starts", () => {
+  const forkOf = (state: TuiState) => describeCommands(state).find((a) => a.id === "fork");
+  const running = snap({ id: "src", status: "running", model: "m1" });
+  assert.match(forkOf(ctxFor(running))?.disabled ?? "", /Stop the turn before forking/);
+  const idle = snap({ id: "src", status: "idle", model: "m1" });
+  assert.equal(forkOf(ctxFor(idle))?.label, "fork");
+  const child = snap({ id: "child", parentId: "src", forkTurn: 2, status: "starting" });
+  const starting = {
+    ...reduce(initialState(), fleet([idle, child], [ACTIONS_PROVIDER])),
+    selectedId: "src",
+  };
+  const cancel = forkOf(starting);
+  assert.equal(cancel?.label, "cancel fork");
+  assert.equal(cancel?.disabled, undefined);
 });
 
 test("disabled commands stay described, each with the reason it cannot run", () => {

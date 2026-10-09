@@ -27,7 +27,7 @@ traffic. Other sessions cannot replace its recall list. New-session prompts reta
 local submission history. Cancelled-message drafts remain separate.
 
 Missing/disabled providers and incompatible isolation histories remain readable.
-The DETAIL pane explains the reason; continuation forks use an enabled provider
+The DETAIL pane explains the reason; handoff forks use an enabled provider
 and the current isolation policy.
 
 Mode selection shows its target immediately; the existing 300ms debounce delays
@@ -57,12 +57,40 @@ arriving row through normal reconciliation.
 
 ## Forks and undo
 
-Undo/rewind depends on provider capabilities. Native history forks retain
-provider identity where supported. Continuation forks start a fresh session with
-saved context when the provider changes, is unavailable, or isolation changes;
-the source remains readable.
+Undo/rewind depends on provider capabilities.
 
-Worktree continuation forks start at the source's actual HEAD and copy staged,
-unstaged and nonignored untracked work separately. In-progress Git operations
-and submodule changes are rejected. Private-clone forks instead start from the
-published tip; see [repository access](repository-mounts.md#clone-mode).
+`F` opens the fork wizard: provider, then history, then (for a handoff) the
+destination's catalogue model and effort, then workspace, then a confirmation
+that states what will cross. Each step's `Esc` goes back one step. A fork waits
+for a settled turn. The source keeps its history, workspace and usage.
+
+- **Native history** resumes a copy of the provider's own history: Loom's
+  transcript for aisdk, `forkSession` for Claude, `thread/fork` for Codex. It is
+  offered only on the source's own provider, under Local isolation, while the
+  source is resumable; the snapshot's `nativeForkBlockedReason` says why not.
+  The copy's provider ref is recorded before its first turn.
+- **Handoff** starts a fresh session on any available provider. Its opening
+  prompt quotes up to 100 user/assistant messages (64 KiB, newest first) from
+  Loom's stored transcript. It names what was omitted: tool activity, sub-agent
+  messages, earlier history and oversized messages. It says that hidden
+  provider state did not cross. It works when the source's provider is
+  disabled or gone. A handoff of a handoff carries the original messages, not
+  the earlier prompt.
+
+The row records `parentId`, `forkTurn`, `forkKind` and, for a handoff, the
+handoff itself. DETAIL shows them. Usage starts at zero. A native Claude copy
+seeds its ledger at resume, so the source's spend is never charged again.
+
+A **copied** workspace is a new worktree at the source's actual HEAD, with its
+staged, unstaged and nonignored untracked work copied separately. In-progress
+Git operations and submodule changes are rejected. Private-clone forks instead
+start from the published tip; see
+[repository access](repository-mounts.md#clone-mode). A **shared** workspace
+is the source's own worktree and branch, recorded as `worktreeOwner`. It needs
+Local isolation on both sessions. The sharing fork never removes the tree or
+its branch. The owner cannot be archived or removed while a sharing fork still
+holds it.
+
+A fork that fails to start, or is cancelled while starting (`F` on the source,
+or interrupt on the STARTING row), leaves no row behind. Its worktree copy and
+branch are removed too.

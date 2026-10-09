@@ -331,22 +331,24 @@ const handle = (req) => {
     }
     return;
   }
-  if (method === "thread/resume") {
+  if (method === "thread/resume" || method === "thread/fork") {
     if (process.env["LOOM_TEST_FAIL_STARTUP"]) {
       send({
         jsonrpc: "2.0",
         id,
-        error: { code: -32000, message: "fake app-server: forced thread/resume failure" },
+        error: { code: -32000, message: `fake app-server: forced ${method} failure` },
       });
       return;
     }
     const base = fixture("thread-resume");
     // Echo whether developerInstructions arrived, in the thread id, so tests
     // can assert on it through `CodexAppServerSession.resume()`'s public
-    // `providerRef` without a new test-only hook into production code.
-    const id_ = params?.developerInstructions
+    // `providerRef` without a new test-only hook into production code. A fork
+    // names a new thread derived from the one it copied.
+    const resumed = params?.developerInstructions
       ? `${base.thread.id}-with-instructions`
       : base.thread.id;
+    const id_ = method === "thread/fork" ? `${params?.threadId}-fork` : resumed;
     // LOOM_TEST_RESUME_SETTINGS (JSON) is what Codex saved for the thread; a
     // `collaborationMode: null` there makes the reply omit the field.
     const saved = JSON.parse(process.env["LOOM_TEST_RESUME_SETTINGS"] || "{}");

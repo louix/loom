@@ -95,6 +95,19 @@ export const rpcParamsSchemas = {
     provider: optionalText,
     prompt: optionalText,
     isolation: z.enum(["vm", "local"]).optional(),
+    /** `native` copies the provider's own history (same provider only);
+     *  `handoff` starts fresh from a portable summary. Default: native when
+     *  possible. */
+    history: z.enum(["native", "handoff"]).optional(),
+    /** `copy`: a new worktree (or private clone) with the source's work;
+     *  `share`: the source's own worktree. Default: copy. */
+    workspace: z.enum(["copy", "share"]).optional(),
+    /** Handoff destination model / effort; a native fork keeps the source's. */
+    model: optionalText,
+    effort: optionalText,
+    /** Caller-chosen id for the new session, so it can be cancelled with
+     *  `session.interrupt` while the fork is still starting. */
+    forkId: z.uuid().optional(),
   }),
   "session.interrupt": session,
   "session.compact": session.extend({ instructions: optionalText }),

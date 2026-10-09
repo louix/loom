@@ -14,7 +14,13 @@ import {
   repoBaseDirectory,
 } from "../../../../runtime/src/session-vm/repo-base.ts";
 import { basename } from "node:path";
-import { forkContext } from "./fork-context.ts";
+import {
+  conversationHandoff,
+  conversationHandoffSchema,
+  HANDOFF_PAGE_SIZE,
+  handoffPrompt,
+  type ConversationHandoff,
+} from "./fork-context.ts";
 import {
   sessionVmDirectory,
   vmResumeBlockedReason,
@@ -997,6 +1003,8 @@ export class Daemon {
     if (modes) out = { ...out, modes };
     const reason = this.#resumeBlockedReason(s);
     out = { ...out, resumable: !reason, ...(reason ? { resumeBlockedReason: reason } : {}) };
+    const nativeFork = reason ?? this.#nativeForkBlockedReason(out);
+    if (nativeFork) out = { ...out, nativeForkBlockedReason: nativeFork };
     // An in-place session works in the repo root; show that dir's git state.
     const gitPath = this.#gitKey(out);
     if (gitPath && out.checkout === "clone") {
@@ -1395,6 +1403,401 @@ export class Daemon {
   }
 
   /**
+   * `session.fork`: a new session that continues `p.id`'s conversation, which
+   * is left exactly as it was. The conversation crosses one of two ways,
+   * recorded on the new row as its `forkKind`:
+   *
+   * - `native`: the provider resumes a copy of its own history. For a
+   *   transcript-owning (aisdk) provider that copy is Loom's
+   *   `provider_messages`; for one with `capabilities.forking` it is the
+   *   provider's own (Claude `forkSession`, Codex `thread/fork`). Same
+   *   provider, Local isolation, and only while the source is resumable.
+   * - `handoff`: a fresh provider session (any available provider, with its
+   *   catalogue's model and effort) opened with a portable summary of Loom's
+   *   stored transcript. It says plainly that it is not native history, and it
+   *   works when the source's provider is gone.
+   *
+   * The workspace is a copy (a new worktree at the source's HEAD with its
+   * staged / unstaged / untracked work, or a private clone from the published
+   * branch) or the source's own worktree, shared (`worktreeOwner`). The new
+   * row's usage starts at zero, and a native copy's provider ledger is seeded
+   * at resume rather than charged. Anything created is torn down when the
+   * destination fails to start or the fork is cancelled (`session.interrupt`
+   * on `forkId` while it starts).
+   */
+  async #fork(p: RpcParams<"session.fork">): Promise<SessionSnapshot> {
+    const id = p.id;
+    const parent = this.#registry.get(id);
+    if (!parent) throw new RpcError("not_found", `no such session: ${id}`);
+    if (!["idle", "interrupted", "done", "error"].includes(parent.status.kind)) {
+      // Forking mid-turn copies a transcript whose last message is an
+      // assistant tool-call with no tool_result yet — the fork's first
+      // request would 400 on most endpoints.
+      throw new RpcError("bad_request", "the parent is mid-turn — interrupt it before forking");
+    }
+    const providerId =
+      p.provider ??
+      (this.#providers.has(parent.provider) ? parent.provider : this.#defaultProviderId());
+    const unavailable = this.#providers.unavailableReason(providerId);
+    if (unavailable) throw new RpcError("provider_unavailable", unavailable);
+    const isolation =
+      p.isolation ?? parent.isolation ?? this.#providers.defaultIsolation(providerId);
+    const share = p.workspace === "share";
+    const shareBlocked = share ? this.#shareBlockedReason(parent, isolation) : undefined;
+    if (shareBlocked) throw new RpcError("bad_request", shareBlocked);
+    await this.#preflightTools(providerId, isolation);
+    // Resolve the provider's real capabilities rather than guess from config
+    // membership — an unloaded ChatGPT provider is configured under
+    // `providers.aisdk` (sdk = "chatgpt") but its history is a Codex thread,
+    // not Loom's transcript.
+    const provider = await this.#providers.get(providerId, isolation);
+    const nativeBlocked = this.#nativeForkBlockedReason(parent, providerId, isolation);
+    if (p.history === "native" && nativeBlocked)
+      throw new RpcError("bad_request", `Native history is unavailable: ${nativeBlocked}`);
+    const native = p.history !== "handoff" && !nativeBlocked;
+    if (native && (p.model !== undefined || p.effort !== undefined))
+      throw new RpcError(
+        "bad_request",
+        "A native history fork keeps the source's model and effort; change them after forking.",
+      );
+    const sameProvider = providerId === parent.provider;
+    // A source that never recorded its model ran on the provider default.
+    const model =
+      p.model ??
+      (sameProvider ? parent.model : null) ??
+      (this.#defaultModelFor(providerId) || null);
+    if (
+      p.effort !== undefined &&
+      !EFFORT_LEVELS.includes(p.effort) &&
+      !this.#advertisedEfforts(providerId, model).includes(p.effort)
+    )
+      throw new RpcError("bad_request", "effort must be a level this model supports");
+    const effort = native
+      ? parent.effort
+      : (p.effort ??
+        (sameProvider && model === parent.model
+          ? parent.effort
+          : this.#defaultEffortFor(providerId, model ?? undefined) || null));
+    if (this.config.providers.aisdk[providerId] && !model)
+      throw new RpcError("bad_request", `provider "${providerId}" has no model; choose one`);
+    if (parent.inPlace && native && !share) {
+      throw new RpcError(
+        "bad_request",
+        "the parent runs in-place (no worktree) — hard fork needs an isolated branch",
+      );
+    }
+    const newId = p.forkId ?? randomUUID();
+    if (this.#registry.get(newId))
+      throw new RpcError("bad_request", `session ${newId} already exists`);
+    const forkPrompt = p.prompt?.trim() ?? "";
+    // Built from Loom's own store before anything exists: a handoff needs
+    // neither the source's provider nor its process.
+    const handoff = native ? null : this.#handoffFor(parent, share ? "share" : "copy", forkPrompt);
+    // A transcript-owning provider's native copy is Loom's; any other is the
+    // provider's own, made from the source's live (else stored) provider ref.
+    const ownsTranscript = provider.capabilities.ownsTranscript;
+    const sourceRef =
+      native && !ownsTranscript
+        ? (this.#sessions.snapshot(id)?.providerRef ?? this.#registry.store.providerRef(id))
+        : null;
+    if (native && !ownsTranscript && !sourceRef)
+      throw new RpcError("bad_request", "Native history is unavailable: none was recorded yet.");
+
+    // A clone parent is read through its published branch; its directory is off limits.
+    const parentClone = parent.checkout === "clone";
+    const parentDir = parent.inPlace ? this.repoRoot : parent.worktree;
+    const source = parentClone ? null : parentDir;
+    const childClone =
+      !share && isolation === "vm" && this.config.isolation.checkout?.mode === "clone";
+    let wt: { path: string; branch: string | null; baseRef: string | null };
+    if (share) {
+      wt = { path: parent.worktree!, branch: parent.branch, baseRef: parent.baseBranch };
+    } else {
+      if (source && !this.#worktrees.headSha(source))
+        throw new RpcError("worktree_error", "The parent worktree is missing or has no HEAD");
+      const baseRef = source ? this.#worktrees.headSha(source)! : parent.branch;
+      try {
+        if (childClone) {
+          // The relay names the base, so a fork inherits a branch, never the fork point's SHA.
+          const inherited =
+            parent.baseBranch && this.#worktrees.branchHead(parent.baseBranch)
+              ? parent.baseBranch
+              : this.config.baseBranch;
+          const made = this.#worktrees.createBranch(newId, baseRef ? { baseRef } : {});
+          wt = {
+            path: await this.#clonePath(newId, providerId),
+            branch: made.branch,
+            baseRef: inherited,
+          };
+        } else wt = this.#worktrees.create(newId, baseRef ? { baseRef } : {});
+      } catch (err) {
+        const m = err instanceof Error ? err.message : String(err);
+        throw new RpcError("worktree_error", `could not create the fork's worktree: ${m}`);
+      }
+    }
+
+    // Everything past the worktree is torn down together on any failure so a
+    // failed or cancelled fork doesn't leave an orphan worktree / branch / row.
+    const startup = new AbortController();
+    this.#startups.set(newId, startup);
+    try {
+      // The fork runs in the parent's permission mode; record it on the row
+      // so the chip and a restart's revive (which reads the row) agree with
+      // the adapter — an omitted mode stored `default` while the adapter
+      // actually resumed in the parent's mode.
+      const mode: SessionMode = isSessionMode(parent.mode) ? parent.mode : "default";
+      // Uncommitted work crosses only between host worktrees; a clone starts from the
+      // parent's published tip.
+      if (!share && source && !childClone) this.#worktrees.copyChanges(source, wt.path);
+      this.#registry.create({
+        id: newId,
+        provider: providerId,
+        model,
+        effort,
+        mode,
+        parentId: id,
+        title: `${(parent.title ?? "session").slice(0, 180)} (fork)`,
+        worktree: wt.path,
+        branch: wt.branch,
+        baseBranch: wt.baseRef,
+        isolation,
+        ...(childClone ? { checkout: "clone" as const } : {}),
+      });
+      this.#registry.setFields(newId, {
+        forkTurn: parent.turns,
+        forkKind: native ? "native" : "handoff",
+        ...(handoff ? { forkHandoff: JSON.stringify(handoff) } : {}),
+        // Chained forks all name the session that really owns the tree.
+        ...(share ? { worktreeOwner: parent.worktreeOwner ?? parent.id } : {}),
+        ...(native && ownsTranscript ? { providerRef: newId } : {}),
+      });
+      if (native && ownsTranscript) this.#pmsgs.copyTo(id, newId);
+      this.#publishState(newId);
+
+      const mcpHandles = this.#mcpHandles();
+      const isAisdk = this.config.providers.aisdk[providerId] !== undefined;
+      const promptAppend = systemPromptAppendFor(
+        isAisdk,
+        mcpHandles.length > 0,
+        wt.path,
+        this.repoRoot,
+        this.#instructionsDir(wt.path),
+      );
+      const instructions = {
+        systemPromptAppend: promptAppend,
+        repoInstructions: repoInstructionsFor(this.#instructionsDir(wt.path), this.repoRoot),
+        workspaceRoot: wt.path,
+      };
+      startup.signal.throwIfAborted();
+      if (handoff) {
+        const prompt = handoffPrompt(handoff);
+        this.#lastSend.set(newId, prompt);
+        this.emitEvent({
+          type: "user_message",
+          sessionId: newId,
+          ts: Date.now(),
+          text: prompt,
+          injected: false,
+        });
+        const opts: CreateSessionOptions = {
+          sessionId: newId,
+          cwd: wt.path,
+          prompt,
+          mode,
+          parentId: id,
+          mcpServers: mcpHandles,
+          loomServer: true,
+          disableTools: this.config.providers.claude.disableBuiltin,
+          settingSources: this.config.providers.claude.settingSources,
+          ...instructions,
+          ...(model ? { model } : {}),
+          ...(effort ? { effort } : {}),
+        };
+        Object.assign(opts, { [startupSignal]: startup.signal });
+        await this.#sessions.create(provider, opts);
+      } else {
+        const ref: SessionRef = {
+          initHooks: { hooks: [], env: { LOOM_START_REASON: "create" } },
+          sessionId: newId,
+          providerRef: ownsTranscript ? newId : sourceRef!,
+          ...(ownsTranscript ? {} : { forkHistory: true }),
+          cwd: wt.path,
+          mode,
+          mcpServers: mcpHandles,
+          ...instructions,
+          ...(model ? { model } : {}),
+          ...(effort ? { effort } : {}),
+        };
+        Object.assign(ref, { [startupSignal]: startup.signal });
+        await this.#sessions.resume(provider, ref);
+        if (!ownsTranscript) {
+          // Recorded now, not when the provider first speaks: a restart
+          // before the fork's first turn must resume the copy, never the source.
+          const copied = this.#sessions.snapshot(newId)?.providerRef;
+          if (!copied || copied === sourceRef)
+            throw new Error(`${providerId} did not report the id of its history copy`);
+          this.#registry.setFields(newId, { providerRef: copied });
+        }
+      }
+      startup.signal.throwIfAborted();
+    } catch (err) {
+      await this.#sessions.close(newId).catch(() => {});
+      this.#lastSend.delete(newId);
+      // A shared tree belongs to the source: never this fork's to remove.
+      let removed = share;
+      if (!share) {
+        try {
+          await withStoppedSessionVm(this.repoRoot, newId, () =>
+            this.#removeWorkdir(wt.path, true),
+          );
+          removed = true;
+          // The branch was made for this fork at the source's HEAD; it holds
+          // nothing of its own.
+          if (wt.branch) {
+            this.#worktrees.prune();
+            this.#worktrees.deleteBranch(wt.branch);
+          }
+        } catch (rmErr) {
+          this.#log.warn("fork cleanup: could not remove the worktree", {
+            id: newId,
+            path: wt.path,
+            err: rmErr instanceof Error ? rmErr.message : String(rmErr),
+          });
+        }
+      }
+      if (removed) {
+        if (this.#registry.get(newId)) this.#registry.store.delete(newId); // cascades its events / provider_messages / checkpoints
+      } else {
+        // The tree is still on disk — keep the row (worktree path intact) and
+        // mark it error so a later `session.gc { id }` can still reclaim it,
+        // rather than deleting the row and orphaning the directory.
+        if (!this.#registry.get(newId))
+          this.#registry.create({
+            id: newId,
+            provider: providerId,
+            parentId: id,
+            worktree: wt.path,
+            branch: wt.branch,
+          });
+        this.#registry.setStatus(newId, stateError("fork start failed"));
+      }
+      this.#publishState();
+      if (startup.signal.aborted)
+        throw new RpcError("cancelled", "the fork was cancelled before it started");
+      const m = err instanceof Error ? err.message : String(err);
+      throw new RpcError("provider_error", `could not start the fork: ${m}`);
+    } finally {
+      this.#startups.delete(newId);
+    }
+
+    if (native) this.#registry.setStatus(newId, stateIdle, "forked");
+    if (forkPrompt && native) {
+      const { injected } = await this.#sessions.send(newId, forkPrompt);
+      this.emitEvent({
+        type: "user_message",
+        sessionId: newId,
+        ts: Date.now(),
+        text: forkPrompt,
+        injected,
+      });
+      this.#lastSend.set(newId, forkPrompt);
+    }
+    const snap = this.#registry.mustGet(newId);
+    this.#publishState(snap.id);
+    this.#onActivityChange("session-forked");
+    return snap;
+  }
+
+  /**
+   * Why `row` cannot be forked onto `providerId` (under `isolation`) with
+   * its native provider history, or undefined when it can. Capabilities are
+   * the provider's real ones once it has been built, else a guess from its
+   * kind (Claude and Codex copy their own history; aisdk's is Loom's).
+   */
+  #nativeForkBlockedReason(
+    row: SessionSnapshot,
+    providerId = row.provider,
+    isolation: "vm" | "local" = row.isolation ?? "local",
+  ): string | undefined {
+    if (providerId !== row.provider)
+      return "Native history stays with its own provider; another provider starts from a handoff.";
+    const blocked = this.#resumeBlockedReason(row);
+    if (blocked) return blocked;
+    if (isolation === "vm" || (row.isolation ?? "local") === "vm")
+      return "Native history forks need Local isolation; a VM keeps its history inside the VM.";
+    const codex = this.config.providers.aisdk[providerId]?.sdk === "chatgpt";
+    const caps = this.#providers.capsOf(providerId, isolation);
+    const owns = caps ? caps.ownsTranscript : this.#isAisdk(providerId) && !codex;
+    const forking = caps ? caps.forking : isClaudeId(providerId) || codex;
+    if (!owns && !forking) return `${providerId} cannot copy its native history.`;
+    if (
+      !owns &&
+      !this.#sessions.snapshot(row.id)?.providerRef &&
+      !this.#registry.store.providerRef(row.id)
+    )
+      return "No native history has been recorded yet.";
+    return undefined;
+  }
+
+  /** Why a fork onto `isolation` cannot share `row`'s worktree, if it cannot. */
+  #shareBlockedReason(row: SessionSnapshot, isolation: "vm" | "local"): string | undefined {
+    if (row.checkout === "clone") return "A private clone cannot be shared; fork into a copy.";
+    if (row.inPlace) return "An in-place session has no worktree of its own to share.";
+    if (!row.worktree) return "The source has no worktree to share (it was archived).";
+    if ((row.isolation ?? "local") !== "local" || isolation !== "local")
+      return "Sharing a worktree needs Local isolation on both sessions.";
+    return undefined;
+  }
+
+  /** Live sessions working in `id`'s worktree through a sharing fork. */
+  #worktreeBorrowers(id: string): SessionSnapshot[] {
+    return this.#registry.list().filter((s) => s.worktreeOwner === id && s.worktree);
+  }
+
+  /** Refuse to reclaim `id`'s worktree while a sharing fork still works in it. */
+  #assertNoBorrowers(id: string, verb: string): void {
+    const borrowers = this.#worktreeBorrowers(id);
+    if (borrowers.length === 0) return;
+    const ids = borrowers.map((s) => s.id.slice(0, 8)).join(", ");
+    throw new RpcError(
+      "bad_request",
+      `${verb}: session ${ids} shares this worktree — archive or remove ${borrowers.length === 1 ? "it" : "them"} first`,
+    );
+  }
+
+  /**
+   * The portable handoff for a fork of `row`, from Loom's stored transcript.
+   * When `row` is itself a handoff fork, its opening prompt is replaced by
+   * the handoff it carried, so the source's messages are not nested.
+   */
+  #handoffFor(
+    row: SessionSnapshot,
+    workspace: ConversationHandoff["workspace"],
+    instruction: string,
+  ): ConversationHandoff {
+    let stored: ConversationHandoff | null | undefined;
+    return conversationHandoff(
+      { sessionId: row.id, provider: row.provider, model: row.model, turn: row.turns },
+      workspace,
+      instruction,
+      (olderThan) =>
+        this.#sessionEvents.page(row.id, {
+          limit: HANDOFF_PAGE_SIZE,
+          ...(olderThan === undefined ? {} : { olderThan }),
+        }),
+      (text) => {
+        if (row.forkKind !== "handoff") return null;
+        if (stored === undefined) {
+          const raw = this.#registry.store.forkHandoff(row.id);
+          const parsed = raw ? conversationHandoffSchema.safeParse(JSON.parse(raw)) : null;
+          stored = parsed?.success ? parsed.data : null;
+        }
+        return stored && handoffPrompt(stored) === text ? stored : null;
+      },
+    );
+  }
+
+  /**
    * Spin up a fresh session from already-resolved inputs — worktree, registry
    * row, adapter, opening prompt. Shared by `session.create` and the plan
    * review's `⌥p`-onto-a-different-provider fork. Caller resolves `model` /
@@ -1666,6 +2069,12 @@ export class Daemon {
     // on it. An in-place archived session has no branch to restore; it just
     // resumes in the repo root.
     let worktree = row.worktree;
+    // An archived sharing fork takes its owner's tree back while the owner
+    // still has one; otherwise it restores the branch as its own.
+    if (!worktree && row.worktreeOwner) {
+      worktree = this.#registry.get(row.worktreeOwner)?.worktree ?? null;
+      this.#registry.setFields(id, worktree ? { worktree } : { worktreeOwner: null });
+    }
     if (!worktree && row.branch && row.checkout === "clone") {
       // The guest rebuilds or repairs its clone from the branch; the host only names the place.
       if (!this.#worktrees.branchHead(row.branch))
@@ -3231,213 +3640,7 @@ export class Daemon {
       return { ...updated, ...(worktreeDrift ? { worktreeDrift } : {}) };
     });
 
-    d.register("session.fork", async (params) => {
-      const id = params.id;
-      const parent = this.#registry.get(id);
-      if (!parent) throw new RpcError("not_found", `no such session: ${id}`);
-      // Resolve the provider's real capabilities rather than guess from
-      // config membership — an unloaded ChatGPT provider is configured under
-      // `providers.aisdk` (sdk = "chatgpt") but its real `ownsTranscript` is
-      // conservatively `false` (it may route through Codex's own thread),
-      // so a config-membership guess would wrongly authorize a hard fork.
-      const p = params;
-      const fallback = this.#providers.has(parent.provider)
-        ? parent.provider
-        : this.#defaultProviderId();
-      const providerId = p.provider ?? fallback;
-      const isolation =
-        p.isolation ?? parent.isolation ?? this.#providers.defaultIsolation(providerId);
-      await this.#preflightTools(providerId, isolation);
-      const parentProvider = await this.#providers.get(providerId, isolation);
-      // Changing environment carries portable context, never native history.
-      // VM transcript stores are not the host transcript store either.
-      const continuation =
-        isolation !== (parent.isolation ?? "local") ||
-        isolation === "vm" ||
-        !parentProvider.capabilities.ownsTranscript ||
-        providerId !== parent.provider ||
-        !!this.#resumeBlockedReason(parent);
-      const model =
-        providerId === parent.provider ? parent.model : this.#defaultModelFor(providerId);
-      const effort =
-        providerId === parent.provider ? parent.effort : this.#defaultEffortFor(providerId);
-      if (parent.inPlace && !continuation) {
-        throw new RpcError(
-          "bad_request",
-          "the parent runs in-place (no worktree) — hard fork needs an isolated branch",
-        );
-      }
-      if (!["idle", "interrupted", "done", "error"].includes(parent.status.kind)) {
-        // Forking mid-turn copies a transcript whose last message is an
-        // assistant tool-call with no tool_result yet — the fork's first
-        // request would 400 on most endpoints.
-        throw new RpcError("bad_request", "the parent is mid-turn — interrupt it before forking");
-      }
-      const forkPrompt = p.prompt?.trim() ?? "";
-
-      const context = continuation
-        ? forkContext(id, this.#sessionEvents.page(id, { limit: 5000 }))
-        : "";
-      // A clone parent is read through its published branch; its directory is off limits.
-      const parentClone = parent.checkout === "clone";
-      const parentDir = parent.inPlace ? this.repoRoot : parent.worktree;
-      const source = parentClone ? null : parentDir;
-      if (source && !this.#worktrees.headSha(source))
-        throw new RpcError("worktree_error", "The parent worktree is missing or has no HEAD");
-      const baseRef = source ? this.#worktrees.headSha(source)! : parent.branch;
-      const newId = randomUUID();
-      const childClone = isolation === "vm" && this.config.isolation.checkout?.mode === "clone";
-      let wt;
-      try {
-        if (childClone) {
-          // The relay names the base, so a fork inherits a branch, never the fork point's SHA.
-          const inherited =
-            parent.baseBranch && this.#worktrees.branchHead(parent.baseBranch)
-              ? parent.baseBranch
-              : this.config.baseBranch;
-          const made = this.#worktrees.createBranch(newId, baseRef ? { baseRef } : {});
-          wt = {
-            slug: newId.slice(0, 8),
-            path: await this.#clonePath(newId, providerId),
-            branch: made.branch,
-            baseRef: inherited,
-          };
-        } else wt = this.#worktrees.create(newId, baseRef ? { baseRef } : {});
-      } catch (err) {
-        const m = err instanceof Error ? err.message : String(err);
-        throw new RpcError("worktree_error", `could not create the fork's worktree: ${m}`);
-      }
-
-      // Everything past the worktree is torn down together on any failure so a
-      // failed fork doesn't leave an orphan worktree / branch / row / rows.
-      try {
-        // The fork runs in the parent's permission mode; record it on the row
-        // so the chip and a restart's revive (which reads the row) agree with
-        // the adapter — an omitted mode stored `default` while the adapter
-        // actually resumed in the parent's mode.
-        const mode: SessionMode = isSessionMode(parent.mode) ? parent.mode : "default";
-        // Uncommitted work crosses only between host worktrees; a clone starts from the
-        // parent's published tip.
-        if (source && !childClone) this.#worktrees.copyChanges(source, wt.path);
-        this.#registry.create({
-          id: newId,
-          provider: providerId,
-          model,
-          effort,
-          mode,
-          parentId: id,
-          title: `${(parent.title ?? "session").slice(0, 180)} (fork)`,
-          worktree: wt.path,
-          branch: wt.branch,
-          baseBranch: wt.baseRef,
-          isolation,
-          ...(childClone ? { checkout: "clone" as const } : {}),
-        });
-        this.#registry.setFields(newId, {
-          forkTurn: parent.turns,
-          ...(!continuation ? { providerRef: newId } : {}),
-        });
-        if (!continuation) this.#pmsgs.copyTo(id, newId);
-        this.#publishState(newId);
-
-        const mcpHandles = this.#mcpHandles();
-        if (continuation) {
-          const prompt = context + (forkPrompt ? `\n\nNew user instruction: ${forkPrompt}` : "");
-          this.#lastSend.set(newId, prompt);
-          await this.#sessions.create(parentProvider, {
-            sessionId: newId,
-            cwd: wt.path,
-            prompt,
-            mode,
-            parentId: id,
-            mcpServers: mcpHandles,
-            loomServer: true,
-            disableTools: this.config.providers.claude.disableBuiltin,
-            settingSources: this.config.providers.claude.settingSources,
-            systemPromptAppend: systemPromptAppendFor(
-              !!this.config.providers.aisdk[providerId],
-              mcpHandles.length > 0,
-              wt.path,
-              this.repoRoot,
-              this.#instructionsDir(wt.path),
-            ),
-            repoInstructions: repoInstructionsFor(this.#instructionsDir(wt.path), this.repoRoot),
-            workspaceRoot: wt.path,
-            ...(model ? { model } : {}),
-            ...(effort ? { effort } : {}),
-          });
-          this.emitEvent({
-            type: "user_message",
-            sessionId: newId,
-            ts: Date.now(),
-            text: prompt,
-            injected: false,
-          });
-        } else
-          await this.#sessions.resume(parentProvider, {
-            initHooks: { hooks: [], env: { LOOM_START_REASON: "create" } },
-            sessionId: newId,
-            providerRef: newId,
-            cwd: wt.path,
-            mode,
-            mcpServers: mcpHandles,
-            systemPromptAppend: systemPromptAppendFor(
-              true,
-              mcpHandles.length > 0,
-              wt.path,
-              this.repoRoot,
-              this.#instructionsDir(wt.path),
-            ),
-            ...(model ? { model } : {}),
-            ...(effort ? { effort } : {}),
-          });
-      } catch (err) {
-        await this.#sessions.close(newId).catch(() => {});
-        let removed = false;
-        try {
-          await withStoppedSessionVm(this.repoRoot, newId, () =>
-            this.#removeWorkdir(wt.path, true),
-          );
-          removed = true;
-        } catch (rmErr) {
-          this.#log.warn("fork cleanup: could not remove the worktree", {
-            id: newId,
-            path: wt.path,
-            err: rmErr instanceof Error ? rmErr.message : String(rmErr),
-          });
-        }
-        if (removed) {
-          this.#registry.store.delete(newId); // cascades provider_messages / checkpoints
-        } else {
-          // The tree is still on disk — keep the row (worktree path intact) and
-          // mark it error so a later `session.gc { id }` can still reclaim it,
-          // rather than deleting the row and orphaning the directory.
-          if (!this.#registry.get(newId))
-            this.#registry.create({
-              id: newId,
-              provider: providerId,
-              parentId: id,
-              worktree: wt.path,
-              branch: wt.branch,
-            });
-          this.#registry.setStatus(newId, stateError("fork start failed"));
-        }
-        this.#publishState();
-        this.#lastSend.delete(newId);
-        const m = err instanceof Error ? err.message : String(err);
-        throw new RpcError("provider_error", `could not start the fork: ${m}`);
-      }
-
-      if (!continuation) this.#registry.setStatus(newId, stateIdle, "forked");
-      if (forkPrompt && !continuation) {
-        this.#lastSend.set(newId, forkPrompt);
-        await this.#sessions.send(newId, forkPrompt);
-      }
-      const snap = this.#registry.mustGet(newId);
-      this.#publishState(snap.id);
-      this.#onActivityChange("session-forked");
-      return snap;
-    });
+    d.register("session.fork", (params) => this.#fork(params));
 
     d.register("session.interrupt", async (params) => {
       const id = params.id;
@@ -3850,7 +4053,16 @@ export class Daemon {
         const row = this.#registry.get(id);
         if (!row) throw new RpcError("not_found", `no such session: ${id}`);
         const clone = row.checkout === "clone";
-        if (!force && !clone && row.worktree && this.#worktrees.isDirty(row.worktree)) {
+        // A sharing fork only lets go of the tree; its owner keeps the work.
+        const borrowed = !!row.worktreeOwner;
+        if (!borrowed) this.#assertNoBorrowers(id, "cannot archive");
+        if (
+          !force &&
+          !clone &&
+          !borrowed &&
+          row.worktree &&
+          this.#worktrees.isDirty(row.worktree)
+        ) {
           throw new RpcError(
             "bad_request",
             "the worktree has uncommitted changes — commit them, or archive with force to discard",
@@ -3862,7 +4074,8 @@ export class Daemon {
           if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
           this.#lastSend.delete(id);
           this.#cacheTtlSeen.delete(id);
-          if (row.worktree && !row.inPlace) {
+          if (borrowed && row.worktree) this.#registry.setFields(id, { worktree: null });
+          else if (row.worktree && !row.inPlace) {
             try {
               // Only the guest knows whether a clone is dirty, so archiving keeps it
               // on disk unless forced; resuming repairs or rebuilds it either way.
@@ -3918,7 +4131,16 @@ export class Daemon {
             "The private clone may contain uncommitted or unpublished work. Inspect it in the session and pass force to remove it.",
           );
         }
-        if (!force && s.worktree && s.checkout !== "clone" && this.#worktrees.isDirty(s.worktree)) {
+        // A sharing fork goes without its tree or branch: both are its owner's.
+        const borrowed = !!s.worktreeOwner;
+        if (!borrowed) this.#assertNoBorrowers(id, "cannot remove");
+        if (
+          !force &&
+          !borrowed &&
+          s.worktree &&
+          s.checkout !== "clone" &&
+          this.#worktrees.isDirty(s.worktree)
+        ) {
           throw new RpcError(
             "bad_request",
             "the worktree has uncommitted changes — commit them, or pass force to discard",
@@ -3929,7 +4151,7 @@ export class Daemon {
         return await withStoppedSessionVm(this.repoRoot, id, async () => {
           this.#lastSend.delete(id);
           this.#cacheTtlSeen.delete(id);
-          if (s.worktree) {
+          if (s.worktree && !borrowed) {
             try {
               this.#removeWorkdir(s.worktree, true);
             } catch (err) {
@@ -3948,7 +4170,7 @@ export class Daemon {
             }
           }
           let branchDeleted = false;
-          if (alsoBranch && s.branch && !s.inPlace) {
+          if (alsoBranch && s.branch && !s.inPlace && !borrowed) {
             this.#worktrees.prune(); // release the worktree's hold on the branch first
             branchDeleted = this.#worktrees.deleteBranch(s.branch);
           }
@@ -3999,11 +4221,13 @@ export class Daemon {
             // A `done` session was only interrupted, not closed — its provider
             // process is still registered with this worktree as its cwd. Close
             // it before pulling the directory out from under it.
+            if (!s.worktreeOwner) this.#assertNoBorrowers(s.id, "kept");
             if (this.#sessions.has(s.id)) await this.#sessions.close(s.id);
             await withStoppedSessionVm(this.repoRoot, s.id, async () => {
               // A kept clone may hold unpublished work; reclaim it only when forced.
               if (s.checkout === "clone" && !force) return;
-              this.#removeWorkdir(s.worktree!, force);
+              // A sharing fork's tree is its owner's to reclaim, not this row's.
+              if (!s.worktreeOwner) this.#removeWorkdir(s.worktree!, force);
               const snap = this.#registry.setFields(s.id, { worktree: null });
               this.#publishState(snap.id);
               removed.push(s.id);

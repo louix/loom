@@ -124,7 +124,8 @@ class ChatGPTProvider implements AgentProvider {
     this.capabilities = {
       liveModeSwitch: true,
       liveModelSwitch: false,
-      forking: false,
+      // `thread/fork` copies a thread into a new one (see `resume`).
+      forking: true,
       rewind: false,
       // No Loom `task` tool is mounted for Codex sessions — Codex's own
       // multi-agent activity (`subAgentActivity` items) is a different,

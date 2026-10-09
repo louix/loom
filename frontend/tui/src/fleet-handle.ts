@@ -132,6 +132,15 @@ import {
   requestsFor,
 } from "./interactions.ts";
 import { qnav, sheetKey, sheetLayout, type QNav } from "./question-sheet.ts";
+import {
+  escapeFork,
+  forkConfirm,
+  forkIsolationLocked,
+  forkWorkspaceStep,
+  pickForkStep,
+  startFork,
+  startingForkOf,
+} from "./fork-flow.ts";
 
 /** How much of each log file the `logs` command pulls into `$EDITOR`. */
 const LOG_TAIL_BYTES = 256 * 1024;
@@ -1378,18 +1387,19 @@ export const mkFleetHandle = ({
         return copyToClipboard(s.id, s.id);
       case "clearqueue":
         return void composer.clear(s.id);
-      case "fork":
-        return void show({
-          t: "confirm",
-          confirm: {
-            action: "forkSession",
-            sessionId: s.id,
-            isolation: s.isolation ?? "local",
-            title: "fork session",
-            danger: false,
-            body: "Choose the new session's isolation. The parent keeps its current environment.",
-          },
-        });
+      case "fork": {
+        // While a fork of this session is still starting, the command cancels
+        // it; the daemon then removes whatever the fork had created.
+        const starting = startingForkOf(state, s);
+        if (!starting) return void show(startFork(state, s));
+        note("Cancelling the fork…", "dim");
+        client
+          .request("session.interrupt", { id: starting.id, by: client.clientId })
+          .catch((e: unknown) =>
+            note(`couldn't cancel the fork: ${e instanceof Error ? e.message : String(e)}`, "bad"),
+          );
+        return;
+      }
       default:
         break;
     }
@@ -1607,6 +1617,16 @@ export const mkFleetHandle = ({
   const finalizeModelChoice = (dest: PickerDest, selection: ModelSelection): void => {
     const { provider, effort } = selection;
     const model = selection.model ?? "";
+    // A fork stages its handoff model and effort, then picks a workspace.
+    if (dest.t === "fork")
+      return show(
+        forkWorkspaceStep(state, {
+          ...dest.fork,
+          provider: provider ?? dest.fork.provider,
+          model: selection.model,
+          effort,
+        }),
+      );
     if (dest.t === "newSession")
       return show({
         t: "prompt",
@@ -1701,6 +1721,18 @@ export const mkFleetHandle = ({
       switchRepository?.(cur.id);
       return;
     }
+    // The fork wizard's own steps; its model and effort steps are the shared ones.
+    if (
+      dest.t === "fork" &&
+      (p.step === "provider" || p.step === "forkHistory" || p.step === "forkWorkspace")
+    ) {
+      if (cur?.disabled) {
+        overlayActed = null;
+        return note(cur.disabled, "dim");
+      }
+      return show(pickForkStep(state, p));
+    }
+    if (p.step === "forkHistory" || p.step === "forkWorkspace") return show(browse);
     if (p.step !== "undo" && p.step !== "command") {
       const result = selectModel(state, p);
       switch (result.tag) {
@@ -2092,30 +2124,41 @@ export const mkFleetHandle = ({
     overlayActed = c;
     show(browse);
     if (c.action === "forkSession") {
-      const s = sessionOf(c.sessionId);
+      const f = c.fork;
+      const s = sessionOf(f.sessionId);
       if (!s) return;
       if (forkingSessions.has(s.id)) return;
       forkingSessions.add(s.id);
-      note("Starting fork…", "dim");
+      note("Starting fork… (F on the source cancels)", "dim");
+      const handoff = f.history !== "native";
       client
         .request<SessionSnapshot>("session.fork", {
           id: s.id,
           by: client.clientId,
-          isolation: c.isolation,
+          forkId: crypto.randomUUID(),
+          isolation: f.isolation,
+          history: handoff ? "handoff" : "native",
+          workspace: f.workspace ?? "copy",
+          ...(f.provider ? { provider: f.provider } : {}),
+          ...(handoff && f.model ? { model: f.model } : {}),
+          ...(handoff && f.effort ? { effort: f.effort } : {}),
         })
         .then((r) => {
           dispatch({ t: "select", id: r.id });
           dispatch({
             t: "notice",
-            text: `forked → ${shortId(r.id)}${s.resumable === false ? " — fresh session with saved context" : ""}`,
+            text: `forked → ${shortId(r.id)} · ${handoff ? "handoff: fresh session with a summary" : "native history"}`,
             tone: "good",
           });
         })
         .catch((e: unknown) =>
           dispatch({
             t: "notice",
-            text: `fork failed: ${e instanceof Error ? e.message : String(e)}`,
-            tone: "bad",
+            text:
+              (e as { code?: unknown }).code === "cancelled"
+                ? "fork cancelled — nothing was kept"
+                : `fork failed: ${e instanceof Error ? e.message : String(e)}`,
+            tone: (e as { code?: unknown }).code === "cancelled" ? "dim" : "bad",
           }),
         )
         .finally(() => forkingSessions.delete(s.id));
@@ -2471,15 +2514,20 @@ export const mkFleetHandle = ({
     if (state.overlay.t === "confirm") {
       const confirm = state.overlay.confirm;
       if (confirm.action === "forkSession" && input === "i") {
-        const session = sessionOf(confirm.sessionId);
-        const provider = fleetProviders(state).find((x) => x.id === session?.provider);
-        if (confirm.isolation === "local" && provider?.vmUnavailableReason)
+        const f = confirm.fork;
+        const locked = forkIsolationLocked(f);
+        if (locked) return void note(locked, "dim");
+        const target = f.provider ?? sessionOf(f.sessionId)?.provider;
+        const provider = fleetProviders(state).find((x) => x.id === target);
+        if (f.isolation === "local" && provider?.vmUnavailableReason)
           return void note(provider.vmUnavailableReason, "dim");
-        return void show({
-          t: "confirm",
-          confirm: { ...confirm, isolation: confirm.isolation === "vm" ? "local" : "vm" },
-        });
+        return void show(
+          forkConfirm(state, { ...f, isolation: f.isolation === "vm" ? "local" : "vm" }),
+        );
       }
+      // Esc steps back to the workspace choice rather than out of the wizard.
+      if (confirm.action === "forkSession" && key.escape)
+        return void show(forkWorkspaceStep(state, confirm.fork));
       if (key.return) return runConfirm();
       if (
         input === "b" &&
@@ -2499,7 +2547,8 @@ export const mkFleetHandle = ({
 
     if (state.overlay.t === "picker") {
       const p = state.overlay.picker;
-      if (key.escape) return void show(escapePicker(p, state));
+      if (key.escape)
+        return void show(p.dest.t === "fork" ? escapeFork(state, p) : escapePicker(p, state));
       if (key.upArrow) return void dispatch({ t: "pickerMove", delta: -1 });
       if (key.downArrow) return void dispatch({ t: "pickerMove", delta: 1 });
       if (key.return) {

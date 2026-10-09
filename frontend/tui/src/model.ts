@@ -935,6 +935,8 @@ export const rederiveOpenPicker = (s: TuiState): Overlay => {
   if (s.overlay.t !== "picker") return s.overlay;
   const p = s.overlay.picker;
   if (p.step !== "model" && p.step !== "provider") return s.overlay;
+  // The fork wizard's provider list carries its own history hints.
+  if (p.step === "provider" && p.dest.t === "fork") return s.overlay;
   // Always the picker's own provider: a snapshot carrying another provider's
   // refreshed catalogue (one still settling after the user moved on) leaves
   // this list as it is.
@@ -957,10 +959,14 @@ export const rederiveOpenPicker = (s: TuiState): Overlay => {
 };
 
 /** A live session's current model, when the wizard is choosing for that
- *  session on its own provider — the row {@link modelPickItems} keeps. */
+ *  session (or a fork of it) on its own provider — the row
+ *  {@link modelPickItems} keeps. */
 const keptModel = (s: TuiState, dest: PickerDest, providerId: string): string | null => {
-  if (dest.t !== "session") return null;
-  const sess = fleetSessions(s).find((x) => x.id === dest.sessionId);
+  let id: string | null = null;
+  if (dest.t === "session") id = dest.sessionId;
+  else if (dest.t === "fork") id = dest.fork.sessionId;
+  if (id === null) return null;
+  const sess = fleetSessions(s).find((x) => x.id === id);
   return sess && sess.provider === providerId ? sess.model : null;
 };
 
@@ -1024,7 +1030,7 @@ export const pickerStep = (
   const tag = providerInfo(s, pid)?.tag ?? pid;
   // The ⌥p retarget wizard says so in its title — it stages onto the plan
   // review rather than switching anything live.
-  const lead = o.dest.t === "planImpl" ? "retarget · " : "";
+  const lead = { planImpl: "retarget · ", fork: "fork · " }[o.dest.t as string] ?? "";
   const items = stepItems(s, step, o.chosen, o.dest);
   const note = step === "model" ? modelPickNote(s, pid) : undefined;
   const at = o.pick ? items.findIndex((it) => it.id === o.pick) : -1;

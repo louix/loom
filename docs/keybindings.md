@@ -39,7 +39,7 @@ Consequences:
 - `Shift` is never a decorative "variant of" — it means the heavier sibling of
   the lowercase, almost always _bigger blast radius_: `q`→`Q` (also stops the
   daemon), `r`→`R` (restarts the daemon), `x` (archive, reversible) →`X`
-  (delete, permanent). `F` (hard fork) stands with them as a structural op;
+  (delete, permanent). `F` (fork) stands with them as a structural op;
   the one label-only pair is `y`→`Y` — branch name → session id.
 - Rare actions don't need a memorised key — they're one `Space`, a few letters,
   `Enter` away, and the palette teaches you the key for next time.
@@ -117,12 +117,12 @@ view. Ctrl-C belongs to the shell while it is open. You can also run
 
 ### Structural (`Shift`)
 
-| key | action                                                                                       |
-| --- | -------------------------------------------------------------------------------------------- |
-| `F` | hard fork — a new session + worktree branched off this one (aisdk only)                      |
-| `X` | delete the session — worktree + transcript go too (confirm; `b` there also drops the branch) |
-| `R` | restart the daemon (confirm)                                                                 |
-| `Q` | quit the UI **and stop the daemon** (confirm)                                                |
+| key | action                                                                                                                   |
+| --- | ------------------------------------------------------------------------------------------------------------------------ |
+| `F` | fork — native history or a handoff to any provider, into a copied or shared worktree (`F` again cancels a starting fork) |
+| `X` | delete the session — worktree + transcript go too (confirm; `b` there also drops the branch)                             |
+| `R` | restart the daemon (confirm)                                                                                             |
+| `Q` | quit the UI **and stop the daemon** (confirm)                                                                            |
 
 ### Always
 

@@ -222,6 +222,19 @@ class ClaudeCliSim {
     };
   }
 
+  /**
+   * A native history fork: `sdk.forkSession()` copies the session and a new
+   * process resumes the copy under `newId`. The copy carries no `cost-state`,
+   * so its ledger starts empty — or, with `restoreSource`, the worst case of
+   * a CLI that restored the source's total anyway.
+   */
+  fork(newId: string, restoreSource = false): this {
+    const source = this.#saved.get(this.#sessionId) ?? this.#ledger;
+    this.#sessionId = newId;
+    this.#ledger = restoreSource ? cloneLedger(source) : emptyLedger();
+    return this;
+  }
+
   /** The process ends. Only a graceful exit stamps the transcript. */
   exit(graceful = true): void {
     if (graceful) this.#saved.set(this.#sessionId, cloneLedger(this.#ledger));
@@ -598,6 +611,50 @@ test("/clear: the zeroed ledger is a reset, not a reason to stop charging", asyn
 });
 
 // --- across CLI processes ------------------------------------------------------
+
+for (const restoreSource of [false, true])
+  test(`native fork: the copy is charged only its own spend${restoreSource ? " even if the CLI restores the source's total" : ""}`, async () => {
+    await withPipeline(async (p) => {
+      await p.turn("a1");
+      await p.turn("a2");
+      const sourceRef = p.store.providerRef(ID)!;
+      const sourceCost = p.row().costUsd;
+      const sourceTotal = p.store.providerTotal(ID, sourceRef)!;
+      let copied = "";
+      __setClaudeSdk({
+        forkSession: (async (id: string) => {
+          copied = id;
+          return { sessionId: p.forkId };
+        }) as never,
+      });
+      const FORK = "loom-cost-fork";
+      p.store.create({ id: FORK, provider: "claude" });
+      p.cli.exit();
+      p.cli.fork(p.forkId, restoreSource);
+      // What the daemon's `session.fork` sends; the source's observed total
+      // rides along to show it is not used as the copy's baseline.
+      await p.mgr.resume(p.provider, {
+        sessionId: FORK,
+        providerRef: sourceRef,
+        forkHistory: true,
+        cwd: "/tmp",
+        mcpServers: [],
+        usageBaseline: sourceTotal,
+      });
+      assert.equal(copied, sourceRef, "the copy is made from the source's session");
+      assert.equal(p.mgr.snapshot(FORK)?.providerRef, p.forkId, "known before the CLI speaks");
+
+      await p.mgr.send(FORK, "continue on the fork");
+      await until(() => p.q.received() >= 1, "the fork's CLI never received the message");
+      const t = { input: 300, output: 700, cacheRead: 20_000, cacheWrite: 1_000 };
+      const own = p.cli.request("claude-sonnet", t);
+      p.q.push(p.cli.init(), p.cli.assistant("f1", t), p.cli.result());
+      await until(() => p.store.get(FORK)!.turns >= 1, "the fork's turn never settled");
+
+      near(p.store.get(FORK)!.costUsd, own, "the fork");
+      near(p.row().costUsd, sourceCost, "the source");
+    });
+  });
 
 test("undo: a resumed sdk.forkSession() fork restarts at zero and onQuerySwap carries the rest", async () => {
   await withPipeline(async (p) => {

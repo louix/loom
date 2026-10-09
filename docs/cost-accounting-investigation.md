@@ -293,8 +293,11 @@ It is also per provider session id, not per Loom session.
 - **Zeroed crash results.** `map.ts:568-579` and the clamp at `:596-601` hold
   (fixture).
 - **Subagents.** Already inside `modelUsage` and charged once (fixture). Loom
-  child sessions and forks are separate rows; Claude forks are continuation
-  sessions (`daemon.ts:3139`), so nothing is inherited. Nothing sums children
+  child sessions and forks are separate rows; Claude forks were then
+  continuation sessions (`daemon.ts:3139`), so nothing was inherited. Since
+  A8 a native Claude fork resumes a `forkSession` copy, whose ledger is seeded
+  at resume like any other, so it is not inherited either (fixture: "native
+  fork"). Nothing sums children
   in the UI.
 - **Model change and cache pricing.** The cost comes from the CLI, priced per
   model with cache reads and writes (fixture). The aisdk mapper subtracts

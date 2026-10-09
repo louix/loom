@@ -61,6 +61,8 @@ export class FakeSession implements AgentSession {
   interruptCount = 0;
   closed = false;
   readonly resumed: boolean;
+  /** For a native history fork: the provider ref whose history was copied. */
+  forkedFrom: string | null = null;
 
   /** Opt-in async gates so a test can hold `compact()` / `rewind()` open and
    *  drive `interrupt()` / `send()` against a mid-restructure session. Null
@@ -72,9 +74,14 @@ export class FakeSession implements AgentSession {
    *  adapters' A2 behaviour). */
   #compactInterrupted = false;
 
-  constructor(id: string, opts: Pick<CreateSessionOptions, "model" | "mode">, resumed = false) {
+  constructor(
+    id: string,
+    opts: Pick<CreateSessionOptions, "model" | "mode">,
+    resumed = false,
+    providerRef = `fake-${id}`,
+  ) {
     this.id = id;
-    this.providerRef = `fake-${id}`;
+    this.providerRef = providerRef;
     this.resumed = resumed;
     this.#snap = {
       status: stateStarting,
@@ -283,12 +290,18 @@ export class FakeSession implements AgentSession {
 
 export class FakeProvider implements AgentProvider {
   readonly id = "fake";
-  readonly capabilities = CAPS;
+  /** Per instance, so a test can turn on `forking` (native history forks)
+   *  for one provider without touching another. */
+  readonly capabilities: ProviderCapabilities = structuredClone(CAPS);
 
   /** What a `oneShot` session answers with (used to exercise the auto-titler). */
   titleReply = "a concise fake title";
 
   #sessions = new Map<string, FakeSession>();
+
+  /** Every create / resume asked of this provider, in order (test surface). */
+  readonly creates: CreateSessionOptions[] = [];
+  readonly resumes: SessionRef[] = [];
 
   /** Park the next `createSession()` until the returned fn is called — a test
    *  holds creation open to drive RPCs against the not-yet-attached session
@@ -307,6 +320,7 @@ export class FakeProvider implements AgentProvider {
   }
 
   async createSession(opts: CreateSessionOptions): Promise<AgentSession> {
+    if (!opts.oneShot) this.creates.push(opts);
     const s = new FakeSession(opts.sessionId, {
       mode: opts.mode,
       ...(opts.model ? { model: opts.model } : {}),
@@ -342,12 +356,18 @@ export class FakeProvider implements AgentProvider {
   }
 
   async resumeSession(ref: SessionRef): Promise<AgentSession> {
+    this.resumes.push(ref);
     if (this.#resumeGate) await this.#resumeGate;
+    if (ref.forkHistory && !this.capabilities.forking)
+      throw new Error("fake: native history forks are off (capabilities.forking)");
     const s = new FakeSession(
       ref.sessionId,
       { mode: ref.mode ?? "default", ...(ref.model ? { model: ref.model } : {}) },
       true,
+      // A native fork is a new provider session with a copy of the history.
+      ...(ref.forkHistory ? [`fake-fork-${ref.sessionId}`] : []),
     );
+    if (ref.forkHistory) s.forkedFrom = ref.providerRef;
     this.#sessions.set(s.id, s);
     return s;
   }

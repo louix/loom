@@ -449,38 +449,50 @@ export class CodexAppServerSession implements AgentSession {
     const s = new CodexAppServerSession(opts, proc, base, dispatch, networkAccess);
     try {
       await s.#initialize();
+      // A forked thread replays its copied cumulative usage like a resumed
+      // one, so both seed the baseline from that replay rather than charge it.
       s.#usageBaseline = null;
       s.#threadId = ref.providerRef;
-      const resumed = await s.#rpc.requestStartup("thread/resume", {
-        threadId: ref.providerRef,
-        cwd: ref.cwd,
-        // No reviewer: Codex restores the saved one, which is also the
-        // execution choice a saved Plan session exits to.
-        approvalPolicy: "on-request",
-        sandbox: "workspace-write",
-        config: { "sandbox_workspace_write.network_access": networkAccess },
-        excludeTurns: true,
-        ...(ref.systemPromptAppend ? { developerInstructions: ref.systemPromptAppend } : {}),
-        // No `dynamicTools` here: the generated `ThreadResumeParams` binding
-        // (Codex 0.153.2) has no such field — `thread/resume` cannot register
-        // or refresh a thread's dynamic tools at all. Codex restores whatever
-        // was registered at `thread/start` from the thread's own rollout
-        // history. A schema/description change to `commit`/`status` (see
-        // `loomDynamicTools`) therefore only reaches *new* threads; an
-        // already-persisted thread keeps serving its original registration
-        // until a fresh thread starts (Phase 6's summarize-and-restart).
-        //
-        // This also means a thread created before `ask_user`/`exit_plan`
-        // existed (pre-Phase-5) genuinely does not have them registered —
-        // Codex has no way to gain a tool it was never given at `thread/
-        // start`. `index.ts`'s `codeModeInstructions` is deliberately
-        // conservative about this on resume: it never tells the model
-        // `ask_user` is available here, even for a thread that actually does
-        // have it, because Loom has no persisted way to tell the two cases
-        // apart. Under-claiming a tool that exists is safe; over-claiming
-        // one that doesn't (and watching the model's call error) is not.
-      });
-      s.#threadId = (resumed as any)?.thread?.id ?? ref.providerRef;
+      // `thread/fork` copies the source thread's rollout into a new thread
+      // (Codex's own native fork) and loads it like `thread/resume` does; the
+      // source thread is left as it was.
+      const resumed = await s.#rpc.requestStartup(
+        ref.forkHistory ? "thread/fork" : "thread/resume",
+        {
+          threadId: ref.providerRef,
+          cwd: ref.cwd,
+          // No reviewer: Codex restores the saved one, which is also the
+          // execution choice a saved Plan session exits to.
+          approvalPolicy: "on-request",
+          sandbox: "workspace-write",
+          config: { "sandbox_workspace_write.network_access": networkAccess },
+          excludeTurns: true,
+          ...(ref.systemPromptAppend ? { developerInstructions: ref.systemPromptAppend } : {}),
+          // No `dynamicTools` here: the generated `ThreadResumeParams` binding
+          // (Codex 0.153.2) has no such field — `thread/resume` cannot register
+          // or refresh a thread's dynamic tools at all. Codex restores whatever
+          // was registered at `thread/start` from the thread's own rollout
+          // history. A schema/description change to `commit`/`status` (see
+          // `loomDynamicTools`) therefore only reaches *new* threads; an
+          // already-persisted thread keeps serving its original registration
+          // until a fresh thread starts (Phase 6's summarize-and-restart).
+          //
+          // This also means a thread created before `ask_user`/`exit_plan`
+          // existed (pre-Phase-5) genuinely does not have them registered —
+          // Codex has no way to gain a tool it was never given at `thread/
+          // start`. `index.ts`'s `codeModeInstructions` is deliberately
+          // conservative about this on resume: it never tells the model
+          // `ask_user` is available here, even for a thread that actually does
+          // have it, because Loom has no persisted way to tell the two cases
+          // apart. Under-claiming a tool that exists is safe; over-claiming
+          // one that doesn't (and watching the model's call error) is not.
+        },
+      );
+      const threadId = (resumed as any)?.thread?.id;
+      // A fork that names no new thread must not carry on as the source.
+      if (ref.forkHistory && (typeof threadId !== "string" || threadId === ref.providerRef))
+        throw new Error("codex app-server did not return a new thread id for the fork");
+      s.#threadId = threadId ?? ref.providerRef;
       await s.#establishMode(resumed, false);
       s.#idle();
       return s;

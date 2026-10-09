@@ -31,6 +31,10 @@ export const providerCapabilitiesSchema = z.object({
    *  (Codex app-server applies a mode change live but a model change only on
    *  the next turn). */
   liveModelSwitch: z.boolean(),
+  /** `resumeSession` honours {@link SessionRef.forkHistory}: the provider can
+   *  copy its own native history (Claude's session, a Codex thread) into a new
+   *  provider session. A transcript Loom owns is copied by the daemon instead
+   *  (see {@link ownsTranscript}). */
   forking: z.boolean(),
   /** `rewind(keep)` can truncate the transcript to an earlier turn (undo). */
   rewind: z.boolean(),
@@ -187,6 +191,14 @@ export const sessionRefSchema = z.object({
    * baseline from this only when the provider cannot report what it restored.
    */
   usageBaseline: providerTotalSchema.optional(),
+  /**
+   * Native history fork: copy `providerRef`'s history into a new provider
+   * session and resume the copy, leaving `providerRef` itself untouched. The
+   * session reports the copy's id as its `providerRef` as soon as it returns.
+   * Only sent to a provider whose `capabilities.forking` is true; the copy
+   * starts its own usage ledger, so `usageBaseline` (the source's) is unused.
+   */
+  forkHistory: z.boolean().optional(),
 });
 export type SessionRef = z.infer<typeof sessionRefSchema>;
 
