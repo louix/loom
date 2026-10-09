@@ -1462,6 +1462,12 @@ test("disabled commands stay described, each with the reason it cannot run", () 
   );
   assert.equal(reason(snap({ status: "idle", turns: 0 }), "undo"), "Nothing to undo yet.");
   assert.equal(reason(snap({ status: "idle" }), "clearqueue"), "No queued messages.");
+  // A provider offering one permission mode leaves nothing for ⇧⇥ to cycle to.
+  assert.equal(
+    reason(snap({ status: "idle", mode: "auto", modes: ["auto"] }), "mode"),
+    "fake offers no other permission mode",
+  );
+  assert.equal(reason(snap({ status: "idle", modes: ["default", "auto"] }), "mode"), undefined);
   const s = snap({ id: "a", status: "idle" });
   assert.equal(reason(s, "send", { archiving: ["a"] }), "Archiving…");
   // A target that left the fleet is refused, never redirected.

@@ -480,7 +480,16 @@ const sessionAvailability = (
         ),
       };
     case "mode":
-      return { disabled: first(settled, readOnly) };
+      return {
+        disabled: first(
+          settled,
+          readOnly,
+          // The provider's own modes (`SessionSnapshot.modes`) are what ⇧⇥ walks.
+          s.modes !== undefined &&
+            s.modes.filter((m) => m !== s.mode).length === 0 &&
+            `${s.provider} offers no other permission mode`,
+        ),
+      };
     case "model":
       return { disabled: first(settled, readOnly, noModels(ctx, s)) };
     case "effort":
