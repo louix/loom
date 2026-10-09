@@ -160,6 +160,16 @@
           smolvm = hostSmolvm;
           session-runtime = hostRuntimes.session-runtime;
 
+          # The standalone isolation CLI, packaged apart from loom/loomd and their
+          # application graph; it defaults to the same session runtime and smolvm.
+          loom-isolate = import ./packaging/loom-isolate.nix {
+            inherit pkgs denoDeps;
+            src = ./.;
+            version = revFor;
+            runtime = if bundleSupported then session-runtime else null;
+            smolvm = if bundleSupported then hostSmolvm else null;
+          };
+
           # A fixed-output derivation holding a populated `DENO_DIR`: every
           # npm tarball + esm module `deno.lock` pins, fetched once under a
           # hash of the lockfile's own content. `deno install --frozen`
