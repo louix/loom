@@ -222,6 +222,7 @@ class Pipeline {
       onStatus: () => {},
       onUsage: (id, delta: UsageDelta) => this.store.addUsage(id, delta),
       onResult: () => {},
+      onTurnCompleted: () => {},
       onOverlay: () => {},
       onProviderRef: () => {},
       onMode: () => {},
