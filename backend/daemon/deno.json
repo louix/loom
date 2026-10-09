@@ -12,6 +12,7 @@
     "./daemon/lifecycle": "./src/daemon/lifecycle.ts",
     "./daemon/model-catalog": "./src/daemon/model-catalog.ts",
     "./daemon/prompt": "./src/daemon/prompt.ts",
+    "./daemon/provider-color": "./src/daemon/provider-color.ts",
     "./daemon/provider-registry": "./src/daemon/provider-registry.ts",
     "./daemon/registry": "./src/daemon/registry.ts",
     "./daemon/rpc": "./src/daemon/rpc.ts",

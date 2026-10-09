@@ -116,9 +116,7 @@ import {
 } from "@loom/core/types";
 import { acquirePidfile, IdleTimer, releasePidfile, type PidfileInfo } from "./lifecycle.ts";
 import { repoInstructionsFor, systemPromptAppendFor } from "./prompt.ts";
-
-/** Auto-assigned Fleet-row id colours for aisdk providers, in config order. */
-const PROVIDER_PALETTE = ["cyan", "magenta", "yellow", "green", "blue", "red"];
+import { providerColor } from "./provider-color.ts";
 
 const EFFORT_LEVELS: readonly EffortLevel[] = ["low", "medium", "high", "xhigh", "max"];
 
@@ -1193,13 +1191,9 @@ export class Daemon {
     // read like a broken catalog. The pin still seeds new sessions below.
     const claudeModels = claude.models;
 
-    // `paletteIx` walks PROVIDER_PALETTE for any provider without an explicit
-    // colour — shared across named Claude profiles and aisdk profiles so the
-    // Fleet-row tints don't collide. The base `claude` id stays plain ("").
-    let paletteIx = 0;
-    const autoColor = (explicit: string): string =>
-      explicit || (PROVIDER_PALETTE[paletteIx++ % PROVIDER_PALETTE.length] ?? "");
-
+    // Any provider without an explicit colour gets one hashed from its id
+    // (`providerColor`), so adding, removing or reordering profiles never
+    // repaints the others. The base `claude` id stays plain ("").
     const out: ProviderInfo[] = this.config.claudeProfiles
       .filter((profile) => this.#providers.has(claudeProfileId(profile)))
       .map((profile) => {
@@ -1219,7 +1213,7 @@ export class Daemon {
             ? { vmUnavailableReason: this.#providers.vmUnavailableReason(id)! }
             : {}),
           tag: profile.tag ?? (profile.name || "Claude"),
-          color: id === "claude" ? profile.color : autoColor(profile.color),
+          color: id === "claude" ? profile.color : providerColor(id, profile.color),
           isDefault: def === id,
           ...(account ? { account: { loginMethod: account.loginMethod, org: account.org } } : {}),
         };
@@ -1266,7 +1260,7 @@ export class Daemon {
           ? { vmUnavailableReason: this.#providers.vmUnavailableReason(id)! }
           : {}),
         tag: p.tag,
-        color: autoColor(p.color),
+        color: providerColor(id, p.color),
         isDefault: def === id,
       });
     }

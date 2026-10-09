@@ -96,8 +96,8 @@ export interface AisdkProfile {
   tag: string;
   /**
    * Colour for this provider's session ids in the Fleet pane. One of Ink's
-   * names (cyan / magenta / yellow / green / blue / red …); "" → auto-assign
-   * from a palette in config order.
+   * names (cyan / magenta / yellow / green / blue / red …); "" → a palette
+   * colour hashed from the provider id, stable across config order and restarts.
    */
   color: string;
   /**

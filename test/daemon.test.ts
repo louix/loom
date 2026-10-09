@@ -20,6 +20,7 @@ import { loomPaths } from "@loom/core/paths";
 import { stateIdle, stateRunning } from "@loom/core/session-state";
 import type { FakeProvider } from "@loom/connector-mock";
 import { Daemon } from "@loom/daemon/daemon/daemon";
+import { providerColor } from "@loom/daemon/daemon/provider-color";
 import { makeHarness, type Harness } from "@loom/harness";
 
 /** Minimal OpenAI-style `/v1/models` endpoint; returns its base URL + a close fn.
@@ -527,12 +528,44 @@ test("providers.list reports claude plus configured aisdk profiles with palette 
     assert.equal(byId.get("claude")?.modelsLoading, undefined); // probe skipped → not "loading"
     assert.equal(byId.get("openai")?.isDefault, true);
     assert.equal(byId.get("claude")?.isDefault, false);
-    // first aisdk profile gets the first palette colour; explicit wins
-    assert.equal(byId.get("openai")?.color, "cyan");
+    // a profile without a colour gets the one its id hashes to; explicit wins
+    assert.equal(byId.get("openai")?.color, providerColor("openai"));
     assert.equal(byId.get("deepseek")?.color, "red");
   } finally {
     await hh.cleanup();
   }
+});
+
+test("providers.list default colours follow provider ids, not config order", async () => {
+  const profile = (id: string, color = "") =>
+    `"${id}": { "base_url": "https://${id}.example/v1", "model": "m"${
+      color ? `, "color": "${color}"` : ""
+    } }`;
+  const colours = async (profiles: string[]): Promise<Map<string, string>> => {
+    const hh = await makeHarness({
+      config: `{ "providers": { "openai_compatible": { "profiles": { ${profiles.join(", ")} } } } }`,
+    });
+    try {
+      const c = await LoomClient.connect({
+        repoRoot: hh.repoRoot,
+        sockPath: hh.sockPath,
+        autospawn: false,
+      });
+      const list = await c.request<Array<{ id: string; color: string }>>("providers.list");
+      await c.close();
+      return new Map(list.map((p) => [p.id, p.color]));
+    } finally {
+      await hh.cleanup();
+    }
+  };
+  const forward = await colours([profile("alpha"), profile("beta"), profile("gamma", "#ff8800")]);
+  // Reordered, one removed: a fresh daemon over the new config repaints nothing.
+  const reordered = await colours([profile("gamma", "#ff8800"), profile("beta")]);
+  assert.equal(forward.get("alpha"), providerColor("alpha"));
+  assert.equal(forward.get("beta"), providerColor("beta"));
+  assert.equal(reordered.get("beta"), forward.get("beta"));
+  assert.equal(forward.get("gamma"), "#ff8800", "an explicit colour still wins");
+  assert.equal(reordered.get("gamma"), "#ff8800");
 });
 
 test("providers.list exposes opt-in echo and respects visibility and access settings", async () => {
