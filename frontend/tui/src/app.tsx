@@ -396,6 +396,6 @@ const InputArea = ({
   return pane ? (
     <PromptPane state={view.ui} width={width} modes={modes} />
   ) : (
-    <FooterArea state={view.ui} width={width} modes={modes} outbox={outbox} />
+    <FooterArea state={view.ui} width={width} modes={modes} outbox={outbox} bar={view.bar} />
   );
 };

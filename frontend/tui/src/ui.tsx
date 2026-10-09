@@ -153,7 +153,7 @@ export const Hints = ({
 }): ReactNode => (
   <Line>
     {items.map(({ keys, label }, i) => (
-      <Text key={keys}>
+      <Text key={i}>
         {i > 0 && <Text tone="faint">{" ".repeat(gap) + "·" + " ".repeat(gap)}</Text>}
         <Text tone="accent">{keys}</Text>
         <Text tone="dim">{" ".repeat(gap) + label}</Text>

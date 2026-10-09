@@ -2,11 +2,14 @@ import type { SessionInspection } from "../../../core/src/session-inspection.ts"
 import { repositoryPicker } from "./repositories.ts";
 import { SESSION_TABS } from "./session-tabs.tsx";
 import {
+  barHits,
   describeCommand,
   describeCommands,
   keyAction,
   paletteActions,
   type ActName,
+  type BarHit,
+  type BarItem,
   type CommandContext,
   type CommandSurface,
 } from "./commands.ts";
@@ -46,6 +49,7 @@ import { setThemeMode, shortId, truncate, modeChipText } from "./theme.ts";
 import { loadPersistedTheme, persistTheme } from "./theme-store.ts";
 import {
   detailLayout,
+  footerBar,
   type DetailLayout,
   promptPaneRows,
   newSessionLayout,
@@ -189,6 +193,9 @@ export const NARROW_COLS = 80;
  */
 export type LayoutView = "overview" | "session";
 
+/** Anything a left click can land on in a frame. */
+export type ViewHit = FleetHit | BarHit;
+
 /** Which body the layout draws — each overlay owns the screen, and carries what
  *  it draws, so the renderer never has to guard a payload against a mode.
  *  `fleetOnly` is the narrow `overview` (the fleet list alone); `sessionPane`
@@ -229,9 +236,13 @@ export interface FleetView {
   readonly rightW: number;
   readonly splitLogH: number;
   readonly logPage: number;
-  /** Clickable regions for this frame — FLEET rows + the Detail `[mode]` chip.
-   *  The keymap's mouse branch hit-tests a left click against these. */
-  readonly hits: readonly FleetHit[];
+  /** The footer's key bar for this frame — the same items its click targets
+   *  were measured from (see {@link footerBar}). */
+  readonly bar: readonly BarItem[];
+  /** Clickable regions for this frame — FLEET rows, the Detail `[mode]` chip,
+   *  session tabs and key-bar commands. The keymap's mouse branch hit-tests a
+   *  left click against these. */
+  readonly hits: readonly ViewHit[];
 }
 
 export interface FleetHandle {
@@ -302,6 +313,7 @@ const deriveView = (
   planScroll: number,
   layoutView: LayoutView,
   dims: { cols: number; rows: number },
+  bar: readonly BarItem[] = [],
 ): Omit<FleetView, "inspectionText" | "inspectionScroll"> => {
   const sel = selectedSession(state);
   mode ??= sel?.pendingMode ?? null;
@@ -392,7 +404,7 @@ const deriveView = (
   // Clickable regions — screen coordinates the keymap's mouse branch hit-tests
   // against. The body starts at screen row 2 (Header is one row); Ink clips the
   // fleet list past `bodyH + 1`.
-  const hits: FleetHit[] = [];
+  const hits: ViewHit[] = [];
   const fleetGeom = { originX: 1, originY: 2, maxY: bodyH + 1 };
   if (body.t === "split") {
     hits.push(...fleetHits({ ...state, find }, { ...fleetGeom, listW: leftW }, layout));
@@ -436,6 +448,8 @@ const deriveView = (
         hits.push({ kind: "promptMode", y, x0, x1: Math.min(right, x0 + chip.length - 1) });
     }
   }
+  // The key bar is the frame's last row, inside the footer's one-column padding.
+  hits.push(...barHits(bar, rows, 2, cols - 1));
 
   return {
     ui: state,
@@ -456,6 +470,7 @@ const deriveView = (
     rightW,
     splitLogH,
     logPage,
+    bar,
     hits,
   };
 };
@@ -706,6 +721,18 @@ export const mkFleetHandle = ({
       inspectionOffsets[state.sessionTab] = Math.max(0, Math.min(max, inspectionOffset() + by));
     publish();
   };
+  /** What command availability reads: the state, the outboxes and the
+   *  capabilities this client was started with. */
+  const commandCtx = (s: TuiState = state): CommandContext => ({
+    ...s,
+    outbox: composer.get(),
+    features: {
+      logs: logs !== undefined,
+      shell: openShell !== undefined,
+      prepareEnvironment: prepareEnvironment !== undefined,
+      switchRepository: repositories !== undefined && switchRepository !== undefined,
+    },
+  });
   const view = (): FleetView => ({
     inspectionText: inspectionText(),
     inspectionScroll: inspectionOffset(),
@@ -718,6 +745,7 @@ export const mkFleetHandle = ({
       planScroll,
       layoutView,
       { ...dims, rows: dims.rows - (environmentWarning ? 2 : 0) },
+      footerBar(commandCtx(), modes.get()),
     ),
   });
   const store = mkStore(view());
@@ -764,19 +792,6 @@ export const mkFleetHandle = ({
     planScroll = Math.max(0, planScroll + by);
     publish();
   };
-
-  /** What command availability reads: the state, the outboxes and the
-   *  capabilities this client was started with. */
-  const commandCtx = (s: TuiState = state): CommandContext => ({
-    ...s,
-    outbox: composer.get(),
-    features: {
-      logs: logs !== undefined,
-      shell: openShell !== undefined,
-      prepareEnvironment: prepareEnvironment !== undefined,
-      switchRepository: repositories !== undefined && switchRepository !== undefined,
-    },
-  });
 
   /** The Space palette's rows: every relevant command for `target`. */
   const paletteItems = (target: string | null, s: TuiState = state): PickItem[] =>
@@ -2124,6 +2139,14 @@ export const mkFleetHandle = ({
         const hit = store.get().hits.find((h) => row === h.y && col >= h.x0 && col <= h.x1);
         if (!hit) return;
         if (hit.kind === "promptMode") return handleKey("", { tab: true, shift: true } as Key);
+        if (hit.kind === "bar") {
+          // A key-bar chip runs its command for the target the bar was drawn
+          // for — revalidated now, like a palette pick. Under a send composer
+          // the draft rides along, as with the chip's key.
+          const p = openPrompt(state.overlay);
+          if (!p) return execute(hit.command.id, hit.command.target);
+          return execute(hit.command.id, hit.command.target, "composer", p.buffer.text);
+        }
         if (state.overlay.t !== "browse") return;
         if (hit.kind === "sessionTab") return void dispatch({ t: "sessionTab", tab: hit.tab });
         if (hit.kind === "session") return void dispatch({ t: "select", id: hit.id });

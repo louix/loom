@@ -12,8 +12,10 @@
  * a target that changed state gets the new disabled reason instead of the run.
  *
  * Adding a command is one entry in {@link COMMANDS} plus its availability in
- * {@link sessionAvailability} or {@link otherAvailability}; nothing else needs to learn about it.
+ * {@link sessionAvailability} or {@link otherAvailability}; nothing else
+ * needs to learn about it.
  */
+import stringWidth from "string-width";
 import { absurd } from "@loom/core/absurd";
 import type { SessionSnapshot } from "@loom/core/wire";
 import type { KeyLike } from "./editor.ts";
@@ -699,6 +701,46 @@ export interface BarItem {
   readonly label: string;
   readonly command?: { readonly id: ActName; readonly target: string | null };
 }
+
+/** A key-bar chip on screen: one row, columns `x0..x1` inclusive, 1-based —
+ *  the space SGR mouse reports use. */
+export interface BarHit {
+  readonly kind: "bar";
+  readonly y: number;
+  readonly x0: number;
+  readonly x1: number;
+  readonly command: { readonly id: ActName; readonly target: string | null };
+}
+
+/**
+ * Where the clickable chips of a bar drawn by `Hints` (gap 1) land when its
+ * row starts at column `x`: `keys label`, separated by ` · `. Measured from
+ * the same items the bar draws, so a click resolves to the chip on screen;
+ * chips past `right` (truncated away) are not targets.
+ */
+export const barHits = (
+  items: readonly BarItem[],
+  y: number,
+  x: number,
+  right: number,
+): BarHit[] => {
+  const out: BarHit[] = [];
+  let at = x;
+  items.forEach((item, i) => {
+    if (i > 0) at += 3;
+    const width = stringWidth(item.keys) + 1 + stringWidth(item.label);
+    if (item.command && at <= right)
+      out.push({
+        kind: "bar",
+        y,
+        x0: at,
+        x1: Math.min(right, at + width - 1),
+        command: item.command,
+      });
+    at += width;
+  });
+  return out;
+};
 
 const chip = (a: CommandAction): BarItem => ({
   keys: a.keys,

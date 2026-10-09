@@ -26,7 +26,7 @@ export { PaletteContext } from "./ui.tsx";
 import { markdownText, plainText } from "./markdown.ts";
 import type { TextRow } from "./text-layout.ts";
 import { rowLayout, type LayoutRow } from "./layout.ts";
-import { footerHints } from "./commands.ts";
+import { composerBar, footerHints, type BarItem, type CommandContext } from "./commands.ts";
 import { absurd } from "@loom/core/absurd";
 import { cacheHitRate } from "@loom/core/cache";
 import type { DoctorReport, SessionSnapshot } from "@loom/core/wire";
@@ -880,30 +880,47 @@ const pendingPromptHint = (p: Prompt): string | null => {
   return null;
 };
 
-const promptHints = (
+/**
+ * The bar under an open reply prompt. Its editing controls are the prompt's
+ * own; on a send prompt the session's commands follow — the same descriptions
+ * the fleet's bar and keymap use for that session, under their composer keys,
+ * so a command offered here is offered (or not) for the same reason there.
+ */
+export const promptBar = (
   p: Exclude<Prompt, { t: "new" }>,
-  queued: number,
-  sessionMode?: string | null,
-  pendingMode?: SessionMode | null,
-): string => {
+  ctx: CommandContext,
+  modes: ModeChoices = {},
+): BarItem[] => {
   const pending = pendingPromptHint(p);
-  if (pending) return pending;
-  const kind = p.t === "session" || p.t === "request" ? p.kind : p.t;
-  const bits = [`enter ${MODE_HINT[kind]}`, "⌥⏎ newline", "⌥e editor"];
-  bits.push("⌥o log");
+  if (pending) return [{ keys: "", label: pending }];
+  const items: BarItem[] = [
+    { keys: "enter", label: MODE_HINT[promptKind(p) as Exclude<PromptKind, "new">] },
+    { keys: "⌥⏎", label: "newline" },
+    { keys: "⌥e", label: "editor" },
+    { keys: "⌥o", label: "log" },
+  ];
   if (p.t === "session" && p.kind === "send") {
-    // ⇧⇥ re-modes the live session, ⌥m swaps its model, ⌥p its provider — all
-    // without leaving the half-typed message.
-    bits.push(
-      `⇧⇥ mode:${modeText(sessionMode, pendingMode)}`,
-      "⌥m model",
-      "⌥p provider",
-      "↑↓ history",
-    );
-    if (queued > 0) bits.push(`⌥x clear ${queued} queued`);
+    const sess = fleetSessions(ctx).find((x) => x.id === p.sessionId);
+    for (const item of composerBar(ctx, p.sessionId)) {
+      if (item.command?.id === "mode") {
+        const pending = pendingMode(modes, sess?.id) ?? sess?.pendingMode;
+        items.push({ ...item, label: `mode:${modeText(sess?.mode, pending)}` });
+      } else if (item.command?.id === "clearqueue")
+        items.push({ ...item, label: `clear ${queueFor(ctx, p.sessionId).length} queued` });
+      else items.push(item);
+    }
+    items.push({ keys: "↑↓", label: "history" });
   }
-  bits.push("esc cancel");
-  return bits.join("  ·  ");
+  items.push({ keys: "esc", label: "cancel" });
+  return items;
+};
+
+/** The footer's key bar for whatever is open: a reply prompt's, nothing under
+ *  the floating new-session prompt, else the fleet's or the overlay's. */
+export const footerBar = (ctx: CommandContext, modes: ModeChoices = {}): BarItem[] => {
+  const p = openPrompt(ctx.overlay);
+  if (p?.t === "new") return [];
+  return p ? promptBar(p, ctx, modes) : footerHints(ctx);
 };
 
 /** Glyph prefixing a footer notice, by tone — a quiet "message line" marker
@@ -946,35 +963,29 @@ export const FooterArea = ({
   width,
   outbox = {},
   modes = {},
+  bar,
 }: {
   state: TuiState;
   width: number;
   modes?: ModeChoices;
   outbox?: Outboxes;
+  /** The bar the frame's click targets were measured from (see `FleetView`);
+   *  computed here when the caller has none. */
+  bar?: readonly BarItem[];
 }): ReactNode => {
   const palette = useTheme();
   const p = openPrompt(state.overlay);
-  if (p && p.t !== "new") {
+  if (p?.t === "new") return <Box height={2} />;
+  const items = bar ?? footerBar({ ...state, outbox }, modes);
+  if (p) {
     // A reply to a session — the input lives on that session's EVENTS pane
     // (`PromptPane`, under the log); the footer keeps only the hints row.
-    const send = p.t === "session" && p.kind === "send";
-    const sess = send ? fleetSessions(state).find((x) => x.id === p.sessionId) : undefined;
     return (
       <Box width={width} paddingX={1}>
-        <Line tone="faint">
-          {promptHints(
-            p,
-            send ? queueFor({ ...state, outbox }, p.sessionId).length : 0,
-            sess?.mode,
-            pendingMode(modes, sess?.id) ?? sess?.pendingMode,
-          )}
-        </Line>
+        <Hints items={items} />
       </Box>
     );
   }
-  if (p?.t === "new") return <Box height={2} />;
-
-  const hints = footerHints(state);
   return (
     <Box flexDirection="column" width={width}>
       {/* A transient notice owns this full-width row rather than hanging off the
@@ -993,7 +1004,7 @@ export const FooterArea = ({
       ) : null}
       <Text tone="faint">{"─".repeat(width)}</Text>
       <Box paddingX={1}>
-        <Hints items={hints} />
+        <Hints items={items} />
       </Box>
     </Box>
   );

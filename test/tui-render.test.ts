@@ -3963,6 +3963,54 @@ test("a palette pick acts on the session it opened for, revalidated when it runs
   }
 });
 
+test("the key bar projects the command model, and its chips run their commands", () => {
+  const fake = mkFakeClient();
+  const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+  const stop = handle.effectStart();
+  const press = (input: string, key = {}) => handle.handleKey(input, key as Key);
+  const chips = () => handle.getView().bar.map((item) => item.label);
+  const click = (id: string) => {
+    const hit = handle.getView().hits.find((h) => h.kind === "bar" && h.command.id === id);
+    assert.ok(hit, `no ${id} chip in ${chips().join(" · ")}`);
+    press(`[<0;${hit.x0};${hit.y}M`);
+  };
+  try {
+    fake.deliver(fleetOf(testSession({ id: "a", status: stateRunning })));
+    // The browse bar is the enabled bar commands, in the model's order.
+    assert.deepEqual(chips(), ["interrupt", "send", "new", "find", "quit", "more"]);
+    const hits = handle.getView().hits.filter((h) => h.kind === "bar");
+    assert.ok(
+      hits.every((h) => h.y === 40),
+      "the bar is the frame's last row",
+    );
+    assert.ok(
+      hits.every((h, i) => i === 0 || h.x0 > hits[i - 1]!.x1 + 1),
+      "chips don't overlap",
+    );
+
+    // The composer offers the same session commands, under its own keys.
+    press("", { return: true });
+    press("draft");
+    assert.ok(chips().includes("interrupt"));
+    assert.ok(handle.getView().bar.some((i) => i.keys === "⌥i" && i.command?.target === "a"));
+    assert.ok(!chips().includes("provider"), "a running turn can't switch provider here either");
+    click("interrupt");
+    assert.equal(fake.of("session.interrupt").length, 1);
+    assert.equal(openPrompt(handle.getView().ui.overlay)?.buffer.text, "draft", "draft kept");
+    press("", { escape: true });
+
+    // A chip's click is revalidated: an idle session no longer offers interrupt,
+    // and a click on the fleet bar opens the palette for the selection.
+    fake.deliver(fleetOf(testSession({ id: "a", status: stateIdle })));
+    assert.ok(!chips().includes("interrupt"));
+    click("palette");
+    const o = handle.getView().ui.overlay;
+    assert.deepEqual(o.t === "picker" ? o.picker.dest : null, { t: "command", target: "a" });
+  } finally {
+    stop();
+  }
+});
+
 test("number tabs preserve navigation, isolate scroll, and leave text editing alone", async () => {
   const fake = mkFakeClient();
   fake.deliver(
