@@ -3060,8 +3060,9 @@ test("a model picker opened while the catalog loads resolves when the fresh list
       })),
     ),
   );
-  assert.equal(modelPickEmptyText(failed, "claude"), diagnostic);
-  assert.equal(pickerOf(failed)?.emptyText, diagnostic);
+  // The diagnostic, with the way out: Refresh models retries.
+  assert.equal(modelPickEmptyText(failed, "claude"), `${diagnostic} — ⌥r to retry`);
+  assert.equal(pickerOf(failed)?.emptyText, `${diagnostic} — ⌥r to retry`);
 
   // …then the daemon's settle push lands — the same picker fills in.
   const settled = reduce(opened, fleet([], PROVIDERS));

@@ -20,6 +20,7 @@ import type {
 import type { ClientState, ConnectionError } from "@loom/client";
 import { foldLoadable, loadableIdle } from "@loom/core/loadable";
 import type { SessionMode } from "@loom/core/types";
+import { DEFAULT_EFFORT_LEVELS, modelEfforts } from "@loom/core/model-catalogue";
 import { buffer, type Buffer } from "./editor.ts";
 import {
   browse,
@@ -856,26 +857,72 @@ export const providerPickItems = (s: TuiState): PickItem[] => {
   }));
 };
 
-export const modelPickItems = (s: TuiState, providerId: string): PickItem[] => {
+/**
+ * The model rows every selector shows for `providerId` — new session, live
+ * switch and plan retarget alike — straight from that provider's catalogue:
+ * its labels and descriptions over stable ids. `keep` is a session's current
+ * model; when the catalogue no longer lists it, it stays choosable and says
+ * so rather than vanishing (nothing is substituted for it).
+ */
+export const modelPickItems = (
+  s: TuiState,
+  providerId: string,
+  keep?: string | null,
+): PickItem[] => {
   const p = providerInfo(s, providerId);
   if (!p) return [];
-  if (p.modelChoices && p.modelChoices.length > 0) {
-    return p.modelChoices.map((c) => ({
-      id: c.id,
-      label: c.label,
-      ...(c.context ? { hint: `${humanTokens(c.context)} ctx` } : {}),
-    }));
-  }
-  return p.models.map((m) => ({ id: m, label: m }));
+  const items: PickItem[] = p.modelChoices?.length
+    ? p.modelChoices.map((c) => {
+        const hint = [c.context ? `${humanTokens(c.context)} ctx` : "", c.description ?? ""]
+          .filter(Boolean)
+          .join(" · ");
+        return { id: c.id, label: c.label, ...(hint ? { hint } : {}) };
+      })
+    : p.models.map((m) => ({ id: m, label: m }));
+  if (keep && items.length > 0 && !items.some((it) => it.id === keep))
+    items.push({ id: keep, label: keep, hint: "current · no longer listed" });
+  return items;
+};
+
+/** The model picker's status line for `providerId`: a refresh in progress,
+ *  or why the last one failed while an older list is still shown. */
+export const modelPickNote = (s: TuiState, providerId: string): string | undefined => {
+  const p = providerInfo(s, providerId);
+  if (p?.modelsLoading) return "refreshing the model catalogue… · ⌥r cancel";
+  if (p?.modelsError && modelPickItems(s, providerId).length > 0)
+    return `last refresh failed: ${p.modelsError} · ⌥r retry`;
+  return undefined;
+};
+
+/**
+ * What a finished Refresh models says for `providerId`: how many models it
+ * lists now, and how many of that provider's sessions run a model it no
+ * longer lists — which keep it (their settings are never rewritten).
+ */
+export const modelRefreshSummary = (
+  s: TuiState,
+  providerId: string,
+  models: readonly string[],
+): string => {
+  const tag = providerInfo(s, providerId)?.tag || providerId;
+  const listed = new Set(models);
+  const stale = fleetSessions(s).filter(
+    (x) => x.provider === providerId && x.model && !listed.has(x.model),
+  ).length;
+  const kept =
+    stale > 0
+      ? ` · ${stale} session${stale === 1 ? "" : "s"} keep${stale === 1 ? "s" : ""} a model no longer listed`
+      : "";
+  return `${tag}: ${models.length} model${models.length === 1 ? "" : "s"}${kept}`;
 };
 
 /** Message for an empty model picker — why there's nothing to pick. */
 export const modelPickEmptyText = (s: TuiState, providerId: string): string => {
   if (providerInfo(s, providerId)?.modelsLoading) {
-    return "loading the model catalog — the list fills in when detection completes";
+    return "loading the model catalogue — the list fills in when discovery completes";
   }
   const error = providerInfo(s, providerId)?.modelsError;
-  if (error) return error;
+  if (error) return `${error} — ⌥r to retry`;
   if (isClaudeId(providerId)) return "claude uses its configured model — enter to continue";
   return `no models detected for "${providerId}" — check \`loom models ${providerId}\` or set model / models in config; enter to use the provider default`;
 };
@@ -888,19 +935,34 @@ export const rederiveOpenPicker = (s: TuiState): Overlay => {
   if (s.overlay.t !== "picker") return s.overlay;
   const p = s.overlay.picker;
   if (p.step !== "model" && p.step !== "provider") return s.overlay;
+  // Always the picker's own provider: a snapshot carrying another provider's
+  // refreshed catalogue (one still settling after the user moved on) leaves
+  // this list as it is.
   const providerId = p.chosen.provider ?? "";
-  const items = p.step === "model" ? modelPickItems(s, providerId) : providerPickItems(s);
+  const items =
+    p.step === "model"
+      ? modelPickItems(s, providerId, keptModel(s, p.dest, providerId))
+      : providerPickItems(s);
   const cur = pickerCurrent(p)?.id;
   const at = cur ? items.findIndex((it) => it.id === cur) : -1;
   // The list loaded — the empty-state note is dead.
   const emptyText =
     p.step === "model" && items.length === 0 ? modelPickEmptyText(s, providerId) : null;
-  return { t: "picker", picker: { ...p, items, index: at >= 0 ? at : 0, emptyText } };
+  const { note: _note, ...rest } = p;
+  const note = p.step === "model" ? modelPickNote(s, providerId) : undefined;
+  return {
+    t: "picker",
+    picker: { ...rest, items, index: at >= 0 ? at : 0, emptyText, ...(note ? { note } : {}) },
+  };
 };
 
-/** The default effort levels offered when a model supports effort but doesn't
- *  enumerate which ones — the SDK's full `EffortLevel` set. */
-const DEFAULT_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"];
+/** A live session's current model, when the wizard is choosing for that
+ *  session on its own provider — the row {@link modelPickItems} keeps. */
+const keptModel = (s: TuiState, dest: PickerDest, providerId: string): string | null => {
+  if (dest.t !== "session") return null;
+  const sess = fleetSessions(s).find((x) => x.id === dest.sessionId);
+  return sess && sess.provider === providerId ? sess.model : null;
+};
 
 /** Whether `providerId`'s `modelId` accepts a thinking-effort level, per the
  *  discovered catalog — the gate for offering the `effort` picker step. */
@@ -913,7 +975,9 @@ export const modelSupportsEffort = (s: TuiState, providerId: string, modelId: st
 
 export const effortPickItems = (s: TuiState, providerId: string, modelId: string): PickItem[] => {
   const choice = providerInfo(s, providerId)?.modelChoices?.find((c) => c.id === modelId);
-  const levels = choice?.effortLevels?.length ? choice.effortLevels : DEFAULT_EFFORT_LEVELS;
+  // The catalogue's own rule for which levels a model takes — shared with
+  // the daemon's effort validation, so a level offered here is accepted there.
+  const levels = choice?.supportsEffort ? modelEfforts(choice) : DEFAULT_EFFORT_LEVELS;
   return levels.map((lvl) => ({
     id: lvl,
     label: lvl,
@@ -928,9 +992,11 @@ const stepItems = (
   s: TuiState,
   step: WizardStep,
   chosen: { provider: string | null; model: string | null },
+  dest: PickerDest,
 ): PickItem[] => {
   if (step === "provider") return providerPickItems(s);
-  if (step === "model") return modelPickItems(s, chosen.provider ?? "");
+  if (step === "model")
+    return modelPickItems(s, chosen.provider ?? "", keptModel(s, dest, chosen.provider ?? ""));
   return effortPickItems(s, chosen.provider ?? "", chosen.model ?? "");
 };
 
@@ -959,7 +1025,8 @@ export const pickerStep = (
   // The ⌥p retarget wizard says so in its title — it stages onto the plan
   // review rather than switching anything live.
   const lead = o.dest.t === "planImpl" ? "retarget · " : "";
-  const items = stepItems(s, step, o.chosen);
+  const items = stepItems(s, step, o.chosen, o.dest);
+  const note = step === "model" ? modelPickNote(s, pid) : undefined;
   const at = o.pick ? items.findIndex((it) => it.id === o.pick) : -1;
   return {
     t: "picker",
@@ -971,6 +1038,7 @@ export const pickerStep = (
       chosen: o.chosen,
       from: o.from,
       ...(step === "model" && items.length === 0 ? { emptyText: modelPickEmptyText(s, pid) } : {}),
+      ...(note ? { note } : {}),
       index: Math.max(0, at),
     }),
   };

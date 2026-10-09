@@ -24,6 +24,7 @@ import { liveQNav, questionsOf } from "./interactions.ts";
 import { nextThemeMode } from "./theme.ts";
 import {
   childrenOf,
+  defaultProviderId,
   fleetProviders,
   fleetSessions,
   modelPickItems,
@@ -241,6 +242,13 @@ const COMMANDS = {
     label: "verbosity",
     description: "Cycle the chat between full, chat only and chat with tool calls.",
   },
+  refreshModels: {
+    scope: "view",
+    keys: "",
+    label: "refresh models",
+    description:
+      "Rediscover the selected session's provider's models (the default provider's with none selected); ⌥r in a model picker.",
+  },
   new: { scope: "app", keys: "n", label: "new", description: "Start a new session." },
   find: {
     scope: "app",
@@ -378,6 +386,47 @@ const requestFirst = (s: SessionSnapshot): string | undefined => {
     default:
       return "Approve or deny the pending request first.";
   }
+};
+
+/** The provider Refresh models acts on for `target`: that session's, else
+ *  the default one. A model picker refreshes its own provider instead. */
+export const refreshProvider = (ctx: CommandContext, target: string | null): string | null => {
+  const s = target === null ? undefined : fleetSessions(ctx).find((x) => x.id === target);
+  if (s) return s.provider;
+  return fleetProviders(ctx).length > 0 ? defaultProviderId(ctx) : null;
+};
+
+/** Refresh models for one provider as it stands: the action it would take
+ *  (a running refresh turns it into a cancel), its label, and why not. The
+ *  palette command and a model picker's ⌥r both read this. */
+export interface ModelRefresh {
+  readonly provider: string | null;
+  readonly cancel: boolean;
+  readonly label: string;
+  readonly disabled?: string;
+}
+export const modelRefresh = (ctx: CommandContext, provider: string | null): ModelRefresh => {
+  const p = provider === null ? null : providerInfo(ctx, provider);
+  if (ctx.fleet.tag !== "data")
+    return { provider, cancel: false, label: "refresh models", disabled: "Not connected." };
+  if (!p)
+    return {
+      provider,
+      cancel: false,
+      label: "refresh models",
+      disabled: "No provider to refresh.",
+    };
+  const tag = p.tag || p.id;
+  if (p.modelsRefreshUnavailable)
+    return {
+      provider,
+      cancel: false,
+      label: `refresh models · ${tag}`,
+      disabled: p.modelsRefreshUnavailable,
+    };
+  if (p.modelsLoading) return { provider, cancel: true, label: `cancel model refresh · ${tag}` };
+  if (p.modelsError) return { provider, cancel: false, label: `retry model refresh · ${tag}` };
+  return { provider, cancel: false, label: `refresh models · ${tag}` };
 };
 
 const noModels = (ctx: CommandContext, s: SessionSnapshot): string | undefined =>
@@ -576,6 +625,10 @@ const otherAvailability = (
       return { disabled: target !== ctx.selectedId ? "Select the session to view it." : undefined };
     case "layout":
       return { disabled: sel ? undefined : "Select a session first." };
+    case "refreshModels": {
+      const r = modelRefresh(ctx, refreshProvider(ctx, target));
+      return { label: r.label, disabled: r.disabled };
+    }
     case "new":
     case "find":
     case "quit":
@@ -800,12 +853,19 @@ export const footerHints = (ctx: CommandContext): BarItem[] => {
   switch (ctx.overlay.t) {
     case "prompt":
       return [];
-    case "picker":
+    case "picker": {
+      const p = ctx.overlay.picker;
+      // A model list offers its own provider's Refresh models.
+      const refresh = p.step === "model" ? modelRefresh(ctx, p.chosen.provider) : null;
       return [
         { keys: "↑↓", label: "move" },
         { keys: "enter", label: "pick" },
+        ...(refresh && !refresh.disabled
+          ? [{ keys: "⌥r", label: refresh.cancel ? "cancel refresh" : "refresh models" }]
+          : []),
         { keys: "esc", label: "cancel" },
       ];
+    }
     case "confirm":
       return [
         { keys: "enter", label: "confirm" },

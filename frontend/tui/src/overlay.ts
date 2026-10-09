@@ -207,6 +207,9 @@ export interface Picker {
   items: PickItem[];
   /** Shown when `items` is empty (e.g. no models detected for a provider). */
   emptyText: string | null;
+  /** A status line under the list — the model catalogue refreshing, or why
+   *  its last refresh failed — shown whether or not there are items. */
+  note?: string;
   /** Live filter text, as an editor buffer — the readline motions work on it. */
   filter: Buffer;
   /** Highlight into the *filtered* list. */
@@ -226,6 +229,7 @@ export const makePicker = (init: {
   items: PickItem[];
   dest: PickerDest;
   emptyText?: string;
+  note?: string;
   chosen?: { provider: string | null; model: string | null };
   from?: PickerStep;
   /** Initial highlight into `items`; clamped, defaults to 0. Used to pre-select
@@ -236,6 +240,7 @@ export const makePicker = (init: {
   title: init.title,
   items: init.items,
   emptyText: init.emptyText ?? null,
+  ...(init.note ? { note: init.note } : {}),
   filter: buffer(),
   index: init.index !== undefined ? Math.max(0, Math.min(init.index, init.items.length - 1)) : 0,
   chosen: init.chosen ?? { provider: null, model: null },

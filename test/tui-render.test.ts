@@ -1582,7 +1582,8 @@ describe("tui-render", { concurrency: 4 }, () => {
       stdin.feed("\r"); // pick oai
       await delay(140);
       assert.match(stdout.last, /MODEL/);
-      assert.match(stdout.last, /no models detected for "oai"/i);
+      // A failed discovery says why and how to retry, rather than a generic "none".
+      assert.match(stdout.last, /catalog request failed.*⌥r to retry/i);
       stdin.feed("\r"); // enter continues anyway
       await delay(120);
       assert.match(stdout.last, /new/i);

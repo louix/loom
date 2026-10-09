@@ -6,7 +6,9 @@ import {
   describeCommand,
   describeCommands,
   keyAction,
+  modelRefresh,
   paletteActions,
+  refreshProvider,
   type ActName,
   type BarHit,
   type BarItem,
@@ -74,7 +76,9 @@ import {
   initialState,
   newSettings,
   NOTICE_TTL_MS,
+  modelRefreshSummary,
   modelSupportsEffort,
+  providerInfo,
   selectModel,
   startModelSelection,
   type ModelSelection,
@@ -880,6 +884,47 @@ export const mkFleetHandle = ({
       }),
     });
 
+  /** The latest Refresh models request per provider. Only that request's
+   *  reply speaks: a superseded or cancelled one stays quiet. Neither can touch
+   *  another provider's list — catalogues reach every picker through that
+   *  provider's own snapshot entry, never through a reply. */
+  const modelRefreshes = new Map<string, number>();
+  let modelRefreshSeq = 0;
+  /** Refresh models for `provider`, or cancel the refresh it is running. */
+  const refreshModels = (provider: string | null): void => {
+    const r = modelRefresh(commandCtx(), provider);
+    if (r.disabled || r.provider === null)
+      return note(r.disabled ?? "No provider to refresh.", "dim");
+    const id = r.provider;
+    const tag = providerInfo(state, id)?.tag || id;
+    const failed = (e: unknown) => (e instanceof Error ? e.message : String(e));
+    if (r.cancel) {
+      modelRefreshes.delete(id);
+      client.request("providers.cancelModelRefresh", { id }).then(
+        () => note(`${tag}: model refresh cancelled`, "dim"),
+        (e: unknown) => note(`couldn't cancel the model refresh: ${failed(e)}`, "bad"),
+      );
+      return;
+    }
+    const token = ++modelRefreshSeq;
+    modelRefreshes.set(id, token);
+    note(`${tag}: refreshing models…`, "dim");
+    client
+      .request<{ models: string[] }>("providers.refreshModels", { id })
+      .then((res) => {
+        if (modelRefreshes.get(id) !== token) return;
+        modelRefreshes.delete(id);
+        note(modelRefreshSummary(state, id, res.models), "good");
+      })
+      .catch((e: unknown) => {
+        if (modelRefreshes.get(id) !== token) return;
+        modelRefreshes.delete(id);
+        if ((e as { code?: unknown }).code === "cancelled")
+          return note(`${tag}: model refresh cancelled`, "dim");
+        note(`${tag}: model refresh failed — ${failed(e)} · refresh again to retry`, "bad");
+      });
+  };
+
   /**
    * Run a command for the target it was described for — re-described here,
    * at execution, so a palette pick or a click made against an older frame
@@ -1261,6 +1306,8 @@ export const mkFleetHandle = ({
         });
       case "prepareEnvironment":
         return void prepareRepo();
+      case "refreshModels":
+        return refreshModels(refreshProvider(commandCtx(), target));
       case "filter":
         return void dispatch({ t: "logFilter", value: cycleLogFilter(state.logFilter) });
       case "theme":
@@ -2469,6 +2516,8 @@ export const mkFleetHandle = ({
         }
         return void choosePicked();
       }
+      // ⌥r: a model list refreshes (or stops refreshing) its own provider.
+      if (key.meta && input === "r" && p.step === "model") return refreshModels(p.chosen.provider);
       // The filter is an input line — the same readline motions as the prompt
       // (⌃a/⌃e/⌃b/⌃f/⌃u/⌃k/⌃w, ←/→, paste at the caret); esc / ⏎ / ↑ / ↓ were
       // resolved above, before the editor saw them.

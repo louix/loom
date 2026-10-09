@@ -1775,7 +1775,13 @@ export const Picker = ({
       ) : (
         <Box height={1} flexShrink={0} />
       )}
-      <Box height={1} />
+      {picker.note ? (
+        <Line tone={picker.note.startsWith("last refresh failed") ? "warn" : "faint"}>
+          {truncate(picker.note, room)}
+        </Line>
+      ) : (
+        <Box height={1} />
+      )}
       {current?.disabled ? (
         <Line tone="warn">{current.disabled}</Line>
       ) : (
