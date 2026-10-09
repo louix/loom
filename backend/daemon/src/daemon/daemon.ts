@@ -53,7 +53,7 @@ import {
 } from "../config/config.ts";
 import { readClaudeAccount } from "../config/claude-profile.ts";
 import { isClaudeId } from "@loom/core/provider-id";
-import { costOf, type PriceRow, type PriceTable } from "../config/pricing.ts";
+import { costOf, type PriceTable } from "../config/pricing.ts";
 import { EndpointPricing } from "./endpoint-pricing.ts";
 import { LOOM_VERSION } from "@loom/core/version";
 import type { HarnessEvent } from "@loom/core/events";
@@ -73,7 +73,6 @@ import {
   type DoctorMcpServer,
   type DoctorReport,
   type HelloResult,
-  type ModelChoice,
   type ProviderInfo,
   type SearchResult,
   type SessionSnapshot,
@@ -92,6 +91,11 @@ import { SessionEventStore } from "../store/session-events.ts";
 import { SessionSearchStore } from "../store/session-search.ts";
 import { estimateTokens, knownContextLimit } from "@loom/core/tokens";
 import { probeOpenAiModels } from "./model-catalog.ts";
+import { ModelCatalogueCache } from "./model-catalogue-cache.ts";
+import { CatalogueCancelled, ModelCatalogues } from "./model-catalogues.ts";
+import { modelEfforts, type ModelCatalogue } from "@loom/core/model-catalogue";
+import { resolveCodexHome } from "../../../../connectors/chatgpt/src/codex-home.ts";
+import { readCodexAccess } from "./codex-auth.ts";
 import { Registry } from "./registry.ts";
 import { RpcDispatcher, RpcError, type RpcContext } from "./rpc.ts";
 import { SocketServer } from "./server.ts";
@@ -241,12 +245,11 @@ export class Daemon {
    * to it) — never in the gap where it would reach only the registry.
    */
   readonly #queue: SessionQueue = mkSessionQueue();
-  /** Claude's CLI-reported model catalog, discovered once at start-up. */
-  #claudeChoices: ModelChoice[] | null = null;
-  /** Set once the start-up catalog probe has settled (any outcome) — drives
-   *  `ProviderInfo.modelsLoading`, so the TUI shows a loader, not a stub list. */
-  #claudeProbeDone = false;
-  #claudeModelsError: string | undefined;
+  /** Per-provider model catalogues and their discovery (see `#registerCatalogues`). */
+  #catalogues!: ModelCatalogues;
+  /** Providers whose start-up discovery has not begun yet — reported as
+   *  loading, so a client that connects first shows a loader, not a stub list. */
+  readonly #catalogueStartup = new Set<string>();
   /** Last text sent to each live session — the undo picker's turn snippets. */
   readonly #lastSend = new Map<string, string>();
   /** Prompt-cache TTL last *observed* per session, in minutes — the dedupe key
@@ -315,8 +318,6 @@ export class Daemon {
     this.repoRoot = opts.repoRoot;
     this.#configFile = resolve(opts.configFile ?? userConfigPath());
     this.#standalone = opts.standalone ?? false;
-    // Standalone (test / embedded) daemons never probe — nothing is "loading".
-    this.#claudeProbeDone = this.#standalone;
     this.paths = loomPaths(opts.repoRoot);
     ensureLoomDir(this.paths);
     setLogFile(this.paths.log);
@@ -406,6 +407,14 @@ export class Daemon {
         },
       },
     );
+    this.#catalogues = new ModelCatalogues({
+      // Standalone (test / embedded) daemons keep catalogues in memory: an
+      // isolated test must neither read nor seed the user's cache.
+      cache: this.#standalone ? null : new ModelCatalogueCache(),
+      onCatalogue: (id, catalogue) => this.#applyCatalogue(id, catalogue),
+      onChange: () => this.#publishState(),
+    });
+    this.#registerCatalogues();
     this.#hooks = new HookRunner({
       repoRoot: opts.repoRoot,
       log: this.#log.child("hooks"),
@@ -627,16 +636,11 @@ export class Daemon {
     await this.#server.listen();
 
     // Anything that connects in the window between listen() and the probes
-    // landing (the TUI, the moment the socket appears) fetches `providers.list`
-    // with the config-pin fallback — one model per provider. Snapshot the
-    // pre-probe list; if a probe resolved real catalogs, push them so those
-    // clients re-seed their pickers instead of waiting for an unrelated
-    // session event.
-    const preProbe = JSON.stringify(this.#providerList());
-    await this.#resolveAutoModels();
+    // landing (the TUI, the moment the socket appears) sees those providers as
+    // loading. Every settle publishes a snapshot, so those clients re-seed
+    // their pickers instead of waiting for an unrelated session event.
+    await this.#loadStartupCatalogues();
     await this.#refreshEndpointPricing();
-    await this.#resolveClaudeModels();
-    if (JSON.stringify(this.#providerList()) !== preProbe) this.#publishState();
     // Lint after detection so an auto-detect provider that resolved fine isn't
     // flagged — only a genuine failure (endpoint unreachable / no `/models`) is.
     for (const warning of lintConfig(this.config)) this.#log.warn("config", { warning });
@@ -707,6 +711,8 @@ export class Daemon {
         this.#sessions.shutdown(),
         new Promise((r) => setTimeout(r, SHUTDOWN_GRACE_MS).unref()),
       ]);
+      // Discovery probes first: their utility workers belong to the providers.
+      await this.#catalogues.close();
       await this.#providers.close().catch((error) => {
         this.#log.warn("provider shutdown failed", { error: String(error) });
       });
@@ -1044,138 +1050,181 @@ export class Daemon {
   }
 
   /**
-   * Fill `model` / `models` for aisdk profiles that configured neither, by
-   * probing `{base_url}/models`. Best-effort and bounded — a black-hole
-   * endpoint logs a warning and leaves the profile model-less (session creation
-   * on it then fails with a clear message). Mutates `this.config` in place so
-   * the registry (which reads the profile by reference) sees the result.
+   * Declare every configured provider's model discovery. Each Claude profile
+   * and each aisdk profile is its own catalogue, keyed by its own config and
+   * credential identity — a work and a personal Claude login never share a
+   * list. Providers whose models are pinned in config, or whose SDK has no
+   * catalogue to read, get a reason instead (shown on Refresh models).
    */
-  async #resolveAutoModels(): Promise<void> {
-    const pending = Object.entries(this.config.providers.aisdk).filter(
-      ([id, p]) => p.autoModels && this.#providers.has(id),
-    );
-    if (pending.length === 0) return;
-    await Promise.all(
-      pending.map(async ([id, p]) => {
-        try {
-          const models: Awaited<ReturnType<typeof probeOpenAiModels>> =
-            p.sdk === "chatgpt"
-              ? ((await (await this.#providers.get(id)).listModels?.()) ?? []).map((m) => ({
-                  id: m.id,
-                  ...(m.context !== undefined ? { context: m.context } : {}),
-                  ...(m.label !== undefined ? { label: m.label } : {}),
-                  ...(m.effortLevels !== undefined ? { efforts: m.effortLevels } : {}),
-                  ...(m.defaultEffort !== undefined ? { defaultEffort: m.defaultEffort } : {}),
-                }))
-              : await probeOpenAiModels(p.baseUrl, resolveApiKey(p));
-          if (models.length === 0) throw new Error("endpoint returned no models");
-          p.models = models.map((m) => m.id);
-          p.model = p.models[0] ?? "";
-          // Carry the catalog metadata into model choices and provider requests.
-          const probed: Record<string, number> = {};
-          const probedPricing: Record<string, PriceRow> = {};
-          const probedLabels: Record<string, string> = {};
-          const probedEfforts: Record<string, string[]> = {};
-          const probedDefaultEffort: Record<string, string> = {};
-          for (const m of models) {
-            if (m.context !== undefined) probed[m.id] = m.context;
-            if (m.label !== undefined) probedLabels[m.id] = m.label;
-            if (m.pricing !== undefined) probedPricing[m.id] = m.pricing;
-            if (m.efforts !== undefined) probedEfforts[m.id] = m.efforts;
-            if (m.defaultEffort !== undefined) probedDefaultEffort[m.id] = m.defaultEffort;
-          }
-          p.modelContext = probed;
-          p.modelPricing = probedPricing;
-          p.modelLabels = probedLabels;
-          p.modelEfforts = probedEfforts;
-          p.modelDefaultEffort = probedDefaultEffort;
-          p.autoModels = false;
-          this.#pricing.record(this.#pricingScope(id), models);
-          this.#log.info("auto-detected models", {
-            provider: id,
-            count: models.length,
-            model: p.model,
-            withContext: Object.keys(probed).length,
-            withPricing: Object.keys(probedPricing).length,
-            withEfforts: Object.keys(probedEfforts).length,
-          });
-        } catch (err) {
-          this.#log.warn("model auto-detection failed — set `model` / `models` for this provider", {
-            provider: id,
+  #registerCatalogues(): void {
+    const claude = this.config.providers.claude;
+    for (const profile of this.config.claudeProfiles) {
+      const id = claudeProfileId(profile);
+      if (claude.models.length > 0) {
+        this.#catalogues.register(id, {
+          unavailable: "Claude models are pinned by [providers.claude] models in the config.",
+        });
+        continue;
+      }
+      this.#catalogues.register(id, {
+        identity: () => {
+          const account = readClaudeAccount(profile.dir);
+          return {
+            kind: "claude",
+            dir: profile.dir,
+            cliPath: claude.cliPath,
+            account: account ? [account.loginMethod, account.org, account.email] : null,
+            ...this.#hostIdentity(),
+          };
+        },
+        discover: async (signal) => {
+          const provider = await this.#providers.get(id);
+          if (!provider.listModels) throw new Error(`${id} has no model discovery.`);
+          return await provider.listModels(signal);
+        },
+      });
+      // Standalone (test / embedded) daemons don't probe Claude at start-up;
+      // an explicit refresh still can.
+      if (!this.#standalone) this.#catalogueStartup.add(id);
+    }
+    for (const [id, p] of Object.entries(this.config.providers.aisdk)) {
+      if (!p.autoModels) {
+        this.#catalogues.register(id, {
+          unavailable: `${id}'s models are pinned by \`model\` / \`models\` in the config.`,
+        });
+        continue;
+      }
+      if (p.sdk === "chatgpt") {
+        this.#catalogues.register(id, {
+          identity: async () => {
+            const home = resolveCodexHome({ configDir: p.configDir });
+            const account = await readCodexAccess(home.dir).catch(() => null);
+            return {
+              kind: "codex",
+              home: home.dir,
+              cliPath: p.codexCliPath,
+              account: account?.accountId ?? null,
+              ...this.#hostIdentity(),
+            };
+          },
+          discover: async (signal) => {
+            const provider = await this.#providers.get(id);
+            if (!provider.listModels) throw new Error(`${id} has no model discovery.`);
+            return await provider.listModels(signal);
+          },
+        });
+      } else {
+        this.#catalogues.register(id, {
+          identity: () => ({
+            kind: "openai",
             baseUrl: p.baseUrl,
-            err: err instanceof Error ? err.message : String(err),
-          });
-        }
-      }),
+            // A different key may see a different catalogue; only a digest is kept.
+            key: createHash("sha256").update(resolveApiKey(p)).digest("hex"),
+            ...this.#hostIdentity(),
+          }),
+          discover: async (signal) => {
+            const rows = await probeOpenAiModels(p.baseUrl, resolveApiKey(p), signal);
+            // Advertised prices only arrive with a fresh probe; a cached
+            // catalogue leaves pricing to the endpoint-pricing refresh.
+            this.#pricing.record(this.#pricingScope(id), rows);
+            p.modelPricing = Object.fromEntries(
+              rows.flatMap((m) => (m.pricing ? [[m.id, m.pricing] as const] : [])),
+            );
+            return rows.map((m) => ({
+              id: m.id,
+              ...(m.label !== undefined ? { label: m.label } : {}),
+              ...(m.description !== undefined ? { description: m.description } : {}),
+              ...(m.context !== undefined ? { context: m.context } : {}),
+              ...(m.efforts?.length ? { supportsEffort: true, effortLevels: m.efforts } : {}),
+              ...(m.defaultEffort !== undefined ? { defaultEffort: m.defaultEffort } : {}),
+            }));
+          },
+        });
+      }
+      this.#catalogueStartup.add(id);
+    }
+  }
+
+  /** The installed code and host a catalogue was discovered with: an upgrade
+   *  or a different `PATH` (another CLI binary) is a cache miss. */
+  #hostIdentity(): Record<string, unknown> {
+    return { loom: LOOM_VERSION, hostPath: Deno.env.get("PATH") ?? "" };
+  }
+
+  /**
+   * Start-up discovery, all providers at once. Each settle publishes on its
+   * own; a failure is reported on the provider (`modelsError`) and logged,
+   * never fatal. A disk-cached catalogue younger than its TTL is used as is.
+   */
+  async #loadStartupCatalogues(): Promise<void> {
+    const ids = [...this.#catalogueStartup];
+    this.#catalogueStartup.clear();
+    await Promise.all(
+      ids
+        .filter((id) => this.#providers.has(id))
+        .map((id) =>
+          this.#catalogues.load(id).catch((err: unknown) => {
+            if (err instanceof CatalogueCancelled) return;
+            this.#log.warn("model discovery failed", {
+              provider: id,
+              err: err instanceof Error ? err.message : String(err),
+            });
+          }),
+        ),
     );
   }
 
   /**
-   * Ask the Claude CLI for its model catalog once at start-up, so `M` / `⌥p`
-   * offer real choices without a hard-coded list. Skipped when the user pinned
-   * `[providers.claude] models`, in standalone/test daemons, or when the
-   * provider has no `listModels`. Best-effort and bounded — a failure just
-   * leaves the list empty; the TUI shows its loading / empty state and the
-   * config `model` pin still seeds new sessions.
+   * A provider produced a catalogue. Claude reads it straight from
+   * {@link ModelCatalogues}; an aisdk profile also carries it in its config
+   * fields, which connectors and the effort/context checks read. Sessions are
+   * never touched: one whose model left the list keeps it.
    */
-  async #resolveClaudeModels(): Promise<void> {
-    try {
-      await this.#probeClaudeCatalog();
-    } finally {
-      // Settled — success, failure, skip or timeout. `modelsLoading` must not
-      // stick on, and the settle (even with an empty list) is what resolves a
-      // TUI picker that opened while the probe was running.
-      this.#claudeProbeDone = true;
+  #applyCatalogue(id: string, catalogue: ModelCatalogue): void {
+    const p = this.config.providers.aisdk[id];
+    if (p) {
+      type Row = ModelCatalogue["models"][number];
+      const pick = <T>(f: (m: Row) => T | undefined): Record<string, T> => {
+        const out: Record<string, T> = {};
+        for (const m of catalogue.models) {
+          const v = f(m);
+          if (v !== undefined) out[m.id] = v;
+        }
+        return out;
+      };
+      p.models = catalogue.models.map((m) => m.id);
+      p.model = catalogue.defaultModel ?? p.models[0] ?? "";
+      p.modelContext = pick((m) => m.context);
+      p.modelLabels = pick((m) => (m.label !== m.id ? m.label : undefined));
+      p.modelEfforts = pick((m) => (m.effortLevels?.length ? m.effortLevels : undefined));
+      p.modelDefaultEffort = pick((m) => m.defaultEffort);
+      p.autoModels = false;
     }
+    this.#log.info("models discovered", {
+      provider: id,
+      count: catalogue.models.length,
+      ...(catalogue.defaultModel ? { defaultModel: catalogue.defaultModel } : {}),
+    });
   }
 
-  async #probeClaudeCatalog(): Promise<void> {
-    this.#claudeModelsError = undefined;
-    if (this.#standalone || !this.#claudeCatalogId) return;
-    if (this.config.providers.claude.models.length > 0) return;
-    try {
-      const provider = await this.#providers.get(this.#claudeCatalogId);
-      if (!provider.listModels) return;
-      let timer: NodeJS.Timeout | undefined;
-      const models = await Promise.race([
-        provider.listModels(),
-        new Promise<never>((_, rej) => {
-          timer = setTimeout(() => rej(new Error("timed out after 10s")), 10_000);
-          timer.unref();
-        }),
-      ]).finally(() => {
-        if (timer) clearTimeout(timer);
-      });
-      if (models.length === 0) return;
-      this.#claudeChoices = models.map((m) => ({
-        id: m.id,
-        label: m.label || m.id,
-        ...(m.context ? { context: m.context } : {}),
-        ...(m.supportsEffort ? { supportsEffort: true } : {}),
-        ...(m.effortLevels && m.effortLevels.length > 0 ? { effortLevels: m.effortLevels } : {}),
-      }));
-      this.config.providers.claude.models = this.#claudeChoices.map((c) => c.id);
-      this.#log.info("claude models discovered", { count: models.length });
-    } catch (err) {
-      this.#claudeModelsError =
-        err instanceof Error ? err.message : "Claude model discovery failed";
-      this.#log.warn("claude model discovery failed", {
-        err: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-
-  /** The Claude provider id that owns the shared model catalog — profile 0. */
-  get #claudeCatalogId(): string {
-    return (
-      this.config.claudeProfiles.map(claudeProfileId).find((id) => this.#providers.has(id)) ?? ""
-    );
-  }
-
-  /** The catalog probe is still running and nothing is pinned — the picker
-   *  list isn't final yet (surfaced as `ProviderInfo.modelsLoading`). */
-  get #claudeCatalogPending(): boolean {
-    return !this.#claudeProbeDone && this.config.providers.claude.models.length === 0;
+  /** `ProviderInfo`'s catalogue fields for `id`; `ids` is the catalogue's
+   *  model list, when there is one. */
+  #catalogueInfo(
+    id: string,
+  ): Pick<
+    ProviderInfo,
+    "modelChoices" | "modelsLoading" | "modelsError" | "modelsRefreshUnavailable"
+  > & { ids?: string[] } {
+    const st = this.#catalogues.state(id);
+    const loading = st.loading || this.#catalogueStartup.has(id);
+    return {
+      ...(st.catalogue
+        ? { ids: st.catalogue.models.map((m) => m.id), modelChoices: st.catalogue.models }
+        : {}),
+      ...(loading ? { modelsLoading: true } : {}),
+      ...(st.error && !loading ? { modelsError: st.error } : {}),
+      ...(st.unavailable ? { modelsRefreshUnavailable: st.unavailable } : {}),
+    };
   }
 
   /** Configured providers for the TUI's creation flow / model switcher. */
@@ -1183,11 +1232,6 @@ export class Daemon {
     const def = this.#defaultProviderId();
     const mode = this.#defaultMode();
     const claude = this.config.providers.claude;
-    // One shared model catalog (all profiles run the same `claude` binary).
-    // No fabrication: until the start-up probe lands (or if it fails) the list
-    // is empty and the TUI shows a loader — a one-row list of the config pin
-    // read like a broken catalog. The pin still seeds new sessions below.
-    const claudeModels = claude.models;
 
     // Any provider without an explicit colour gets one hashed from its id
     // (`providerColor`), so adding, removing or reordering profiles never
@@ -1197,12 +1241,14 @@ export class Daemon {
       .map((profile) => {
         const id = claudeProfileId(profile);
         const account = readClaudeAccount(profile.dir);
+        // Each profile's own catalogue, or the config pin. No fabrication:
+        // until discovery lands (or if it fails) the list is empty and the TUI
+        // shows a loader or the failure. The `model` pin still seeds new sessions.
+        const { ids, ...catalogue } = this.#catalogueInfo(id);
         return {
           id,
-          models: claudeModels,
-          ...(this.#claudeChoices ? { modelChoices: this.#claudeChoices } : {}),
-          ...(this.#claudeCatalogPending ? { modelsLoading: true } : {}),
-          ...(this.#claudeModelsError ? { modelsError: this.#claudeModelsError } : {}),
+          models: claude.models.length > 0 ? claude.models : (ids ?? []),
+          ...catalogue,
           defaultModel: this.#defaultModelFor(id),
           defaultEffort: this.#defaultEffortFor(id),
           defaultMode: mode,
@@ -1218,38 +1264,23 @@ export class Daemon {
       });
 
     for (const [id, p] of Object.entries(this.config.providers.aisdk)) {
-      // Picker rows carry what the endpoint (or a pin) actually says — display
-      // name, context window, and reasoning-effort support — same treatment as
-      // the Claude catalog. Unknown sizes stay unhinted rather than echoing the
-      // prefix-table guess as authoritative.
-      const hasMeta =
-        Object.keys(p.modelContext).length > 0 ||
-        Object.keys(p.modelLabels).length > 0 ||
-        Object.keys(p.modelEfforts).length > 0;
+      const { ids, ...catalogue } = this.#catalogueInfo(id);
+      // A pinned list has no discovered rows; a pin with known context sizes
+      // still gets picker rows. Unknown sizes stay unhinted rather than
+      // echoing the prefix-table guess as authoritative.
+      const hasMeta = Object.keys(p.modelContext).length > 0;
       out.push({
         id,
-        models: p.models,
-        ...(hasMeta
+        models: ids ?? p.models,
+        ...(!catalogue.modelChoices && hasMeta
           ? {
               modelChoices: p.models.map((m) => {
                 const ctx = knownContextLimit(m, p.modelContext);
-                const efforts = p.modelEfforts[m];
-                const dflt = p.modelDefaultEffort[m];
-                return {
-                  id: m,
-                  label: p.modelLabels[m] ?? m,
-                  ...(ctx !== undefined ? { context: ctx } : {}),
-                  ...(efforts?.length
-                    ? {
-                        supportsEffort: true,
-                        effortLevels: efforts,
-                        ...(dflt ? { defaultEffort: dflt } : {}),
-                      }
-                    : {}),
-                };
+                return { id: m, label: m, ...(ctx !== undefined ? { context: ctx } : {}) };
               }),
             }
           : {}),
+        ...catalogue,
         defaultModel: this.#defaultModelFor(id),
         defaultEffort: this.#defaultEffortFor(id),
         defaultMode: mode,
@@ -1267,6 +1298,7 @@ export class Daemon {
       out.push({
         id: "echo",
         models: ["echo"],
+        modelsRefreshUnavailable: "Echo has one fixed model.",
         defaultModel: "echo",
         defaultEffort: this.#defaultEffortFor("echo"),
         defaultMode: mode,
@@ -1311,11 +1343,14 @@ export class Daemon {
   #defaultModelFor(providerId: string): string {
     if (providerId === "echo") return "echo";
     if (isClaudeId(providerId)) {
-      // Shared model pin / catalog, but each profile remembers its own last model.
+      // The model pin, else this profile's own catalogue; each profile also
+      // remembers its own last model.
       const c = this.config.providers.claude;
+      const catalogue = this.#catalogues.state(providerId).catalogue;
+      const listed = c.models.length > 0 ? c.models : (catalogue?.models.map((m) => m.id) ?? []);
       const remembered = this.#providerDefaults.model(providerId);
-      if (remembered && (c.models.length === 0 || c.models.includes(remembered))) return remembered;
-      return c.model || c.models[0] || "";
+      if (remembered && (listed.length === 0 || listed.includes(remembered))) return remembered;
+      return c.model || catalogue?.defaultModel || listed[0] || "";
     }
     const p = this.config.providers.aisdk[providerId];
     if (!p) return "";
@@ -1333,8 +1368,30 @@ export class Daemon {
   #defaultEffortFor(providerId: string, model?: string): string {
     const remembered = this.#providerDefaults.effort(providerId);
     if (remembered) return remembered;
-    if (model) return this.config.providers.aisdk[providerId]?.modelDefaultEffort[model] ?? "";
-    return "";
+    if (!model) return "";
+    return (
+      this.config.providers.aisdk[providerId]?.modelDefaultEffort[model] ??
+      this.#catalogueRow(providerId, model)?.defaultEffort ??
+      ""
+    );
+  }
+
+  /** Whether `providerId` currently lists `model`; undefined while it has no
+   *  list to judge by (not discovered yet, or discovery failed first time). */
+  #modelListed(providerId: string, model: string): boolean | undefined {
+    const p = this.config.providers.aisdk[providerId];
+    const claude = this.config.providers.claude;
+    let listed = this.#catalogues.state(providerId).catalogue?.models.map((m) => m.id);
+    if (p) listed = p.models;
+    else if (isClaudeId(providerId) && claude.models.length > 0) listed = claude.models;
+    return listed?.length ? listed.includes(model) : undefined;
+  }
+
+  /** `providerId`'s catalogue row for `model`, when it has one. */
+  #catalogueRow(providerId: string, model: string | null | undefined) {
+    return model
+      ? this.#catalogues.state(providerId).catalogue?.models.find((m) => m.id === model)
+      : undefined;
   }
 
   /**
@@ -1644,20 +1701,17 @@ export class Daemon {
     // what it may restore.
     const usageBaseline = this.#registry.store.providerTotal(id, providerRef);
     const mode: SessionMode = isSessionMode(row.mode) ? row.mode : "default";
-    // If the model this session ran on has since dropped out of the endpoint's
-    // list, revive on the current default instead of failing the first turn.
-    let model = row.model;
+    // A model that has since dropped out of the provider's catalogue is kept:
+    // the session's settings are the user's, and another model is never
+    // substituted behind their back. Say so, so a failing turn is explained.
+    const model = row.model;
     const prof = this.config.providers.aisdk[row.provider];
-    if (prof && model && prof.models.length > 0 && !prof.models.includes(model)) {
-      const swap = this.#defaultModelFor(row.provider);
-      if (swap && swap !== model) {
-        this.#emitNotice(
-          `${row.provider}: model "${model}" is no longer offered — resuming ${id.slice(0, 8)} on "${swap}"`,
-          "warn",
-        );
-        this.#registry.setFields(id, { model: swap });
-        model = swap;
-      }
+    if (model && this.#modelListed(row.provider, model) === false) {
+      this.#emitNotice(
+        `${row.provider}: model "${model}" is no longer listed — ${id.slice(0, 8)} keeps it; ` +
+          "switch models (⌥m) if its turns fail",
+        "warn",
+      );
     }
     const cwd = worktree ?? this.repoRoot;
     const mcpHandles = this.#mcpHandles();
@@ -2244,14 +2298,11 @@ export class Daemon {
 
   /** Effort strings `providerId`/`model` actually advertises, beyond Loom's own
    *  five-value union — the same discovery data `#providerList` already
-   *  exposes to the picker (Claude's shared catalog, or an aisdk profile's
-   *  probed `modelEfforts`). */
+   *  exposes to the picker (the provider's own catalogue, or an aisdk
+   *  profile's probed `modelEfforts`). */
   #advertisedEfforts(providerId: string, model?: string | null): readonly string[] {
-    if (isClaudeId(providerId)) {
-      return this.#claudeChoices?.find((c) => c.id === model)?.effortLevels ?? [];
-    }
     const p = this.config.providers.aisdk[providerId];
-    return (model && p?.modelEfforts[model]) || [];
+    return (model && p?.modelEfforts[model]) || modelEfforts(this.#catalogueRow(providerId, model));
   }
 
   /** Snapshot a completed turn so it can be rewound / forked from later. */
@@ -2679,11 +2730,11 @@ export class Daemon {
     d.register("providers.probeModels", async (params) => {
       const id = params.id;
       if (isClaudeId(id)) {
+        // Only this profile's own catalogue — never another profile's.
+        if (!this.#providers.has(id)) throw new RpcError("not_found", `no provider: ${id}`);
         try {
-          const provider = await this.#providers.get(
-            this.#providers.has(id) ? id : this.#claudeCatalogId,
-          );
-          const discovered = await provider.listModels?.();
+          const provider = await this.#providers.get(id);
+          const discovered = await provider.listModels?.(AbortSignal.timeout(60_000));
           const models = discovered
             ? discovered.map((m) => m.id)
             : this.config.providers.claude.models;
@@ -2723,6 +2774,29 @@ export class Daemon {
         );
       }
     });
+
+    // Refresh models: rediscover one provider's catalogue, bypassing the
+    // cache. Progress, the new list and any failure reach every client on the
+    // provider's snapshot; the reply only settles this caller's request. A
+    // refresh already running is joined rather than restarted.
+    d.register("providers.refreshModels", async (params) => {
+      const id = params.id;
+      if (!this.#providers.has(id) || !this.#catalogues.has(id))
+        throw new RpcError("not_found", `no provider: ${id}`);
+      const unavailable = this.#catalogues.state(id).unavailable;
+      if (unavailable) throw new RpcError("unsupported", unavailable);
+      try {
+        const catalogue = await this.#catalogues.load(id, { refresh: true });
+        return { id, models: catalogue.models.map((m) => m.id) };
+      } catch (err) {
+        if (err instanceof CatalogueCancelled) throw new RpcError("cancelled", err.message);
+        throw new RpcError("provider_error", err instanceof Error ? err.message : String(err));
+      }
+    });
+
+    d.register("providers.cancelModelRefresh", (params) => ({
+      cancelled: this.#catalogues.cancel(params.id),
+    }));
 
     d.register("config.check", () => ({
       warnings: [...lintConfig(this.config), ...this.#orphanedProviderWarnings()],

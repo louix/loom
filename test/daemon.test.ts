@@ -2107,6 +2107,8 @@ test("a live daemon reports claude's catalog as loading until the probe settles 
   const xdg = mkdtempSync(join(tmpdir(), "loom-probe-xdg-"));
   const realXdg = process.env["XDG_CONFIG_HOME"];
   process.env["XDG_CONFIG_HOME"] = xdg; // keep the scaffolded starter out of the shared harness XDG
+  const realCache = process.env["XDG_CACHE_HOME"];
+  process.env["XDG_CACHE_HOME"] = xdg; // nor seed the user's model-catalogue cache
   const repoRoot = mkdtempSync(join(tmpdir(), "loom-probe-"));
   execFileSync("git", ["init", "-q", "-b", "main", repoRoot]);
   execFileSync("git", ["-C", repoRoot, "config", "user.email", "t@example.com"]);
@@ -2156,6 +2158,8 @@ test("a live daemon reports claude's catalog as loading until the probe settles 
   } finally {
     await daemon?.stop("test").catch(() => {});
     process.env["XDG_CONFIG_HOME"] = realXdg;
+    if (realCache === undefined) delete process.env["XDG_CACHE_HOME"];
+    else process.env["XDG_CACHE_HOME"] = realCache;
     rmSync(repoRoot, { recursive: true, force: true });
     rmSync(xdg, { recursive: true, force: true });
   }

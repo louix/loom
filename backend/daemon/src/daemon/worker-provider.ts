@@ -265,6 +265,12 @@ export class RemoteWorkerSession implements AgentSession {
     await this.#request({ method: "interrupt", args: [] });
   }
 
+  /** Stop the worker now — process group killed, pending requests rejected
+   *  with `reason` — without the graceful close handshake. */
+  abort(reason: Error): void {
+    this.#fail(reason);
+  }
+
   async listModels(): Promise<DiscoveredModel[]> {
     const frame = await this.#request({ method: "listModels", args: [] }, 20_000);
     if (frame.kind !== "models") throw new Error("invalid discovery response");
@@ -524,13 +530,17 @@ export class WorkerProvider implements AgentProvider {
   async listPersistedSessions(): Promise<SessionRef[]> {
     return this.#utility("enumeration", (s) => s.listPersistedSessions());
   }
-  async listModels(): Promise<DiscoveredModel[]> {
-    return this.#utility("discovery", (s) => s.listModels());
+  /** A metadata-only utility worker: no conversation and no session VM. An
+   *  abort kills its process group at once rather than waiting out a reply. */
+  async listModels(signal?: AbortSignal): Promise<DiscoveredModel[]> {
+    return this.#utility("discovery", (s) => s.listModels(), signal);
   }
   async #utility<T>(
     role: WorkerRole,
     run: (session: RemoteWorkerSession) => Promise<T>,
+    signal?: AbortSignal,
   ): Promise<T> {
+    signal?.throwIfAborted();
     const { session } = await RemoteWorkerSession.connect(
       crypto.randomUUID(),
       this.id,
@@ -540,9 +550,17 @@ export class WorkerProvider implements AgentProvider {
       this.profile,
       role,
     );
+    const cancelled = () =>
+      signal?.reason instanceof Error ? signal.reason : new Error("Model discovery cancelled.");
+    const abort = () => session.abort(cancelled());
+    signal?.addEventListener("abort", abort, { once: true });
     try {
-      return await run(session);
+      if (signal?.aborted) abort();
+      const result = await run(session);
+      if (signal?.aborted) throw cancelled();
+      return result;
     } finally {
+      signal?.removeEventListener("abort", abort);
       await session.close();
     }
   }

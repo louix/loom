@@ -292,6 +292,8 @@ export class LoomClient {
    *  `compact_progress` heartbeats show it's alive in the meantime. */
   static #SLOW_METHODS: Record<string, number> = {
     "session.compact": 15 * 60_000,
+    // Bounded by the daemon's own discovery timeout; this only outlasts it.
+    "providers.refreshModels": 150_000,
     "session.create": 120_000,
     "session.fork": 120_000,
     "session.resume": 120_000,

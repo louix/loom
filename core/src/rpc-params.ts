@@ -47,6 +47,10 @@ export const rpcParamsSchemas = {
   "pricing.reload": empty,
   "providers.list": empty,
   "providers.probeModels": session,
+  /** Rediscover one provider's catalogue, bypassing the cache; settles when it does. */
+  "providers.refreshModels": z.object({ id: text }),
+  /** Abort that provider's running discovery; its previous catalogue stays. */
+  "providers.cancelModelRefresh": z.object({ id: text }),
   "config.check": empty,
   "daemon.relinkProvider": z.object({ from: text, to: text }),
   "daemon.doctor": empty,
