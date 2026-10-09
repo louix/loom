@@ -1,9 +1,9 @@
 import { canonicalHostPath } from "../../../../core/src/host-path.ts";
+import { userDirectory } from "../../../../core/src/user-dirs.ts";
 import { existsSync } from "node:fs";
 import { discardSessionDisks } from "../../../../runtime/src/session-vm/disks.ts";
 import { withStoppedVmState } from "../../../../runtime/src/session-vm/stopped-state.ts";
 import { createHash } from "node:crypto";
-import { homedir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import {
   assertNoActiveVm,
@@ -12,7 +12,7 @@ import {
 } from "../../../../runtime/src/session-vm/persistence.ts";
 export const sessionVmDirectory = (repo: string, id: string) => {
   if (!/^[A-Za-z0-9_-]{1,100}$/.test(id)) throw new Error("Invalid session identity");
-  const root = Deno.env.get("XDG_STATE_HOME") || join(homedir(), ".local/state");
+  const root = userDirectory("state");
   const key = createHash("sha256").update(resolve(repo)).digest("hex").slice(0, 32);
   return canonicalHostPath(join(root, "loom/session-vms", key, id));
 };

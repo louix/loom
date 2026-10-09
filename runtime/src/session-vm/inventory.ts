@@ -1,7 +1,7 @@
 /** Host-only VM inventory and per-instance control mailboxes. Never mounted in guests. */
-import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { canonicalHostPath } from "../../../core/src/host-path.ts";
+import { userDirectory } from "../../../core/src/user-dirs.ts";
 import { lockSessionState, writeRecoveryFile } from "./persistence.ts";
 import { readRecovery, recoverSessionVm } from "./recovery.ts";
 
@@ -33,10 +33,7 @@ export interface VmRecord {
   error: string | null;
 }
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-export const vmInventoryHome = () =>
-  canonicalHostPath(
-    join(Deno.env.get("XDG_STATE_HOME") || join(homedir(), ".local/state"), "loom/vms"),
-  );
+export const vmInventoryHome = () => canonicalHostPath(join(userDirectory("state"), "loom/vms"));
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 const exists = async (path: string) => {
   try {

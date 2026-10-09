@@ -5,22 +5,17 @@
 // failures as they happen — `deno test` has no per-event reporter hook, only
 // a final report (`--reporter=junit`), so output is batched until the whole
 // suite finishes. Use `deno task test` for live output when debugging.
+// Runs inside a throwaway HOME/XDG root (scripts/lib/test-home.ts).
 //
-// Usage: deno run -A scripts/fail-only-reporter.ts test/
+// Usage: deno task test:silent [deno test flags...] [files or dirs; default test/]
 
 import { parseJunit, stripTrailingTestFailedNotice } from "./junit.ts";
+import { runIsolatedTests } from "./lib/test-home.ts";
 
-const command = new Deno.Command(Deno.execPath(), {
-  args: ["test", "-A", "--reporter=junit", ...Deno.args],
+const { code, stdout, stderr } = await runIsolatedTests(["--reporter=junit", ...Deno.args], {
   stdout: "piped",
   stderr: "piped",
 });
-const child = command.spawn();
-const [stdout, stderr] = await Promise.all([
-  new Response(child.stdout).text(),
-  new Response(child.stderr).text(),
-]);
-const { code } = await child.status;
 
 const cleanedStderr = stripTrailingTestFailedNotice(stderr);
 if (cleanedStderr) await Deno.stderr.write(new TextEncoder().encode(cleanedStderr));

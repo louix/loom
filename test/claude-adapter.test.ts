@@ -831,10 +831,9 @@ test("outOfTreeWriteReason: lets through the roots that are writable anyway", ()
     ),
     null,
   );
-  // A pinned profile dir does not drag the default one along with it.
-  assert.ok(
-    outOfTreeWriteReason(ROOT, ROOT, "Write", { file_path: `${homedir()}/.claude/x` }, allowed),
-  );
+  // A pinned profile dir does not drag the default one along with it. (Compare
+  // roots, not a write: the test run's HOME is itself under the temp dir.)
+  assert.ok(!allowed.includes(`${homedir()}/.claude`));
   // Everything else outside the tree still prompts — including a prefix match.
   assert.ok(outOfTreeWriteReason(ROOT, ROOT, "Write", { file_path: "/etc/passwd" }, allowed));
   assert.ok(outOfTreeWriteReason(ROOT, ROOT, "Write", { file_path: "/tmpfoo/x" }, allowed));

@@ -7,23 +7,19 @@
 // version's wall-vs-Σ(files) overlap ratio, "file time" here is just the sum
 // of that file's own test-case durations, not a measured wall/spawn cost.
 //
-// Usage: deno run -A scripts/timing-reporter.ts test/
+// Runs inside a throwaway HOME/XDG root (scripts/lib/test-home.ts).
+//
+// Usage: deno task test:timing [deno test flags...] [files or dirs; default test/]
 
 import { parseJunit, stripTrailingTestFailedNotice } from "./junit.ts";
+import { runIsolatedTests } from "./lib/test-home.ts";
 
 const fmtMs = (ms: number) => (ms >= 10_000 ? `${(ms / 1000).toFixed(2)}s` : `${Math.round(ms)}ms`);
 
-const command = new Deno.Command(Deno.execPath(), {
-  args: ["test", "-A", "--reporter=junit", ...Deno.args],
+const { code, stdout, stderr } = await runIsolatedTests(["--reporter=junit", ...Deno.args], {
   stdout: "piped",
   stderr: "piped",
 });
-const child = command.spawn();
-const [stdout, stderr] = await Promise.all([
-  new Response(child.stdout).text(),
-  new Response(child.stderr).text(),
-]);
-const { code } = await child.status;
 
 const cleanedStderr = stripTrailingTestFailedNotice(stderr);
 if (cleanedStderr) await Deno.stderr.write(new TextEncoder().encode(cleanedStderr));

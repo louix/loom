@@ -1,5 +1,5 @@
-import { dirname, isAbsolute, join, parse, resolve } from "node:path";
-import { homedir } from "node:os";
+import { dirname, join, parse, resolve } from "node:path";
+import { userDirectory } from "@loom/core/user-dirs";
 import { setTimeout as sleep } from "node:timers/promises";
 import { oauthKeychain } from "./mcp-oauth-keychain-host.ts";
 import {
@@ -13,14 +13,8 @@ import {
 } from "./mcp-oauth-model.ts";
 
 const MAX_BYTES = 256 * 1024;
-export const mcpOAuthStateDirectory = (env = Deno.env.toObject()): string => {
-  const xdg = env["XDG_STATE_HOME"];
-  return join(
-    xdg && isAbsolute(xdg) ? xdg : join(env["HOME"] || homedir(), ".local", "state"),
-    "loom",
-    "mcp-auth",
-  );
-};
+export const mcpOAuthStateDirectory = (env = Deno.env.toObject()): string =>
+  join(userDirectory("state", env), "loom", "mcp-auth");
 const check = (stat: Deno.FileInfo, directory: boolean) => {
   if (
     stat.isSymlink ||

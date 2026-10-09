@@ -13,8 +13,8 @@
  * Publication is atomic (temp file + rename), so reads need no lock.
  */
 import { createHash } from "node:crypto";
-import { homedir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { join } from "node:path";
+import { userDirectory } from "@loom/core/user-dirs";
 import { modelCatalogueSchema, type ModelCatalogue } from "@loom/core/model-catalogue";
 
 export const MODEL_CATALOGUE_TTL = 10 * 60_000;
@@ -41,14 +41,8 @@ export const catalogueKey = (identity: unknown): string =>
     .update(JSON.stringify(canonical({ version: VERSION, identity })))
     .digest("hex");
 
-export const defaultCatalogueDirectory = (): string => {
-  const cache = Deno.env.get("XDG_CACHE_HOME");
-  return join(
-    cache && isAbsolute(cache) ? cache : join(homedir(), ".cache"),
-    "loom",
-    "model-catalogues",
-  );
-};
+export const defaultCatalogueDirectory = (): string =>
+  join(userDirectory("cache"), "loom", "model-catalogues");
 
 export class ModelCatalogueCache {
   readonly directory: string;

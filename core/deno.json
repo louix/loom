@@ -19,6 +19,7 @@
     "./tool-paths": "./src/tool-paths.ts",
     "./tokens": "./src/tokens.ts",
     "./paths": "./src/paths.ts",
+    "./user-dirs": "./src/user-dirs.ts",
     "./provider-id": "./src/provider-id.ts",
     "./version": "./src/version.ts",
     "./transcript": "./src/transcript.ts",

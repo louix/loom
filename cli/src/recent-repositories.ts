@@ -1,14 +1,10 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { tryFindRepoRoot } from "@loom/core/paths";
+import { userDirectory } from "@loom/core/user-dirs";
 
 export const recentRepositoriesPath = (): string =>
-  join(
-    Deno.env.get("XDG_STATE_HOME") || join(homedir(), ".local", "state"),
-    "loom",
-    "repositories.json",
-  );
+  join(userDirectory("state"), "loom", "repositories.json");
 
 export const readRecentRepositories = (path = recentRepositoriesPath()): string[] => {
   try {

@@ -1,7 +1,7 @@
 /** Read-only runtime resolution. Session launch never invokes Nix or fetches. */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
+import { userDirectory } from "../../../core/src/user-dirs.ts";
 
 export interface RuntimeManifest {
   version: 1;
@@ -22,8 +22,7 @@ export interface RuntimeLock {
   smolvm: string;
   preparedAt: string;
 }
-export const runtimeHome = () =>
-  join(Deno.env.get("XDG_DATA_HOME") || join(homedir(), ".local/share"), "loom/runtimes");
+export const runtimeHome = () => join(userDirectory("data"), "loom/runtimes");
 export const runtimeKey = async (source: string) =>
   Array.from(
     new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(source))),

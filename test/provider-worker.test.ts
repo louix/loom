@@ -83,6 +83,14 @@ Deno.test("a network-denied host runs provider turns in a worker with host trans
           fixture.repo,
           configFile,
         ],
+        // A full (non-standalone) daemon: keep its state, worktrees, scaffolded
+        // config and model-catalogue cache inside the fixture.
+        env: Object.fromEntries(
+          ["STATE", "DATA", "CONFIG", "CACHE"].map((kind) => [
+            `XDG_${kind}_HOME`,
+            join(fixture.root, `xdg-${kind.toLowerCase()}`),
+          ]),
+        ),
         stdout: "piped",
         stderr: "piped",
       }).output();

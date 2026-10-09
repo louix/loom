@@ -1,8 +1,8 @@
 /** Immutable prepared disks per repo and runtime. Readers only lock while cloning. */
 import { createHash } from "node:crypto";
-import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { canonicalHostPath } from "../../../core/src/host-path.ts";
+import { userDirectory } from "../../../core/src/user-dirs.ts";
 import type { VmBinding } from "../packaged/vm.ts";
 import {
   readSessionDisks,
@@ -18,7 +18,7 @@ import { referencedBases } from "../packaged/maintenance.ts";
 export const repoBaseDirectory = (repo: string) =>
   canonicalHostPath(
     join(
-      Deno.env.get("XDG_STATE_HOME") || join(homedir(), ".local/state"),
+      userDirectory("state"),
       "loom/environments",
       createHash("sha256").update(resolve(repo)).digest("hex").slice(0, 32),
     ),

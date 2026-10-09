@@ -20,6 +20,11 @@ test("bare repo and linked launches share sessions, base HEAD, config, and CLI r
     execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", stdio: "pipe" }).trim();
   let daemon: Daemon | undefined;
   let client: LoomClient | undefined;
+  // Session worktrees and the CLI's scaffolded starter config belong in the
+  // fixture, never in the developer's real XDG data and config directories.
+  const xdg = ["XDG_DATA_HOME", "XDG_CONFIG_HOME"] as const;
+  const previous = xdg.map((key) => Deno.env.get(key));
+  for (const key of xdg) Deno.env.set(key, join(root, key.toLowerCase()));
   try {
     const seed = join(root, "seed");
     git(root, "init", "-q", "-b", "main", seed);
@@ -141,6 +146,9 @@ test("bare repo and linked launches share sessions, base HEAD, config, and CLI r
   } finally {
     await client?.close();
     await daemon?.stop("test-cleanup");
+    xdg.forEach((key, i) =>
+      previous[i] === undefined ? Deno.env.delete(key) : Deno.env.set(key, previous[i]),
+    );
     rmSync(root, { recursive: true, force: true });
   }
 });

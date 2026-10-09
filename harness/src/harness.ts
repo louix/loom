@@ -21,9 +21,12 @@ setLogLevel("error"); // keep test output quiet
 // Isolate the user-level config: without this, the developer's real
 // ~/.config/loom/config.jsonc is deep-merged into every harness daemon (extra
 // providers, live credentials, start-up network probes). Point XDG at an empty
-// dir; each harness also supplies its own trusted config file.
+// dir; each harness also supplies its own trusted config file. State too:
+// harness daemons create session VM directories and environment bases there.
+// (XDG_CACHE_HOME stays: it also locates Deno's module cache for child workers.)
 Deno.env.set("XDG_CONFIG_HOME", mkdtempSync(join(tmpdir(), "loom-xdg-")));
 Deno.env.set("XDG_DATA_HOME", mkdtempSync(join(tmpdir(), "loom-data-")));
+Deno.env.set("XDG_STATE_HOME", mkdtempSync(join(tmpdir(), "loom-state-")));
 
 export interface Harness {
   repoRoot: string;

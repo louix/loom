@@ -1,8 +1,9 @@
 import { spawnSync } from "node:child_process";
 import { accessSync, constants, mkdirSync, readFileSync, realpathSync } from "node:fs";
-import { basename, delimiter, isAbsolute, join, resolve } from "node:path";
+import { basename, delimiter, join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
+import { userDirectory } from "./user-dirs.ts";
 
 /**
  * Is `cmd` runnable — an executable on `$PATH`, or an executable file if `cmd`
@@ -105,9 +106,7 @@ export const worktreeDirectory = (
       .replace(/[^a-zA-Z0-9._-]/g, "-")
       .slice(0, 48) || "repo";
   const hash = createHash("sha256").update(identity).digest("hex").slice(0, 16);
-  const xdg = env["XDG_DATA_HOME"];
-  const data = xdg && isAbsolute(xdg) ? xdg : join(home, ".local", "share");
-  return join(data, "loom", "worktrees", `${name}-${hash}`);
+  return join(userDirectory("data", env), "loom", "worktrees", `${name}-${hash}`);
 };
 
 export const loomPaths = (repoRoot: string, configuredTrees = ""): LoomPaths => {
