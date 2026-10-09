@@ -300,6 +300,7 @@ export class CodexAppServerSession implements AgentSession {
   #startedUsageTurn = false;
   #startingUsageTurn = false;
   #pendingUsage: Record<string, unknown>[] = [];
+  #deferredTurnCompletions: Record<string, unknown>[] = [];
   #contextUsed = 0;
   #contextLimit = 0;
   #turns = 0;
@@ -881,7 +882,9 @@ export class CodexAppServerSession implements AgentSession {
         sandboxPolicy: this.#sandboxPolicy(),
       });
     } catch (err) {
+      this.#startingUsageTurn = false;
       if (!this.#turnId) this.#turnMode = null;
+      this.#completeDeferredTurns();
       throw err;
     } finally {
       this.#startingUsageTurn = false;
@@ -896,6 +899,13 @@ export class CodexAppServerSession implements AgentSession {
       ts: now(),
       status: this.#status,
     });
+    this.#completeDeferredTurns();
+  }
+  /** Ends, now that `#turnId` names it, a turn whose `turn/completed` was
+   *  read while `turn/start` was still in flight (see `#notification`). */
+  #completeDeferredTurns(): void {
+    for (const completion of this.#deferredTurnCompletions.splice(0))
+      this.#notification("turn/completed", completion);
   }
   #idle(): void {
     this.#status = stateIdle;
@@ -1228,6 +1238,14 @@ export class CodexAppServerSession implements AgentSession {
     if (method === "item/agentMessage/delta") return; // final item is authoritative and avoids duplicate transcript text.
     if (method === "turn/started") this.#turnId = (p["turn"] as any)?.id ?? this.#turnId;
     if (method === "turn/completed") {
+      // `turn/start`'s reply and the turn's completion can arrive in one
+      // read, and then this line is handled before the awaited reply names
+      // the turn: it would be dropped below as another turn's, or end a turn
+      // the reply then revives. `#startTurn` replays it once the turn is named.
+      if (this.#startingUsageTurn) {
+        this.#deferredTurnCompletions.push(p);
+        return;
+      }
       const turn = p["turn"] as any;
       const completedId = typeof turn?.id === "string" ? turn.id : undefined;
       // A late notification for a turn already superseded by `interrupt()`

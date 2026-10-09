@@ -2039,6 +2039,51 @@ test("natural turn completion settles an unanswered dynamic question", async () 
     await rm(directory, { recursive: true, force: true });
   }
 });
+test("a turn completed in the same read as turn/start's reply still ends, and is never steered", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "loom-codex-instant-turn-"));
+  const log = join(dir, "requests.jsonl");
+  Deno.env.set("LOOM_TEST_REQUEST_LOG", log);
+  try {
+    // Without and with `turn/started` ahead of the completion.
+    for (const variant of ["1", "started"]) {
+      await writeFile(log, "");
+      Deno.env.set("LOOM_TEST_COMPLETE_TURN_WITH_REPLY", variant);
+      const s = await CodexAppServerSession.start(
+        { sessionId: "instant", cwd: dir, prompt: "", mode: "default", mcpServers: [] },
+        { dir, authJsonPath: join(dir, "auth.json") },
+        FAKE_CODEX,
+      );
+      // A dropped completion would otherwise wait for a result forever.
+      const deadline = setTimeout(() => void s.close(), 5000);
+      try {
+        for (const prompt of ["first", "second"]) {
+          await s.send(prompt);
+          let ended = false;
+          for await (const event of s.events())
+            if (event.type === "result") {
+              ended = true;
+              break;
+            }
+          assert.ok(ended, `${variant}: the "${prompt}" turn never ended`);
+          assert.equal(s.snapshot().status.kind, "idle", variant);
+        }
+      } finally {
+        clearTimeout(deadline);
+        await s.close();
+      }
+      const methods = (await readFile(log, "utf8"))
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line).method);
+      assert.equal(methods.filter((m) => m === "turn/start").length, 2, variant);
+      assert.equal(methods.filter((m) => m === "turn/steer").length, 0, variant);
+    }
+  } finally {
+    Deno.env.delete("LOOM_TEST_REQUEST_LOG");
+    Deno.env.delete("LOOM_TEST_COMPLETE_TURN_WITH_REPLY");
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 // --- Native agent modes ------------------------------------------------------
 
 type Logged = { method: string; params: Record<string, any> };

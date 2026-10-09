@@ -46,6 +46,8 @@
  * request tagged with the turn being interrupted, right after replying to
  * `turn/interrupt` — simulating a request that was already in flight for
  * that turn, to exercise the client's stale-turn rejection.
+ * `LOOM_TEST_COMPLETE_TURN_WITH_REPLY` (`1`, or `started` to also announce
+ * the turn) writes `turn/start`'s reply and `turn/completed` in one chunk.
  * `LOOM_TEST_FAIL_THREAD_SETTINGS_UPDATE=1` makes `thread/settings/update`
  * reply with a JSON-RPC error instead of `{}`, for exercising a failed
  * `setMode` mid-transition (e.g. inside `respondToPlan`).
@@ -399,6 +401,26 @@ const handle = (req) => {
       });
     };
     const respondToTurnStart = () => {
+      // LOOM_TEST_COMPLETE_TURN_WITH_REPLY: the reply and the turn's
+      // completion (`=started`: with `turn/started` between them) in one
+      // write, so the client reads them together — a turn that ends at once.
+      const withReply = process.env["LOOM_TEST_COMPLETE_TURN_WITH_REPLY"];
+      if (withReply) {
+        const result = fixture("turn-start");
+        const messages = [
+          { jsonrpc: "2.0", id, result },
+          ...(withReply === "started"
+            ? [{ jsonrpc: "2.0", method: "turn/started", params: { turn: result.turn } }]
+            : []),
+          {
+            jsonrpc: "2.0",
+            method: "turn/completed",
+            params: { turn: { ...result.turn, status: "completed" } },
+          },
+        ];
+        process.stdout.write(messages.map((m) => JSON.stringify(m) + "\n").join(""));
+        return;
+      }
       send({ jsonrpc: "2.0", id, result: fixture("turn-start") });
       const limits = process.env["LOOM_TEST_LIMITS_UPDATE"];
       if (limits) send({ method: "account/rateLimits/updated", params: JSON.parse(limits) });
