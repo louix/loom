@@ -303,6 +303,12 @@ export const createConfigSchema = (d: LoomConfig, events: readonly HookEvent[]) 
             .describe(
               "Stop idle session VMs after this many minutes; preserve their workspace and history. Zero disables idle shutdown. Open shells, active tasks and keep-warm sessions are excluded.",
             ),
+          launcher: z
+            .enum(["legacy", "isolation"])
+            .default("legacy")
+            .describe(
+              "How the daemon starts session VMs. legacy runs the agent worker as the VM's own workload. isolation boots the VM through the isolation library and runs the same worker inside it as a leased execution; it needs a session runtime built from this Loom version. A change applies after a daemon restart.",
+            ),
           checkout: section({
             mode: z
               .enum(["mount", "clone"])

@@ -21,7 +21,8 @@ import { ClaudeAuthOwner } from "./claude-auth.ts";
 import { createSessionVmLauncher, sessionVmGeneration } from "./session-vm-worker.ts";
 import { sessionVmDirectory, stoppedSessionVm } from "./session-vm-state.ts";
 import { RemoteWorkerSession } from "./worker-provider.ts";
-import { mockLaunchSpec } from "./worker-launch.ts";
+import { mockLaunchSpec, type WorkerProcess } from "./worker-launch.ts";
+import { createIsolatedWorkerLauncher } from "./isolated-worker.ts";
 import { sessionGitIdentity, type SessionGitIdentity } from "../config/git-identity.ts";
 const executable = async (name: string) => {
   for (const path of name.includes("/")
@@ -37,14 +38,28 @@ const executable = async (name: string) => {
     }
   throw new Error(`Executable not found: ${name}`);
 };
+/** A provider's VM launches: the current session-vm-worker path or the isolation adapter. */
+export type SessionVmLauncher = {
+  launch(
+    options: SessionVmOptions & { signal?: AbortSignal },
+  ): Promise<WorkerProcess & { binding: { state: string } }>;
+  close(): Promise<void>;
+};
+type SessionVmPolicy = NonNullable<ConnectorContext["config"]["sessionVm"]>;
+export const selectSessionVmLauncher = (vm: SessionVmPolicy): SessionVmLauncher =>
+  vm.launcher === "isolation"
+    ? createIsolatedWorkerLauncher(vm.repoRoot)
+    : createSessionVmLauncher();
+
 export const withVmSessions = async <T extends AgentProvider>(
   base: T,
   ctx: ConnectorContext,
   kind: "claude" | "codex" | "aisdk",
-  createLauncher = createSessionVmLauncher,
+  createLauncher: (vm: SessionVmPolicy) => SessionVmLauncher = selectSessionVmLauncher,
 ): Promise<T> => {
   const vm = ctx.config.sessionVm!;
-  const launches = createLauncher();
+  const launches = createLauncher(vm);
+  const isolated = vm.launcher === "isolation";
   const smolvm = await executable(vm.smolvm);
   let owner: ClaudeAuthOwner | CodexAuthOwner | undefined;
   let auth: SessionVmOptions["auth"] = {};
@@ -179,9 +194,12 @@ export const withVmSessions = async <T extends AgentProvider>(
         url.port = String(guestPort);
         return { ...server, spec: { ...server.spec, url: url.toString() } };
       });
-      signalOf(input)?.throwIfAborted();
+      const signal = signalOf(input);
+      signal?.throwIfAborted();
       const worker = own(
         await launches.launch({
+          // The isolation adapter returns only after the environment is ready.
+          ...(isolated && signal ? { signal } : {}),
           onProgress: (message, termination) =>
             ctx.onStartupProgress?.(input.sessionId, message, termination),
           workspace: input.cwd,

@@ -236,6 +236,7 @@ export class ProviderRegistry {
         ...this.vmPolicy(id)!,
         repoRoot: this.#repoRoot,
         extraAllowedHosts: this.#config.isolation.extraAllowedHosts,
+        ...(this.#config.isolation.launcher ? { launcher: this.#config.isolation.launcher } : {}),
         ...(this.#config.isolation.environment
           ? { environment: this.#config.isolation.environment }
           : {}),

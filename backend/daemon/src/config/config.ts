@@ -234,6 +234,8 @@ export interface LoomConfig {
     codex?: { artifact: string; smolvm: string };
     extraAllowedHosts: string[];
     idleTimeoutMinutes?: number;
+    /** Session VM launch path; absent means legacy. */
+    launcher?: "legacy" | "isolation";
     environment?: SessionEnvironment;
     /** How new VM sessions reach the repository. Absent means mount. */
     checkout?: { mode: "mount" | "clone"; visibleRefs: string[]; maxPushBytes: number };
@@ -734,6 +736,7 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
     isolation: {
       enabled: vmEnabled,
       idleTimeoutMinutes: isolation.idle_timeout_minutes,
+      launcher: isolation.launcher,
       runtimes,
       extraAllowedHosts: [
         ...new Set([
