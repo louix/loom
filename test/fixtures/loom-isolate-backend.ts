@@ -28,6 +28,8 @@ export const launch: typeof launchEnvironmentVm = async (options) => {
     directory: options.sessionDirectory,
     workspace: options.workspace,
     extraAllowedHosts: options.extraAllowedHosts ?? [],
+    environment: options.environment ?? null,
+    artifact: options.artifact,
     activity: options.activity?.(),
   });
   const exited = Promise.withResolvers<void>();
@@ -66,15 +68,18 @@ export const launch: typeof launchEnvironmentVm = async (options) => {
   };
 };
 
-export const command: typeof vmCommand = async (binding, source, _timeoutMs, signal) => {
+export const command: typeof vmCommand = async (binding, source, _timeoutMs, signal, env = {}) => {
   const result = await new Deno.Command("/bin/sh", {
     args: ["-c", guestTmp(binding.state, source)],
+    // Like guest commands, which run in the workspace.
+    cwd: binding.workspace,
+    env,
     stdin: "null",
     stdout: "piped",
     stderr: "piped",
     signal,
   }).output();
-  await record({ event: "command", command: source, code: result.code });
+  await record({ event: "command", command: source, code: result.code, env });
   return {
     code: result.code,
     output: new TextDecoder().decode(result.stdout) + new TextDecoder().decode(result.stderr),

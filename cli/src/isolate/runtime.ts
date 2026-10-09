@@ -10,18 +10,29 @@ export const runtimeEnvironment = {
   smolvm: "LOOM_ISOLATE_SMOLVM",
 } as const;
 
-/** Flags, then the package default, then what the environment was last prepared with. */
+/**
+ * Flags, then trusted configuration (a launch profile's artifact, then the user
+ * backend), then the package default, then what the environment was last prepared with.
+ */
 export const selectRuntime = (
   flags: { artifact?: string | undefined; smolvm?: string | undefined },
   prepared: IsolateRuntime | null,
+  configured: { artifact?: string | undefined; smolvm?: string | undefined } = {},
 ): IsolateRuntime => {
   const artifact =
-    flags.artifact ?? Deno.env.get(runtimeEnvironment.artifact) ?? prepared?.artifact;
-  const smolvm = flags.smolvm ?? Deno.env.get(runtimeEnvironment.smolvm) ?? prepared?.smolvm;
+    flags.artifact ??
+    configured.artifact ??
+    Deno.env.get(runtimeEnvironment.artifact) ??
+    prepared?.artifact;
+  const smolvm =
+    flags.smolvm ??
+    configured.smolvm ??
+    Deno.env.get(runtimeEnvironment.smolvm) ??
+    prepared?.smolvm;
   if (!artifact || !smolvm)
     throw new UsageError(
       "No VM runtime selected: pass --artifact and --smolvm (a Loom session runtime and a smolvm executable), " +
-        "or use the packaged loom-isolate, which bundles both.",
+        "set backend in the environment config, or use the packaged loom-isolate, which bundles both.",
     );
   return { artifact, smolvm };
 };

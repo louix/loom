@@ -14,7 +14,7 @@ export const isolateCliEntries = [
   "runtime/src/session-vm/capture-environment.ts",
 ];
 const allowed =
-  /^(cli\/src\/loom-isolate\.ts|cli\/src\/isolate\/[^/]+\.ts|(core|runtime|isolation)\/src\/)/;
+  /^(cli\/src\/loom-isolate\.ts|cli\/src\/isolate\/[^/]+\.ts|(core|runtime|isolation|environment-config)\/src\/)/;
 const forbidden = [
   /^runtime\/src\/(worker|mcp)\//,
   // Conversation, session protocol and event contracts.

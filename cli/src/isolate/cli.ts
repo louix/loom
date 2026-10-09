@@ -23,6 +23,13 @@ import {
   type ForegroundChild,
   type HostSignal,
 } from "./foreground.ts";
+import {
+  configuredRuntime,
+  formatConfig,
+  loadIsolateConfig,
+  userRuntime,
+  type IsolateConfig,
+} from "./config.ts";
 import { selectRuntime, verifyRuntime, type RuntimeReport } from "./runtime.ts";
 import {
   environmentId,
@@ -41,24 +48,30 @@ export const HELP = `loom-isolate — run commands in a smolvm VM over a workspa
 usage:
   loom-isolate prepare [options]               verify the runtime and boot the environment once
   loom-isolate exec [options] -- CMD [ARG]...  run CMD with literal arguments in the VM
+  loom-isolate run [options] PROFILE [-- ARG]...  run a launch profile's entrypoint with ARGs
+  loom-isolate config inspect [options]        show the resolved configuration and its sources
   loom-isolate inspect [--all] [--json]        show environment and runtime status
   loom-isolate cleanup [--all]                 recover leftovers and remove this tool's state
 
 options:
   -w, --workspace DIR    directory mounted read-write in the VM (default: current directory)
   -n, --name NAME        environment of the workspace (default: "default")
-      --artifact PATH    Loom session runtime (default: packaged runtime, then last prepare)
-      --smolvm PATH      smolvm executable (default: packaged smolvm, then last prepare)
-      --allow-host HOST  exec only: allow HTTPS egress to HOST (repeatable); all else is denied
-  -t, --tty              exec only: allocate a terminal (needs interactive stdin and stdout)
-      --no-stdin         exec only: do not forward stdin
+      --artifact PATH    Loom session runtime (default: configured, packaged, then last prepare)
+      --smolvm PATH      smolvm executable (default: configured, packaged, then last prepare)
+      --user-config FILE environment config (default: \${XDG_CONFIG_HOME:-~/.config}/loom/environment.jsonc)
+      --ignore-project   do not read the workspace's loom.json
+      --profile NAME     config inspect only: resolve with a launch profile
+      --allow-host HOST  exec/run: also allow HTTPS egress to HOST (repeatable); all else is denied
+  -t, --tty              exec/run: allocate a terminal (needs interactive stdin and stdout)
+      --no-stdin         exec/run: do not forward stdin
   -q, --quiet            omit startup progress
-      --json             inspect only: machine-readable output
+      --json             inspect and config inspect: machine-readable output
       --all              inspect/cleanup every loom-isolate environment
   -h, --help             show this help
       --version          show the version
 
 Each command owns its environment while it runs; the VM stops when it exits.
+The workspace's loom.json may request setup and network; environment.jsonc grants it.
 State lives in \${XDG_STATE_HOME:-~/.local/state}/loom-isolate, apart from Loom's.
 exec exits with the command's status (128+N if ended by signal N), 125 when
 loom-isolate itself fails, and 2 for usage errors.
@@ -87,6 +100,9 @@ const parse = (args: string[]) =>
       name: { type: "string", short: "n", default: "default" },
       artifact: { type: "string" },
       smolvm: { type: "string" },
+      "user-config": { type: "string" },
+      "ignore-project": { type: "boolean" },
+      profile: { type: "string" },
       "allow-host": { type: "string", multiple: true },
       tty: { type: "boolean", short: "t" },
       "no-stdin": { type: "boolean" },
@@ -122,28 +138,40 @@ export const isolateCli = async (
       return 0;
     }
     const [command, ...rest] = positionals;
+    // `run PROFILE` and `config inspect` take one operand; nothing else does.
+    const operand = command === "run" || command === "config" ? rest.shift() : undefined;
     if (rest.length) throw new UsageError("Unexpected argument: " + rest[0]);
-    if (command !== "exec" && separator >= 0)
-      throw new UsageError("Only exec takes a command after --.");
+    const runs = command === "exec" || command === "run";
+    if (!runs && separator >= 0) throw new UsageError("Only exec and run take arguments after --.");
     const execOnly = (["allow-host", "tty", "no-stdin"] as const).find(
       (flag) => values[flag] !== undefined,
     );
-    if (execOnly && command !== "exec") throw new UsageError(`--${execOnly} applies only to exec.`);
-    if (values.json && command !== "inspect")
-      throw new UsageError("--json applies only to inspect.");
+    if (execOnly && !runs) throw new UsageError(`--${execOnly} applies only to exec and run.`);
+    if (values.json && command !== "inspect" && command !== "config")
+      throw new UsageError("--json applies only to inspect and config inspect.");
     if (values.all && command !== "inspect" && command !== "cleanup")
       throw new UsageError("--all applies only to inspect and cleanup.");
+    if (values.profile !== undefined && command !== "config")
+      throw new UsageError("--profile applies only to config inspect; use run PROFILE to launch.");
+    if (values["ignore-project"] && (command === "inspect" || command === "cleanup"))
+      throw new UsageError("--ignore-project does not apply to " + command + ".");
     switch (command) {
       case "prepare":
         return await prepare(values, dependencies);
       case "exec":
         return await exec(values, argv, dependencies);
+      case "run":
+        if (!operand) throw new UsageError("Name the launch profile: run PROFILE [-- ARG...].");
+        return await exec(values, argv, dependencies, operand);
+      case "config":
+        if (operand !== "inspect") throw new UsageError("Use config inspect.");
+        return await inspectConfig(values);
       case "inspect":
         return await inspect(values, dependencies);
       case "cleanup":
         return await cleanup(values);
       case undefined:
-        throw new UsageError("Choose a command: prepare, exec, inspect or cleanup.");
+        throw new UsageError("Choose a command: prepare, exec, run, config, inspect or cleanup.");
       default:
         throw new UsageError("Unknown command: " + command);
     }
@@ -184,7 +212,17 @@ interface Session {
   coordinator: ReturnType<typeof createVmEnvironmentCoordinator>;
   /** Owns every lease this process takes; aborting it disconnects them. */
   owner: AbortController;
+  /** Aborted by a routed signal until the command installs its own handler. */
+  signal: AbortSignal;
+  progress: (text: string) => void;
 }
+
+/** The workspace and its resolved configuration, before any state is touched. */
+const configure = async (values: Values, profile?: string) => {
+  const workspace = await resolveWorkspace(values.workspace ?? Deno.cwd());
+  environmentId(workspace, values.name);
+  return { workspace, config: loadIsolateConfig(workspace, values, profile) };
+};
 
 /**
  * Own the workspace's environment and boot it, cancelling on any routed signal.
@@ -193,18 +231,26 @@ interface Session {
 const withEnvironment = async (
   values: Values,
   dependencies: IsolateDependencies,
-  options: { activity: string; extraAllowedHosts?: string[] },
+  options: {
+    activity: string;
+    workspace: string;
+    config: IsolateConfig;
+    extraAllowedHosts?: string[];
+    /** Run the configured start hooks during startup (prepare runs them itself). */
+    startHooks: boolean;
+  },
   run: (
     session: Session,
     setSignal: (handle: (signal: HostSignal) => void) => void,
   ) => Promise<number>,
 ): Promise<number> => {
-  const workspace = await resolveWorkspace(values.workspace ?? Deno.cwd());
-  environmentId(workspace, values.name);
+  const { workspace, config } = options;
   let phase: "starting" | "running" | "stopping" = "starting";
   const progress = (text: string) => {
     if (!values.quiet) err(`loom-isolate: ${text}\n`);
   };
+  for (const request of config.unsupported)
+    progress("Ignoring a project request loom-isolate does not support: " + request);
   let received: HostSignal | undefined;
   const cancelled = new AbortController();
   let onSignal = (signal: HostSignal) => {
@@ -217,7 +263,7 @@ const withEnvironment = async (
     if (!environment) throw new Error("Could not create the environment");
     try {
       const runtime = await (dependencies.verifyRuntime ?? verifyRuntime)(
-        selectRuntime(values, environment.record.runtime),
+        selectRuntime(values, environment.record.runtime, configuredRuntime(config)),
       );
       await recover(environment, progress, cancelled.signal);
       cancelled.signal.throwIfAborted();
@@ -239,6 +285,8 @@ const withEnvironment = async (
           artifact: runtime.artifact,
           smolvm: runtime.smolvm,
           activity: () => options.activity,
+          environment: config.environment,
+          ...(options.startHooks && config.start.length ? { startHooks: config.start } : {}),
           ...(options.extraAllowedHosts?.length
             ? { extraAllowedHosts: options.extraAllowedHosts }
             : {}),
@@ -250,7 +298,15 @@ const withEnvironment = async (
         cancelled.signal.removeEventListener("abort", stopStartup);
         cancelled.signal.throwIfAborted();
         phase = "running";
-        return await run({ environment, runtime, coordinator, owner }, (handle) => {
+        const session = {
+          environment,
+          runtime,
+          coordinator,
+          owner,
+          signal: cancelled.signal,
+          progress,
+        };
+        return await run(session, (handle) => {
           onSignal = handle;
         });
       } catch (error) {
@@ -276,13 +332,45 @@ const withEnvironment = async (
   }
 };
 
+/**
+ * Prepare hooks, then start hooks, in the mounted workspace. There are no
+ * prepared bases here: preparation changes the workspace itself.
+ */
+const runHooks = async (session: Session, config: IsolateConfig) => {
+  const { environment, coordinator, owner, progress, signal } = session;
+  // A routed signal interrupts the running hook through its lease.
+  signal.addEventListener("abort", () => owner.abort(), { once: true });
+  for (const [event, hooks] of [
+    ["workspace_prepare", config.prepare],
+    ["workspace_start", config.start],
+  ] as const)
+    for (const hook of hooks) {
+      signal.throwIfAborted();
+      progress(`Running ${event} hook: ${hook.name}`);
+      const result = await coordinator.command(environment.id, hook.run, hook.timeoutMs, owner, {
+        LOOM_HOOK: hook.name,
+        LOOM_HOOK_EVENT: event,
+      });
+      if (result.code !== 0 || result.timedOut)
+        throw new Error(
+          `${event} hook ${hook.name}` +
+            (result.timedOut ? " timed out" : " exited " + result.code) +
+            ":\n" +
+            result.output,
+        );
+    }
+};
+
 const prepare = async (values: Values, dependencies: IsolateDependencies) => {
   const started = Date.now();
+  const { workspace, config } = await configure(values);
   return await withEnvironment(
     values,
     dependencies,
-    { activity: "loom-isolate prepare" },
-    async ({ environment, runtime }) => {
+    { activity: "loom-isolate prepare", workspace, config, startHooks: false },
+    async (session) => {
+      const { environment, runtime } = session;
+      await runHooks(session, config);
       await environment.update({
         runtime: { artifact: runtime.artifact, smolvm: runtime.smolvm },
         preparedAt: new Date().toISOString(),
@@ -296,24 +384,39 @@ const prepare = async (values: Values, dependencies: IsolateDependencies) => {
   );
 };
 
-const exec = async (values: Values, argv: string[], dependencies: IsolateDependencies) => {
-  if (!argv.length) throw new UsageError("Pass the command after --, e.g. exec -- make test.");
+/** exec runs literal argv; run PROFILE appends argv to the profile's entrypoint. */
+const exec = async (
+  values: Values,
+  args: string[],
+  dependencies: IsolateDependencies,
+  profile?: string,
+) => {
+  if (!profile && !args.length)
+    throw new UsageError("Pass the command after --, e.g. exec -- make test.");
   const stdin = !values["no-stdin"];
   const tty = values.tty ?? false;
   if (tty && !stdin) throw new UsageError("--tty requires stdin.");
   if (tty && (!Deno.stdin.isTerminal() || !Deno.stdout.isTerminal()))
     throw new UsageError("--tty requires an interactive terminal on stdin and stdout.");
-  const user = executionOptionsSchema.safeParse({ argv, stdin, tty });
-  if (!user.success)
-    throw new UsageError("Invalid command: pass an executable that does not start with '-'.");
-  let extraAllowedHosts: string[];
+  let allowed: string[];
   try {
-    extraAllowedHosts = normalizeExtraHosts(values["allow-host"] ?? []);
+    allowed = normalizeExtraHosts(values["allow-host"] ?? []);
   } catch {
     throw new UsageError(
       "--allow-host takes exact DNS names (HTTPS only; no URLs, IPs or wildcards).",
     );
   }
+  // A literal command is checked before reading configuration; a profile's after.
+  const valid = (argv: string[]) => {
+    if (!executionOptionsSchema.safeParse({ argv, stdin, tty }).success)
+      throw new UsageError("Invalid command: pass an executable that does not start with '-'.");
+  };
+  if (!profile) valid(args);
+  const { workspace, config } = await configure(values, profile);
+  const argv = [...(config.profile?.entrypoint ?? []), ...args];
+  valid(argv);
+  // The caller is the host: explicit hosts add to what configuration allows.
+  const extraAllowedHosts = [...new Set([...config.extraAllowedHosts, ...allowed])];
   const terminal = Object.fromEntries(
     ["TERM", "COLORTERM"].flatMap((key) => {
       const value = Deno.env.get(key);
@@ -323,7 +426,13 @@ const exec = async (values: Values, argv: string[], dependencies: IsolateDepende
   return await withEnvironment(
     values,
     dependencies,
-    { activity: "loom-isolate exec", extraAllowedHosts },
+    {
+      activity: profile ? "loom-isolate run " + profile : "loom-isolate exec",
+      workspace,
+      config,
+      extraAllowedHosts,
+      startHooks: true,
+    },
     async ({ environment, coordinator, owner }, setSignal) => {
       const pidFile = `/tmp/loom-isolate-${crypto.randomUUID()}.pid`;
       const target = coordinator.openExecution(
@@ -374,15 +483,30 @@ const exec = async (values: Values, argv: string[], dependencies: IsolateDepende
   );
 };
 
+/** Resolution only: no state, VM or runtime is touched. */
+const inspectConfig = async (values: Values) => {
+  const { config } = await configure(values, values.profile);
+  out(values.json ? JSON.stringify(config, null, 2) + "\n" : formatConfig(config));
+  return 0;
+};
+
 const inspect = async (values: Values, dependencies: IsolateDependencies) => {
   const ids = values.all
     ? await listEnvironmentIds()
     : [environmentId(await Deno.realPath(values.workspace ?? Deno.cwd()), values.name)];
   const environments = await Promise.all(ids.map((id) => environmentStatus(id)));
+  // The user backend applies to every workspace; a broken file is reported per runtime.
+  let configured: ReturnType<typeof userRuntime> | Error;
+  try {
+    configured = userRuntime(values);
+  } catch (error) {
+    configured = new Error("environment config: " + message(error));
+  }
   const runtimes = await Promise.all(
     environments.map(async (status) => {
       try {
-        const runtime = selectRuntime(values, status.record?.runtime ?? null);
+        if (configured instanceof Error) throw configured;
+        const runtime = selectRuntime(values, status.record?.runtime ?? null, configured);
         return await (dependencies.verifyRuntime ?? verifyRuntime)(runtime);
       } catch (error) {
         return { error: message(error) };

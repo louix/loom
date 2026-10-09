@@ -14,17 +14,36 @@ loom-isolate exec --allow-host registry.npmjs.org -- npm ci
 
 ## Commands
 
-| Command                      | Effect                                                              |
-| ---------------------------- | ------------------------------------------------------------------- |
-| `exec [options] -- CMD ARG…` | Boot the environment, run `CMD` with literal arguments, stop the VM |
-| `prepare`                    | Verify the runtime, boot once, and record the runtime selection     |
-| `inspect [--all] [--json]`   | Show environments, their owner, VM state and runtime                |
-| `cleanup [--all]`            | Recover a crashed VM, then remove loom-isolate's state              |
+| Command                                 | Effect                                                                    |
+| --------------------------------------- | ------------------------------------------------------------------------- |
+| `exec [options] -- CMD ARG…`            | Boot the environment, run `CMD` with literal arguments, stop the VM       |
+| `run [options] PROFILE [-- ARG…]`       | As `exec`, running a launch profile's entrypoint followed by `ARG…`       |
+| `prepare`                               | Verify the runtime, boot, run prepare and start hooks, record the runtime |
+| `config inspect [--profile P] [--json]` | Show the resolved configuration and where each value came from            |
+| `inspect [--all] [--json]`              | Show environments, their owner, VM state and runtime                      |
+| `cleanup [--all]`                       | Recover a crashed VM, then remove loom-isolate's state                    |
 
 Options: `-w DIR` selects the workspace (default: current directory); `-n NAME`
 selects one of its environments (default `default`); `--artifact` and
-`--smolvm` choose the runtime; `-q` hides startup progress. `exec` also accepts
-`-t` (terminal), `--no-stdin` and repeatable `--allow-host HOST`.
+`--smolvm` choose the runtime; `--user-config FILE` replaces the default
+environment config; `--ignore-project` skips the workspace's `loom.json`; `-q`
+hides startup progress. `exec` and `run` also accept `-t` (terminal),
+`--no-stdin` and repeatable `--allow-host HOST`.
+
+## Configuration
+
+loom-isolate reads the [environment configuration](environment-config.md): the
+checkout's `loom.json` (what the project requests) resolved against
+`${XDG_CONFIG_HOME:-~/.config}/loom/environment.jsonc` (what you grant). It never
+reads Loom's `config.jsonc`; `loom config convert` prints that file's
+environment settings in the new format. Missing files add nothing; malformed
+files, or project requests without a matching grant, fail with status 125
+before anything starts.
+
+The resolution supplies Nix activation or a command prefix, CPU and memory,
+start hooks (run before each command), prepare hooks (run by `prepare`), allowed
+hosts, and the runtime. `--allow-host` adds to the configured hosts.
+`config inspect` resolves without touching state or starting a VM.
 
 Everything after `--` is passed to the guest unchanged: no shell, glob or
 variable expansion. Stdin, stdout and stderr pass through. `exec` exits with
@@ -35,8 +54,10 @@ loom-isolate itself fails, and `2` for usage errors.
 
 The Nix package bundles a session runtime and smolvm. Otherwise pass
 `--artifact` (a Loom session runtime, e.g. `nix build .#session-runtime`) and
-`--smolvm`. Flags win over the packaged default, which wins over the runtime
-recorded by the last `prepare`. Nothing is fetched or built at run time.
+`--smolvm`. Flags win over the configured runtime (a launch profile's
+`artifact`, then `backend` in environment.jsonc), which wins over the packaged
+default, which wins over the runtime recorded by the last `prepare`. Nothing is
+fetched or built at run time.
 
 ## Ownership and lifetime
 
@@ -72,8 +93,9 @@ until `cleanup`.
 - loom-isolate refuses workspaces whose mounts would overlap Loom's VM state
   (`$XDG_STATE_HOME/loom`) or its own state. It never adopts a directory it did
   not create, nor a state directory reached through a symlink.
-- Network access is denied. Each `--allow-host` permits HTTPS to one exact DNS
-  name through the host proxy.
+- Network access is denied. Each `--allow-host`, and each host the
+  configuration allows, permits HTTPS to one exact DNS name through the host
+  proxy.
 - VMs appear in `loom vm list` with workload `loom-isolate exec`. `loom vm stop`
   can stop them. The smolvm disk template cache and runtime maintenance lock are
   shared with Loom.

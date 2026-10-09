@@ -10,7 +10,7 @@ Deno.test("loom-isolate's graph excludes Loom's application and conversation cod
   for (const path of files) {
     assert.match(
       path,
-      /^(cli\/src\/(loom-isolate\.ts|isolate\/)|core\/src\/|runtime\/src\/|isolation\/src\/)/,
+      /^(cli\/src\/(loom-isolate\.ts|isolate\/)|core\/src\/|runtime\/src\/|isolation\/src\/|environment-config\/src\/)/,
     );
     assert.doesNotMatch(path, /^runtime\/src\/(worker|mcp)\//, path);
     assert.doesNotMatch(
@@ -20,6 +20,10 @@ Deno.test("loom-isolate's graph excludes Loom's application and conversation cod
     );
   }
   assert(files.includes("isolation/src/coordinator.ts"), "built on the isolation library");
+  assert(
+    files.includes("environment-config/src/resolution.ts"),
+    "configured by environment-config",
+  );
   assert(files.includes("runtime/src/session-vm/supervisor.ts"), "includes the spawned supervisor");
 });
 
@@ -34,7 +38,12 @@ Deno.test("loom-isolate installs, checks and runs as a standalone package", asyn
     const result = await new Deno.Command(Deno.execPath(), {
       args,
       cwd: pkg,
-      env: { XDG_STATE_HOME: join(root, "state"), NO_COLOR: "1", ...env },
+      env: {
+        XDG_STATE_HOME: join(root, "state"),
+        XDG_CONFIG_HOME: join(root, "config"),
+        NO_COLOR: "1",
+        ...env,
+      },
       stdin: "null",
       stdout: "piped",
       stderr: "piped",
@@ -82,7 +91,7 @@ Deno.test("loom-isolate installs, checks and runs as a standalone package", asyn
       Object.keys(JSON.parse(await Deno.readTextFile(join(pkg, "deno.json"))).imports).filter(
         (name) => !name.startsWith("@loom/"),
       ),
-      ["zod"],
+      ["jsonc-parser", "zod"],
     );
 
     assert.match(
