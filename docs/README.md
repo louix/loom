@@ -12,6 +12,7 @@ Start with the guide for the task at hand:
 | Install or update runtime artifacts                      | [Packaged runtimes](packaged-runtimes.md)                                                   |
 | Diagnose a provider VM                                   | [Claude](claude-session-vm.md), [Codex](codex-session-vm.md), [AI SDK](aisdk-session-vm.md) |
 | Run one command in a VM without Loom                     | [loom-isolate](loom-isolate.md)                                                             |
+| Configure loom-isolate, or convert Loom config for it    | [Environment configuration](environment-config.md)                                          |
 
 For contributors:
 

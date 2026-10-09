@@ -29,6 +29,7 @@ commands:
   models <provider>      list a provider's models (claude CLI catalog, or an aisdk /models probe)
   cache [id]             prompt-cache hit rate + observed TTL, per provider/model
   config                 lint the loaded config (exit 1 if there are warnings)
+  config convert [FILE]  print environment settings in the loom-isolate format   [--out NEW]
   mcp prepare|status|update [name]  manage configured MCP servers
   runtime prepare|status|update|prune [runtime]  manage optional packaged MCP runtimes
   vm                     prepare, inspect and manage VM lifecycles
@@ -127,7 +128,14 @@ loom mcp logout <name> [--json]
   config: `loom config  — lint the loaded config
 
   reports unset api_key_env vars, providers with no key, keyless search
-  backends, and model auto-detection notes. Exit 1 if there are any warnings.`,
+  backends, and model auto-detection notes. Exit 1 if there are any warnings.
+
+loom config convert [FILE] [--out NEW] [--json]
+
+  print FILE's environment settings (default: Loom's config.jsonc) in the
+  versioned environment.jsonc format read by loom-isolate, and list what stays
+  in Loom's config and what cannot be converted. FILE is only read; Loom keeps
+  using it. --out writes the new file to NEW and refuses to overwrite anything.`,
   send: `loom send <id> <text...>  — send a follow-up turn, or answer a question
 
   if the session is mid-turn the text is injected after the current tool call.`,
@@ -206,6 +214,7 @@ const main = async (): Promise<void> => {
       isolation: { type: "string" },
       worktree: { type: "boolean", default: false },
       "delete-branch": { type: "boolean", default: false },
+      out: { type: "string" },
     },
   });
 
@@ -220,6 +229,14 @@ const main = async (): Promise<void> => {
   if (values.help) {
     return void writeOut((cmd && USAGE[cmd] ? USAGE[cmd] : HELP) + "\n");
   }
+  // Reads a file and prints; no repository, daemon or config scaffolding.
+  if (cmd === "config" && positionals[1] === "convert") {
+    if (positionals.length > 3) throw new Error("usage: loom config convert [FILE] [--out FILE]");
+    const { configConvert } = await import("./config-convert.ts");
+    writeOut(await configConvert({ file: positionals[2], out: values.out, json: values.json }));
+    return;
+  }
+  if (values.out !== undefined) throw new Error("--out applies only to loom config convert");
 
   const isTty = Deno.stdout.isTerminal() && Deno.stdin.isTerminal();
   const wantTui = cmd === "tui" || (!cmd && isTty);

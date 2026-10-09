@@ -39,3 +39,8 @@ historical finding; completed plans and investigation reports remain in Git hist
   Idle VM shutdown preserves workspace data; automatic cache eviction needs a
   separate policy.
 - Evaluate macOS disk-template caching and broader MCP reconnect behavior.
+- Environment configuration ([guide](environment-config.md)) is read only by
+  loom-isolate. Not yet adopted: Loom reading it (the daemon still resolves
+  `config.jsonc`), project MCP/skill requests and their grants, integration
+  launch profiles, Git commit identity in loom-isolate, prepared bases from
+  committed `loom.json`, and private-clone or worktree placement in loom-isolate.

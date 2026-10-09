@@ -903,6 +903,14 @@ export const loadConfig = (repoRoot: string, configFile = userConfigPath()): Loo
       selected = overrides;
     }
   }
+  return normalizeConfig(mergeRepoOverride(defaults, selected));
+};
+
+/** One repo override over the user defaults, before normalization. */
+export const mergeRepoOverride = (
+  defaults: Record<string, unknown>,
+  selected: Record<string, unknown>,
+): Record<string, unknown> => {
   const merged = deepMerge(defaults, selected);
   // Hooks are additive across repo layers; other arrays keep replacement semantics.
   // Validate both layers so an override cannot hide malformed inherited hooks.
@@ -914,7 +922,7 @@ export const loadConfig = (repoRoot: string, configFile = userConfigPath()): Loo
     ...((defaults.hooks as unknown[] | undefined) ?? []),
     ...((selected.hooks as unknown[] | undefined) ?? []),
   ];
-  return normalizeConfig(merged);
+  return merged;
 };
 
 /** Resolve a possibly-relative config path against the repo root. */
