@@ -1,0 +1,10 @@
+{
+  "name": "@loom/isolation",
+  "exports": {
+    "./execution-leases": "./src/execution-leases.ts",
+    "./errors": "./src/errors.ts",
+    "./storage": "./src/storage.ts",
+    "./coordinator": "./src/coordinator.ts",
+    "./environment": "./src/environment.ts"
+  }
+}

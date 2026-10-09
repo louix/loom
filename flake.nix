@@ -95,7 +95,7 @@
         root = ./.;
         fileset = nixpkgs.lib.fileset.unions [
           ./aisdk ./backend ./cli ./client ./connectors ./core ./frontend
-          ./harness ./runtime ./packaging/runtimes
+          ./harness ./runtime ./isolation ./packaging/runtimes
           ./deno.json ./deno.lock ./flake.nix ./flake.lock
         ];
       };
