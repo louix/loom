@@ -114,13 +114,12 @@ import {
   formatQuestionsForEditor,
   liveQNav,
   mkInteractions,
-  nextUnanswered,
   parseAskUserQuestions,
-  questionPromptFor,
+  questionsOf,
   questionState,
   requestsFor,
-  type AskUserQuestionItem,
 } from "./interactions.ts";
+import { qnav, sheetKey, sheetLayout, type QNav } from "./question-sheet.ts";
 
 /** How much of each log file the `logs` command pulls into `$EDITOR`. */
 const LOG_TAIL_BYTES = 256 * 1024;
@@ -195,6 +194,7 @@ export type BodyKind =
   | { t: "help" }
   | { t: "doctor" }
   | { t: "plan"; plan: PlanReview }
+  | { t: "questions"; sessionId: string; requestId: string }
   | { t: "split" }
   | { t: "fleetOnly" }
   | { t: "sessionPane" };
@@ -217,7 +217,7 @@ export interface FleetView {
   readonly requestCount: number;
   readonly showRequest: boolean;
   /** Which `AskUserQuestion` question the request panel should show — the one
-   *  the open `answerQuestion` prompt is collecting, else the first. */
+   *  the answer sheet was left on, else the first. */
   readonly questionIdx: number;
   readonly body: BodyKind;
   readonly cols: number;
@@ -326,7 +326,7 @@ const deriveView = (
   const rows = Math.max(1, dims.rows);
   const footerH = promptRows(state);
   // Which question the request panel previews — the one `qnav` is parked on,
-  // which is also the one an open answer prompt is collecting. The panel sizes
+  // which is also the one the answer sheet resumes on. The panel sizes
   // itself to fit it (see `requestPanelRows`), so this has to be settled before
   // the row budget.
   const questionIdx = liveQNav(state.qnav, sel?.id, request?.id)?.idx ?? 0;
@@ -339,7 +339,7 @@ const deriveView = (
   const bodyFor = (): BodyKind => {
     const o = state.overlay;
     // Reading views own the body; composers and selectors float above it.
-    if (o.t === "help" || o.t === "doctor" || o.t === "plan") return o;
+    if (o.t === "help" || o.t === "doctor" || o.t === "plan" || o.t === "questions") return o;
     if (layoutView === "session") return { t: "sessionPane" };
     return narrow ? { t: "fleetOnly" } : { t: "split" }; // wide `overview`
   };
@@ -1053,19 +1053,34 @@ export const mkFleetHandle = ({
       }
     });
   };
-  /** Park `qnav` on question `idx` and open the answer prompt there. The prompt
-   *  itself carries only the session + request it resolves; which question and
-   *  the answers so far live in `qnav`, which survives the prompt closing. */
-  const openQuestionPrompt = (
-    sessionId: string,
-    requestId: string,
-    qs: AskUserQuestionItem[],
-    answers: Record<string, string>,
-    idx: number,
-  ): void => {
-    const { nav, prompt } = questionPromptFor(sessionId, requestId, qs, answers, idx);
-    dispatch({ t: "qnavSet", nav });
-    show({ t: "prompt", prompt });
+  /** Send a validated answer sheet. The sheet stays up, taking no edits, until
+   *  the daemon has the answers; a failure puts the reason on the sheet with
+   *  every answer intact. */
+  const submitQuestions = (nav: QNav, answers: Record<string, string>): void => {
+    const { sessionId, requestId } = nav;
+    const request = requestsFor(fleetSessions(state), sessionId).find((r) => r.id === requestId);
+    const showing = (): boolean =>
+      state.overlay.t === "questions" &&
+      state.overlay.sessionId === sessionId &&
+      state.overlay.requestId === requestId;
+    dispatch({ t: "qnavSet", nav: { ...nav, busy: true, notice: "" } });
+    interactions
+      .respond(sessionId, requestId, { t: "answers", request, answers })
+      .then((m) => {
+        if (showing()) show(browse);
+        if (m) note(m, "good");
+      })
+      .catch((e: unknown) => {
+        const live = liveQNav(state.qnav, sessionId, requestId);
+        // A dropped reply may have been applied, and the request's guard stays
+        // up until the snapshot settles it — say so rather than invite a retry.
+        let notice = e instanceof Error ? e.message : String(e);
+        if (isAmbiguousFailure(e))
+          notice =
+            "No confirmation — the answers may have been sent. Check the session before retrying.";
+        if (live) dispatch({ t: "qnavSet", nav: { ...live, busy: false, notice } });
+        if (!showing()) note(notice, "bad");
+      });
   };
 
   const runAct = (action: ActName): void => {
@@ -1255,13 +1270,9 @@ export const mkFleetHandle = ({
         if (r?.kind === "user_question") {
           const q = questionState(fleetSessions(state), state.qnav, s.id);
           if (!q) return note("malformed AskUserQuestion input — ⌃o to inspect", "bad");
-          return void openQuestionPrompt(
-            s.id,
-            q.requestId,
-            q.qs,
-            q.nav?.answers ?? {},
-            q.nav?.idx ?? 0,
-          );
+          // Resume the sheet where it was left; progress lives in `qnav`.
+          dispatch({ t: "qnavSet", nav: q.nav ?? qnav(s.id, q.requestId) });
+          return void show({ t: "questions", sessionId: s.id, requestId: q.requestId });
         }
         return note("no question pending", "dim");
       }
@@ -1726,28 +1737,6 @@ export const mkFleetHandle = ({
         k === "answer" ? { t: "answer", text } : { t: "deny", message: text },
       );
 
-    /** Record this answer, then either move to the next unanswered question or
-     *  resolve the whole `AskUserQuestion`. The questions come from the request
-     *  itself and the progress from `qnav` — the prompt holds neither, so there
-     *  is no stale copy to reconcile. */
-    const runQuestions = async (sessionId: string, requestId: string): Promise<string> => {
-      const fleet = fleetSessions(state);
-      const q = questionState(fleet, state.qnav, sessionId);
-      if (!q || q.requestId !== requestId) return "";
-      const idx = Math.min(q.nav?.idx ?? 0, q.qs.length - 1);
-      const answers = { ...q.nav?.answers, [q.qs[idx]!.question]: text };
-      const missing = nextUnanswered(q.qs, answers, idx);
-      if (missing !== -1) {
-        openQuestionPrompt(sessionId, requestId, q.qs, answers, missing);
-        return "";
-      }
-      return interactions.respond(sessionId, requestId, {
-        t: "answers",
-        request: requestsFor(fleet, sessionId).find((r) => r.id === requestId),
-        answers,
-      });
-    };
-
     const run = async (): Promise<string> => {
       switch (p.t) {
         case "new": {
@@ -1769,8 +1758,6 @@ export const mkFleetHandle = ({
           return runSession(p.kind, p.sessionId);
         case "request":
           return runRequest(p.kind, p.sessionId, p.requestId);
-        case "questions":
-          return runQuestions(p.sessionId, p.requestId);
         case "discuss": {
           const r = await client.request<{ alreadyResolved: boolean }>("session.respondPlan", {
             id: p.plan.sessionId,
@@ -2049,7 +2036,10 @@ export const mkFleetHandle = ({
     // the fleet filter. The replayed presses are length-1, so this never
     // re-enters.
     const onInputLine =
-      state.overlay.t === "prompt" || state.overlay.t === "picker" || !!searches.get();
+      state.overlay.t === "prompt" ||
+      state.overlay.t === "picker" ||
+      (state.overlay.t === "questions" && !!state.qnav?.editing) ||
+      !!searches.get();
     if (
       onInputLine &&
       input.length > 1 &&
@@ -2227,24 +2217,6 @@ export const mkFleetHandle = ({
       const res = applyKey(p.buffer, input, key);
       switch (res.kind) {
         case "cancel":
-          // Esc on an AskUserQuestion answer drops back to the request panel
-          // (the daemon stays blocked) rather than abandoning the whole call:
-          // answers gathered so far — including whatever is typed now — stay in
-          // `qnav`, so ← / → can move to another question and `a` resumes where
-          // you left off.
-          if (p.t === "questions") {
-            const q = questionState(fleetSessions(state), state.qnav, p.sessionId);
-            if (q && q.requestId === p.requestId) {
-              const idx = Math.min(q.nav?.idx ?? 0, q.qs.length - 1);
-              const answers = { ...q.nav?.answers };
-              if (p.buffer.text.trim() !== "") answers[q.qs[idx]!.question] = p.buffer.text;
-              dispatch({
-                t: "qnavSet",
-                nav: { sessionId: p.sessionId, requestId: p.requestId, idx, answers },
-              });
-            }
-            return void dispatch({ t: "closePrompt", saveDraft: false });
-          }
           return void dispatch({ t: "closePrompt", saveDraft: true });
         case "submit":
           promptSubmittedAt = Date.now();
@@ -2257,6 +2229,32 @@ export const mkFleetHandle = ({
           return;
         default:
           return absurd(res);
+      }
+    }
+    if (state.overlay.t === "questions") {
+      const { sessionId, requestId } = state.overlay;
+      const qs = questionsOf(fleetSessions(state), sessionId, requestId);
+      if (!qs) return void show(browse);
+      if (key.meta && input === "o") return void viewInEditor();
+      // Not editing, a multi-character chunk is a paste or a coalesced burst —
+      // never a choice.
+      const nav = liveQNav(state.qnav, sessionId, requestId) ?? qnav(sessionId, requestId);
+      if (!nav.editing && input.length > 1) return;
+      const { cols, bodyH } = store.get();
+      const result = sheetKey(qs, nav, input, key, sheetLayout(qs, nav, cols, bodyH));
+      switch (result.t) {
+        case "nav":
+          return void dispatch({ t: "qnavSet", nav: result.nav });
+        case "close":
+          // The daemon stays blocked; the request panel keeps the progress.
+          dispatch({ t: "qnavSet", nav: result.nav });
+          return void show(browse);
+        case "submit":
+          return submitQuestions(result.nav, result.answers);
+        case "ignore":
+          return;
+        default:
+          return absurd(result);
       }
     }
     if (state.overlay.t === "plan") {
@@ -2420,10 +2418,8 @@ export const mkFleetHandle = ({
       if (q && q.qs.length > 1) {
         const cur = Math.min(q.nav?.idx ?? 0, q.qs.length - 1);
         const idx = (cur + (key.leftArrow ? q.qs.length - 1 : 1)) % q.qs.length;
-        return void dispatch({
-          t: "qnavSet",
-          nav: { sessionId: sel!.id, requestId: q.requestId, idx, answers: q.nav?.answers ?? {} },
-        });
+        const nav = q.nav ?? qnav(sel!.id, q.requestId);
+        return void dispatch({ t: "qnavSet", nav: { ...nav, idx, cursor: 0, offset: 0 } });
       }
     }
     // Fleet drill-down: → enters the selected session's child rows (its live

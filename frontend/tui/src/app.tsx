@@ -45,6 +45,9 @@ import {
   PlanReview,
   RequestPanel,
 } from "./components.tsx";
+import { liveQNav, questionsOf, requestsFor } from "./interactions.ts";
+import { QuestionSheetPane } from "./question-pane.tsx";
+import { qnav } from "./question-sheet.ts";
 
 export const App = ({
   client,
@@ -204,6 +207,25 @@ const Layout = ({ view, handle }: Omit<PaneProps, "width">): ReactNode => {
               : {})}
             {...(ps ? { cur: { provider: ps.provider, model: ps.model, effort: ps.effort } } : {})}
             {...(tgt ? { target: tgt } : {})}
+          />
+        </Box>
+      );
+      break;
+    }
+    case "questions": {
+      // The sheet reads its request by id, so a newer request becoming the
+      // active one never re-aims it; a resolved one closes it (reconcile).
+      const { sessionId, requestId } = view.body;
+      const fleet = fleetSessions(state);
+      const qs = questionsOf(fleet, sessionId, requestId) ?? [];
+      body = (
+        <Box width={cols} height={bodyH} flexShrink={0} overflow="hidden">
+          <QuestionSheetPane
+            questions={qs}
+            nav={liveQNav(state.qnav, sessionId, requestId) ?? qnav(sessionId, requestId)}
+            width={cols}
+            height={bodyH}
+            queued={requestsFor(fleet, sessionId).length}
           />
         </Box>
       );

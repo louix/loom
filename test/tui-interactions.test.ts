@@ -26,11 +26,13 @@ const request: SessionInteraction = {
   at: 1,
 };
 
-test("displayed question letters become option labels on the permission wire", () => {
+test("displayed option numbers match the sheet and answers ride the permission wire", () => {
   const qs = parseAskUserQuestions(input);
-  assert.ok(askQuestionLines(qs, 0, 80).some((line) => line.trim() === "b) Postgres"));
-  assert.ok(formatQuestionsForEditor(qs).includes("b) Postgres"));
-  const answers = { "Which store?": "b", "Which scope?": "a)" };
+  assert.equal(qs[0]?.multiSelect, true);
+  assert.equal(qs[1]?.multiSelect, false);
+  assert.ok(askQuestionLines(qs, 0, 80).some((line) => line.trim() === "2) Postgres"));
+  assert.ok(formatQuestionsForEditor(qs).includes("2) Postgres"));
+  const answers = { "Which store?": "Postgres, Memory", "Which scope?": "Local" };
   assert.deepEqual(decisionCall("s1", "q1", { t: "answers", request, answers }, "me"), {
     method: "session.respondPermission",
     params: {
@@ -38,24 +40,19 @@ test("displayed question letters become option labels on the permission wire", (
       requestId: "q1",
       by: "me",
       decision: "allow",
-      updatedInput: { ...input, answers: { "Which store?": "Postgres", "Which scope?": "Local" } },
+      updatedInput: { ...input, answers },
     },
   });
-  assert.deepEqual(answers, { "Which store?": "b", "Which scope?": "a)" });
+  assert.deepEqual(answers, { "Which store?": "Postgres, Memory", "Which scope?": "Local" });
 });
 
-test("letter selections resolve while free text and unknown choices remain verbatim", () => {
-  const cases: Array<[string, string]> = [
-    [" B) ", "Postgres"],
-    ["c.", "Memory"],
-    ["a, c", "SQLite, Memory"],
-    ["A) and B)", "SQLite, Postgres"],
-    ["b/c", "Postgres, Memory"],
-    ...["Postgres", "b, but only locally", "a, z", "z", "  custom answer  ", ""].map(
-      (answer): [string, string] => [answer, answer],
-    ),
-  ];
-  for (const [answer, expected] of cases) {
+// The answer sheet resolves choices to labels itself, so whatever reaches the
+// wire — including a custom answer that happens to look like an option tag —
+// is sent exactly as given. (The old typed prompt mapped `a`, `b, c` … onto
+// lettered options; the sheet chooses by number and never needs that.)
+test("answers, including letter-like custom text, travel verbatim", () => {
+  const cases = ["b", "a, c", "Postgres", "b, but only locally", "  custom answer  ", ""];
+  for (const answer of cases) {
     const call = decisionCall(
       "s1",
       "q1",
@@ -68,7 +65,7 @@ test("letter selections resolve while free text and unknown choices remain verba
     );
     assert.deepEqual(call.params["updatedInput"], {
       ...input,
-      answers: { "Which store?": expected, "Unknown question": "a" },
+      answers: { "Which store?": answer, "Unknown question": "a" },
     });
   }
 });

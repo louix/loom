@@ -1,4 +1,4 @@
-import { snap } from "./tui-fixtures.ts";
+import { fleet, snap } from "./tui-fixtures.ts";
 import assert from "node:assert/strict";
 import { outboxOf, pending } from "@loom/tui/composer";
 import { describe, test } from "node:test";
@@ -50,7 +50,7 @@ import {
   type Term,
 } from "@loom/tui/fleet-handle";
 import { initialState, fleetSessions, shownLog, reduce, sessionLog } from "@loom/tui/model";
-import { openPrompt, questionsPrompt, sessionPrompt } from "@loom/tui/overlay";
+import { openPrompt, sessionPrompt } from "@loom/tui/overlay";
 import { requestsFor } from "@loom/tui/interactions";
 import type { FakeProvider } from "@loom/connector-mock";
 import { makeHarness, type Harness } from "@loom/harness";
@@ -2004,11 +2004,11 @@ describe("tui-render", { concurrency: 4 }, () => {
 
   test("the request panel expands to show every option of the active question", () => {
     const request = askRequest();
-    // every option letter is present — not clipped at a) b) like the old fixed
+    // every option number is present — not clipped at 1) 2) like the old fixed
     // 5-row body did
     const out = stripAnsi(renderToString(createElement(RequestPanel, { request, width: 80 })));
-    for (const letter of ["a)", "b)", "c)", "d)"]) {
-      assert.ok(out.includes(letter), `option ${letter} is rendered: ${JSON.stringify(out)}`);
+    for (const tag of ["1)", "2)", "3)", "4)"]) {
+      assert.ok(out.includes(tag), `option ${tag} is rendered: ${JSON.stringify(out)}`);
     }
     assert.match(out, /OAuth 2\.0/);
     assert.match(out, /JWT bearer/);
@@ -2050,24 +2050,30 @@ describe("tui-render", { concurrency: 4 }, () => {
     assert.equal(requestPanelRows(request, 80, 0), 8);
   });
 
-  test("askQuestionLines letters every option and returns them all", () => {
+  test("askQuestionLines numbers every option and returns them all", () => {
     const lines = askQuestionLines(QUESTIONS, 0, 76);
-    assert.ok(lines.some((l) => /a\) OAuth 2\.0 — delegated/.test(l)));
-    assert.ok(lines.some((l) => /d\) JWT bearer/.test(l)));
+    assert.ok(lines.some((l) => /1\) OAuth 2\.0 — delegated/.test(l)));
+    assert.ok(lines.some((l) => /4\) JWT bearer/.test(l)));
     // clamps out-of-range indices rather than throwing
     assert.deepEqual(askQuestionLines(QUESTIONS, 99, 76), askQuestionLines(QUESTIONS, 1, 76));
   });
 
-  test("the answer footer says esc steps back to the panel, not cancel", () => {
-    const state = reduce(initialState(), {
+  test("the answer sheet footer says esc steps back to the panel, not cancel", () => {
+    const blocked = snap({
+      id: "a",
+      status: "awaiting_input",
+      awaitReason: "user_question",
+      requests: [askRequest()],
+    });
+    const state = reduce(reduce(initialState(), fleet([blocked])), {
       t: "overlay",
-      overlay: { t: "prompt", prompt: questionsPrompt("a", "p1", "answer 1/2: Auth") },
+      overlay: { t: "questions", sessionId: "a", requestId: "p1" },
     });
     const out = stripAnsi(renderToString(createElement(FooterArea, { state, width: 120 })));
     assert.match(out, /esc back/);
     assert.doesNotMatch(out, /esc cancel/);
-    assert.doesNotMatch(out, /⇥/, "no tab binding is advertised");
-    assert.match(out, /⌥o view/);
+    // The sheet binds ⇥ to the custom answer, where the old prompt had none.
+    assert.match(out, /⇥ custom/);
   });
 
   test("the request-panel hint offers ←/→ only for a multi-question call", () => {
@@ -2122,7 +2128,7 @@ describe("tui-render", { concurrency: 4 }, () => {
     assert.match(live, /last turn hit/, "the previous turn's split still reads true");
   });
 
-  test("AskUserQuestion · esc drops to the panel, ←/→ pick a question, answers land in any order", async () => {
+  test("AskUserQuestion · the sheet keeps progress across esc, reviews, then answers once", async () => {
     const { h, connect, cleanup } = await harness();
     const client = await connect();
     const snap = await client.request<SessionSnapshot>("session.create", {
@@ -2139,31 +2145,45 @@ describe("tui-render", { concurrency: 4 }, () => {
         tool: "AskUserQuestion",
         input: { questions: QUESTIONS },
       });
-      // the panel spells out every option of question 1, not just a) b)
+      // the panel spells out every option of question 1, not just 1) 2)
       await waitFor(stdout, /QUESTION \(1\/2\)/);
-      assert.match(stdout.last, /a\) OAuth 2\.0/);
-      assert.match(stdout.last, /d\) JWT bearer/);
+      assert.match(stdout.last, /1\) OAuth 2\.0/);
+      assert.match(stdout.last, /4\) JWT bearer/);
 
-      stdin.feed("a"); // open the answer prompt for question 1
-      await waitFor(stdout, /answer 1\/2/);
-      stdin.feed("API keys");
-      stdin.feed(ESC); // esc → back to the panel, keeping the typed answer
-      await waitFor(stdout, (t) => /QUESTION \(1\/2\)/.test(t) && !/answer 1\/2/.test(t));
+      stdin.feed("a"); // open the answer sheet on question 1
+      await waitFor(stdout, /QUESTION 1\/2 · Auth/);
+      assert.match(stdout.last, /simplest, rotate manually/, "choices keep their descriptions");
+      stdin.feed("2"); // choose API keys
+      await waitFor(stdout, /\(•\) API keys/);
+      stdin.feed(ESC); // esc → back to the panel, keeping the choice
+      await waitFor(stdout, (t) => /QUESTION \(1\/2\)/.test(t) && !/Custom answer/.test(t));
 
       stdin.feed("\x1b[C"); // → move the panel to question 2
       await waitFor(stdout, /QUESTION \(2\/2\)/);
       assert.match(stdout.last, /Where should sessions live\?/);
 
-      stdin.feed("a"); // answer question 2
-      await waitFor(stdout, /answer 2\/2/);
-      stdin.feed("Postgres");
-      stdin.feed("\r"); // question 1 already answered → this resolves the call
+      stdin.feed("a"); // the sheet resumes on question 2
+      await waitFor(stdout, /QUESTION 2\/2 · Sessions/);
+      stdin.feed("\t"); // edit the custom answer
+      await waitFor(stdout, /Editing the custom answer/);
+      stdin.feed("Postgres, pooled");
+      stdin.feed("\r"); // done editing
+      await waitFor(stdout, /Custom answer · Postgres, pooled/);
+      stdin.feed("\r"); // continue to the review
+      await waitFor(stdout, /REVIEW ANSWERS/);
+      assert.match(stdout.last, /→ API keys/, "the choice made before esc survived");
+      assert.match(stdout.last, /→ Postgres, pooled/);
+      assert.equal(fs?.permissionResponses.length ?? 0, 0, "review does not submit");
+
+      stdin.feed("\r"); // submit
       await waitFor(stdout, () => (fs?.permissionResponses.length ?? 0) > 0);
+      stdin.feed("\r");
+      await delay(100);
       assert.equal(fs?.permissionResponses.length, 1, "resolved exactly once");
       const resolved = fs!.permissionResponses[0]!;
       assert.equal(resolved.id, "q1");
       // the daemon carries the collected answers through to the provider, keyed
-      // by question text, regardless of the order they were typed in
+      // by question text: chosen labels, and custom text as typed
       const decision = resolved.decision as {
         behavior: string;
         updatedInput: { answers: Record<string, string> };
@@ -2171,7 +2191,7 @@ describe("tui-render", { concurrency: 4 }, () => {
       assert.equal(decision.behavior, "allow");
       assert.deepEqual(decision.updatedInput.answers, {
         "Which auth method should we use for the API?": "API keys",
-        "Where should sessions live?": "Postgres",
+        "Where should sessions live?": "Postgres, pooled",
       });
     } finally {
       app.unmount();

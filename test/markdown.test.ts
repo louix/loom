@@ -292,9 +292,9 @@ test("formatted question and plan previews fit their measured height", () => {
       assert.ok(!out.includes("`file.ts`"));
     }
     const lines = askQuestionLines(questions, 0, width - 4);
-    assert.ok(lines.some((l) => l.includes("a) first")));
+    assert.ok(lines.some((l) => l.includes("1) first")));
     assert.ok(lines.some((l) => l.includes("recommended")));
-    assert.ok(lines.some((l) => l.includes("b) second")));
+    assert.ok(lines.some((l) => l.includes("2) second")));
   }
 });
 

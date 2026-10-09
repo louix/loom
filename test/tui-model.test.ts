@@ -77,7 +77,6 @@ import {
   pickerCurrent,
   pickerVisible,
   promptKind,
-  questionsPrompt,
   sessionPrompt,
   type NewSessionSettings,
   type Overlay,
@@ -86,6 +85,7 @@ import {
   type PlanReview,
 } from "@loom/tui/overlay";
 import { activeRequest, liveQNav, mkInteractions, requestsFor } from "@loom/tui/interactions";
+import { qnav } from "@loom/tui/question-sheet";
 import { enqueue, outboxOf } from "@loom/tui/composer";
 import { mkClock, mkDeadline, SPIN_MS, type Beat } from "@loom/tui/clock";
 import { openFind } from "@loom/tui/fleet-search";
@@ -1164,16 +1164,16 @@ test("a resolved request closes the UI bound to it, and nothing else", () => {
   // Typing an answer to q1, with an unrelated cancelled send draft beside it.
   let s = reduce(initialState(), fleet([blocked([q("q1")]), snap({ id: "b", status: "idle" })]));
   s = { ...s, drafts: { ...s.drafts, last: "an unrelated half-typed message" } };
-  s = reduce(s, open({ t: "prompt", prompt: questionsPrompt("a", "q1", "answer") }));
+  s = reduce(s, open({ t: "questions", sessionId: "a", requestId: "q1" }));
   s = reduce(s, {
     t: "qnavSet",
-    nav: { sessionId: "a", requestId: "q1", idx: 1, answers: { "Q one": "x" } },
+    nav: { ...qnav("a", "q1"), idx: 1, selected: { 0: [1] } },
   });
 
   // Another client answers q1 and the agent asks something new.
   s = reduce(s, fleet([blocked([q("q2")]), snap({ id: "b", status: "idle" })]));
 
-  assert.equal(promptOf(s), null, "the prompt for a request that is gone closes");
+  assert.equal(promptOf(s), null, "the answer sheet for a request that is gone closes");
   assert.equal(s.overlay.t, "browse");
   assert.equal(s.qnav, null, "and so does the navigation through its questions");
   assert.match(s.notice?.text ?? "", /resolved elsewhere/);
@@ -1201,7 +1201,7 @@ test("a send or title prompt is not closed because some request was resolved", (
 });
 
 test("liveQNav gates on session + request id", () => {
-  const nav = { sessionId: "a", requestId: "q1", idx: 1, answers: { "Q one": "x" } };
+  const nav = { ...qnav("a", "q1"), idx: 1 };
   assert.equal(liveQNav(nav, "a", "q1"), nav);
   assert.equal(liveQNav(nav, "b", "q1"), null, "wrong session → stale");
   assert.equal(liveQNav(nav, "a", "q2"), null, "wrong request → stale");

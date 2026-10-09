@@ -40,7 +40,7 @@ import {
   type Prompt,
 } from "./overlay.ts";
 import { nextMode } from "./mode-control.ts";
-import type { QNav } from "./interactions.ts";
+import { liveQNav, questionsOf, type QNav } from "./interactions.ts";
 import {
   noDrafts,
   outboxOf,
@@ -162,7 +162,7 @@ export interface TuiState {
    *  on open; kept between opens so a reopen paints immediately. */
   doctor: DoctorReport | null;
   /** In-progress answers for a multi-question `AskUserQuestion` — see
-   *  {@link QNav}. Persists across the answer prompt opening and closing. */
+   *  {@link QNav}. Persists across the answer sheet opening and closing. */
   qnav: QNav | null;
   /** Unsent `new` / `send` text with no session behind it yet — see
    *  {@link Drafts}. */
@@ -1496,6 +1496,30 @@ export const footerHints = (s: TuiState): Array<{ keys: string; label: string }>
         { keys: "d", label: "discuss" },
         { keys: "⌥o / o", label: "view" },
       ];
+    case "questions": {
+      const { sessionId, requestId } = s.overlay;
+      const nav = liveQNav(s.qnav, sessionId, requestId);
+      const qs = questionsOf(fleetSessions(s), sessionId, requestId) ?? [];
+      if (nav?.editing)
+        return [
+          { keys: "enter", label: "done" },
+          { keys: "esc", label: "stop editing" },
+        ];
+      if ((nav?.idx ?? 0) >= qs.length)
+        return [
+          { keys: "enter", label: "submit answers" },
+          { keys: "←", label: "questions" },
+          { keys: "esc", label: "back" },
+        ];
+      return [
+        { keys: "↑↓", label: "move" },
+        { keys: "␣ / 1–9", label: "choose" },
+        { keys: "⇥", label: "custom" },
+        { keys: "enter", label: "next" },
+        { keys: "←→", label: "questions" },
+        { keys: "esc", label: "back" },
+      ];
+    }
     case "help":
       return [{ keys: "? / esc", label: "close help" }];
     case "doctor":

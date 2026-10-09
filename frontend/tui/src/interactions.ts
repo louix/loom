@@ -14,7 +14,9 @@
 import type { SessionInteraction } from "@loom/core/interaction";
 import type { SessionSnapshot } from "@loom/core/wire";
 import { isAmbiguousFailure } from "@loom/client";
-import { questionsPrompt, type Prompt } from "./overlay.ts";
+import type { QNav } from "./question-sheet.ts";
+
+export type { QNav } from "./question-sheet.ts";
 
 /** The daemon's newest session snapshots — the only source of request truth. */
 export type Fleet = readonly SessionSnapshot[];
@@ -49,6 +51,8 @@ export interface AskUserQuestionItem {
   question: string;
   header: string;
   options: Array<{ label: string; description?: string }>;
+  /** Any number of options may be chosen, rather than exactly one answer. */
+  multiSelect?: boolean;
 }
 
 /** Parse an `AskUserQuestion` tool call's `input.questions` defensively — the
@@ -78,26 +82,11 @@ export const parseAskUserQuestions = (input: unknown): AskUserQuestionItem[] => 
       question: o["question"],
       header: typeof o["header"] === "string" ? o["header"] : "",
       options,
+      multiSelect: o["multiSelect"] === true,
     });
   }
   return out;
 };
-
-/**
- * In-progress answering of a multi-question `AskUserQuestion`. Lives outside the
- * answer prompt so it survives the prompt closing: `Esc` drops back to the
- * request panel, where `←` / `→` move between questions, and `a` re-opens the
- * prompt on whichever one is shown. Answers gathered so far are kept keyed by
- * question text; the permission resolves once every question has one.
- */
-export interface QNav {
-  sessionId: string;
-  requestId: string;
-  /** Which question the panel previews and the next `a` opens. */
-  idx: number;
-  /** Answers gathered so far, keyed by question text. */
-  answers: Record<string, string>;
-}
 
 /** `nav`, but only if it still describes the request `sid` / `rid` is parked
  *  on — a stale nav (resolved request, or a different session) reads as none. */
@@ -124,72 +113,36 @@ export const questionState = (
   return { requestId: r.id, qs, nav: liveQNav(qnav, sessionId, r.id) };
 };
 
-/** Footer label for the answer prompt: the current question's short `header`
- *  chip, plus `N/total` progress when the call asked more than one question. */
-const questionLabel = (all: AskUserQuestionItem[], idx: number): string => {
-  const tag = all[idx]?.header || "answer";
-  return all.length > 1 ? `answer ${idx + 1}/${all.length}: ${tag}` : `answer: ${tag}`;
-};
-
-/** Where an answer prompt should be parked and what it should start from:
- *  question `idx` (clamped) and whatever has been answered so far. Both live in
- *  {@link QNav}, which outlives the prompt, so this pairs the two. */
-export const questionPromptFor = (
+/** The questions of one specific `AskUserQuestion`, looked up by id rather
+ *  than by whichever request is active — an open answer sheet stays on the
+ *  request it was opened for while others queue or resolve around it. Null once
+ *  the daemon stops listing it. */
+export const questionsOf = (
+  fleet: Fleet,
   sessionId: string,
   requestId: string,
-  qs: AskUserQuestionItem[],
-  answers: Record<string, string>,
-  idx: number,
-): { nav: QNav; prompt: Prompt } => {
-  const at = Math.max(0, Math.min(qs.length - 1, idx));
-  const q = qs[at]!;
-  return {
-    nav: { sessionId, requestId, idx: at, answers },
-    prompt: questionsPrompt(sessionId, requestId, questionLabel(qs, at), answers[q.question] ?? ""),
-  };
-};
-
-/** The next question after `from` with no non-blank answer, wrapping past the
- *  end; -1 once every question has one and the permission can resolve. */
-export const nextUnanswered = (
-  qs: AskUserQuestionItem[],
-  answers: Record<string, string>,
-  from: number,
-): number => {
-  for (let k = 1; k <= qs.length; k++) {
-    const j = (from + k) % qs.length;
-    if ((answers[qs[j]!.question] ?? "").trim() === "") return j;
-  }
-  return -1;
+): AskUserQuestionItem[] | null => {
+  const r = requestsFor(fleet, sessionId).find((x) => x.id === requestId);
+  if (r?.kind !== "user_question") return null;
+  const qs = parseAskUserQuestions(r.input);
+  return qs.length > 0 ? qs : null;
 };
 
 /** The whole `AskUserQuestion` call as a readable sheet for the `o` / `⌥o`
  *  editor view — each question numbered when there's more than one, its options
- *  lettered `a) … b) …` with descriptions, mirroring the request panel. Beats
- *  dumping the raw tool JSON. */
+ *  numbered `1) … 2) …` with descriptions, as the request panel and the answer
+ *  sheet number them. Beats dumping the raw tool JSON. */
 export const formatQuestionsForEditor = (qs: AskUserQuestionItem[]): string =>
   qs
     .map((q, qi) => {
       const head = qs.length > 1 ? `${qi + 1}. ${q.question}` : q.question;
-      const opts = q.options.map((o, oi) => {
-        const letter = String.fromCharCode(97 + oi);
-        return `   ${letter}) ${o.label}${o.description ? ` — ${o.description}` : ""}`;
-      });
+      const opts = q.options.map(
+        (o, oi) => `   ${oi + 1}) ${o.label}${o.description ? ` — ${o.description}` : ""}`,
+      );
       return [head, ...opts].join("\n");
     })
     .join("\n\n")
     .concat("\n");
-
-/** Resolve only complete letter selections; prose and unknown letters stay verbatim.
- *  The model supplied option labels, but the TUI alone added the a), b), … tags. */
-const resolveOptionLetters = (q: AskUserQuestionItem, answer: string): string => {
-  const selection = answer.trim();
-  if (!/^[a-z][).]?(?:\s*(?:,|\/|\band\b)\s*[a-z][).]?)*$/i.test(selection)) return answer;
-  const letters = selection.toLowerCase().split(/\s*(?:,|\/|\band\b)\s*/);
-  const options = letters.map((letter) => q.options[letter.charCodeAt(0) - 97]);
-  if (options.some((option) => !option)) return answer;
-  return options.map((option) => option!.label).join(", ");
-};
 
 // ---- decisions -------------------------------------------------------------
 
@@ -224,16 +177,13 @@ export const decisionCall = (
     case "answer":
       return { method: "session.answer", params: { ...on, text: d.text } };
     case "answers": {
+      // The answer sheet already resolved choices to their labels; custom
+      // answers travel exactly as typed.
       const raw = d.request?.kind === "user_question" ? d.request.input : undefined;
       const base = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
-      const answers = { ...d.answers };
-      for (const q of parseAskUserQuestions(raw)) {
-        const answer = answers[q.question];
-        if (answer !== undefined) answers[q.question] = resolveOptionLetters(q, answer);
-      }
       return {
         method: "session.respondPermission",
-        params: { ...on, decision: "allow", updatedInput: { ...base, answers } },
+        params: { ...on, decision: "allow", updatedInput: { ...base, answers: { ...d.answers } } },
       };
     }
   }

@@ -125,7 +125,6 @@ const PROMPT_PLACEHOLDER: Record<PromptKind, string> = {
   compact: "steer the summary (optional) — blank = best-effort summary of everything",
   send: "type a message…",
   answer: "type a message…",
-  questions: 'type your answer — e.g. "a" or "a, but …"',
 };
 
 /** Context-meter colour by fill fraction. */
@@ -862,7 +861,6 @@ export const InputLine = ({
 const MODE_HINT: Record<Exclude<PromptKind, "new">, string> = {
   send: "send",
   answer: "answer",
-  questions: "answer",
   deny: "deny",
   title: "rename",
   comment: "save",
@@ -892,7 +890,7 @@ const promptHints = (
   if (pending) return pending;
   const kind = p.t === "session" || p.t === "request" ? p.kind : p.t;
   const bits = [`enter ${MODE_HINT[kind]}`, "⌥⏎ newline", "⌥e editor"];
-  bits.push(p.t === "questions" ? "⌥o view" : "⌥o log");
+  bits.push("⌥o log");
   if (p.t === "session" && p.kind === "send") {
     // ⇧⇥ re-modes the live session, ⌥m swaps its model, ⌥p its provider — all
     // without leaving the half-typed message.
@@ -904,10 +902,7 @@ const promptHints = (
     );
     if (queued > 0) bits.push(`⌥x clear ${queued} queued`);
   }
-  // Esc on an AskUserQuestion answer drops back to the request panel (where
-  // ← / → move between questions), keeping what's been answered — it doesn't
-  // abandon the whole call the way cancelling any other prompt does.
-  bits.push(p.t === "questions" ? "esc back" : "esc cancel");
+  bits.push("esc cancel");
   return bits.join("  ·  ");
 };
 
@@ -1314,13 +1309,14 @@ const REQUEST_PANEL_MAX_BODY = 14;
  *  request. Questions and plans size dynamically — see {@link requestPanelRows}. */
 export const REQUEST_PANEL_ROWS = REQUEST_PANEL_CHROME + REQUEST_PANEL_MIN_BODY;
 
-/** Format content separately from the fixed option letters. */
+/** Format content separately from the fixed option numbers — the numbers the
+ *  answer sheet chooses them by. */
 const askQuestionRows = (qs: AskUserQuestionItem[], active: number, w: number): TextRow[] => {
   const q = qs[Math.max(0, Math.min(qs.length - 1, active))];
   if (!q) return [];
   const rows = [...markdownText(q.question).layout(w)];
   q.options.forEach((opt, oi) => {
-    const prefix = `  ${String.fromCharCode(97 + oi)}) `;
+    const prefix = `  ${oi + 1}) `;
     const source = opt.label + (opt.description ? ` — ${opt.description}` : "");
     const gutter = w > prefix.length ? prefix : "";
     markdownText(source)
@@ -1461,7 +1457,7 @@ export const RequestPanel = ({
       // Title position marker: which question of this call we're on, plus —
       // when others are queued behind it — where this one sits in the queue.
       const pos = [
-        qs.length > 1 ? `${questionIdx + 1}/${qs.length}` : "",
+        qs.length > 1 ? `${Math.min(questionIdx, qs.length - 1) + 1}/${qs.length}` : "",
         queued > 1 ? `1 of ${queued}` : "",
       ]
         .filter(Boolean)

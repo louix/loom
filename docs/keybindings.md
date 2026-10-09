@@ -136,9 +136,12 @@ selected session's EVENTS pane (label, then the input under its transcript), so
 you can see the agent you're typing at; the footer keeps their hints row. The
 sessionless `new` prompt stays in the footer.
 
-For lettered questions, enter a letter (`b` or `b)`) or a list (`a, c`,
-`a and c`, or `a/c`). The TUI sends the corresponding option labels to the
-agent. Free-form replies are also accepted and sent as typed.
+A multiple-choice question (`AskUserQuestion`) opens an answer sheet instead of
+a prompt. `↑↓` move, `␣` or `1`–`9` choose (one option, or any number when the
+question allows several), `⇥` edits a custom answer and `⏎` continues. `←→`
+move between questions. The last step reviews every answer; only `⏎` there
+submits, and an unanswered question is named rather than sent. `esc` steps back
+to the request panel with the answers kept, and `a` resumes where you left off.
 
 `Ctrl` carries the readline motions and nothing else:
 

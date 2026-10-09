@@ -48,20 +48,13 @@ export type Prompt =
   | (PromptEditor & { t: "new"; settings: NewSessionSettings })
   | (PromptEditor & { t: "session"; kind: SessionPromptKind; sessionId: string })
   | (PromptEditor & { t: "request"; kind: RequestPromptKind; sessionId: string; requestId: string })
-  /**
-   * One question of a multi-question `AskUserQuestion`. *Which* question, and
-   * the answers gathered so far, live in {@link TuiState.qnav} rather than
-   * here: they outlive the prompt, because `Esc` drops back to the request
-   * panel with them intact and `a` resumes where you left off.
-   */
-  | (PromptEditor & { t: "questions"; sessionId: string; requestId: string })
   /** A note back about an open plan review, carrying the review itself: `Esc`
    *  puts it back exactly as it was, cycled mode and staged retarget included. */
   | (PromptEditor & { t: "discuss"; plan: PlanReview });
 
 /** A prompt's flat name, for the per-kind display tables (placeholder text, the
  *  `⏎ …` hint). Presentation only — nothing branches on it to decide an RPC. */
-export type PromptKind = "new" | "questions" | "discuss" | SessionPromptKind | RequestPromptKind;
+export type PromptKind = "new" | "discuss" | SessionPromptKind | RequestPromptKind;
 
 export const promptKind = (p: Prompt): PromptKind =>
   p.t === "session" || p.t === "request" ? p.kind : p.t;
@@ -99,13 +92,6 @@ export const discussPrompt = (plan: PlanReview): Prompt => ({
   plan,
   ...ed("discuss plan", ""),
 });
-
-export const questionsPrompt = (
-  sessionId: string,
-  requestId: string,
-  label: string,
-  text = "",
-): Prompt => ({ t: "questions", sessionId, requestId, ...ed(label, text) });
 
 /** What a prompt is aimed at: the session it acts on, and the one request it
  *  resolves. Either is `null` when the variant has none — a `new` prompt has no
@@ -301,6 +287,13 @@ export type Overlay =
   | { t: "prompt"; prompt: Prompt }
   | { t: "confirm"; confirm: Confirm }
   | { t: "plan"; plan: PlanReview }
+  /**
+   * The answer sheet for one `AskUserQuestion`. Which question, and the answers
+   * gathered so far, live in {@link TuiState.qnav} rather than here: they
+   * outlive the sheet, because `Esc` drops back to the request panel with them
+   * intact and `a` resumes where you left off.
+   */
+  | { t: "questions"; sessionId: string; requestId: string }
   | { t: "picker"; picker: Picker };
 
 export const browse: Overlay = { t: "browse" };
@@ -358,6 +351,8 @@ export const overlayTarget = (
       return promptTarget(o.prompt);
     case "plan":
       return { sessionId: o.plan.sessionId, requestId: o.plan.requestId };
+    case "questions":
+      return { sessionId: o.sessionId, requestId: o.requestId };
     case "picker":
       switch (o.picker.dest.t) {
         case "planImpl":
