@@ -50,6 +50,8 @@ export const workerFailureSchema = z.object({
         module: z.enum([
           "runtime/src/worker/main.ts",
           "runtime/src/worker/serve.ts",
+          "runtime/src/framing.ts",
+          // Existing immutable guest artifacts report the previous framing location.
           "runtime/src/worker/transport.ts",
           "runtime/src/session-vm/guest.ts",
           "runtime/src/session-vm/guest-relay.ts",

@@ -2,6 +2,7 @@ import type { HostStopReason } from "./vm-termination.ts";
 import { mcpGrantsSchema } from "./mcp-config.ts";
 import { z } from "zod";
 import { opaqueSchema } from "./schema.ts";
+import { initHookSchema } from "./init-hook.ts";
 const effortLevelSchema = z.string();
 /**
  * The provider seam (design spec §3). Nothing above the adapter layer imports a
@@ -110,13 +111,8 @@ export const agentDefinitionSpecSchema = z.object({
 });
 export type AgentDefinitionSpec = z.infer<typeof agentDefinitionSpecSchema>;
 
-export const initHookSchema = z.object({
-  async: z.boolean().optional(),
-  name: z.string(),
-  run: z.string().max(65536),
-  timeoutMs: z.number().min(1000).max(3600000),
-});
-export type InitHook = z.infer<typeof initHookSchema>;
+// Shared with the VM runtime, which must not import session types.
+export { initHookSchema, type InitHook } from "./init-hook.ts";
 
 export const createSessionOptionsSchema = z.object({
   /** Trusted workspace_start commands, consumed once per worker start, including resume. */

@@ -1,7 +1,7 @@
 import { canonicalHostPath } from "../../../../core/src/host-path.ts";
 import { existsSync } from "node:fs";
-import { recoverSessionVm } from "../../../../runtime/src/session-vm/recovery.ts";
 import { discardSessionDisks } from "../../../../runtime/src/session-vm/disks.ts";
+import { withStoppedVmState } from "../../../../runtime/src/session-vm/stopped-state.ts";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join, resolve, dirname } from "node:path";
@@ -21,29 +21,11 @@ export const sessionVmDirectory = (repo: string, id: string) => {
 export const sessionCloneRoot = (repo: string) => dirname(sessionVmDirectory(repo, "root"));
 
 /** Keep the lock through recovery and the caller's filesystem mutation. */
-export const withStoppedSessionVm = async <T>(
+export const withStoppedSessionVm = <T>(
   repo: string,
   id: string,
   action: (recovered: boolean) => T | Promise<T>,
-): Promise<T> => {
-  const dir = sessionVmDirectory(repo, id);
-  try {
-    await Deno.lstat(dir);
-  } catch (error) {
-    if (error instanceof Deno.errors.NotFound) return await action(false);
-    throw error;
-  }
-  if ((await Deno.realPath(dir)) !== dir) throw new Error("Session state must not be a symlink");
-  const lock = await lockSessionState(dir);
-  try {
-    const recovered = await recoverSessionVm(dir);
-    await assertNoActiveVm(dir);
-    await discardSessionDisks(dir);
-    return await action(recovered);
-  } finally {
-    lock.close();
-  }
-};
+): Promise<T> => withStoppedVmState(sessionVmDirectory(repo, id), action);
 export const removeSessionVmProfile = async (repo: string, id: string) => {
   for (const name of [
     "profile",

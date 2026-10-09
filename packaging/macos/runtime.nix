@@ -50,6 +50,9 @@ let
     if [ -f "$result/claude-session-version" ]; then
       cp "$result/claude-session-version" /tmp/artifact/
     fi
+    if [ -f "$result/standalone-environment-version" ]; then
+      cp "$result/standalone-environment-version" /tmp/artifact/
+    fi
     "$image_tools/bin/jq" '. + {closureFormat: "erofs"}' "$result/manifest.json" > /tmp/artifact/manifest.json
     tar -cf /output/runtime.tar -C /tmp/artifact .
   '';

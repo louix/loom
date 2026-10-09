@@ -17,6 +17,8 @@ export interface VmBinding {
   /** Private guest OverlayFS upper, never a writable host store. */
   writableNix?: boolean;
   preparationOnly?: boolean;
+  /** Keep the initialized guest alive without starting a connector worker. */
+  environmentOnly?: boolean;
   repoBaseDirectory?: string;
   packageCache?: string;
   mounts?: string[];

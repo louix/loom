@@ -4,6 +4,10 @@
     "./pending": "./src/pending.ts",
     "./loom-tools": "./src/loom-tools.ts",
     "./policy": "./src/policy.ts",
-    "./instructions": "./src/instructions.ts"
+    "./instructions": "./src/instructions.ts",
+    "./process": "./src/process.ts",
+    "./session-vm": "./src/session-vm/launch.ts",
+    "./environment-vm": "./src/session-vm/environment-launch.ts",
+    "./environment-coordinator": "./src/session-vm/coordinator.ts"
   }
 }

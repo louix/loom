@@ -137,5 +137,5 @@ Deno.test("worker loop errors are reported before the explicit exit path", async
   assert.equal(records.length, 1);
   assert.equal(records[0]!.origin, "worker_loop");
   assert.equal(records[0]!.name, "SyntaxError");
-  assert(records[0]!.frames.some((f) => f.module === "runtime/src/worker/transport.ts"));
+  assert(records[0]!.frames.some((f) => f.module === "runtime/src/framing.ts"));
 });

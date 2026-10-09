@@ -28,7 +28,8 @@ import {
 import type { RecoverableBinding } from "./recovery.ts";
 import { startMcpRelay } from "./mcp-relay.ts";
 import { startGitRelay } from "./git-relay.ts";
-import { readFrames } from "../worker/transport.ts";
+import { readFrames } from "../framing.ts";
+import { readEnvironmentOutput, writeEnvironmentReady } from "./environment-protocol.ts";
 import { reportStartup, readStartupProgress, classifyStartupFailure } from "./progress.ts";
 import { seedRepoBase, pruneRepoBases } from "./repo-base.ts";
 import {
@@ -55,7 +56,7 @@ const {
   extraAllowedHosts?: string[];
   providerHosts?: string[];
   environment?: SessionEnvironment;
-  prepareHooks?: import("../../../core/src/types.ts").InitHook[];
+  prepareHooks?: import("../../../core/src/init-hook.ts").InitHook[];
 };
 let child: Deno.ChildProcess | undefined;
 if (binding.preparationOnly) Deno.env.set("LOOM_PREPARATION_ONLY", "1");
@@ -189,6 +190,8 @@ try {
   );
   if (binding.preparationOnly)
     await Deno.writeTextFile(join(binding.state, "private/prepare-only"), "1", { mode: 0o600 });
+  if (binding.environmentOnly)
+    await Deno.writeTextFile(join(binding.state, "private/environment-only"), "1", { mode: 0o600 });
   status();
   egress = startEgress(
     join(binding.state, "egress.sock"),
@@ -301,27 +304,44 @@ try {
         },
       );
   void diagnostics.catch(() => stop("diagnostics_error"));
-  const output = child.stdout
-    .pipeThrough(
-      new TransformStream<Uint8Array, Uint8Array>({
-        async transform(chunk, controller) {
-          if (ownsPersistent && !binding.recovery.ready) {
-            binding.recovery.ready = true;
-            await persist();
-          }
-          controller.enqueue(chunk);
-        },
-      }),
-    )
-    .pipeTo(Deno.stdout.writable, { preventClose: true });
+  // An environment guest's only stdout is its readiness frame; commands use smolvm exec.
+  const output = binding.environmentOnly
+    ? readEnvironmentOutput(child.stdout, async () => {
+        if (ended) throw new Error("Environment startup interrupted");
+        if (ownsPersistent) {
+          binding.recovery.ready = true;
+          await persist();
+        }
+        if (ended) throw new Error("Environment startup interrupted");
+        phase = "running";
+        status();
+        clearTimeout(deadline);
+        await writeEnvironmentReady(Deno.stdout.writable);
+      })
+    : child.stdout
+        .pipeThrough(
+          new TransformStream<Uint8Array, Uint8Array>({
+            async transform(chunk, controller) {
+              if (ownsPersistent && !binding.recovery.ready) {
+                binding.recovery.ready = true;
+                await persist();
+              }
+              controller.enqueue(chunk);
+            },
+          }),
+        )
+        .pipeTo(Deno.stdout.writable, { preventClose: true });
   void output.catch(() => stop("output_error"));
   const guestStatus = child.status.then((result) => {
     if (!cleaning) guestExit = { code: result.code, signal: result.signal };
     return result;
   });
-  phase = "running";
-  status();
-  clearTimeout(deadline);
+  // Environments keep their startup deadline until the guest reports readiness.
+  if (!binding.environmentOnly) {
+    phase = "running";
+    status();
+    clearTimeout(deadline);
+  }
   await Promise.race([
     done.promise,
     guestStatus.then(() => recordStop("guest_exit")),

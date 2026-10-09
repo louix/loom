@@ -22,7 +22,8 @@ import {
   type Checkout,
 } from "./checkout.ts";
 import { startGuestRelay } from "./guest-relay.ts";
-import { reportStartup } from "./progress.ts";
+import { reportStartup, classifyStartupFailure } from "./progress.ts";
+import { serveEnvironment } from "./environment-protocol.ts";
 import { guestShellEnvironmentPath, shellEnvironment } from "./shell.ts";
 import { installWorkerDiagnostics } from "../worker/diagnostics.ts";
 installWorkerDiagnostics();
@@ -171,12 +172,37 @@ const prepare = async (output?: "inherit") => {
   // nix develop removes its build-temporary directory when activation exits.
   if (!before.TMPDIR) Deno.env.delete("TMPDIR");
 };
-let preparationOnly = false;
-try {
-  preparationOnly = (await Deno.readTextFile("/run/loom/private/prepare-only")) === "1";
-} catch (error) {
-  if (!(error instanceof Deno.errors.NotFound)) throw error;
-}
+// Activate the current checkout; shared by connector workers and environments.
+const initializeSession = async () => {
+  // The clone comes first: environment activation reads the project's files.
+  if (checkout) {
+    reportStartup("checkout");
+    try {
+      await prepareCheckout(checkout);
+    } catch {
+      throw new WorkerDiagnostic("sessionCheckoutFailed");
+    }
+  }
+  await prepare();
+  await Deno.writeTextFile(guestShellEnvironmentPath, shellEnvironment(Deno.env.toObject()), {
+    mode: 0o600,
+  });
+  await Deno.mkdir("/etc/profile.d", { recursive: true });
+  await Deno.writeTextFile(
+    "/etc/profile.d/zz-loom-path.sh",
+    guestPathProfile(Deno.env.get("PATH")!),
+  );
+};
+const flag = async (name: string) => {
+  try {
+    return (await Deno.readTextFile("/run/loom/private/" + name)) === "1";
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+    return false;
+  }
+};
+const preparationOnly = await flag("prepare-only");
+const environmentOnly = await flag("environment-only");
 if (preparationOnly) {
   Deno.env.set("LOOM_PREPARATION_ONLY", "1");
   try {
@@ -200,27 +226,20 @@ if (preparationOnly) {
     console.error(error instanceof Error ? error.message : String(error));
     Deno.exit(1);
   }
+} else if (environmentOnly) {
+  // No connector worker: readiness is the only stdout, and commands use smolvm exec.
+  try {
+    await serveEnvironment(initializeSession, Deno.stdin.readable, Deno.stdout.writable);
+    Deno.exit(0);
+  } catch (error) {
+    // stderr terminates at the host supervisor, which forwards only fixed codes.
+    console.error(JSON.stringify({ loomStartupFailure: classifyStartupFailure(error) }));
+    Deno.exit(1);
+  }
 } else
   await runWorker(
     async () => {
-      // The clone comes first: environment activation reads the project's files.
-      if (checkout) {
-        reportStartup("checkout");
-        try {
-          await prepareCheckout(checkout);
-        } catch {
-          throw new WorkerDiagnostic("sessionCheckoutFailed");
-        }
-      }
-      await prepare();
-      await Deno.writeTextFile(guestShellEnvironmentPath, shellEnvironment(Deno.env.toObject()), {
-        mode: 0o600,
-      });
-      await Deno.mkdir("/etc/profile.d", { recursive: true });
-      await Deno.writeTextFile(
-        "/etc/profile.d/zz-loom-path.sh",
-        guestPathProfile(Deno.env.get("PATH")!),
-      );
+      await initializeSession();
       reportStartup("provider");
     },
     "session-vm",

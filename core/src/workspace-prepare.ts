@@ -1,4 +1,4 @@
-import { initHookSchema, type InitHook } from "./types.ts";
+import { initHookSchema, type InitHook } from "./init-hook.ts";
 import { executeShellHook } from "./shell-hook.ts";
 
 /** Preparation has no agent to repair failures: stop before publishing any base. */

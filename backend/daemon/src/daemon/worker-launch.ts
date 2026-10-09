@@ -1,4 +1,4 @@
-import type { HostStopReason } from "../../../../core/src/vm-termination.ts";
+import type { ManagedProcess } from "../../../../runtime/src/process.ts";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { Readable, Writable } from "node:stream";
@@ -20,17 +20,7 @@ export interface WorkerLaunchSpec {
   processGroup?: boolean;
   cleanupPaths?: string[];
 }
-export interface WorkerProcess {
-  input: WritableStream<Uint8Array>;
-  output: ReadableStream<Uint8Array>;
-  exited: Promise<unknown>;
-  pid: number;
-  terminate(reason?: HostStopReason): void;
-  setStopReason?(reason: HostStopReason): void;
-  cleanup?(): Promise<void>;
-  /** Credential-free supervisor diagnosis, drained before interpreting worker EOF. */
-  failure?(): Promise<Error | undefined>;
-}
+export type WorkerProcess = ManagedProcess;
 export type WorkerLauncher = (spec: WorkerLaunchSpec) => WorkerProcess;
 
 /** No inherited environment, runtime downloads, permission prompts or blanket grants. */
