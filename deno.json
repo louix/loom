@@ -55,6 +55,7 @@
     "runtime:update": "deno run -A cli/src/loom.ts runtime update",
     "loom": "deno run -A --deny-net cli/src/loom.ts",
     "daemon": "deno run -A --deny-net cli/src/loomd.ts",
+    "isolate": "deno run -A --deny-net cli/src/loom-isolate.ts",
     "typecheck": "deno check core client aisdk runtime isolation harness backend/daemon frontend/tui connectors/generic connectors/claude connectors/gemini connectors/mock connectors/echo connectors/chatgpt cli scripts test",
     "typecheck:silent": "deno task typecheck",
     "watch": "deno task typecheck --watch",

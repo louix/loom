@@ -1,0 +1,79 @@
+/** VM runtime selection for loom-isolate. Read-only: nothing is fetched or built here. */
+import { join } from "node:path";
+import { inspectArtifact, requireVmHost } from "../../../runtime/src/packaged/artifact.ts";
+import { environmentRuntimeVersion } from "../../../runtime/src/session-vm/launch.ts";
+import { UsageError, type IsolateRuntime } from "./state.ts";
+
+/** Set by the Nix package to its bundled session runtime and smolvm. */
+export const runtimeEnvironment = {
+  artifact: "LOOM_ISOLATE_ARTIFACT",
+  smolvm: "LOOM_ISOLATE_SMOLVM",
+} as const;
+
+/** Flags, then the package default, then what the environment was last prepared with. */
+export const selectRuntime = (
+  flags: { artifact?: string | undefined; smolvm?: string | undefined },
+  prepared: IsolateRuntime | null,
+): IsolateRuntime => {
+  const artifact =
+    flags.artifact ?? Deno.env.get(runtimeEnvironment.artifact) ?? prepared?.artifact;
+  const smolvm = flags.smolvm ?? Deno.env.get(runtimeEnvironment.smolvm) ?? prepared?.smolvm;
+  if (!artifact || !smolvm)
+    throw new UsageError(
+      "No VM runtime selected: pass --artifact and --smolvm (a Loom session runtime and a smolvm executable), " +
+        "or use the packaged loom-isolate, which bundles both.",
+    );
+  return { artifact, smolvm };
+};
+
+export interface RuntimeReport extends IsolateRuntime {
+  system: string;
+  environmentCompatibility: string | null;
+  /** Standalone environment protocol of the runtime; at least 1 is required. */
+  environmentVersion: number;
+  smolvmVersion: string;
+}
+
+/** Canonical, compatible runtime and a working smolvm, or a specific error. */
+export const verifyRuntime = async (runtime: IsolateRuntime): Promise<RuntimeReport> => {
+  requireVmHost();
+  const resolve = async (path: string, label: string) => {
+    try {
+      return await Deno.realPath(path);
+    } catch {
+      throw new UsageError(`${label} not found: ${path}`);
+    }
+  };
+  const artifact = await resolve(runtime.artifact, "VM runtime");
+  const smolvm = await resolve(runtime.smolvm, "smolvm executable");
+  const manifest = await inspectArtifact(artifact);
+  const session = await Deno.readTextFile(join(artifact, "claude-session-version")).catch(() => "");
+  const environmentVersion = await environmentRuntimeVersion(artifact);
+  if (session.trim() !== "2" || !manifest.environmentCompatibility || environmentVersion < 1)
+    throw new Error(
+      "VM runtime is not a compatible Loom session runtime with standalone environments: " +
+        artifact,
+    );
+  const info = await Deno.stat(smolvm);
+  if (!info.isFile || !((info.mode ?? 0) & 0o111))
+    throw new UsageError("smolvm is not an executable file: " + smolvm);
+  const version = await new Deno.Command(smolvm, {
+    args: ["--version"],
+    stdin: "null",
+    stdout: "piped",
+    stderr: "piped",
+  }).output();
+  if (!version.success)
+    throw new Error(
+      `smolvm --version failed (${version.code}): ` +
+        new TextDecoder().decode(version.stderr).trim(),
+    );
+  return {
+    artifact,
+    smolvm,
+    system: manifest.system,
+    environmentCompatibility: manifest.environmentCompatibility ?? null,
+    environmentVersion,
+    smolvmVersion: new TextDecoder().decode(version.stdout).trim(),
+  };
+};

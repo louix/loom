@@ -11,6 +11,7 @@ Start with the guide for the task at hand:
 | Set up project dependencies, prepare VMs or open a shell | [Session environments](session-environments.md)                                             |
 | Install or update runtime artifacts                      | [Packaged runtimes](packaged-runtimes.md)                                                   |
 | Diagnose a provider VM                                   | [Claude](claude-session-vm.md), [Codex](codex-session-vm.md), [AI SDK](aisdk-session-vm.md) |
+| Run one command in a VM without Loom                     | [loom-isolate](loom-isolate.md)                                                             |
 
 For contributors:
 
