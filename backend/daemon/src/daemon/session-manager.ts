@@ -545,6 +545,7 @@ export class SessionManager {
           ? { costSource: "provider" as const }
           : {}),
         ...(ev.cacheCreation ? { cacheCreation: ev.cacheCreation } : {}),
+        ...(ev.providerTotal ? { providerTotal: ev.providerTotal } : {}),
         contextUsed: ev.contextUsed,
         ...(ev.contextLimit > 0 ? { contextLimit: ev.contextLimit } : {}),
         ...(ev.tokens.cacheRead > 0 || ev.tokens.cacheWrite > 0 ? { lastTurnAt: ev.ts } : {}),

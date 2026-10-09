@@ -23,12 +23,12 @@ import type {
   SDKMessage,
   SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
-import type { HarnessEvent } from "@loom/core/events";
+import type { HarnessEvent, ProviderTotal } from "@loom/core/events";
 import { stateRunning } from "@loom/core/session-state";
 import { makeLogger, type Logger } from "@loom/core/logger";
 import { AsyncChannel } from "@loom/core/channel";
 import { WorkerDiagnostic } from "@loom/core/worker";
-import { ClaudeEventMapper, type SdkGetUsageResponse } from "./map.ts";
+import { ClaudeEventMapper, baselineOf, type SdkGetUsageResponse } from "./map.ts";
 import { resolveClaudeCli } from "./cli.ts";
 import { buildLoomMcpServer } from "./loom-mcp.ts";
 import { PendingInteractions } from "@loom/runtime/pending";
@@ -92,6 +92,32 @@ const COMPACT_CEILING_MS = 15 * 60_000;
  * a round-trip to the claude.ai usage endpoint.
  */
 const PLAN_POLL_MIN_GAP_MS = 60_000;
+
+/**
+ * How long a resumed query holds its first user message while asking the CLI
+ * what it restored (see {@link ClaudeSession.#seedBaseline}). The answer needs
+ * the initialize handshake plus one `get_usage` round-trip; past this the
+ * persisted fallback seeds the baseline and the turn goes ahead.
+ */
+let seedTimeoutMs = 10_000;
+
+/** Test-only: shorten {@link seedTimeoutMs}. */
+export const __setSeedTimeoutMs = (ms: number): void => {
+  seedTimeoutMs = ms;
+};
+
+/**
+ * `inbox`, held back until `ready` settles. A resumed CLI must not start a
+ * turn before Loom has read its restored totals, or the totals would already
+ * include new spend.
+ */
+const afterReady = async function* <T>(
+  ready: Promise<void>,
+  inbox: AsyncIterable<T>,
+): AsyncGenerator<T> {
+  await ready;
+  yield* inbox;
+};
 
 /** An in-flight `/compact` — see {@link ClaudeSession.#compactWait}. */
 interface CompactWait {
@@ -299,6 +325,8 @@ const mcpConfig = (handles: McpServerHandle[]): Record<string, McpServerConfig> 
 /** Extra `start()` inputs the provider supplies (and `rewind()` re-supplies). */
 interface StartExtra {
   resume?: string;
+  /** Loom's last observation of the CLI's totals for `resume` — the seed of last resort. */
+  usageBaseline?: ProviderTotal;
   cli?: string;
   promptCacheTtl?: string;
   configDir?: string;
@@ -350,7 +378,7 @@ class ClaudeSession implements AgentSession {
    * aborts the live turn but not turns already sitting in its command queue (a
    * message the user sent mid-turn, or the plan-approval path's own follow-up).
    * While this is set, `#drain` keeps the mapper's accounting current but drops
-   * conversational events while forwarding task lifecycle cleanup. A queued
+   * conversational events while forwarding usage and task lifecycle cleanup. A queued
    * turn cannot stream chatter into a stopped session. A real `send()`
    * supersedes the interrupt once cancellation has completed.
    */
@@ -371,6 +399,16 @@ class ClaudeSession implements AgentSession {
 
   /** Epoch ms of the last structured `/usage` poll — throttles {@link #pollPlanUsage}. */
   #lastPlanPollAt = 0;
+
+  /**
+   * Settles once a resumed query's accounting baseline is seeded; null when the
+   * query needs no seed. `#drain` maps no `result` before it, so a result can
+   * never be diffed against an unseeded baseline. Always settles, by
+   * {@link seedTimeoutMs} at the latest.
+   */
+  #seeding: Promise<void> | null = null;
+  /** Ends a pending seed wait early on close. */
+  #cancelSeed: (() => void) | null = null;
 
   constructor(opts: CreateSessionOptions) {
     this.id = opts.sessionId;
@@ -561,19 +599,35 @@ class ClaudeSession implements AgentSession {
         : {}),
     };
 
+    // A fresh CLI session starts its ledger at zero, which is the mapper's
+    // baseline already. A resumed one restores what it saved, so its first
+    // user message waits until that has been read. A seed still pending for a
+    // replaced query is moot.
+    this.#cancelSeed?.();
+    const seeded = resume ? Promise.withResolvers<void>() : null;
     try {
-      this.#query = sdk.query({ prompt: this.#inbox, options });
+      this.#query = sdk.query({
+        prompt: seeded ? afterReady(seeded.promise, this.#inbox) : this.#inbox,
+        options,
+      });
     } catch (error) {
       if (init && this.#initDirectory) Deno.removeSync(this.#initDirectory, { recursive: true });
       throw error;
     }
+    this.#seeding = seeded?.promise ?? null;
     this.#pump = this.#drain();
-
-    // Prime the plan rate-limit windows once the CLI handshake lands — covers
-    // both a fresh session and a resume, so a reattached daemon shows real
-    // `five_hour` / `seven_day` numbers within a second instead of waiting for
-    // the next spontaneous `rate_limit_event`.
     const query = this.#query;
+    if (seeded) {
+      void this.#seedBaseline(query, resume!, extra.usageBaseline)
+        .catch((err) => this.#log.warn("usage baseline failed", { err: String(err) }))
+        .finally(seeded.resolve);
+      return;
+    }
+
+    // Prime the plan rate-limit windows once the CLI handshake lands, so the
+    // session shows real `five_hour` / `seven_day` numbers within a second
+    // instead of waiting for the next spontaneous `rate_limit_event`. A
+    // resumed query gets both from its seed.
     void query
       .initializationResult()
       .then(async () => {
@@ -581,6 +635,67 @@ class ClaudeSession implements AgentSession {
         await Promise.all([this.#pollPlanUsage(), this.#pollContextLimit()]);
       })
       .catch(() => {});
+  }
+
+  /**
+   * Seed a resumed query's accounting baseline with what its CLI restored. A
+   * resumed CLI continues from the totals its transcript saved at its last
+   * graceful exit, and every result reports those plus new spend. Asked before
+   * the first turn, `get_usage` reports exactly the restored part. When it
+   * can't answer in time, Loom's last observation of the same CLI session
+   * stands in: it never over-charges, but after a crash (an older or missing
+   * stamp) it under-charges the new process until it passes that mark. With
+   * neither, the baseline stays zero and the restored spend is charged again.
+   */
+  async #seedBaseline(q: Query, ref: string, fallback: ProviderTotal | undefined): Promise<void> {
+    const fn = q.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET;
+    const asked = q
+      .initializationResult()
+      .then(() =>
+        typeof fn === "function"
+          ? (fn.call(q, { skipBehaviors: true }) as Promise<SdkGetUsageResponse>)
+          : null,
+      );
+    // The plan windows are worth showing whenever they arrive.
+    void asked
+      .then((resp) => {
+        if (this.#closing || this.#query !== q) return;
+        this.#lastPlanPollAt = Date.now();
+        for (const ev of this.#mapper.mapPlanUsage(resp)) this.#outbox.push(ev);
+      })
+      .catch(() => {});
+    void q
+      .initializationResult()
+      .then(() => {
+        if (this.#query === q && !this.#closing) return this.#pollContextLimit();
+      })
+      .catch(() => {});
+
+    // Only an answer that lands before the first turn is released describes
+    // the restored ledger alone; a later one is ignored for seeding.
+    const resp = await new Promise<SdkGetUsageResponse | null>((resolve) => {
+      const settle = (r: SdkGetUsageResponse | null) => {
+        clearTimeout(timer);
+        if (this.#cancelSeed === cancel) this.#cancelSeed = null;
+        resolve(r);
+      };
+      const cancel = () => settle(null);
+      const timer = setTimeout(cancel, seedTimeoutMs);
+      this.#cancelSeed = cancel;
+      asked.then(settle, cancel);
+    });
+    if (this.#query !== q || this.#closing) return;
+    const reported = baselineOf(resp);
+    const persisted =
+      fallback && fallback.ref === ref
+        ? { costUsd: fallback.costUsd, usage: fallback.tokens }
+        : null;
+    const seed = reported ?? persisted;
+    if (seed) this.#mapper.seedQueryBaseline(seed);
+    let source = "none";
+    if (reported) source = "provider";
+    else if (persisted) source = "persisted";
+    this.#log.info("usage baseline", { source, costUsd: seed?.costUsd ?? 0 });
   }
 
   /** Discover the window before the first turn finishes. Keep request usage
@@ -635,8 +750,12 @@ class ClaudeSession implements AgentSession {
   async #drain(): Promise<void> {
     const q = this.#query;
     if (!q) return;
+    const seeding = this.#seeding;
     try {
       for await (const msg of q) {
+        // A startup-error result can precede the first turn; it must not be
+        // diffed against a baseline that is still being read.
+        if (msg.type === "result" && seeding) await seeding;
         this.#trackTasks(msg);
         if (msg.type === "system" && msg.subtype === "init") {
           const missing = (this.#startOpts?.mcpServers ?? []).filter(
@@ -674,8 +793,14 @@ class ClaudeSession implements AgentSession {
           }
         }
         if (this.#interrupted) {
+          // Spend is not chatter: an interrupted turn was still billed, and
+          // the mapper has already moved its baseline past it.
           for (const ev of events)
-            if (ev.type === "subagent_stopped" || ev.type === "background_tasks")
+            if (
+              ev.type === "subagent_stopped" ||
+              ev.type === "background_tasks" ||
+              ev.type === "usage"
+            )
               this.#outbox.push(ev);
           continue;
         }
@@ -1149,9 +1274,9 @@ class ClaudeSession implements AgentSession {
    * turn's last chain-entry UUID — {@link ClaudeEventMapper} tracks it), and we
    * swap the live `query()` for a plain resume of that shorter fork. `#outbox`
    * survives the swap so the daemon's event stream is unbroken; the mapper is
-   * kept, so cumulative cost never regresses (the first turn after an undo may
-   * under-report token deltas until the resumed total catches up). `_keep` is
-   * the aisdk message count — unused here.
+   * kept, so cumulative cost never regresses, and the resumed fork's ledger is
+   * seeded like any other resume. `_keep` is the aisdk message count — unused
+   * here.
    *
    * The fork runs *before* the live query is touched, so a fork failure (a bad
    * ref, a missing transcript) leaves the session completely intact.
@@ -1293,6 +1418,7 @@ class ClaudeSession implements AgentSession {
 
   async close(): Promise<void> {
     this.#closing = true;
+    this.#cancelSeed?.();
     this.#rejectPending("the session was closed before this was answered");
     try {
       this.#query?.close();
@@ -1394,7 +1520,11 @@ export class ClaudeProvider implements AgentProvider {
       ...(ref.systemPromptAppend ? { systemPromptAppend: ref.systemPromptAppend } : {}),
     };
     const s = new ClaudeSession(opts);
-    s.start(opts, { resume: ref.providerRef, ...this.#extra(cli) });
+    s.start(opts, {
+      resume: ref.providerRef,
+      ...(ref.usageBaseline ? { usageBaseline: ref.usageBaseline } : {}),
+      ...this.#extra(cli),
+    });
     return s;
   }
 

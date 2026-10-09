@@ -1640,6 +1640,9 @@ export class Daemon {
     const providerRef = this.#registry.store.providerRef(id);
     if (!providerRef)
       throw new RpcError("bad_request", "session has no provider ref to resume from");
+    // Only totals observed for the provider session being resumed describe
+    // what it may restore.
+    const usageBaseline = this.#registry.store.providerTotal(id, providerRef);
     const mode: SessionMode = isSessionMode(row.mode) ? row.mode : "default";
     // If the model this session ran on has since dropped out of the endpoint's
     // list, revive on the current default instead of failing the first turn.
@@ -1677,6 +1680,7 @@ export class Daemon {
         mcpServers: mcpHandles,
         ...(model ? { model } : {}),
         ...(row.effort ? { effort: row.effort } : {}),
+        ...(usageBaseline ? { usageBaseline } : {}),
         ...(isClaude || isAisdk
           ? {
               systemPromptAppend: promptAppend,

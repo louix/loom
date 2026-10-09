@@ -379,4 +379,8 @@ export const MIGRATIONS: string[] = [
       AND json_extract(session_events.payload, '$.agentId') IS NULL
   );
   `,
+  // 29 — the provider's own running totals as last observed (JSON
+  // `ProviderTotal`), so a resume can seed its baseline when the provider
+  // cannot report what it restored. NULL until a provider reports one.
+  `ALTER TABLE usage ADD COLUMN provider_total TEXT;`,
 ];

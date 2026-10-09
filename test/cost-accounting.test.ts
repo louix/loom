@@ -1,29 +1,27 @@
 /**
- * Cost-accounting fixtures (isolation plan A0, feeding A7). Each case drives a
- * representative Claude SDK `result` sequence through the real mapper, the
- * real `SessionManager` and the real `SessionStore`, then compares the
- * persisted session total — the number the TUI's fleet row prints — with what
- * the provider actually billed for the requests in that sequence.
+ * Cost-accounting fixtures (isolation plan A0/A7). Each case drives a
+ * representative Claude CLI sequence through the real `ClaudeProvider` (over
+ * a fake SDK query), the real `SessionManager` and the real `SessionStore`,
+ * then compares the persisted session total — the number the TUI prints —
+ * with what the provider actually billed for the requests in that sequence.
  *
  * `ClaudeCliSim` models the CLI's cost ledger as SDK 0.3.282 documents it
- * (`SDKResultSuccess.total_cost_usd` / `modelUsage` in `sdk.d.ts`): running
- * totals per CLI process covering main loop, subagents and compaction calls;
- * zeroed values on crash results; and "a resumed or forked session continues
- * from the total its transcript saved, when it has one". The saved total is
- * the transcript's `cost-state` entry, appended at a graceful exit and
- * restored by `--resume`. `sdk.forkSession()` copies only chain entries, so
- * an undo's resumed fork starts from zero. See
- * docs/cost-accounting-investigation.md for the evidence.
- *
- * Cases that pin a real defect assert the correct total and are skipped with
- * the defect named, so the suite stays green until A7 lands the fix.
+ * (`SDKResultSuccess.total_cost_usd` / `modelUsage` in `sdk.d.ts`) and as the
+ * CLI 2.1.280 was observed to behave (docs/cost-accounting-investigation.md):
+ * running totals per process covering main loop, subagents and compaction;
+ * zeroed values on crash results; a `cost-state` stamp at a graceful exit that
+ * `--resume` restores; `get_usage` reporting the restored ledger before the
+ * first turn; `sdk.forkSession()` copying no stamp; and `/clear` emitting
+ * `conversation_reset` and a fresh `init` before zeroing the ledger.
  */
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import { ClaudeEventMapper } from "@loom/connector-claude/map";
-import { ClaudeProvider, __setClaudeSdk } from "@loom/connector-claude/adapter";
-import { FakeProvider } from "@loom/connector-mock";
+import { ClaudeProvider, __setClaudeSdk, __setSeedTimeoutMs } from "@loom/connector-claude/adapter";
 import type { HarnessEvent } from "@loom/core/events";
 import { makeLogger, setLogLevel } from "@loom/core/logger";
 import { SessionManager } from "@loom/daemon/daemon/session-manager";
@@ -88,6 +86,10 @@ class ClaudeCliSim {
   #sessionId = "";
   #turnUsage: Required<Tokens> = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 
+  get sessionId(): string {
+    return this.#sessionId;
+  }
+
   /**
    * A new CLI process. `resume` restores the saved total for that session id,
    * if any; `fresh` is a new session id and an `sdk.forkSession()` fork
@@ -125,6 +127,11 @@ class ClaudeCliSim {
       this.#turnUsage.cacheWrite += t.cacheWrite ?? 0;
     }
     return cost;
+  }
+
+  /** The `init` frame that opens a process's first turn. */
+  init(): unknown {
+    return { type: "system", subtype: "init", session_id: this.#sessionId };
   }
 
   /** The main-loop assistant frame for a request, carrying its own usage. */
@@ -189,48 +196,172 @@ class ClaudeCliSim {
     };
   }
 
+  /**
+   * `/clear`: as observed on CLI 2.1.280 — `conversation_reset`, an `init`
+   * under a new session id, then a result whose ledger is already zero.
+   */
+  clear(newSessionId: string): unknown[] {
+    const reset = {
+      type: "conversation_reset",
+      new_conversation_id: crypto.randomUUID(),
+      uuid: crypto.randomUUID(),
+      session_id: this.#sessionId,
+      trigger: "clear",
+    };
+    this.#sessionId = newSessionId;
+    this.#ledger = emptyLedger();
+    return [reset, this.init(), this.result({ num_turns: 0, modelUsage: {} })];
+  }
+
+  /** What `get_usage` reports: the ledger as it stands. */
+  usageReport(): unknown {
+    return {
+      session: { total_cost_usd: this.#ledger.costUsd, model_usage: this.#ledger.models },
+      rate_limits_available: false,
+      rate_limits: null,
+    };
+  }
+
   /** The process ends. Only a graceful exit stamps the transcript. */
   exit(graceful = true): void {
     if (graceful) this.#saved.set(this.#sessionId, cloneLedger(this.#ledger));
   }
 }
 
+// --- a fake SDK query over the simulated CLI ---------------------------------
+
+type UsageMode = "report" | "fail" | "hang";
+
+/**
+ * A `Query` stand-in: frames are pushed by the test, user messages are pulled
+ * from the prompt the adapter hands the SDK (so a held prompt is observable),
+ * and `get_usage` answers from the simulated CLI — or fails, or never answers.
+ */
+const fakeQuery = (cli: ClaudeCliSim, prompt: AsyncIterable<unknown>, usage: () => UsageMode) => {
+  let stop = false;
+  let received = 0;
+  const queue: unknown[] = [];
+  void (async () => {
+    for await (const _ of prompt) received++;
+  })();
+  const iter = {
+    [Symbol.asyncIterator]() {
+      return iter;
+    },
+    async next(): Promise<IteratorResult<unknown, void>> {
+      while (queue.length === 0 && !stop) await delay(2);
+      if (queue.length > 0) return { done: false, value: queue.shift() };
+      return { done: true, value: undefined };
+    },
+    async return(): Promise<IteratorResult<unknown, void>> {
+      stop = true;
+      return { done: true, value: undefined };
+    },
+  };
+  return Object.assign(iter, {
+    push: (...m: unknown[]): void => {
+      queue.push(...m);
+    },
+    received: (): number => received,
+    interrupt: async () => ({ still_queued: [] as string[] }),
+    close: () => {
+      stop = true;
+    },
+    setPermissionMode: async () => {},
+    setModel: async () => {},
+    applyFlagSettings: async () => {},
+    initializationResult: async () => ({ models: [] }),
+    usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET: (): Promise<unknown> => {
+      const mode = usage();
+      if (mode === "fail") return Promise.reject(new Error("get_usage unsupported"));
+      if (mode === "hang") return new Promise(() => {});
+      return Promise.resolve(cli.usageReport());
+    },
+  });
+};
+
+type FakeQuery = ReturnType<typeof fakeQuery>;
+
+const until = async (pred: () => boolean, what: string, ms = 2000): Promise<void> => {
+  const start = Date.now();
+  while (!pred()) {
+    if (Date.now() - start > ms) throw new Error(`timed out: ${what}`);
+    await delay(2);
+  }
+};
+
+const isResultEvent = (frame: unknown): boolean => {
+  const f = frame as {
+    type?: string;
+    subtype?: string;
+    is_error?: boolean;
+    queued_turn_count?: number;
+  };
+  if (f.type !== "result") return false;
+  // A healthy result with turns still queued is an internal seam, not a turn.
+  return !(f.subtype === "success" && f.is_error !== true && (f.queued_turn_count ?? 0) > 0);
+};
+
 // --- the Loom side ------------------------------------------------------
 
 const ID = "loom-cost";
 
 /**
- * Mapper → `SessionManager` → `SessionStore`, wired the way the daemon wires
- * them. A provider-reported delta is stored as-is, which is all
- * `Daemon.#priceUsage` does with one; nothing here prices from a table.
+ * `ClaudeProvider` → `SessionManager` → `SessionStore`, wired the way the
+ * daemon wires them. A provider-reported delta is stored as-is, which is all
+ * `Daemon.#priceUsage` does with one; nothing here prices from a table. A
+ * revive passes the store's observed provider total exactly as
+ * `Daemon.#reviveLocked` does.
  */
 class Pipeline {
-  readonly db = openDb(":memory:");
-  readonly store = new SessionStore(this.db);
-  readonly provider = new FakeProvider();
-  readonly mgr: SessionManager;
-  mapper = new ClaudeEventMapper(ID);
-  #emitted = 0;
-  #seen = 0;
+  readonly cli = new ClaudeCliSim();
+  readonly provider = new ClaudeProvider();
+  usage: UsageMode = "report";
+  forkId = "claude-fork-1";
+  db!: ReturnType<typeof openDb>;
+  store!: SessionStore;
+  mgr!: SessionManager;
+  q!: FakeQuery;
+  readonly dbPath: string;
+  /** User messages the test has handed the current query. */
+  #used = 0;
+  #needsSend = false;
+  #initPending = true;
 
-  constructor() {
-    this.store.create({ id: ID, provider: "claude" });
+  constructor(dbPath = ":memory:") {
+    this.dbPath = dbPath;
+    this.#openStore();
+    __setClaudeSdk({
+      query: ((args: { prompt: AsyncIterable<unknown>; options: { resume?: string } }) => {
+        this.q = fakeQuery(this.cli, args.prompt, () => this.usage);
+        this.#used = 0;
+        this.#initPending = true;
+        this.#needsSend = Boolean(args.options.resume);
+        return this.q;
+      }) as never,
+      forkSession: (async () => ({ sessionId: this.forkId })) as never,
+    });
+  }
+
+  #openStore(): void {
+    this.db = openDb(this.dbPath);
+    this.store = new SessionStore(this.db);
+    if (!this.store.get(ID)) this.store.create({ id: ID, provider: "claude" });
     this.mgr = new SessionManager({
-      emitEvent: () => {
-        this.#seen++;
-      },
+      emitEvent: () => {},
       onStatus: () => {},
       onUsage: (id, delta: UsageDelta) => this.store.addUsage(id, delta),
       onResult: () => {},
       onTurnCompleted: () => {},
       onOverlay: () => {},
-      onProviderRef: () => {},
+      onProviderRef: (id, ref) => this.store.setFields(id, { providerRef: ref }),
       onMode: () => {},
       log: makeLogger("test"),
     });
   }
 
-  async open(): Promise<void> {
+  async create(): Promise<void> {
+    this.cli.start("claude-1");
     await this.mgr.create(this.provider, {
       sessionId: ID,
       cwd: "/tmp",
@@ -241,31 +372,61 @@ class Pipeline {
     });
   }
 
-  /** What `ClaudeProvider.resumeSession` does: a new adapter, so a new mapper. */
-  async revive(): Promise<void> {
-    await this.mgr.close(ID);
-    this.#emitted = this.#seen;
-    await this.mgr.resume(this.provider, { sessionId: ID, providerRef: "claude-1", cwd: "/tmp" });
-    this.mapper = new ClaudeEventMapper(ID);
+  /** Wait until the CLI has pulled the next user message, sending one if needed. */
+  async next(text = "next"): Promise<void> {
+    if (this.#needsSend) await this.mgr.send(ID, text);
+    this.#needsSend = true;
+    const want = ++this.#used;
+    await until(() => this.q.received() >= want, "the CLI never received the user message");
   }
 
-  /** Map provider frames and push every resulting event through the manager. */
-  async feed(...frames: unknown[]): Promise<HarnessEvent[]> {
-    const fs = this.provider.session(ID)!;
-    const out: HarnessEvent[] = [];
-    for (const frame of frames) {
-      for (const ev of this.mapper.map(frame)) {
-        out.push(ev);
-        fs.emit(ev);
-        this.#emitted++;
-      }
+  /** Push frames (opening the process's first turn with `init`) and wait for their results. */
+  async feed(...frames: unknown[]): Promise<void> {
+    if (this.#initPending && !frames.some((f) => (f as { type?: string }).type === "system")) {
+      frames.unshift(this.cli.init());
     }
-    const start = Date.now();
-    while (this.#seen < this.#emitted) {
-      if (Date.now() - start > 2000) throw new Error("events were not drained");
-      await delay(2);
-    }
-    return out;
+    this.#initPending = false;
+    const want = this.row().turns + frames.filter(isResultEvent).length;
+    this.q.push(...frames);
+    await until(() => this.row().turns >= want, "the turn never settled");
+  }
+
+  /** One ordinary main-loop turn: a cache-reading request that also writes. */
+  async turn(uuid: string, model = "claude-sonnet"): Promise<void> {
+    await this.next();
+    const t = { input: 400, output: 900, cacheRead: 30_000, cacheWrite: 2_000 };
+    this.cli.request(model, t);
+    await this.feed(this.cli.assistant(uuid, t), this.cli.result());
+  }
+
+  /** What `Daemon.#reviveLocked` does: resume the stored ref with its observed total. */
+  async #resume(): Promise<void> {
+    const ref = this.store.providerRef(ID)!;
+    this.cli.start(ref, "resume");
+    const usageBaseline = this.store.providerTotal(ID, ref);
+    await this.mgr.resume(this.provider, {
+      sessionId: ID,
+      providerRef: ref,
+      cwd: "/tmp",
+      mcpServers: [],
+      ...(usageBaseline ? { usageBaseline } : {}),
+    });
+  }
+
+  /** The CLI exits (gracefully or not) and a later send revives the session. */
+  async revive(graceful = true): Promise<void> {
+    this.cli.exit(graceful);
+    await this.mgr.close(ID);
+    await this.#resume();
+  }
+
+  /** The daemon stops and starts again over the same database, then revives. */
+  async restart(graceful = true): Promise<void> {
+    this.cli.exit(graceful);
+    await this.mgr.shutdown();
+    this.db.close();
+    this.#openStore();
+    await this.#resume();
   }
 
   /** The persisted session row — what the fleet list prints. */
@@ -279,10 +440,10 @@ class Pipeline {
   }
 }
 
-const withPipeline = async (fn: (p: Pipeline) => Promise<void>): Promise<void> => {
-  const p = new Pipeline();
+const withPipeline = async (fn: (p: Pipeline) => Promise<void>, dbPath?: string): Promise<void> => {
+  const p = new Pipeline(dbPath);
   try {
-    await p.open();
+    await p.create();
     await fn(p);
   } finally {
     await p.close();
@@ -296,28 +457,21 @@ const near = (actual: number, expected: number, what: string): void => {
   );
 };
 
-/** One ordinary main-loop turn: a cache-reading request that also writes. */
-const turn = (cli: ClaudeCliSim, uuid: string, model = "claude-sonnet"): unknown[] => {
-  const t = { input: 400, output: 900, cacheRead: 30_000, cacheWrite: 2_000 };
-  cli.request(model, t);
-  return [cli.assistant(uuid, t), cli.result()];
-};
-
-// --- one CLI process: the sequences the mapper already gets right ---------
+// --- one CLI process ---------------------------------------------------------
 
 test("one process: cache pricing, a model change and subagent usage are charged once", async () => {
   await withPipeline(async (p) => {
-    const cli = new ClaudeCliSim().start("claude-1");
-    await p.feed({ type: "system", subtype: "init", session_id: "claude-1" }, ...turn(cli, "a1"));
+    await p.turn("a1");
 
     // The user switches model mid-session; a Task subagent runs on Haiku in
     // the same turn. Both land in the next result's `modelUsage`.
+    await p.next();
     const main = { input: 50, output: 2_000, cacheRead: 60_000, cacheWrite: 8_000 };
-    cli.request("claude-opus", main);
-    cli.request("claude-haiku", { input: 12_000, output: 3_000, cacheWrite: 4_000 }, false);
-    await p.feed(cli.assistant("a2", main), cli.result());
+    p.cli.request("claude-opus", main);
+    p.cli.request("claude-haiku", { input: 12_000, output: 3_000, cacheWrite: 4_000 }, false);
+    await p.feed(p.cli.assistant("a2", main), p.cli.result());
 
-    near(p.row().costUsd, cli.billedUsd, "model change + subagent");
+    near(p.row().costUsd, p.cli.billedUsd, "model change + subagent");
     assert.equal(p.row().costSource, "provider");
     const tokens = p.row().usage;
     assert.equal(tokens.cacheRead, 90_000, "cache reads counted once");
@@ -327,199 +481,300 @@ test("one process: cache pricing, a model change and subagent usage are charged 
 
 test("one process: compaction lowers context occupancy but never the incurred cost", async () => {
   await withPipeline(async (p) => {
-    const cli = new ClaudeCliSim().start("claude-1");
-    await p.feed(...turn(cli, "a1"), ...turn(cli, "a2"));
-    const before = p.row().costUsd;
+    await p.turn("a1");
+    await p.turn("a2");
 
     // Automatic compaction runs inside a turn: the summarise call is billed
     // and shows up in the next result's modelUsage, not in `result.usage`.
-    cli.request("claude-sonnet", { input: 150_000, output: 6_000 }, false);
-    await p.feed({
-      type: "system",
-      subtype: "compact_boundary",
-      compact_metadata: { trigger: "auto", pre_tokens: 160_000, post_tokens: 9_000 },
-    });
-    assert.equal(p.row().costUsd, before, "the boundary itself carries no cost");
-    await p.feed(...turn(cli, "a3"));
+    await p.next();
+    p.cli.request("claude-sonnet", { input: 150_000, output: 6_000 }, false);
+    const t = { input: 400, output: 900, cacheRead: 8_000, cacheWrite: 2_000 };
+    p.cli.request("claude-sonnet", t);
+    await p.feed(
+      {
+        type: "system",
+        subtype: "compact_boundary",
+        compact_metadata: { trigger: "auto", pre_tokens: 160_000, post_tokens: 9_000 },
+      },
+      p.cli.assistant("a3", t),
+      p.cli.result(),
+    );
 
     // A manual `/compact` is its own SDK turn with its own result.
-    cli.request("claude-sonnet", { input: 40_000, output: 3_000 }, false);
+    await p.next();
+    p.cli.request("claude-sonnet", { input: 40_000, output: 3_000 }, false);
     await p.feed(
       {
         type: "system",
         subtype: "compact_boundary",
         compact_metadata: { trigger: "manual", pre_tokens: 41_000, post_tokens: 5_000 },
       },
-      cli.result(),
+      p.cli.result(),
     );
 
-    near(p.row().costUsd, cli.billedUsd, "auto + manual compaction");
+    near(p.row().costUsd, p.cli.billedUsd, "auto + manual compaction");
     assert.equal(p.row().contextUsed, 5_000, "context is occupancy, not spend");
   });
 });
 
 test("one process: duplicate results, queued interim results and zeroed crash results", async () => {
   await withPipeline(async (p) => {
-    const cli = new ClaudeCliSim().start("claude-1");
-    const [assistant, first] = turn(cli, "a1");
+    await p.next();
+    const t = { input: 400, output: 900, cacheRead: 30_000, cacheWrite: 2_000 };
+    p.cli.request("claude-sonnet", t);
+    const first = p.cli.result();
     // The same cumulative frame delivered twice must not charge twice.
-    await p.feed(assistant, first, first);
-    near(p.row().costUsd, cli.billedUsd, "duplicate result");
+    await p.feed(p.cli.assistant("a1", t), first, first);
+    near(p.row().costUsd, p.cli.billedUsd, "duplicate result");
 
     // A mid-engagement result (more user turns queued) still carries usage.
-    cli.request("claude-sonnet", { input: 10, output: 400, cacheRead: 32_000 });
-    await p.feed(cli.result({ queued_turn_count: 1 }));
-    near(p.row().costUsd, cli.billedUsd, "queued interim result");
+    await p.next();
+    p.cli.request("claude-sonnet", { input: 10, output: 400, cacheRead: 32_000 });
+    p.cli.request("claude-sonnet", { input: 10, output: 400, cacheRead: 33_000 });
+    await p.feed(p.cli.result({ queued_turn_count: 1 }), p.cli.result());
+    near(p.row().costUsd, p.cli.billedUsd, "queued interim result");
 
     // A crash result with zeroed totals must not reset the baseline and
     // re-charge everything on the next healthy result.
-    await p.feed(cli.crashResult(), ...turn(cli, "a2"));
-    near(p.row().costUsd, cli.billedUsd, "zeroed crash result");
+    await p.next();
+    await p.feed(p.cli.crashResult());
+    await p.turn("a2");
+    near(p.row().costUsd, p.cli.billedUsd, "zeroed crash result");
   });
 });
+
+test("an explicit conversation_reset starts a new ledger; a smaller total alone does not", () => {
+  const result = (cost: number) => ({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    total_cost_usd: cost,
+    modelUsage: { m: { inputTokens: Math.round(cost * 1000), costUSD: cost } },
+  });
+  const charged = (m: ClaudeEventMapper, frame: unknown): number =>
+    m
+      .map(frame)
+      .filter((e): e is Extract<HarnessEvent, { type: "usage" }> => e.type === "usage")
+      .reduce((sum, e) => sum + (e.costDeltaUsd ?? 0), 0);
+
+  // A partial report below the running total is not a reset: nothing is
+  // charged until the total passes the old mark again.
+  const partial = new ClaudeEventMapper(ID);
+  assert.equal(charged(partial, result(1)), 1);
+  assert.equal(charged(partial, result(0.4)), 0);
+  assert.ok(Math.abs(charged(partial, result(1.2)) - 0.2) < 1e-9);
+  assert.ok(Math.abs(partial.state.costUsd - 1.2) < 1e-9);
+
+  // After the reset frame the same smaller total is new spend.
+  const reset = new ClaudeEventMapper(ID);
+  assert.equal(charged(reset, result(1)), 1);
+  reset.map({ type: "conversation_reset", new_conversation_id: "c2", session_id: "c1" });
+  assert.ok(Math.abs(charged(reset, result(0.4)) - 0.4) < 1e-9);
+  assert.ok(Math.abs(reset.state.costUsd - 1.4) < 1e-9, "charged totals never regress");
+});
+
+test("/clear: the zeroed ledger is a reset, not a reason to stop charging", async () => {
+  await withPipeline(async (p) => {
+    await p.turn("a1");
+    await p.turn("a2");
+    await p.next("/clear");
+    await p.feed(...p.cli.clear("claude-2"));
+    await p.turn("b1");
+    await p.turn("b2");
+    near(p.row().costUsd, p.cli.billedUsd, "after /clear");
+    // What a resume of the cleared session would restore: its own ledger only.
+    const observed = p.store.providerTotal(ID);
+    assert.equal(observed?.ref, "claude-2");
+    assert.ok(observed && observed.costUsd < p.row().costUsd);
+  });
+});
+
+// --- across CLI processes ------------------------------------------------------
 
 test("undo: a resumed sdk.forkSession() fork restarts at zero and onQuerySwap carries the rest", async () => {
   await withPipeline(async (p) => {
-    const cli = new ClaudeCliSim().start("claude-1");
-    await p.feed(...turn(cli, "a1"), ...turn(cli, "a2"));
-    cli.exit();
-
-    // ClaudeSession.rewind(): fork the transcript, swap the query.
-    p.mapper.onQuerySwap();
-    cli.start("claude-fork-1", "fork");
-    await p.feed(...turn(cli, "b1"), ...turn(cli, "b2"));
-    near(p.row().costUsd, cli.billedUsd, "undo");
+    await p.turn("a1");
+    await p.turn("a2");
+    p.cli.exit();
+    p.cli.start(p.forkId, "fork");
+    await p.mgr.rewind(ID, 0, "a1");
+    await p.turn("b1");
+    await p.turn("b2");
+    near(p.row().costUsd, p.cli.billedUsd, "undo");
   });
 });
 
-test("fresh implementation: a new CLI session starts at zero and onQuerySwap carries the plan", async () => {
-  await withPipeline(async (p) => {
-    const cli = new ClaudeCliSim().start("claude-plan");
-    await p.feed(...turn(cli, "a1", "claude-opus"));
-    cli.exit();
-    // ClaudeSession.#implementFresh(): a new query() without `resume`.
-    p.mapper.onQuerySwap();
-    cli.start("claude-impl", "fresh");
-    await p.feed(...turn(cli, "b1"), ...turn(cli, "b2"));
-    near(p.row().costUsd, cli.billedUsd, "fresh implementation");
-  });
+test("fresh implementation: a new CLI session starts at zero and onQuerySwap carries the plan", () => {
+  // ClaudeSession.#implementFresh(): a new query() without `resume`, so no seed.
+  const cli = new ClaudeCliSim().start("claude-plan");
+  const m = new ClaudeEventMapper(ID);
+  let charged = 0;
+  const feed = (...frames: unknown[]) => {
+    for (const f of frames)
+      for (const e of m.map(f)) if (e.type === "usage") charged += e.costDeltaUsd ?? 0;
+  };
+  const t = { input: 400, output: 900, cacheRead: 30_000, cacheWrite: 2_000 };
+  cli.request("claude-opus", t);
+  feed(cli.init(), cli.assistant("a1", t), cli.result());
+  cli.exit();
+  m.onQuerySwap();
+  cli.start("claude-impl", "fresh");
+  for (const uuid of ["b1", "b2"]) {
+    cli.request("claude-sonnet", t);
+    feed(cli.assistant(uuid, t), cli.result());
+  }
+  near(charged, cli.billedUsd, "fresh implementation");
+  near(m.state.costUsd, cli.billedUsd, "mapper total");
 });
 
 test("revive without a saved total: a killed CLI leaves nothing to restore, so the new process starts at zero", async () => {
   await withPipeline(async (p) => {
-    const cli = new ClaudeCliSim().start("claude-1");
-    await p.feed(...turn(cli, "a1"), ...turn(cli, "a2"));
-    cli.exit(false); // SIGKILL: no `cost-state` stamp
-    await p.revive();
-    cli.start("claude-1", "resume");
-    await p.feed(...turn(cli, "a3"));
-    near(p.row().costUsd, cli.billedUsd, "revive after an unstamped exit");
+    await p.turn("a1");
+    await p.turn("a2");
+    await p.revive(false); // SIGKILL: no `cost-state` stamp
+    await p.turn("a3");
+    near(p.row().costUsd, p.cli.billedUsd, "revive after an unstamped exit");
   });
 });
 
-// --- across CLI processes: the defect --------------------------------------
-
-// DEFECT (resume re-charges history): ClaudeProvider.resumeSession builds a new
-// ClaudeSession whose ClaudeEventMapper starts its query baseline at zero
-// (connectors/claude/src/map.ts:263-264), but the resumed CLI restores the
-// transcript's saved `cost-state`, so its first result's `total_cost_usd` and
-// `modelUsage` already include every earlier process. The mapper emits that
-// whole history as this turn's `costDeltaUsd` (map.ts:623) and the store adds
-// it again (sessions.ts:356).
-test(
-  "revive after a graceful exit charges only the new spend",
-  { skip: "DEFECT: resume re-charges the restored cost-state (A7)" },
-  async () => {
-    await withPipeline(async (p) => {
-      const cli = new ClaudeCliSim().start("claude-1");
-      await p.feed(...turn(cli, "a1"), ...turn(cli, "a2"));
-      cli.exit(); // daemon restart, idle suspension, refresh, provider switch…
-      await p.revive();
-      cli.start("claude-1", "resume");
-      await p.feed(...turn(cli, "a3"));
-      near(p.row().costUsd, cli.billedUsd, "revive after a graceful exit");
-    });
-  },
-);
-
-// DEFECT (resume re-charges history), compounded: each revive re-charges the
-// whole running total, so the overcount grows with every restart.
-test(
-  "repeated revives keep the session total equal to the billed spend",
-  { skip: "DEFECT: resume re-charges the restored cost-state (A7)" },
-  async () => {
-    await withPipeline(async (p) => {
-      const cli = new ClaudeCliSim().start("claude-1");
-      await p.feed(...turn(cli, "a1"));
-      for (let i = 2; i <= 5; i++) {
-        cli.exit();
-        await p.revive();
-        cli.start("claude-1", "resume");
-        await p.feed(...turn(cli, `a${i}`));
-      }
-      near(p.row().costUsd, cli.billedUsd, "five processes");
-    });
-  },
-);
-
-// DEFECT (resume re-charges history), crash variant: the CLI restores the last
-// *graceful* stamp, which can be older than the last result Loom saw.
-test(
-  "revive after a crash restores an older stamp without re-charging it",
-  { skip: "DEFECT: resume re-charges the restored cost-state (A7)" },
-  async () => {
-    await withPipeline(async (p) => {
-      const cli = new ClaudeCliSim().start("claude-1");
-      await p.feed(...turn(cli, "a1"));
-      cli.exit();
-      await p.revive();
-      cli.start("claude-1", "resume");
-      await p.feed(...turn(cli, "a2"));
-      cli.exit(false); // killed: the stamp still says "after a1"
-      await p.revive();
-      cli.start("claude-1", "resume");
-      await p.feed(...turn(cli, "a3"));
-      near(p.row().costUsd, cli.billedUsd, "revive after a crash");
-    });
-  },
-);
-
-// --- through the adapter ------------------------------------------------
-
-/** A `Query` stand-in fed while the session runs (as in claude-adapter.test.ts). */
-const liveQuery = () => {
-  let stop = false;
-  const queue: unknown[] = [];
-  const iter = {
-    [Symbol.asyncIterator]() {
-      return iter;
-    },
-    async next(): Promise<IteratorResult<unknown, void>> {
-      while (queue.length === 0 && !stop) await delay(5);
-      if (queue.length > 0) return { done: false, value: queue.shift() };
-      return { done: true, value: undefined };
-    },
-    async return(): Promise<IteratorResult<unknown, void>> {
-      stop = true;
-      return { done: true, value: undefined };
-    },
-  };
-  return Object.assign(iter, {
-    push: (...m: unknown[]): void => {
-      queue.push(...m);
-    },
-    interrupt: async () => ({ still_queued: [] as string[] }),
-    close: () => {
-      stop = true;
-    },
-    setPermissionMode: async () => {},
-    setModel: async () => {},
-    applyFlagSettings: async () => {},
-    initializationResult: async () => ({ models: [] }),
+test("revive after a graceful exit charges only the new spend", async () => {
+  await withPipeline(async (p) => {
+    await p.turn("a1");
+    await p.turn("a2");
+    await p.revive(); // daemon restart, idle suspension, refresh, provider switch…
+    await p.turn("a3");
+    near(p.row().costUsd, p.cli.billedUsd, "revive after a graceful exit");
   });
-};
+});
 
-type LiveQuery = ReturnType<typeof liveQuery>;
+test("repeated revives keep the session total equal to the billed spend", async () => {
+  await withPipeline(async (p) => {
+    await p.turn("a1");
+    for (let i = 2; i <= 5; i++) {
+      await p.revive();
+      await p.turn(`a${i}`);
+    }
+    near(p.row().costUsd, p.cli.billedUsd, "five processes");
+  });
+});
+
+test("revive after a crash restores an older stamp without re-charging it", async () => {
+  await withPipeline(async (p) => {
+    await p.turn("a1");
+    await p.revive();
+    await p.turn("a2");
+    await p.revive(false); // killed: the stamp still says "after a1"
+    await p.turn("a3");
+    near(p.row().costUsd, p.cli.billedUsd, "revive after a crash");
+  });
+});
+
+test("get_usage failure: the persisted observation seeds the resumed baseline", async () => {
+  await withPipeline(async (p) => {
+    await p.turn("a1");
+    await p.turn("a2");
+    const observed = p.store.providerTotal(ID, "claude-1");
+    assert.ok(observed, "each result persists the CLI's running total");
+    near(observed.costUsd, p.cli.billedUsd, "observed running total");
+    p.usage = "fail";
+    await p.revive();
+    await p.turn("a3");
+    near(p.row().costUsd, p.cli.billedUsd, "fallback seed after a graceful exit");
+  });
+});
+
+test("the persisted observation survives a daemon restart", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "loom-cost-"));
+  try {
+    await withPipeline(
+      async (p) => {
+        await p.turn("a1");
+        await p.turn("a2");
+        p.usage = "fail";
+        await p.restart();
+        await p.turn("a3");
+        near(p.row().costUsd, p.cli.billedUsd, "fallback seed across a daemon restart");
+      },
+      join(dir, "loom.db"),
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a crash with no stamp and no get_usage never charges negative or twice", async () => {
+  await withPipeline(async (p) => {
+    await p.turn("a1");
+    await p.turn("a2");
+    const before = p.row().costUsd;
+    p.usage = "fail";
+    // The CLI restores nothing, but the only seed left is Loom's last
+    // observation. The new process's spend stays under that mark, so it goes
+    // uncharged — a bounded undercount, never a re-charge or a negative delta.
+    await p.revive(false);
+    await p.turn("a3");
+    const row = p.row();
+    assert.ok(row.costUsd >= before, "the total never decreases");
+    assert.ok(row.costUsd <= p.cli.billedUsd + 1e-9, "nothing is charged twice");
+  });
+});
+
+test("a result that lands before the seed is held, then diffed against the fallback", async (t) => {
+  __setSeedTimeoutMs(100);
+  t.after(() => __setSeedTimeoutMs(10_000));
+  await withPipeline(async (p) => {
+    await p.turn("a1");
+    await p.turn("a2");
+    p.usage = "hang";
+    p.cli.exit();
+    await p.mgr.close(ID);
+    // Resume without the store's observation would re-charge; the held
+    // startup-error result carries the restored totals.
+    p.cli.start("claude-1", "resume");
+    const usageBaseline = p.store.providerTotal(ID, "claude-1")!;
+    await p.mgr.resume(p.provider, {
+      sessionId: ID,
+      providerRef: "claude-1",
+      cwd: "/tmp",
+      mcpServers: [],
+      usageBaseline,
+    });
+    const before = p.row().costUsd;
+    await p.feed(p.cli.init(), p.cli.result({ subtype: "error_during_execution", is_error: true }));
+    near(p.row().costUsd, before, "the restored total is not charged again");
+    await p.turn("a3");
+    near(p.row().costUsd, p.cli.billedUsd, "after a get_usage timeout");
+  });
+});
+
+// --- interrupts ----------------------------------------------------------------
+
+test("an interrupted turn's spend is still charged", async () => {
+  await withPipeline(async (p) => {
+    await p.turn("a1");
+
+    // A long turn is interrupted after it has already spent; the CLI's
+    // result for it carries that spend in its running total.
+    await p.next();
+    const spent = { input: 300, output: 5_000, cacheRead: 40_000, cacheWrite: 1_000 };
+    p.cli.request("claude-sonnet", spent);
+    p.q.push(p.cli.assistant("a2", spent));
+    await p.mgr.interrupt(ID);
+    const trailing = p.cli.result({ subtype: "error_during_execution", is_error: true });
+    p.q.push(trailing);
+    await until(
+      () => Math.abs(p.row().costUsd - p.cli.billedUsd) < 1e-9,
+      `interrupted turn: Loom $${p.row().costUsd}, billed $${p.cli.billedUsd}`,
+    );
+
+    // A trailing duplicate of that result is not charged twice.
+    p.q.push(trailing);
+    await p.turn("a3");
+    near(p.row().costUsd, p.cli.billedUsd, "interrupt + trailing result");
+  });
+});
+
+// --- through the adapter alone ------------------------------------------------
 
 /** Collect a session's charged cost; tear it down via `t.after`. */
 const collect = (
@@ -540,90 +795,35 @@ const collect = (
   return charged;
 };
 
-const until = async (pred: () => boolean): Promise<void> => {
-  const start = Date.now();
-  while (!pred()) {
-    if (Date.now() - start > 2000) throw new Error("condition not met in time");
-    await delay(5);
-  }
-};
+test("a resumed ClaudeSession charges only the spend since it started", async (t) => {
+  const cli = new ClaudeCliSim().start("claude-1");
+  const t1 = { input: 400, output: 900, cacheRead: 30_000, cacheWrite: 2_000 };
+  cli.request("claude-sonnet", t1);
+  cli.request("claude-sonnet", t1);
+  cli.exit();
+  const before = cli.billedUsd;
+  cli.start("claude-1", "resume");
 
-// DEFECT (resume re-charges history), at the adapter boundary: a resumed
-// ClaudeSession's first usage event carries the restored history.
-test(
-  "a resumed ClaudeSession charges only the spend since it started",
-  { skip: "DEFECT: resume re-charges the restored cost-state (A7)" },
-  async (t) => {
-    const cli = new ClaudeCliSim().start("claude-1");
-    turn(cli, "a1");
-    turn(cli, "a2");
-    cli.exit();
-    const before = cli.billedUsd;
-
-    let q!: LiveQuery;
-    let resumed: unknown;
-    __setClaudeSdk({
-      query: (args: unknown) => {
-        resumed = (args as { options: { resume?: string } }).options.resume;
-        q = liveQuery();
-        return q as never;
-      },
-    });
-    const s = await new ClaudeProvider().resumeSession({
-      sessionId: ID,
-      providerRef: "claude-1",
-      cwd: "/tmp",
-    });
-    const charged = collect(t, s);
-    assert.equal(resumed, "claude-1");
-    cli.start("claude-1", "resume");
-    await s.send("next");
-    q.push({ type: "system", subtype: "init", session_id: "claude-1" }, ...turn(cli, "a3"));
-    await until(() => charged.results === 1);
-    near(charged.usd, cli.billedUsd - before, "resumed adapter");
-  },
-);
-
-// DEFECT (interrupted turns are never charged): while `#interrupted` is set,
-// ClaudeSession.#drain still advances the mapper's baseline but drops the
-// `usage` event (connectors/claude/src/adapter.ts:676-680), so the spend of an
-// interrupted turn never reaches the session total. Undercount, not inflation.
-test(
-  "an interrupted turn's spend is still charged",
-  { skip: "DEFECT: interrupt drops the turn's usage event (A7)" },
-  async (t) => {
-    const cli = new ClaudeCliSim().start("claude-1");
-    let q!: LiveQuery;
-    __setClaudeSdk({
-      query: () => {
-        q = liveQuery();
-        return q as never;
-      },
-    });
-    const s = await new ClaudeProvider().createSession({
-      sessionId: ID,
-      cwd: "/tmp",
-      prompt: "go",
-      mode: "default",
-      mcpServers: [],
-      loomServer: false,
-    });
-    const charged = collect(t, s);
-    q.push({ type: "system", subtype: "init", session_id: "claude-1" }, ...turn(cli, "a1"));
-    await until(() => charged.results === 1);
-
-    // A long turn is interrupted after it has already spent; the CLI's
-    // result for it carries that spend in its running total.
-    const spent = { input: 300, output: 5_000, cacheRead: 40_000, cacheWrite: 1_000 };
-    cli.request("claude-sonnet", spent);
-    q.push(cli.assistant("a2", spent));
-    await s.interrupt();
-    q.push(cli.result({ subtype: "error_during_execution", is_error: true }));
-    await delay(50);
-
-    await s.send("again");
-    q.push(...turn(cli, "a3"));
-    await until(() => charged.results === 2);
-    near(charged.usd, cli.billedUsd, "interrupted turn");
-  },
-);
+  let q!: FakeQuery;
+  let resumed: unknown;
+  __setClaudeSdk({
+    query: ((args: { prompt: AsyncIterable<unknown>; options: { resume?: string } }) => {
+      resumed = args.options.resume;
+      q = fakeQuery(cli, args.prompt, () => "report");
+      return q;
+    }) as never,
+  });
+  const s = await new ClaudeProvider().resumeSession({
+    sessionId: ID,
+    providerRef: "claude-1",
+    cwd: "/tmp",
+  });
+  const charged = collect(t, s);
+  assert.equal(resumed, "claude-1");
+  await s.send("next");
+  await until(() => q.received() === 1, "the held prompt was released");
+  cli.request("claude-sonnet", t1);
+  q.push(cli.init(), cli.assistant("a3", t1), cli.result());
+  await until(() => charged.results === 1, "the turn settled");
+  near(charged.usd, cli.billedUsd - before, "resumed adapter");
+});

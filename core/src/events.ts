@@ -28,6 +28,19 @@ export const tokenUsageSchema = z.object({
 });
 export type TokenUsage = z.infer<typeof tokenUsageSchema>;
 
+/**
+ * A provider's own running totals for one of its sessions — what that
+ * provider restores when it resumes `ref`. Not a delta, and not Loom's session
+ * total: a Loom session can span several provider sessions.
+ */
+export const providerTotalSchema = z.object({
+  /** The provider's session id these totals belong to. */
+  ref: z.string(),
+  costUsd: z.number(),
+  tokens: tokenUsageSchema,
+});
+export type ProviderTotal = z.infer<typeof providerTotalSchema>;
+
 export const harnessEventBaseSchema = z.object({
   /** Session this event belongs to. */
   sessionId: z.string(),
@@ -128,6 +141,12 @@ export const usageEventSchema = harnessEventBaseSchema.extend({
   cacheTtlMinutes: z.number().optional(),
   /** Observed per-TTL write counts, used to price mixed cache writes. */
   cacheCreation: cacheCreationSchema.optional(),
+  /**
+   * The provider's running totals after this event, for adapters whose
+   * provider restores them on resume. Persisted so a later resume can seed its
+   * baseline when the provider cannot report what it restored.
+   */
+  providerTotal: providerTotalSchema.optional(),
 });
 export type UsageEvent = z.infer<typeof usageEventSchema>;
 

@@ -8,7 +8,7 @@ const effortLevelSchema = z.string();
  * vendor SDK; adapters normalize to the one `HarnessEvent` union and this pair
  * of interfaces. The Claude adapter ships in V1; ADK is a designed-for second.
  */
-import { tokenUsageSchema, type HarnessEvent } from "./events.ts";
+import { providerTotalSchema, tokenUsageSchema, type HarnessEvent } from "./events.ts";
 import { sessionStateSchema } from "./session-state.ts";
 
 export const sessionModeSchema = z.enum(["default", "plan", "acceptEdits", "auto"]);
@@ -185,6 +185,12 @@ export const sessionRefSchema = z.object({
   repoInstructions: z.union([z.string(), z.null()]).optional(),
   /** See {@link CreateSessionOptions.workspaceRoot}. */
   workspaceRoot: z.string().optional(),
+  /**
+   * The provider's running totals for `providerRef` as Loom last observed
+   * them. An adapter whose provider restores its totals on resume seeds its
+   * baseline from this only when the provider cannot report what it restored.
+   */
+  usageBaseline: providerTotalSchema.optional(),
 });
 export type SessionRef = z.infer<typeof sessionRefSchema>;
 

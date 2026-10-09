@@ -1,5 +1,10 @@
 import type { CacheCreation } from "@loom/core/cache";
-import type { TokenUsage, RateLimitEvent } from "@loom/core/events";
+import {
+  providerTotalSchema,
+  type ProviderTotal,
+  type TokenUsage,
+  type RateLimitEvent,
+} from "@loom/core/events";
 import {
   parseSessionState,
   type SessionState,
@@ -102,6 +107,8 @@ export interface UsageDelta {
   lastCacheTtlMinutes?: number;
   /** Observed per-TTL write counts, used to price mixed cache writes. */
   cacheCreation?: CacheCreation;
+  /** The provider's running totals after this delta (absolute; latest wins). */
+  providerTotal?: ProviderTotal;
 }
 
 /** A session that was mid-run when the previous daemon instance exited. */
@@ -369,6 +376,7 @@ export class SessionStore {
            last_cache_read = COALESCE(?, last_cache_read),
            last_cache_write = COALESCE(?, last_cache_write),
            last_cache_ttl_minutes = COALESCE(?, last_cache_ttl_minutes),
+           provider_total = COALESCE(?, provider_total),
            updated_at = ?
          WHERE session_id = ?`,
       )
@@ -389,6 +397,7 @@ export class SessionStore {
         abs(d.lastCacheRead),
         abs(d.lastCacheWrite),
         abs(d.lastCacheTtlMinutes),
+        d.providerTotal ? JSON.stringify(d.providerTotal) : null,
         now,
         id,
       );
@@ -574,6 +583,25 @@ export class SessionStore {
       | { provider_ref: string | null }
       | undefined;
     return row?.provider_ref ?? null;
+  }
+
+  /**
+   * The provider's running totals as last observed for this session — what a
+   * resume of their `ref` may restore. With `ref`, only totals for that
+   * provider session. Null when never observed or unreadable.
+   */
+  providerTotal(id: string, ref?: string): ProviderTotal | null {
+    const row = this.#db
+      .prepare("SELECT provider_total FROM usage WHERE session_id = ?")
+      .get(id) as { provider_total: string | null } | undefined;
+    if (!row?.provider_total) return null;
+    try {
+      const parsed = providerTotalSchema.safeParse(JSON.parse(row.provider_total));
+      if (!parsed.success || (ref !== undefined && parsed.data.ref !== ref)) return null;
+      return parsed.data;
+    } catch {
+      return null;
+    }
   }
 
   /** Which backend owns this session's history (`""` = the provider's own

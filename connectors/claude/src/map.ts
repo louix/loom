@@ -4,8 +4,9 @@
  * `@anthropic-ai/sdk` Beta content-block types — we narrow by `.type` and read
  * only the fields we forward, so a Beta type reshape can't break the mapper.
  *
- * Token / cost accounting is stateful: the SDK reports cumulative totals per
- * `query()` call, so the mapper differences them to emit per-turn deltas.
+ * Token / cost accounting is stateful: the SDK reports the CLI's running
+ * totals, so the mapper differences them to emit per-turn deltas. A resumed CLI
+ * starts from the totals it saved, so the adapter seeds the baseline with them.
  * Context fill stays absolute, tracked from each main-loop assistant
  * message's own `usage` rather than the turn-level `result.usage` — a turn
  * can drive many internal model calls, and `result.usage` sums all of them,
@@ -111,10 +112,16 @@ interface SdkUsageWindow {
 
 /**
  * The subset of the SDK's experimental `get_usage` response we read — the
- * claude.ai plan rate-limit windows. `rate_limits_available` is false (and
- * `rate_limits` null) for API-key / Bedrock / Vertex sessions.
+ * claude.ai plan rate-limit windows, and the CLI's running session totals.
+ * `rate_limits_available` is false (and `rate_limits` null) for API-key /
+ * Bedrock / Vertex sessions.
  */
 export interface SdkGetUsageResponse {
+  /** The CLI's cost ledger — after a resume, including what it restored. */
+  session?: {
+    total_cost_usd?: number;
+    model_usage?: Record<string, ModelUsageEntry>;
+  } | null;
   rate_limits_available?: boolean;
   rate_limits?: {
     five_hour?: SdkUsageWindow | null;
@@ -224,6 +231,33 @@ export const writtenTtlMinutes = (u: RawUsage | undefined): number => {
   return ephemeralTtlMinutes(u?.cache_creation);
 };
 
+/** Running totals a query's accounting starts from. */
+export interface QueryBaseline {
+  costUsd: number;
+  usage: TokenUsage;
+}
+
+/**
+ * The CLI's running totals from a `get_usage` response, or null when it
+ * carries none. Asked before a query's first turn, this is exactly what a
+ * resume restored from the transcript's saved `cost-state`.
+ */
+export const baselineOf = (resp: SdkGetUsageResponse | null | undefined): QueryBaseline | null => {
+  const s = resp?.session;
+  const cost = s?.total_cost_usd;
+  if (typeof cost !== "number" || !Number.isFinite(cost) || cost < 0) return null;
+  const mu = sumModelUsage(s?.model_usage ?? undefined);
+  return {
+    costUsd: cost,
+    usage: {
+      input: mu.input,
+      output: mu.output,
+      cacheRead: mu.cacheRead,
+      cacheWrite: mu.cacheWrite,
+    },
+  };
+};
+
 // --- the mapper ----------------------------------------------------------
 
 export class ClaudeEventMapper {
@@ -252,16 +286,21 @@ export class ClaudeEventMapper {
   #cacheTtlMinutes = 0;
 
   /**
-   * Usage / cost totalled by `query()` calls that ran *before* an undo swapped
-   * the live query. The SDK restarts `modelUsage` / `total_cost_usd` from ~0 for
-   * a resumed query, so the reported cumulative is `#carry + current query` —
-   * kept so `snapshot().usage` / `costUsd` never regress across a rewind (C2).
+   * Usage / cost this mapper charged under earlier CLI ledgers — before an undo
+   * or fresh implementation swapped the live query, or a `conversation_reset`
+   * zeroed the ledger — so `state.usage` / `costUsd` never regress (C2).
    */
   readonly #carry = { usage: zeroUsage(), costUsd: 0 };
-  /** The current query's own running totals — the baseline the SDK's cumulative
+  /** The current ledger's running totals — the baseline the SDK's cumulative
    *  `modelUsage` / `total_cost_usd` is diffed against for the per-turn delta. */
   #queryUsage: TokenUsage = zeroUsage();
   #queryCostUsd = 0;
+  /**
+   * What the current ledger already held when this query started: a resumed
+   * CLI restores its saved totals, so its first result carries spend that was
+   * charged before. Part of the baseline, never part of what this mapper charged.
+   */
+  #seed: QueryBaseline = { costUsd: 0, usage: zeroUsage() };
 
   /** Open *foreground* `Task` tool calls: tool_use id → sub-agent name. A
    *  backgrounded Task is tracked via `background_tasks_changed` instead. */
@@ -314,6 +353,12 @@ export class ClaudeEventMapper {
         return this.#result(m);
       case "rate_limit_event":
         return this.#rateLimit(m);
+      case "conversation_reset":
+        // `/clear` (and the CLI's other fresh-context flows) zero the ledger
+        // before the next result. This frame is the only reset signal: a
+        // smaller running total without it is a partial report, not a reset.
+        this.#foldLedger();
+        return [];
       default:
         // stream_event (partials, not requested), tool_progress, notifications, …
         return [];
@@ -329,15 +374,7 @@ export class ClaudeEventMapper {
    * suppress a legitimate re-emit), and any open foreground sub-agents.
    */
   onQuerySwap(): void {
-    this.#carry.usage = {
-      input: this.#carry.usage.input + this.#queryUsage.input,
-      output: this.#carry.usage.output + this.#queryUsage.output,
-      cacheRead: this.#carry.usage.cacheRead + this.#queryUsage.cacheRead,
-      cacheWrite: this.#carry.usage.cacheWrite + this.#queryUsage.cacheWrite,
-    };
-    this.#carry.costUsd += this.#queryCostUsd;
-    this.#queryUsage = zeroUsage();
-    this.#queryCostUsd = 0;
+    this.#foldLedger();
     this.#lastChainUuid = null;
     // The prior fork ref points into the turns we just undid past — drop it so a
     // second undo before the next completed turn can't fork from a truncated ref.
@@ -346,6 +383,39 @@ export class ClaudeEventMapper {
     this.#openSubagents.clear();
     this.#bgPending.clear();
     this.#bgIds.clear();
+  }
+
+  /**
+   * Start the current query from the totals its CLI ledger already holds. The
+   * adapter calls this before the query's first turn; anything the ledger
+   * restored was charged under an earlier process and is not charged again.
+   */
+  seedQueryBaseline(seed: QueryBaseline): void {
+    const usage = {
+      input: nonnegative(seed.usage.input),
+      output: nonnegative(seed.usage.output),
+      cacheRead: nonnegative(seed.usage.cacheRead),
+      cacheWrite: nonnegative(seed.usage.cacheWrite),
+    };
+    this.#seed = { costUsd: nonnegative(seed.costUsd), usage };
+    this.#queryUsage = { ...usage };
+    this.#queryCostUsd = this.#seed.costUsd;
+  }
+
+  /** Bank what this mapper charged under the current ledger; the next starts at 0. */
+  #foldLedger(): void {
+    const q = this.#queryUsage;
+    const s = this.#seed.usage;
+    this.#carry.usage = {
+      input: this.#carry.usage.input + Math.max(0, q.input - s.input),
+      output: this.#carry.usage.output + Math.max(0, q.output - s.output),
+      cacheRead: this.#carry.usage.cacheRead + Math.max(0, q.cacheRead - s.cacheRead),
+      cacheWrite: this.#carry.usage.cacheWrite + Math.max(0, q.cacheWrite - s.cacheWrite),
+    };
+    this.#carry.costUsd += Math.max(0, this.#queryCostUsd - this.#seed.costUsd);
+    this.#seed = { costUsd: 0, usage: zeroUsage() };
+    this.#queryUsage = zeroUsage();
+    this.#queryCostUsd = 0;
   }
 
   #base(agentId: string | null | undefined): { sessionId: string; ts: number; agentId?: string } {
@@ -578,10 +648,10 @@ export class ClaudeEventMapper {
         rawMu.costUsd > 0)
         ? rawMu
         : null;
-    // `cum` is the *current query's* cumulative (SDK `modelUsage` is cumulative
-    // per `query()` and restarts on a resumed query). Diff it against the
-    // current-query baseline, not the reported total — the reported total also
-    // carries pre-undo history via `#carry`.
+    // `cum` is the current CLI ledger's running total (SDK `modelUsage` is
+    // cumulative per process, restored on resume, zeroed by
+    // `conversation_reset`). Diff it against the ledger baseline, not the
+    // reported total — that also carries earlier ledgers via `#carry`.
     const cum = mu
       ? mu
       : {
@@ -594,7 +664,8 @@ export class ClaudeEventMapper {
         };
 
     // Partial/error reports must not lower the baseline and double-count the
-    // next healthy report. A new SDK query resets the baseline explicitly.
+    // next healthy report. Only an explicit reset (a new query, a
+    // `conversation_reset`) starts a new ledger.
     cum.input = Math.max(this.#queryUsage.input, nonnegative(cum.input));
     cum.output = Math.max(this.#queryUsage.output, nonnegative(cum.output));
     cum.cacheRead = Math.max(this.#queryUsage.cacheRead, nonnegative(cum.cacheRead));
@@ -628,8 +699,9 @@ export class ClaudeEventMapper {
     const contextUsed = this.state.contextUsed;
     const contextLimit = cum.contextLimit || this.state.contextLimit;
 
-    // Advance the current-query baseline, then report `#carry + current query`
-    // so `state.usage` / `state.costUsd` never regress across a rewind (C2).
+    // Advance the ledger baseline, then report what this mapper has charged —
+    // `#carry` plus the current ledger past its seed — so `state.usage` /
+    // `state.costUsd` never regress across a rewind (C2).
     this.#queryUsage = {
       input: cum.input,
       output: cum.output,
@@ -637,14 +709,16 @@ export class ClaudeEventMapper {
       cacheWrite: cum.cacheWrite,
     };
     this.#queryCostUsd = cum.costUsd;
+    const seed = this.#seed.usage;
     this.state.usage = {
-      input: this.#carry.usage.input + this.#queryUsage.input,
-      output: this.#carry.usage.output + this.#queryUsage.output,
-      cacheRead: this.#carry.usage.cacheRead + this.#queryUsage.cacheRead,
-      cacheWrite: this.#carry.usage.cacheWrite + this.#queryUsage.cacheWrite,
+      input: this.#carry.usage.input + Math.max(0, cum.input - seed.input),
+      output: this.#carry.usage.output + Math.max(0, cum.output - seed.output),
+      cacheRead: this.#carry.usage.cacheRead + Math.max(0, cum.cacheRead - seed.cacheRead),
+      cacheWrite: this.#carry.usage.cacheWrite + Math.max(0, cum.cacheWrite - seed.cacheWrite),
     };
-    this.state.costUsd = this.#carry.costUsd + this.#queryCostUsd;
+    this.state.costUsd = this.#carry.costUsd + Math.max(0, cum.costUsd - this.#seed.costUsd);
     this.state.contextLimit = contextLimit;
+    const ref = this.state.providerRef;
 
     out.push({
       type: "usage",
@@ -654,6 +728,10 @@ export class ClaudeEventMapper {
       contextLimit,
       ...(hasCost ? { costDeltaUsd } : {}),
       ...(this.#cacheTtlMinutes > 0 ? { cacheTtlMinutes: this.#cacheTtlMinutes } : {}),
+      // What a later `--resume` of `ref` restores, as far as this mapper saw.
+      ...(ref
+        ? { providerTotal: { ref, costUsd: cum.costUsd, tokens: { ...this.#queryUsage } } }
+        : {}),
     });
 
     const ok = m.subtype === "success" && m.is_error !== true;
