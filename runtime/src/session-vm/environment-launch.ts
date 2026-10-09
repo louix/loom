@@ -1,6 +1,7 @@
 import type { HostStopReason } from "../../../core/src/vm-termination.ts";
 import { readEnvironmentOutput } from "./environment-protocol.ts";
-import { launchSessionVm, type SessionVmOptions } from "./launch.ts";
+import { launchSessionVm, type SessionVmOptions, type SessionVmStatus } from "./launch.ts";
+import type { VmBinding } from "../packaged/vm.ts";
 
 export type EnvironmentVmOptions = Omit<
   SessionVmOptions,
@@ -12,12 +13,27 @@ export type EnvironmentVmConfiguration = Omit<
   "sessionId" | "sessionDirectory" | "onStop"
 >;
 
+export interface VmEnvironment {
+  binding: VmBinding;
+  pid: number;
+  ready: Promise<void>;
+  exited: Promise<unknown>;
+  status(): Promise<SessionVmStatus>;
+  close(reason?: HostStopReason): Promise<void>;
+  /** Credential-free diagnosis of the VM, available once it has exited. */
+  failure?(): Promise<Error | undefined>;
+  /** The first recorded host reason wins; later termination keeps it. */
+  setStopReason?(reason: HostStopReason): void;
+}
+
 /**
  * Start the existing supervised VM without constructing a conversation worker.
  * The returned handle owns startup too: close() cancels it before ready resolves.
  * Callers must await ready before using the command/shell transports.
  */
-export const launchEnvironmentVm = async (options: EnvironmentVmOptions) => {
+export const launchEnvironmentVm = async (
+  options: EnvironmentVmOptions,
+): Promise<VmEnvironment> => {
   const worker = await launchSessionVm({
     ...options,
     // Unlike agent sessions, environments get no provider egress by default.
@@ -50,6 +66,8 @@ export const launchEnvironmentVm = async (options: EnvironmentVmOptions) => {
     ready: ready.promise,
     exited: worker.exited,
     status: worker.status,
+    failure: worker.failure!,
+    setStopReason: worker.setStopReason!,
     async close(reason: HostStopReason = "session_close") {
       worker.terminate(reason);
       await worker.cleanup!();

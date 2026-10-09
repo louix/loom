@@ -5,6 +5,10 @@ import { relayDiagnosticSchema, type RelayDiagnostic } from "../../../core/src/r
 import { decodeTextStream } from "../../../core/src/text-stream.ts";
 import { isFileLimitError, fileLimitDiagnostic } from "./file-limit.ts";
 import { fileLimitScanner } from "./file-limit-scanner.ts";
+import {
+  environmentDiagnosticOf,
+  environmentDiagnostics,
+} from "../../../core/src/environment-diagnostic.ts";
 export const startupStages = {
   init: "Running session init hooks…",
   runtime: "Preparing VM runtime…",
@@ -34,11 +38,15 @@ export const startupFailures = {
     "The VM backend could not access a required file or device. Check host filesystem and virtualization permissions.",
   disk: "The VM disk or filesystem is invalid. Run loom vm prepare to rebuild the prepared base.",
   backend: "The VM backend failed before the agent could start.",
+  // Standalone environment guests report their own preparation failures here.
+  ...environmentDiagnostics,
 } as const;
 export type StartupFailure = keyof typeof startupFailures;
 /** Classify host backend errors; raw stderr never crosses the credential boundary. */
 export const classifyStartupFailure = (error: unknown): StartupFailure => {
   const message = error instanceof Error ? error.message : String(error);
+  const diagnostic = environmentDiagnosticOf(error);
+  if (diagnostic) return diagnostic;
   if (isFileLimitError(error)) return "files";
   if (/no more IRQs|too many.*devices/i.test(message)) return "devices";
   if (/no space left|ENOSPC/i.test(message)) return "space";

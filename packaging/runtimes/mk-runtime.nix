@@ -38,8 +38,9 @@ in pkgs.runCommand "loom-${executable}-runtime" {} ''
     cp ${guestImage} $out/guest-image.tar
     cp ${closure}/registration $out/registration
     echo 7 > $out/session-environment-version
-    # Guests can run without a connector worker (runtime/src/session-vm/environment-protocol.ts).
-    echo 1 > $out/standalone-environment-version
+    # Guests can run without a connector worker (runtime/src/session-vm/environment-protocol.ts),
+    # and since 2 run the connector worker as an execution (guest-worker.ts).
+    echo 2 > $out/standalone-environment-version
   ''}
   ${pkgs.lib.optionalString (sessionVersion != null) "echo ${toString sessionVersion} > $out/claude-session-version"}
   cp ${manifest} $out/manifest.json

@@ -23,6 +23,11 @@ switch (Deno.args[1]) {
     }
     const mode = await Deno.readTextFile(join(state, "mode"));
     if (mode === "failure") Deno.exit(17);
+    if (mode === "diagnostic") {
+      // guest.ts reports a classified preparation failure, then exits.
+      console.error(JSON.stringify({ loomStartupFailure: "sessionCheckoutFailed" }));
+      Deno.exit(1);
+    }
     if (mode === "invalid") console.log("unexpected worker output");
     else {
       await Deno.stdout.write(new TextEncoder().encode('{"loomEnvironment'));

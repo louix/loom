@@ -86,6 +86,23 @@ const remove = async (path: string) => {
     if (!(error instanceof Deno.errors.NotFound)) throw error;
   }
 };
+/** Agent sessions reach this provider unless their launcher names others. */
+export const defaultProviderHosts = ["api.anthropic.com"];
+/**
+ * Standalone environment protocol of a session runtime; 0 when absent.
+ * 1: environment guests report readiness. 2: they also run guest-worker.ts executions.
+ */
+export const environmentRuntimeVersion = async (artifact: string): Promise<number> => {
+  try {
+    const value = (
+      await Deno.readTextFile(join(artifact, "standalone-environment-version"))
+    ).trim();
+    return /^[1-9][0-9]{0,3}$/.test(value) ? Number(value) : 0;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return 0;
+    throw error;
+  }
+};
 const launchSessionVmOwned = async (
   options: SessionVmOptions,
 ): Promise<
@@ -160,18 +177,10 @@ const launchSessionVmOwned = async (
       "Session VM runtime is missing or incompatible; upgrade the Loom package, or rebuild the configured provider runtime with this Loom version",
     );
   }
-  if (options.environmentOnly) {
-    try {
-      if (
-        (await Deno.readTextFile(join(artifact, "standalone-environment-version"))).trim() !== "1"
-      )
-        throw new Error("incompatible environment protocol");
-    } catch {
-      throw new Error(
-        "Standalone environments require a rebuilt session runtime; run loom runtime update",
-      );
-    }
-  }
+  if (options.environmentOnly && (await environmentRuntimeVersion(artifact)) < 1)
+    throw new Error(
+      "Standalone environments require a rebuilt session runtime; run loom runtime update",
+    );
   if (privateWorkspace || options.preparationOnly || environmentEnabled(options.environment)) {
     try {
       if ((await Deno.readTextFile(join(artifact, "session-environment-version"))).trim() !== "7")
@@ -294,7 +303,7 @@ const launchSessionVmOwned = async (
         extraAllowedHosts,
         environment: options.environment,
         prepareHooks: options.prepareHooks,
-        providerHosts: normalizeExtraHosts(options.providerHosts ?? ["api.anthropic.com"]),
+        providerHosts: normalizeExtraHosts(options.providerHosts ?? defaultProviderHosts),
         auth,
       }) + "\n",
     );
@@ -335,7 +344,8 @@ const launchSessionVmOwned = async (
             options.onProgress?.(startupMessage(stage, elapsed, host));
           },
           (code) => {
-            failure = new Error(startupFailures[code]);
+            // A guest's specific diagnostic outlives the supervisor's generic summary.
+            if (!failure || code !== "backend") failure = new Error(startupFailures[code]);
           },
           (info) => {
             termination ??= info;

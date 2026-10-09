@@ -13,18 +13,16 @@ import {
 } from "../../../core/src/session-environment.ts";
 import { runWorker } from "../worker/main.ts";
 import { WorkerDiagnostic } from "../../../core/src/worker.ts";
-import {
-  checkoutSchema,
-  guestGitPort,
-  guestGitSocket,
-  prepareCheckout,
-  publishCheckout,
-  type Checkout,
-} from "./checkout.ts";
+import { guestGitPort, guestGitSocket, prepareCheckout } from "./checkout.ts";
+import { publishAfterTurn, readGuestCheckout } from "./guest-publish.ts";
 import { startGuestRelay } from "./guest-relay.ts";
 import { reportStartup, classifyStartupFailure } from "./progress.ts";
 import { serveEnvironment } from "./environment-protocol.ts";
-import { guestShellEnvironmentPath, shellEnvironment } from "./shell.ts";
+import {
+  guestShellEnvironmentPath,
+  guestWorkerEnvironmentPath,
+  shellEnvironment,
+} from "./shell.ts";
 import { installWorkerDiagnostics } from "../worker/diagnostics.ts";
 installWorkerDiagnostics();
 // Package caches outlive VM replacement; installed dependencies stay in the worktree.
@@ -107,15 +105,10 @@ for (const [index, spec] of mcp.entries()) {
     .finished;
 }
 // Clone sessions reach the host repository only through this relay.
-let checkout: Checkout | undefined;
-try {
-  checkout = checkoutSchema.parse(
-    JSON.parse(await Deno.readTextFile("/run/loom/private/checkout.json")),
-  );
+const checkout = await readGuestCheckout();
+if (checkout) {
   const endpoint = Deno.listen({ hostname: "127.0.0.1", port: guestGitPort });
   void startGuestRelay(endpoint, guestGitSocket, 32, { kind: "git" }).finished;
-} catch (error) {
-  if (!(error instanceof Deno.errors.NotFound)) throw error;
 }
 // Preparation warms the reusable disk; every session activates its current checkout.
 // The proxy remains available to activation, setup and init hooks.
@@ -187,6 +180,10 @@ const initializeSession = async () => {
   await Deno.writeTextFile(guestShellEnvironmentPath, shellEnvironment(Deno.env.toObject()), {
     mode: 0o600,
   });
+  // Exactly this process's environment, for a guest worker launched as an execution.
+  await Deno.writeTextFile(guestWorkerEnvironmentPath, JSON.stringify(Deno.env.toObject()), {
+    mode: 0o600,
+  });
   await Deno.mkdir("/etc/profile.d", { recursive: true });
   await Deno.writeTextFile(
     "/etc/profile.d/zz-loom-path.sh",
@@ -243,25 +240,5 @@ if (preparationOnly) {
       reportStartup("provider");
     },
     "session-vm",
-    async (event) => {
-      if (!checkout || event.type !== "result") return;
-      // The host ref is current before the daemon learns the turn ended. The daemon
-      // republishes the spec after a rename; a failed push is retried next turn.
-      try {
-        await publishCheckout(
-          checkoutSchema.parse(
-            JSON.parse(await Deno.readTextFile("/run/loom/private/checkout.json")),
-          ),
-        );
-      } catch {
-        return {
-          type: "error" as const,
-          sessionId: event.sessionId,
-          ts: Date.now(),
-          fatal: false,
-          message:
-            "Git publication failed. Commits are still in this session's private checkout; the host branch may be out of date. Retry git push before removing the session.",
-        };
-      }
-    },
+    publishAfterTurn(checkout),
   );

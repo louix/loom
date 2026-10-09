@@ -6,6 +6,8 @@ import {
 } from "../packaged/vm.ts";
 
 export const guestShellEnvironmentPath = "/run/loom/shell-env.sh";
+/** The same activated environment as JSON, restored by guest-worker.ts executions. */
+export const guestWorkerEnvironmentPath = "/run/loom/worker-env.json";
 
 /** Save the activated environment inside the guest; never send it over the host RPC. */
 export const shellEnvironment = (env: Record<string, string>): string =>

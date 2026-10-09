@@ -3,6 +3,7 @@ import { transcriptMessageSchema } from "./transcript.ts";
 import { harnessEventSchema } from "./events.ts";
 import { connectorWireConfigSchema } from "./connector.ts";
 import { decode } from "./schema.ts";
+import { environmentDiagnostics } from "./environment-diagnostic.ts";
 import {
   adapterSnapshotSchema,
   createSessionOptionsSchema,
@@ -20,16 +21,7 @@ export const MAX_FRAME_BYTES = 1024 * 1024;
 export const MAX_PENDING = 128;
 
 const diagnostics = {
-  sessionNixFailed:
-    "Nix activation failed. Check the project shell and session.isolation.network_presets, or disable session.auto_nix. Run loom vm prepare for build output.",
-  sessionNixTimeout:
-    "Nix activation timed out. Run loom vm prepare to warm the cache and inspect build output, or increase session.isolation.environment.timeout_seconds.",
-  sessionEnvironmentFailed:
-    "VM environment preparation failed. Check session.isolation.environment.command_prefix, prepare and network presets. The session has not started.",
-  sessionEnvironmentTimeout:
-    "VM environment preparation timed out. Check the network policy or increase isolation.environment.timeout_seconds. The session has not started.",
-  sessionCheckoutFailed:
-    "The session clone could not be prepared from the host repository. Check that the session branch still exists, then resume. The session has not started.",
+  ...environmentDiagnostics,
   claudeCliPath:
     "providers.claude.cli_path is not an executable file. Set it to an installed Claude executable and restart the daemon.",
   claudeBundledCli:
@@ -40,8 +32,11 @@ const diagnostics = {
 
 /** Only fixed, credential-free diagnostics may cross the worker boundary. */
 export class WorkerDiagnostic extends Error {
+  /** Fixed code; guest environments forward it without the worker protocol. */
+  readonly diagnostic: keyof typeof diagnostics;
   constructor(code: keyof typeof diagnostics) {
     super(diagnostics[code]);
+    this.diagnostic = code;
   }
 }
 

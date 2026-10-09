@@ -55,10 +55,11 @@ Deno.test("standalone supervisor gates readiness, retains ownership, and cleans 
     children.push(child);
     const writer = child.stdin.getWriter();
     const records: VmTermination[] = [];
+    const failures: string[] = [];
     const diagnostics = readStartupProgress(
       child.stderr,
       () => {},
-      undefined,
+      (code) => failures.push(code),
       (record) => {
         records.push(record);
       },
@@ -108,6 +109,7 @@ Deno.test("standalone supervisor gates readiness, retains ownership, and cleans 
       output,
       diagnostics,
       records,
+      failures,
     };
   };
   const timer = setTimeout(() => {
@@ -120,7 +122,7 @@ Deno.test("standalone supervisor gates readiness, retains ownership, and cleans 
     }
   }, 30_000);
   try {
-    for (const mode of ["ready", "failure", "invalid", "parent", "signal"] as const) {
+    for (const mode of ["ready", "failure", "diagnostic", "invalid", "parent", "signal"] as const) {
       const vm = await start(mode, mode);
       try {
         await waitForFile(join(vm.state, "entered"));
@@ -168,6 +170,8 @@ Deno.test("standalone supervisor gates readiness, retains ownership, and cleans 
         await vm.output.catch(() => {});
         assert.equal(vm.records.length, 1);
         assert.equal(vm.records[0]!.phase, mode === "ready" ? "running" : "starting");
+        // A guest's specific preparation diagnostic crosses the supervisor intact.
+        assert.deepEqual(vm.failures, mode === "diagnostic" ? ["sessionCheckoutFailed"] : []);
         await assert.rejects(Deno.stat(vm.state), Deno.errors.NotFound);
         await assert.rejects(
           Deno.stat(join(vm.sessionDirectory, "active.json")),
