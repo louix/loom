@@ -1,8 +1,15 @@
 import type { SessionInspection } from "../../../core/src/session-inspection.ts";
 import { repositoryPicker } from "./repositories.ts";
 import { SESSION_TABS } from "./session-tabs.tsx";
-import { bindCommand, keyCommand } from "./commands.ts";
-import { helpLines } from "./help.ts";
+import {
+  describeCommand,
+  describeCommands,
+  keyAction,
+  paletteActions,
+  type ActName,
+  type CommandContext,
+  type CommandSurface,
+} from "./commands.ts";
 /**
  * Everything the TUI does that isn't drawing: owns the {@link TuiState}, the
  * keymap, and every daemon round-trip. The React side (`./app.tsx`) is a pure
@@ -54,9 +61,6 @@ import { cycleLogFilter, mkTranscript, transcriptText } from "./transcript.ts";
 import {
   fleetProviders,
   fleetSessions,
-  allowedActs,
-  commandsFor,
-  commandHints,
   defaultModelOf,
   defaultProviderId,
   escapePicker,
@@ -65,18 +69,15 @@ import {
   initialState,
   newSettings,
   NOTICE_TTL_MS,
-  modelPickItems,
   modelSupportsEffort,
   selectModel,
   startModelSelection,
   type ModelSelection,
-  providerInfo,
   reduce,
   selectedSession,
   sessionLog,
   shownLog,
   versionMismatchAction,
-  type ActName,
   type Action,
   fleetLayout,
   fleetRowBudget,
@@ -95,6 +96,7 @@ import {
   newPrompt,
   openPrompt,
   pickerCurrent,
+  pickerVisible,
   makePicker,
   promptKind,
   promptOnPane,
@@ -102,6 +104,7 @@ import {
   sessionPrompt,
   type Confirm,
   type Overlay,
+  type PickItem,
   type Prompt,
   type NewSessionSettings,
   type PickerDest,
@@ -191,7 +194,6 @@ export type LayoutView = "overview" | "session";
  *  `fleetOnly` is the narrow `overview` (the fleet list alone); `sessionPane`
  *  is the `session` view at any width, and `split` the wide `overview`. */
 export type BodyKind =
-  | { t: "help" }
   | { t: "doctor" }
   | { t: "plan"; plan: PlanReview }
   | { t: "questions"; sessionId: string; requestId: string }
@@ -339,7 +341,7 @@ const deriveView = (
   const bodyFor = (): BodyKind => {
     const o = state.overlay;
     // Reading views own the body; composers and selectors float above it.
-    if (o.t === "help" || o.t === "doctor" || o.t === "plan" || o.t === "questions") return o;
+    if (o.t === "doctor" || o.t === "plan" || o.t === "questions") return o;
     if (layoutView === "session") return { t: "sessionPane" };
     return narrow ? { t: "fleetOnly" } : { t: "split" }; // wide `overview`
   };
@@ -763,13 +765,81 @@ export const mkFleetHandle = ({
     publish();
   };
 
+  /** What command availability reads: the state, the outboxes and the
+   *  capabilities this client was started with. */
+  const commandCtx = (s: TuiState = state): CommandContext => ({
+    ...s,
+    outbox: composer.get(),
+    features: {
+      logs: logs !== undefined,
+      shell: openShell !== undefined,
+      prepareEnvironment: prepareEnvironment !== undefined,
+      switchRepository: repositories !== undefined && switchRepository !== undefined,
+    },
+  });
+
+  /** The Space palette's rows: every relevant command for `target`. */
+  const paletteItems = (target: string | null, s: TuiState = state): PickItem[] =>
+    paletteActions(commandCtx(s), target).map((a) => ({
+      id: a.id,
+      label: a.label,
+      ...(a.keys ? { hint: a.keys } : {}),
+      ...(a.disabled ? { disabled: a.disabled } : {}),
+    }));
+
+  /** An open palette keeps describing its target as the fleet changes, so a
+   *  row never shows an availability that no longer holds. The highlight
+   *  follows its command. */
+  const refreshPalette = (s: TuiState): TuiState => {
+    if (s.overlay.t !== "picker") return s;
+    const p = s.overlay.picker;
+    if (p.dest.t !== "command") return s;
+    const items = paletteItems(p.dest.target, s);
+    if (JSON.stringify(items) === JSON.stringify(p.items)) return s;
+    const current = pickerCurrent(p)?.id;
+    const next = { ...p, items };
+    const index = pickerVisible(next).findIndex((it) => it.id === current);
+    return { ...s, overlay: { t: "picker", picker: { ...next, index: Math.max(0, index) } } };
+  };
+
+  const openPalette = (): void =>
+    show({
+      t: "picker",
+      picker: makePicker({
+        step: "command",
+        title: "commands",
+        items: paletteItems(state.selectedId),
+        dest: { t: "command", target: state.selectedId },
+      }),
+    });
+
+  /**
+   * Run a command for the target it was described for — re-described here,
+   * at execution, so a palette pick or a click made against an older frame
+   * neither lands on whatever is selected now nor bypasses a reason that
+   * appeared since. `draft` is a send composer's text, kept across pickers.
+   */
+  const execute = (
+    id: ActName,
+    target: string | null,
+    surface: CommandSurface = "browse",
+    draft?: string,
+  ): void => {
+    const action = describeCommand(commandCtx(), id, target, surface);
+    if (!action) return note("that command no longer applies here", "dim");
+    if (action.disabled) return note(action.disabled, "dim");
+    runAct(id, action.target, draft);
+  };
+
   const dispatch = (a: Action): void => {
     const prev = state;
-    state = reduce(
-      state,
-      a.t === "move"
-        ? { ...a, ids: searchMatches(searches.get(), fleetSessions(state)).map((s) => s.id) }
-        : a,
+    state = refreshPalette(
+      reduce(
+        state,
+        a.t === "move"
+          ? { ...a, ids: searchMatches(searches.get(), fleetSessions(state)).map((s) => s.id) }
+          : a,
+      ),
     );
     if (state === prev) return;
     if (state.selectedId !== prev.selectedId) {
@@ -1089,13 +1159,13 @@ export const mkFleetHandle = ({
       });
   };
 
-  const runAct = (action: ActName): void => {
-    const command = bindCommand(action, state.selectedId);
-    if (!command) return;
-    if (command.tag === "session" && state.archiving.includes(command.sessionId)) return;
-    const s =
-      command.tag === "session" ? (sessionOf(command.sessionId) ?? null) : selectedSession(state);
-    const name = command.name;
+  /**
+   * Carry out a command for `target`. Availability is not decided here: every
+   * caller goes through {@link execute} or a description it just made, so a
+   * command reaching this point is one the model says can run.
+   */
+  const runAct = (name: ActName, target: string | null, draft?: string): void => {
+    const s = target === null ? null : (sessionOf(target) ?? null);
     const by = client.clientId;
     switch (name) {
       case "viewlog":
@@ -1105,8 +1175,7 @@ export const mkFleetHandle = ({
       case "doctor":
         return void openDoctor();
       case "switchRepository":
-        if (!repositories || !switchRepository)
-          return void note("Repository switching is unavailable", "bad");
+        if (!repositories || !switchRepository) return;
         return void show({
           t: "picker",
           picker: repositoryPicker(
@@ -1116,12 +1185,6 @@ export const mkFleetHandle = ({
         });
       case "prepareEnvironment":
         return void prepareRepo();
-      case "model":
-        return void switchModel();
-      case "effort":
-        return void switchEffort();
-      case "provider":
-        return void pickProviderModelForSession();
       case "filter":
         return void dispatch({ t: "logFilter", value: cycleLogFilter(state.logFilter) });
       case "theme":
@@ -1134,12 +1197,6 @@ export const mkFleetHandle = ({
         // A bulk sweep — every done session's worktree goes (branches and rows
         // stay). Behind a confirm like `X`, since it deletes directories.
         const targets = fleetSessions(state).filter((s) => s.status.kind === "done" && s.worktree);
-        if (targets.length === 0)
-          return void dispatch({
-            t: "notice",
-            text: "nothing to gc — no done sessions with worktrees",
-            tone: "dim",
-          });
         return void show({
           t: "confirm",
           confirm: {
@@ -1150,34 +1207,56 @@ export const mkFleetHandle = ({
           },
         });
       }
+      case "new":
+        return void show({
+          t: "prompt",
+          prompt: newPrompt(newSettings(state, null, null, null), state.drafts.last),
+        });
+      case "find":
+        // The fleet filter — an inline single-line query on the FLEET pane, not a
+        // modal. `/` toggles it; esc clears; ⏎ accepts (keeping enter's meaning).
+        return void (searches.get() ? searches.close() : searches.open());
+      case "quit":
+        return quitTui();
+      case "palette":
+        return openPalette();
+      case "chat":
+      case "changes":
+      case "monitor":
+        if (dims.cols < NARROW_COLS && selectedSession(state)) layoutView = "session";
+        return void dispatch({ t: "sessionTab", tab: name });
+      case "layout":
+        // ⇥ toggles the fleet list — the overview split ↔ the session's detail
+        // + events (see {@link LayoutView}).
+        layoutView = layoutView === "session" ? "overview" : "session";
+        return publish();
+      case "childEnter":
+        return void dispatch({ t: "childEnter" });
+      case "childExit":
+        return void dispatch({ t: "childExit" });
+      default:
+        break;
+    }
+    if (!s) return;
+    switch (name) {
+      case "model":
+        return void switchModel(s.id, draft);
+      case "effort":
+        return void switchEffort(s.id, draft);
+      case "provider":
+        return void pickProviderModelForSession(s.id, draft);
       case "delete":
-        return void (s ? show({ t: "confirm", confirm: confirmForDelete(s) }) : undefined);
+        return void show({ t: "confirm", confirm: confirmForDelete(s) });
       case "copybranch": {
-        if (!s) return void dispatch({ t: "notice", text: "no session selected", tone: "dim" });
         const nm = s.branch ?? (s.worktree ? (s.worktree.split("/").pop() ?? s.worktree) : s.id);
         return copyToClipboard(nm, nm);
       }
-      case "copyid": {
-        if (!s) return void dispatch({ t: "notice", text: "no session selected", tone: "dim" });
+      case "copyid":
         return copyToClipboard(s.id, s.id);
-      }
-      case "clearqueue": {
-        const box = s && outboxOf(composer.get(), s.id);
-        if (!box || pending(box).length === 0) {
-          return void dispatch({ t: "notice", text: "no queued messages to clear", tone: "dim" });
-        }
+      case "clearqueue":
         return void composer.clear(s.id);
-      }
-      case "fork": {
-        if (!s) return void dispatch({ t: "notice", text: "no session selected", tone: "dim" });
-        if (s.status.kind === "awaiting_input") {
-          return void dispatch({
-            t: "notice",
-            text: "answer the pending request first",
-            tone: "dim",
-          });
-        }
-        show({
+      case "fork":
+        return void show({
           t: "confirm",
           confirm: {
             action: "forkSession",
@@ -1188,26 +1267,9 @@ export const mkFleetHandle = ({
             body: "Choose the new session's isolation. The parent keeps its current environment.",
           },
         });
-        return;
-      }
       default:
         break;
     }
-    if (!allowedActs(s).has(name)) return;
-    if (name === "new") {
-      return void show({
-        t: "prompt",
-        prompt: newPrompt(newSettings(state, null, null, null), state.drafts.last),
-      });
-    }
-    if (name === "find") {
-      // The fleet filter — an inline single-line query on the FLEET pane, not a
-      // modal. `/` toggles it; esc clears; ⏎ accepts (keeping enter's meaning).
-      return void (searches.get() ? searches.close() : searches.open());
-    }
-    if (name === "help") return void show(state.overlay.t === "help" ? browse : { t: "help" });
-    if (name === "quit") return quitTui();
-    if (!s) return;
     if (name === "shell") return void enterShell(s.id);
     if (name === "undo") {
       const sid = s.id;
@@ -1568,27 +1630,18 @@ export const mkFleetHandle = ({
     show(startModelSelection(state, { t: "newSession", settings, draft }, settings));
   };
 
-  /** The session a live `⌥m` / `⌥p` / `⌥t` acts on: an explicit id, or the
-   *  selected row. */
-  const switchTarget = (sessionId?: string): SessionSnapshot | null => {
-    const s = sessionId ? sessionOf(sessionId) : selectedSession(state);
-    if (!s) note("no session selected", "dim");
-    return s ?? null;
-  };
+  // The live switchers below open their pickers unconditionally: whether the
+  // session can switch at all (alternate models, an effort control, an idle
+  // turn for a provider change) is the command model's to say, and every way
+  // in goes through it first.
 
   /** Open a live model switcher (`⌥m`). From a `send` prompt, pass `draft` so
-   *  the picker drops you back into it with the message intact. */
-  const switchModel = (sessionId?: string, draft?: string): void => {
-    const s = switchTarget(sessionId);
+   *  the picker drops you back into it with the message intact. Mid-probe the
+   *  list is empty but coming; the settle push fills it in (see
+   *  rederiveOpenPicker). */
+  const switchModel = (sessionId: string, draft?: string): void => {
+    const s = sessionOf(sessionId);
     if (!s) return;
-    // Mid-probe the list is empty but coming — open the picker anyway; the
-    // settle push fills it in (see rederiveOpenPicker).
-    if (
-      modelPickItems(state, s.provider).length === 0 &&
-      !providerInfo(state, s.provider)?.modelsLoading
-    ) {
-      return note(`${s.provider} has no alternate models`, "dim");
-    }
     show(
       startModelSelection(
         state,
@@ -1603,33 +1656,18 @@ export const mkFleetHandle = ({
    *  mid-chat): pre-select its current provider, so the choice finalizes as a
    *  `session.setProvider`. Falls back to the model switcher when there's only
    *  one provider to pick from. */
-  const pickProviderModelForSession = (sessionId?: string, draft?: string): void => {
-    const s = switchTarget(sessionId);
+  const pickProviderModelForSession = (sessionId: string, draft?: string): void => {
+    const s = sessionOf(sessionId);
     if (!s) return;
-    if (
-      s.status.kind === "running" ||
-      s.status.kind === "starting" ||
-      s.status.kind === "working_background" ||
-      s.status.kind === "awaiting_input"
-    ) {
-      return note("interrupt the turn before switching provider", "dim");
-    }
     if (fleetProviders(state).length <= 1) return switchModel(s.id, draft);
     show(startModelSelection(state, { t: "session", sessionId: s.id, back: draft ?? null }, s));
   };
 
-  /** Open a live thinking-effort switcher (`⌥t`) — only when the session's
-   *  current model takes an effort level. There is no model list behind it, so
-   *  `Esc` unwinds rather than stepping back. */
-  const switchEffort = (sessionId?: string, draft?: string): void => {
-    const s = switchTarget(sessionId);
+  /** Open a live thinking-effort switcher (`⌥t`). There is no model list
+   *  behind it, so `Esc` unwinds rather than stepping back. */
+  const switchEffort = (sessionId: string, draft?: string): void => {
+    const s = sessionOf(sessionId);
     if (!s) return;
-    if (!s.model || !modelSupportsEffort(state, s.provider, s.model)) {
-      return note(
-        `${s.provider}${s.model ? `/${s.model}` : ""} has no thinking-effort control`,
-        "dim",
-      );
-    }
     show(
       startModelSelection(
         state,
@@ -2095,7 +2133,7 @@ export const mkFleetHandle = ({
           dispatch({ t: "select", id: hit.sessionId });
           return void dispatch({ t: "childEnter" });
         }
-        if (hit.kind === "mode") return void runAct("mode");
+        if (hit.kind === "mode") return void execute("mode", state.selectedId);
         return;
       }
       return; // release / middle / right / drag / horizontal wheel — ignore
@@ -2124,10 +2162,22 @@ export const mkFleetHandle = ({
             })
           : viewInEditor());
       }
-      // ⇧⇥ cycles the permission mode without leaving the prompt.
+      // The session's own commands, from inside its send composer: the same
+      // descriptions the fleet uses (so the same availability), under their
+      // composer keys, with the half-typed message carried through.
+      if (sendTo && (key.meta || (key.tab && key.shift))) {
+        const surface = "composer" as const;
+        const a = keyAction(
+          describeCommands(commandCtx(), { target: sendTo, surface }),
+          input,
+          key,
+        );
+        if (a)
+          return void (a.disabled ? note(a.disabled, "dim") : runAct(a.id, sendTo, p.buffer.text));
+      }
+      // ⇧⇥ cycles the new session's permission mode without leaving the prompt.
       if (key.tab && key.shift) {
         if (p.t === "new") return void dispatch({ t: "promptCycleMode" });
-        if (sendTo) return void modes.cycle(sendTo);
         return;
       }
       if (key.meta && input === "i" && p.t === "new") {
@@ -2162,7 +2212,6 @@ export const mkFleetHandle = ({
             ),
           );
         }
-        if (sendTo) return void switchModel(sendTo, p.buffer.text);
         return;
       }
       // ⌥t swaps the thinking-effort level without leaving the prompt.
@@ -2182,16 +2231,11 @@ export const mkFleetHandle = ({
             ),
           );
         }
-        if (sendTo) return void switchEffort(sendTo, p.buffer.text);
         return;
       }
       if (key.meta && input === "p") {
         if (p.t === "new") return void pickProviderModel(p.settings, p.buffer.text);
-        if (sendTo) return void pickProviderModelForSession(sendTo, p.buffer.text);
         return;
-      }
-      if (key.meta && input === "x" && sendTo) {
-        return void composer.clear(sendTo);
       }
       // ⌥q: queue for turn end while the target is still working; on an idle
       // target it is just a send. Bare ⏎ (applyKey's "submit") always sends
@@ -2308,23 +2352,6 @@ export const mkFleetHandle = ({
       return;
     }
 
-    if (state.overlay.t === "help") {
-      const page = Math.max(1, store.get().bodyH - 1);
-      const max = Math.max(0, helpLines(Math.max(1, dims.cols - 2)).length - page);
-      let by = 0;
-      if (key.upArrow) by = -1;
-      else if (key.downArrow) by = 1;
-      else if (key.pageUp) by = -page;
-      else if (key.pageDown) by = page;
-      if (by) {
-        planScroll = Math.max(0, Math.min(max, planScroll + by));
-        publish();
-        return;
-      }
-      if (input === "?" || input === "q" || key.escape) show(browse);
-      return;
-    }
-
     if (state.overlay.t === "doctor") {
       if (input === "q" || key.escape) show(browse);
       return;
@@ -2336,14 +2363,15 @@ export const mkFleetHandle = ({
       if (key.upArrow) return void dispatch({ t: "pickerMove", delta: -1 });
       if (key.downArrow) return void dispatch({ t: "pickerMove", delta: 1 });
       if (key.return) {
-        // The command palette runs an action through the shared dispatcher; the
-        // provider / model / undo pickers resolve by step in choosePicked.
+        // The command palette runs its pick for the session it was opened on,
+        // revalidated now; a row the model disables stays put and says why.
+        // The provider / model / undo pickers resolve by step in choosePicked.
         if (p.step === "command") {
-          if (overlayActed === p) return; // batched double-Enter guard
-          overlayActed = p;
           const cur = pickerCurrent(p);
+          if (overlayActed === p || !cur || cur.disabled) return; // batched double-Enter guard
+          overlayActed = p;
           show(browse);
-          if (cur) runAct(cur.id as ActName);
+          if (p.dest.t === "command") execute(cur.id as ActName, p.dest.target);
           return;
         }
         return void choosePicked();
@@ -2385,14 +2413,6 @@ export const mkFleetHandle = ({
         if (res.kind === "buffer") return void searches.setBuffer(res.buffer);
         return; // unbound modified keys — ignore
       }
-    }
-    if (!key.ctrl && !key.meta && ["1", "2", "3"].includes(input)) {
-      if (dims.cols < NARROW_COLS && sel) layoutView = "session";
-      dispatch({
-        t: "sessionTab",
-        tab: (["chat", "changes", "monitor"] as const)[Number(input) - 1]!,
-      });
-      return;
     }
     if (state.sessionTab !== "chat") {
       if (key.pageUp) return scrollInspection(-Math.max(1, logPage - 1));
@@ -2439,15 +2459,6 @@ export const mkFleetHandle = ({
     }
     if (key.upArrow || input === "k") return void dispatch({ t: "move", delta: -1 });
     if (key.downArrow || input === "j") return void dispatch({ t: "move", delta: 1 });
-    // ⇧⇥ cycles the permission mode; plain ⇥ toggles the fleet list — the
-    // overview split ↔ the session's detail + events (see {@link LayoutView}).
-    if (key.tab && !key.shift) {
-      if (sel) {
-        layoutView = layoutView === "session" ? "overview" : "session";
-        publish();
-      }
-      return;
-    }
     if (key.escape) {
       // A single step back: the session view → overview, then out of a drill-down.
       if (layoutView !== "overview") {
@@ -2459,19 +2470,12 @@ export const mkFleetHandle = ({
       return;
     }
     if (key.return && Date.now() - promptSubmittedAt < 100) return;
-    if (input === " " && !key.ctrl && !key.meta) {
-      return void show({
-        t: "picker",
-        picker: makePicker({
-          step: "command",
-          title: "commands",
-          items: commandsFor({ ...state, outbox: composer.get() }),
-          dest: { t: "command" },
-        }),
-      });
-    }
-    const chosen = keyCommand(commandHints({ ...state, outbox: composer.get() }), input, key);
-    if (chosen) runAct(chosen);
+    // Everything else is a command key: whatever the model binds it to for the
+    // selection, or — when that command can't run now — the reason why.
+    const chosen = keyAction(describeCommands(commandCtx()), input, key);
+    if (!chosen) return;
+    if (chosen.disabled) return note(chosen.disabled, "dim");
+    runAct(chosen.id, chosen.target);
   };
 
   const effectStart = (): (() => void) => {

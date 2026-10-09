@@ -83,7 +83,8 @@ loom run --provider claude --mode plan "Explain this codebase"
 loom shell <session-id>                    # enter a session's environment
 ```
 
-Press `n` for a new session, `Space` for the command palette, or `?` for help.
+Press `n` for a new session or `Space` for the command palette — every command
+with its key, and why it is unavailable when it is.
 See [keybindings](docs/keybindings.md), [MCP setup](docs/tools.md), and the
 [docs index](docs/README.md).
 

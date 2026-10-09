@@ -12,9 +12,13 @@ import type { ProviderInfo, SessionSnapshot } from "@loom/core/wire";
 import { loadableFailed, loadableLoaded, loadablePending } from "@loom/core/loadable";
 import type { PushFrame, EventPush, HistoryCursor, HistoryPage } from "@loom/core/wire";
 import {
-  actionsFor,
-  allowedActs,
-  commandsFor,
+  composerBar,
+  describeCommands,
+  footerHints,
+  keyAction,
+  paletteActions,
+} from "@loom/tui/commands";
+import {
   cacheHeat,
   cacheStatus,
   childrenOf,
@@ -25,7 +29,6 @@ import {
   escapePicker,
   fleetHits,
   focusedChildOf,
-  footerHints,
   groupsOf,
   initialState,
   modelPickEmptyText,
@@ -1333,7 +1336,7 @@ test("makePicker clamps its initial index into range", () => {
       step: "model",
       title: "t",
       items,
-      dest: { t: "command" },
+      dest: { t: "command", target: null },
       ...(index !== undefined ? { index } : {}),
     });
   assert.equal(p(1).index, 1);
@@ -1346,54 +1349,148 @@ test("makePicker clamps its initial index into range", () => {
 // contextual actions
 // ---------------------------------------------------------------------------
 
-test("actionsFor offers the right verbs per session state, plus the globals", () => {
-  const acts = (o: Parameters<typeof snap>[0]) => allowedActs(snap(o));
-  const G = ["find", "help", "new", "quit"]; // globals, always present
+/** A provider whose models switch and take an effort level, so availability
+ *  turns on the session rather than on a missing catalogue. */
+const ACTIONS_PROVIDER: ProviderInfo = {
+  id: "fake",
+  models: ["m1", "m2"],
+  modelChoices: [
+    { id: "m1", label: "M1", supportsEffort: true },
+    { id: "m2", label: "M2" },
+  ],
+  defaultModel: "m1",
+  defaultEffort: "",
+  defaultMode: "default",
+  tag: "fake",
+  color: "",
+  isDefault: true,
+};
+
+/** The command context with `s` (or nothing) selected. */
+const ctxFor = (s: SessionSnapshot | null, extra: Partial<TuiState> = {}): TuiState => ({
+  ...reduce(initialState(), fleet(s ? [s] : [], [ACTIONS_PROVIDER])),
+  ...extra,
+});
+/** The session commands that would run for `s`. */
+const allowedActs = (s: SessionSnapshot | null): Set<string> =>
+  new Set(
+    describeCommands(ctxFor(s))
+      .filter((a) => a.scope === "session" && !a.disabled)
+      .map((a) => a.id),
+  );
+const actionsFor = (s: SessionSnapshot | null) => describeCommands(ctxFor(s));
+
+test("the command model enables the right verbs per session state", () => {
+  const acts = (o: Parameters<typeof snap>[0]) => allowedActs(snap({ model: "m1", ...o }));
   // a settled selected session also gets mode + model + effort + provider + title + delete
-  const S = [
-    "mode",
-    "model",
-    "effort",
-    "provider",
-    "fork",
-    "title",
-    "comment",
-    "copyid",
-    "delete",
-    ...G,
-  ];
+  const S = ["mode", "model", "effort", "provider", "fork", "title", "comment", "copyid", "delete"];
 
   // awaiting_input is "request mode" — only the keys that resolve the round-trip,
-  // plus interrupt and the globals. No mode / model / rename / fork.
+  // plus interrupt. No mode / model / rename / fork.
   assert.deepEqual(
     [...acts({ status: "awaiting_input", awaitReason: "permission" })].sort(),
-    ["approve", "deny", "interrupt", ...G].sort(),
+    ["approve", "deny", "interrupt"].sort(),
   );
   assert.deepEqual(
     [...acts({ status: "awaiting_input", awaitReason: "question" })].sort(),
-    ["answer", "interrupt", ...G].sort(),
+    ["answer", "interrupt"].sort(),
   );
   assert.deepEqual(
     [...acts({ status: "awaiting_input", awaitReason: "plan_review" })].sort(),
-    ["planreview", "interrupt", ...G].sort(),
+    ["planreview", "interrupt"].sort(),
   );
   // AskUserQuestion is a real permission gate — unlike Loom's own ask_user,
   // denying it is meaningful, so both answer and deny are offered.
   assert.deepEqual(
     [...acts({ status: "awaiting_input", awaitReason: "user_question" })].sort(),
-    ["answer", "deny", "interrupt", ...G].sort(),
+    ["answer", "deny", "interrupt"].sort(),
   );
   // compact rides along on any live session (running / idle / working_background),
-  // whatever the context meter reads — see the footer-vs-palette split below.
+  // whatever the context meter reads. A provider switch waits for the turn.
   assert.deepEqual(
     [...acts({ status: "running" })].sort(),
-    ["interrupt", "send", "compact", ...S].sort(),
+    ["interrupt", "send", "compact", ...S.filter((a) => a !== "provider")].sort(),
   );
   assert.deepEqual([...acts({ status: "idle" })].sort(), ["send", "done", "compact", ...S].sort());
   // a stopped session: `send` (the daemon revives it) — no separate "resume"
   assert.deepEqual([...acts({ status: "interrupted" })].sort(), ["send", "done", ...S].sort());
   assert.deepEqual([...acts({ status: "error" })].sort(), ["send", "done", ...S].sort());
-  assert.deepEqual([...allowedActs(null)].sort(), ["find", "help", "new", "quit"].sort());
+  // nothing selected: no session verb runs, the application's still do
+  assert.deepEqual([...allowedActs(null)], []);
+  const none = actionsFor(null);
+  for (const id of ["new", "find", "quit", "palette"])
+    assert.ok(
+      none.some((a) => a.id === id && !a.disabled),
+      id,
+    );
+  assert.ok(!none.some((a) => (a.id as string) === "help"), "the ? help view is gone");
+});
+
+test("disabled commands stay described, each with the reason it cannot run", () => {
+  const reason = (s: SessionSnapshot | null, id: string, extra: Partial<TuiState> = {}) =>
+    describeCommands(ctxFor(s, extra)).find((a) => a.id === id)?.disabled;
+  assert.equal(reason(null, "send"), "Select a session first.");
+  const waiting = snap({ status: "awaiting_input", awaitReason: "permission", model: "m1" });
+  assert.equal(reason(waiting, "model"), "Approve or deny the pending request first.");
+  assert.equal(reason(waiting, "send"), "Approve or deny the pending request first.");
+  const question = snap({ status: "awaiting_input", awaitReason: "question" });
+  assert.equal(reason(question, "rebase"), "Answer the pending question first.");
+  assert.equal(reason(snap({ status: "idle" }), "approve"), "No permission request pending.");
+  assert.equal(reason(snap({ status: "idle" }), "interrupt"), "Nothing is running.");
+  assert.equal(
+    reason(snap({ status: "running" }), "provider"),
+    "Interrupt the turn before switching provider.",
+  );
+  assert.equal(
+    reason(snap({ status: "idle", model: "m2" }), "effort"),
+    "fake/m2 has no thinking-effort control",
+  );
+  assert.equal(
+    reason(snap({ status: "idle", provider: "other" }), "model"),
+    "other has no alternate models",
+  );
+  assert.equal(
+    reason(
+      snap({ status: "idle", resumable: false, resumeBlockedReason: "native history lost" }),
+      "send",
+    ),
+    "native history lost",
+  );
+  assert.equal(
+    reason(snap({ status: "idle", inPlace: true }), "fork"),
+    "An in-place session cannot be forked.",
+  );
+  assert.equal(reason(snap({ status: "idle", turns: 0 }), "undo"), "Nothing to undo yet.");
+  assert.equal(reason(snap({ status: "idle" }), "clearqueue"), "No queued messages.");
+  const s = snap({ id: "a", status: "idle" });
+  assert.equal(reason(s, "send", { archiving: ["a"] }), "Archiving…");
+  // A target that left the fleet is refused, never redirected.
+  const gone = describeCommands(ctxFor(snap({ id: "b" })), { target: "a" });
+  assert.equal(
+    gone.find((a) => a.id === "send")?.disabled,
+    "That session is no longer in the fleet.",
+  );
+  assert.ok(gone.every((a) => a.scope === "app" || a.target === "a"));
+  // A command a client lacks says so instead of failing on use.
+  const lacking = describeCommands({ ...ctxFor(null), features: { prepareEnvironment: false } });
+  assert.equal(
+    lacking.find((a) => a.id === "prepareEnvironment")?.disabled,
+    "Environment preparation is unavailable in this client",
+  );
+});
+
+test("the request verbs on ⏎ are relevant only while that request is pending", () => {
+  const ids = (s: SessionSnapshot) => actionsFor(s).map((a) => a.id);
+  assert.ok(!ids(snap({ status: "idle" })).includes("answer"));
+  assert.ok(!ids(snap({ status: "idle" })).includes("planreview"));
+  assert.ok(ids(snap({ status: "idle" })).includes("approve"), "approve is shown, disabled");
+  const permission = actionsFor(snap({ status: "awaiting_input", awaitReason: "permission" }));
+  // ⏎ on a permission says why rather than approving: approval stays explicit.
+  assert.equal(keyAction(permission, "", { return: true })?.id, "send");
+  assert.equal(
+    keyAction(permission, "", { return: true })?.disabled,
+    "Approve or deny the pending request first.",
+  );
 });
 
 test("an in-place session offers undo but not hard fork", () => {
@@ -1410,9 +1507,11 @@ test("an in-place session offers undo but not hard fork", () => {
   assert.ok(isolated.has("undo"));
 });
 
-test("actionsFor keeps the salient action first", () => {
-  const first = actionsFor(snap({ status: "awaiting_input", awaitReason: "permission" }))[0];
-  assert.equal(first?.act, "approve");
+test("the command model keeps the salient action first", () => {
+  const first = actionsFor(snap({ status: "awaiting_input", awaitReason: "permission" })).find(
+    (a) => !a.disabled,
+  );
+  assert.equal(first?.id, "approve");
 });
 
 test("unresolved cancellation offers retry interrupt without starting new work", () => {
@@ -1420,9 +1519,9 @@ test("unresolved cancellation offers retry interrupt without starting new work",
     { ...snap({ status: "awaiting_input", awaitReason: "permission" }), stopping: true },
     { ...snap({ status: "error" }), stopFailed: true },
   ]) {
-    const hints = actionsFor(session);
-    assert.equal(hints[0]?.label, session.stopping ? "stopping…" : "retry interrupt");
-    const acts = hints.map((h) => h.act);
+    const enabled = actionsFor(session).filter((a) => a.scope === "session" && !a.disabled);
+    assert.equal(enabled[0]?.label, session.stopping ? "stopping…" : "retry interrupt");
+    const acts = enabled.map((a) => a.id);
     assert.ok(acts.includes("interrupt"));
     assert.ok(!acts.includes("send"));
     assert.ok(!acts.includes("approve"));
@@ -1447,7 +1546,12 @@ test("footerHints gives every overlay its own fixed key set", () => {
   assert.deepEqual(
     keysFor({
       t: "picker",
-      picker: makePicker({ step: "command", title: "t", items: [], dest: { t: "command" } }),
+      picker: makePicker({
+        step: "command",
+        title: "t",
+        items: [],
+        dest: { t: "command", target: null },
+      }),
     }),
     ["move", "pick", "cancel"],
   );
@@ -1471,87 +1575,132 @@ test("footerHints gives every overlay its own fixed key set", () => {
     "discuss",
     "view",
   ]);
-  assert.deepEqual(keysFor({ t: "help" }), ["close help"]);
-  // browse delegates to the selected session's contextual actions
+  // browse projects the selected session's enabled bar commands
   assert.ok(keysFor({ t: "browse" }).includes("send"));
-  // …trimmed to the footer subset, then the palette pointer
+  // …then the palette pointer
   assert.equal(keysFor({ t: "browse" }).at(-1), "more");
   assert.ok(!keysFor({ t: "browse" }).includes("rename"), "second-tier verbs stay off the footer");
+  assert.ok(!keysFor({ t: "browse" }).includes("help"), "no help view to point at");
+  // every browse chip is a command the keymap would run for the same target
+  for (const item of footerHints({ ...base, overlay: { t: "browse" } }))
+    assert.equal(
+      describeCommands(base).find((a) => a.id === item.command?.id)?.disabled,
+      undefined,
+    );
 });
 
-test("commandsFor lists every action valid now — session verbs plus the app commands", () => {
-  const base: TuiState = {
-    ...initialState(),
-    fleet: loadableLoaded({
-      daemon,
-      providers: [],
-      sessions: [snap({ id: "s1", status: "idle", provider: "openai", turns: 3 })],
-    }),
-    selectedId: "s1",
-  };
-  const ids = commandsFor(base).map((c) => c.id);
-  assert(commandsFor(initialState()).some((c) => c.id === "prepareEnvironment"));
-  // contextual session verbs (idle aisdk session, >1 turn)
+test("the palette lists every relevant command, the unavailable ones with their reason", () => {
+  const base: TuiState = ctxFor(snap({ id: "s1", status: "idle", turns: 3, model: "m1" }));
+  const rows = paletteActions(base, "s1");
+  const ids = rows.map((c) => c.id);
+  assert(paletteActions(initialState(), null).some((c) => c.id === "prepareEnvironment"));
+  // contextual session verbs (idle session, >1 turn)
   for (const v of ["send", "done", "mode", "model", "undo", "fork", "title", "delete"]) {
-    assert.ok(ids.includes(v as any), `missing ${v}`);
+    assert.ok(ids.includes(v as never), `missing ${v}`);
   }
   // app / view commands that never earn a footer slot
-  for (const v of ["viewlog", "filter", "theme", "restart", "quitall", "new", "find", "help"]) {
-    assert.ok(ids.includes(v as any), `missing ${v}`);
+  for (const v of ["viewlog", "filter", "theme", "restart", "quitall", "new", "find", "chat"]) {
+    assert.ok(ids.includes(v as never), `missing ${v}`);
   }
-  // no duplicates, and each carries its key as the hint
+  assert.ok(!ids.includes("palette" as never), "the palette does not list itself");
+  // no duplicates, and each carries its key
   assert.equal(new Set(ids).size, ids.length);
-  assert.equal(commandsFor(base).find((c) => c.id === "delete")?.hint, "X");
-  assert.equal(commandsFor(base).find((c) => c.id === "fork")?.hint, "F");
+  assert.equal(rows.find((c) => c.id === "delete")?.keys, "X");
+  assert.equal(rows.find((c) => c.id === "fork")?.keys, "F");
+  // runnable rows come first, so a filter lands on something that runs
+  const firstDisabled = rows.findIndex((c) => c.disabled);
+  assert.ok(firstDisabled > 0);
+  assert.ok(rows.slice(firstDisabled).every((c) => c.disabled));
 
-  // gc only shows when a done session actually has a worktree to collect
-  assert.ok(!commandsFor(base).some((c) => c.id === "gc"));
+  // gc is listed, disabled until a done session actually has a worktree to collect
+  assert.equal(
+    rows.find((c) => c.id === "gc")?.disabled,
+    "No archived session has a worktree left.",
+  );
   const withDoneTree = reduce(
     base,
-    fleet([
-      ...fleetSessions(base),
-      snap({ id: "s2", status: "done", provider: "openai", worktree: "/tmp/gc-tree" }),
-    ]),
+    fleet(
+      [
+        ...fleetSessions(base),
+        snap({ id: "s2", status: "done", provider: "openai", worktree: "/tmp/gc-tree" }),
+      ],
+      [ACTIONS_PROVIDER],
+    ),
   );
-  assert.ok(commandsFor(withDoneTree).some((c) => c.id === "gc"));
+  assert.equal(paletteActions(withDoneTree, "s1").find((c) => c.id === "gc")?.disabled, undefined);
 
-  // clearqueue only shows when the selected session actually has a queue
-  assert.ok(!commandsFor(base).some((c) => c.id === "clearqueue"));
+  // clearqueue is enabled only when the session actually has a queue
+  assert.equal(rows.find((c) => c.id === "clearqueue")?.disabled, "No queued messages.");
   const withQueue = { ...base, outbox: { s1: enqueue(outboxOf({}, "s1"), "note") } };
-  assert.ok(commandsFor(withQueue).some((c) => c.id === "clearqueue"));
+  assert.equal(
+    paletteActions(withQueue, "s1").find((c) => c.id === "clearqueue")?.disabled,
+    undefined,
+  );
 
   // rebase needs a worktree, but is offered regardless of the (lag-prone)
   // behindBase count — the RPC is a harmless no-op when there's nothing to do
-  assert.ok(!commandsFor(base).some((c) => c.id === "rebase"));
+  assert.equal(rows.find((c) => c.id === "rebase")?.disabled, "This session has no worktree.");
   const mkWt = (behindBase: number): TuiState =>
     reduce(
       base,
-      fleet([
-        snap({
-          id: "s1",
-          status: "idle",
-          provider: "openai",
-          turns: 3,
-          worktree: "/tmp/wt",
-          git: {
-            branch: "loom/s1",
-            commits: 1,
-            aheadOfBase: 0,
-            behindBase,
-            dirty: false,
-            lastCommitSubject: null,
-          },
-        }),
-      ]),
+      fleet(
+        [
+          snap({
+            id: "s1",
+            status: "idle",
+            provider: "openai",
+            turns: 3,
+            worktree: "/tmp/wt",
+            git: {
+              branch: "loom/s1",
+              commits: 1,
+              aheadOfBase: 0,
+              behindBase,
+              dirty: false,
+              lastCommitSubject: null,
+            },
+          }),
+        ],
+        [ACTIONS_PROVIDER],
+      ),
     );
-  const behind = mkWt(2);
-  assert.ok(commandsFor(behind).some((c) => c.id === "rebase"));
-  assert.equal(commandsFor(behind).find((c) => c.id === "rebase")?.hint, "r");
-  assert.equal(commandsFor(behind).find((c) => c.id === "rebase")?.label, "rebase onto base (-2)");
+  const behind = paletteActions(mkWt(2), "s1").find((c) => c.id === "rebase");
+  assert.equal(behind?.disabled, undefined);
+  assert.equal(behind?.keys, "r");
+  assert.equal(behind?.label, "rebase onto base (-2)");
   // up to date (or a stale 0) — still offered, plain label
-  const current = mkWt(0);
-  assert.ok(commandsFor(current).some((c) => c.id === "rebase"));
-  assert.equal(commandsFor(current).find((c) => c.id === "rebase")?.label, "rebase onto base");
+  const current = paletteActions(mkWt(0), "s1").find((c) => c.id === "rebase");
+  assert.equal(current?.disabled, undefined);
+  assert.equal(current?.label, "rebase onto base");
+});
+
+test("the send composer offers the session's commands with the fleet's availability", () => {
+  for (const s of [
+    snap({ id: "a", status: "idle", model: "m1" }),
+    snap({ id: "a", status: "running", model: "m2" }),
+    snap({ id: "a", status: "awaiting_input", awaitReason: "permission", model: "m1" }),
+    snap({ id: "a", status: "idle", provider: "other" }),
+  ]) {
+    for (const outbox of [{}, { a: enqueue(outboxOf({}, "a"), "later") }]) {
+      const ctx = { ...ctxFor(s), outbox };
+      const fleetSide = describeCommands(ctx, { target: "a" });
+      const composer = describeCommands(ctx, { target: "a", surface: "composer" });
+      assert.deepEqual(
+        composer.map((a) => a.id).sort(),
+        ["clearqueue", "effort", "interrupt", "mode", "model", "provider"].sort(),
+      );
+      for (const a of composer) {
+        const same = fleetSide.find((b) => b.id === a.id);
+        assert.equal(a.disabled, same?.disabled, `${a.id} for ${s.status.kind}`);
+        assert.equal(a.label, same?.label);
+      }
+      // the composer bar is exactly its enabled commands
+      assert.deepEqual(
+        composerBar(ctx, "a").map((item) => item.command?.id),
+        composer.filter((a) => !a.disabled).map((a) => a.id),
+      );
+    }
+  }
 });
 
 test("cacheStatus: unknown without a known TTL or a turn", () => {
@@ -1708,24 +1857,24 @@ test("cacheHeat bands the remaining fraction; fresh while live, null when not wa
 
 test("compact is offered on any live session; the footer slot waits for half", () => {
   const compactHint = (s: Parameters<typeof allowedActs>[0]) =>
-    actionsFor(s).find((h) => h.act === "compact");
+    actionsFor(s).find((h) => h.id === "compact");
 
   // Below half: still reachable by `c` / the palette, just not in the footer.
   const low = compactHint(snap({ status: "idle", contextUsed: 40, contextLimit: 100 }));
   assert.ok(low);
-  assert.ok(!low.footer);
+  assert.ok(!low.bar);
   // An unknown context limit is no reason to withhold it either.
   const unknown = compactHint(snap({ status: "idle", contextUsed: 0, contextLimit: 0 }));
   assert.ok(unknown);
-  assert.ok(!unknown.footer);
+  assert.ok(!unknown.bar);
 
   // Past half it earns the footer.
   assert.equal(
-    compactHint(snap({ status: "idle", contextUsed: 60, contextLimit: 100 }))?.footer,
+    compactHint(snap({ status: "idle", contextUsed: 60, contextLimit: 100 }))?.bar,
     true,
   );
   assert.equal(
-    compactHint(snap({ status: "running", contextUsed: 90, contextLimit: 100 }))?.footer,
+    compactHint(snap({ status: "running", contextUsed: 90, contextLimit: 100 }))?.bar,
     true,
   );
 

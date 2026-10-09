@@ -11,7 +11,7 @@ const draw = (width: number, label: string, hint?: string): string =>
       picker: makePicker({
         step: "command",
         title: "commands",
-        dest: { t: "command" },
+        dest: { t: "command", target: null },
         items: [{ id: "example", label, ...(hint ? { hint } : {}) }],
       }),
       width,

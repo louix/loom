@@ -26,7 +26,7 @@ export { PaletteContext } from "./ui.tsx";
 import { markdownText, plainText } from "./markdown.ts";
 import type { TextRow } from "./text-layout.ts";
 import { rowLayout, type LayoutRow } from "./layout.ts";
-import { helpLines } from "./help.ts";
+import { footerHints } from "./commands.ts";
 import { absurd } from "@loom/core/absurd";
 import { cacheHitRate } from "@loom/core/cache";
 import type { DoctorReport, SessionSnapshot } from "@loom/core/wire";
@@ -42,7 +42,6 @@ import {
   fleetSessions,
   cacheHeat,
   cacheStatus,
-  footerHints,
   providerInfo,
   providerAccountOf,
   providerColorOf,
@@ -56,6 +55,7 @@ import { parseAskUserQuestions, type AskUserQuestionItem } from "./interactions.
 import { pendingMode } from "./mode-control.ts";
 import {
   openPrompt,
+  pickerCurrent,
   pickerVisible,
   promptKind,
   type Confirm as ConfirmState,
@@ -1617,6 +1617,12 @@ export const PlanReview = ({
 // picker overlay — provider / model choice, session find
 // ---------------------------------------------------------------------------
 
+/** A palette row reads faint while it cannot be chosen. */
+const rowTone = (it: { disabled?: string }, on: boolean): ThemeColor => {
+  if (it.disabled) return "faint";
+  return on ? "text" : "dim";
+};
+
 export const Picker = ({
   picker,
   width,
@@ -1630,6 +1636,7 @@ export const Picker = ({
   const padding = width < 60 ? 1 : 2;
   const room = Math.max(1, width - 2 - padding * 2);
   const vis = pickerVisible(picker);
+  const current = pickerCurrent(picker);
   const rows = Math.max(1, height - (compact ? 9 : 11));
   const start = Math.max(
     0,
@@ -1685,13 +1692,14 @@ export const Picker = ({
                     <Text tone={on ? "accent" : "faint"}>{on ? "▍ " : "  "}</Text>
                   </Box>
                   <Box flexGrow={1} flexShrink={1} minWidth={0}>
-                    <Line tone={on ? "text" : "dim"} bold={on}>
+                    <Line tone={rowTone(it, on)} bold={on}>
                       {it.label}
                     </Line>
                   </Box>
-                  {it.hint ? (
-                    <Box marginLeft={2} flexShrink={1} minWidth={0}>
-                      <Line tone="faint">{it.hint}</Line>
+                  {it.hint || it.disabled ? (
+                    // A disabled row says why in place; its reason yields room first.
+                    <Box marginLeft={2} flexShrink={it.disabled ? 3 : 1} minWidth={0}>
+                      <Line tone="faint">{[it.hint, it.disabled].filter(Boolean).join(" · ")}</Line>
                     </Box>
                   ) : null}
                 </Box>
@@ -1704,32 +1712,16 @@ export const Picker = ({
         <Box height={1} flexShrink={0} />
       )}
       <Box height={1} />
-      <Line tone="faint">
-        {picker.items.length === 0
-          ? "enter continue · esc cancel"
-          : "enter pick · esc cancel · ↑↓ move"}
-      </Line>
+      {current?.disabled ? (
+        <Line tone="warn">{current.disabled}</Line>
+      ) : (
+        <Line tone="faint">
+          {picker.items.length === 0
+            ? "enter continue · esc cancel"
+            : "enter pick · esc cancel · ↑↓ move"}
+        </Line>
+      )}
     </Panel>
-  );
-};
-
-export const Help = ({
-  width,
-  height,
-  scroll,
-}: {
-  width: number;
-  height: number;
-  scroll: number;
-}): ReactNode => {
-  const capacity = Math.max(0, height - 1);
-  const lines = helpLines(width);
-  const start = Math.min(scroll, Math.max(0, lines.length - capacity));
-  return (
-    <Box width={width} height={height} flexDirection="column">
-      <Lines lines={lines.slice(start, start + capacity)} tone="dim" />
-      <Line tone="accent">↑↓ PgUp/PgDn scroll · Esc close</Line>
-    </Box>
   );
 };
 

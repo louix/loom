@@ -1,94 +1,806 @@
+/**
+ * The TUI's command model. One description per command decides whether it is
+ * shown, whether it can run and why not, its key, its label and whether the
+ * key bar carries it. Keyboard dispatch, the Space palette, the bottom key bar
+ * and clicks on that bar all read {@link describeCommands}; none of them keeps
+ * a list of its own.
+ *
+ * A description is bound to the session it was made for (`target`). Whatever
+ * activates it later — a palette pick, a click — hands that target back, and
+ * the handle describes the command again for it before running. A selection
+ * that moved in between is never acted on in the original target's place, and
+ * a target that changed state gets the new disabled reason instead of the run.
+ *
+ * Adding a command is one entry in {@link COMMANDS} plus its availability in
+ * {@link sessionAvailability} or {@link otherAvailability}; nothing else needs to learn about it.
+ */
+import { absurd } from "@loom/core/absurd";
+import type { SessionSnapshot } from "@loom/core/wire";
 import type { KeyLike } from "./editor.ts";
+import type { Outboxes } from "./composer.ts";
+import { liveQNav, questionsOf } from "./interactions.ts";
+import { nextThemeMode } from "./theme.ts";
+import {
+  childrenOf,
+  fleetProviders,
+  fleetSessions,
+  modelPickItems,
+  modelSupportsEffort,
+  providerInfo,
+  queueFor,
+  selectedSession,
+  type TuiState,
+} from "./model.ts";
 
-// Key, label, and optional aliases. Menus and keyboard dispatch read this same table.
-const globalCommands = {
-  new: ["n", "new"],
-  find: ["/", "find"],
-  filter: ["v", "verbosity"],
-  help: ["?", "help"],
-  quit: ["q", "quit"],
-  doctor: ["", "doctor — tools, connectors, daemon"],
-  prepareEnvironment: ["", "Prepare repo environment — warm dependency cache for future sessions"],
-  switchRepository: ["", "Switch repository"],
-  viewlog: ["o", "view the active tab / pending request in $EDITOR"],
-  logs: ["", "view the daemon + TUI logs in $EDITOR"],
-  theme: ["t", "cycle theme"],
-  restart: ["R", "restart the daemon"],
-  quitall: ["Q", "quit the UI and stop the daemon"],
-  gc: ["", "gc — remove worktrees of done sessions"],
-} as const;
-const sessionCommands = {
-  approve: ["a", "approve"],
-  deny: ["d", "deny"],
-  answer: ["⏎", "answer", ["a"]],
-  planreview: ["⏎", "review plan", ["a"]],
-  send: ["⏎", "send"],
-  interrupt: ["i", "interrupt"],
-  done: ["x", "archive", [], "archive the session — branch + chat kept"],
-  compact: ["c", "compact"],
-  keepwarm: ["", "keep cache warm"],
-  mode: ["⇧⇥", "mode"],
-  model: ["⌥m", "model"],
-  effort: ["⌥t", "effort"],
-  provider: ["⌥p", "provider"],
-  undo: ["u", "undo"],
-  fork: ["F", "fork"],
-  rebase: ["r", "rebase onto base"],
-  title: ["e", "rename"],
-  comment: ["", "add comment"],
-  delete: ["X", "delete"],
-  shell: ["s", "open shell"],
-  copybranch: ["y", "copy branch"],
-  copyid: ["Y", "copy session id"],
-  clearqueue: ["⌥x", "clear the queued messages"],
-} as const;
+/** `session` commands act on their target; `view` ones on what is on screen;
+ *  `app` ones on the UI or the daemon. */
+export type CommandScope = "session" | "view" | "app";
 
-export type Command =
-  | { tag: "global"; name: keyof typeof globalCommands }
-  | { tag: "session"; name: keyof typeof sessionCommands; sessionId: string };
-export type ActName = Command["name"];
-const definitions = { ...globalCommands, ...sessionCommands };
-const isGlobal = (name: ActName): name is keyof typeof globalCommands => name in globalCommands;
-export const bindCommand = (name: ActName, sessionId: string | null): Command | null => {
-  if (isGlobal(name)) return { tag: "global", name };
-  return sessionId === null ? null : { tag: "session", name, sessionId };
+interface CommandSpec {
+  readonly scope: CommandScope;
+  /** The shortcut as shown and as dispatched; "" for palette-only commands. */
+  readonly keys: string;
+  /** Further keys that dispatch it (shown nowhere). */
+  readonly aliases?: readonly string[];
+  /** Its key while a send composer is open on the target. Absent: the command
+   *  is not reachable from the composer, whose plain keys type text. */
+  readonly composer?: string;
+  readonly label: string;
+  readonly description: string;
+}
+
+/**
+ * Every command, in palette and key-bar order: request decisions first (the
+ * most salient thing a session can need), then the session's other verbs,
+ * then the view, then the application.
+ */
+const COMMANDS = {
+  approve: {
+    scope: "session",
+    keys: "a",
+    label: "approve",
+    description: "Allow the pending permission request.",
+  },
+  answer: {
+    scope: "session",
+    keys: "⏎",
+    aliases: ["a"],
+    label: "answer",
+    description: "Answer the pending question.",
+  },
+  planreview: {
+    scope: "session",
+    keys: "⏎",
+    aliases: ["a"],
+    label: "review plan",
+    description: "Open the pending plan review.",
+  },
+  deny: {
+    scope: "session",
+    keys: "d",
+    label: "deny",
+    description: "Deny the pending request, with an optional reason.",
+  },
+  interrupt: {
+    scope: "session",
+    keys: "i",
+    composer: "⌥i",
+    label: "interrupt",
+    description: "Stop the current turn, including outstanding background work.",
+  },
+  send: {
+    scope: "session",
+    keys: "⏎",
+    label: "send",
+    description: "Message the session. A stopped session is revived first.",
+  },
+  compact: {
+    scope: "session",
+    keys: "c",
+    label: "compact",
+    description: "Summarise the context window, optionally steered by a note.",
+  },
+  keepwarm: {
+    scope: "session",
+    keys: "",
+    label: "keep cache warm",
+    description: "Re-prime the prompt cache before its lifetime lapses.",
+  },
+  done: {
+    scope: "session",
+    keys: "x",
+    label: "archive",
+    description: "Archive the session — its branch and chat are kept.",
+  },
+  shell: {
+    scope: "session",
+    keys: "s",
+    label: "open shell",
+    description: "Open a shell in the session's workspace; exit to return.",
+  },
+  mode: {
+    scope: "session",
+    keys: "⇧⇥",
+    composer: "⇧⇥",
+    label: "mode",
+    description: "Cycle the permission mode.",
+  },
+  model: {
+    scope: "session",
+    keys: "⌥m",
+    composer: "⌥m",
+    label: "model",
+    description: "Switch the model; it applies from the next turn.",
+  },
+  effort: {
+    scope: "session",
+    keys: "⌥t",
+    composer: "⌥t",
+    label: "effort",
+    description: "Switch the thinking-effort level.",
+  },
+  provider: {
+    scope: "session",
+    keys: "⌥p",
+    composer: "⌥p",
+    label: "provider",
+    description: "Switch the provider and model.",
+  },
+  undo: {
+    scope: "session",
+    keys: "u",
+    label: "undo",
+    description: "Rewind to an earlier turn and edit its message.",
+  },
+  fork: {
+    scope: "session",
+    keys: "F",
+    label: "fork",
+    description: "Start a new session from this one's history.",
+  },
+  rebase: {
+    scope: "session",
+    keys: "r",
+    label: "rebase onto base",
+    description: "Replay the session's branch onto its base branch.",
+  },
+  title: { scope: "session", keys: "e", label: "rename", description: "Rename the session." },
+  comment: {
+    scope: "session",
+    keys: "",
+    label: "add comment",
+    description: "A note on the session, outside its transcript.",
+  },
+  copybranch: {
+    scope: "session",
+    keys: "y",
+    label: "copy branch",
+    description: "Copy the session's branch name to the clipboard.",
+  },
+  copyid: {
+    scope: "session",
+    keys: "Y",
+    label: "copy session id",
+    description: "Copy the session's id to the clipboard.",
+  },
+  clearqueue: {
+    scope: "session",
+    keys: "⌥x",
+    composer: "⌥x",
+    label: "clear the queued messages",
+    description: "Drop the messages waiting to be sent to the session.",
+  },
+  delete: {
+    scope: "session",
+    keys: "X",
+    label: "delete",
+    description: "Delete the session with its worktree and transcript.",
+  },
+  childExit: {
+    scope: "view",
+    keys: "←",
+    label: "fleet",
+    description: "Step back out of the session's sub-agents and tasks.",
+  },
+  childEnter: {
+    scope: "view",
+    keys: "→",
+    label: "inspect",
+    description: "Drill into the session's sub-agents and background tasks.",
+  },
+  viewlog: {
+    scope: "view",
+    keys: "o",
+    label: "view the active tab / pending request in $EDITOR",
+    description: "Open the active tab or the pending request in $EDITOR, read-only.",
+  },
+  chat: { scope: "view", keys: "1", label: "chat tab", description: "Show the session's chat." },
+  changes: {
+    scope: "view",
+    keys: "2",
+    label: "changes tab",
+    description: "Show the working tree and the changes since the branch point.",
+  },
+  monitor: {
+    scope: "view",
+    keys: "3",
+    label: "monitor tab",
+    description: "Show session activity and resource counters.",
+  },
+  layout: {
+    scope: "view",
+    keys: "⇥",
+    label: "toggle fleet list",
+    description: "Switch between the overview and the full-width session.",
+  },
+  filter: {
+    scope: "view",
+    keys: "v",
+    label: "verbosity",
+    description: "Cycle the chat between full, chat only and chat with tool calls.",
+  },
+  new: { scope: "app", keys: "n", label: "new", description: "Start a new session." },
+  find: {
+    scope: "app",
+    keys: "/",
+    label: "find",
+    description: "Filter the fleet by title and transcript text.",
+  },
+  quit: {
+    scope: "app",
+    keys: "q",
+    label: "quit",
+    description: "Quit the UI; the daemon and its sessions keep running.",
+  },
+  palette: {
+    scope: "app",
+    keys: "␣",
+    label: "more",
+    description: "Every command, with why it is unavailable when it is.",
+  },
+  theme: { scope: "app", keys: "t", label: "cycle theme", description: "Cycle the colour theme." },
+  doctor: {
+    scope: "app",
+    keys: "",
+    label: "doctor — tools, connectors, daemon",
+    description: "Show the tools, connectors and daemon vitals a new session gets.",
+  },
+  prepareEnvironment: {
+    scope: "app",
+    keys: "",
+    label: "Prepare repo environment — warm dependency cache for future sessions",
+    description: "Run `loom vm prepare` with live output.",
+  },
+  switchRepository: {
+    scope: "app",
+    keys: "",
+    label: "Switch repository",
+    description: "Open a recently used repository; sessions here keep running.",
+  },
+  logs: {
+    scope: "app",
+    keys: "",
+    label: "view the daemon + TUI logs in $EDITOR",
+    description: "Open the tail of both process logs, read-only.",
+  },
+  gc: {
+    scope: "app",
+    keys: "",
+    label: "gc — remove worktrees of done sessions",
+    description: "Remove the worktrees of archived sessions; rows and branches stay.",
+  },
+  restart: {
+    scope: "app",
+    keys: "R",
+    label: "restart the daemon",
+    description: "Restart the daemon.",
+  },
+  quitall: {
+    scope: "app",
+    keys: "Q",
+    label: "quit the UI and stop the daemon",
+    description: "Quit and stop the daemon, interrupting live sessions.",
+  },
+} as const satisfies Record<string, CommandSpec>;
+
+export type ActName = keyof typeof COMMANDS;
+const ORDER = Object.keys(COMMANDS) as ActName[];
+
+/** Client capabilities some commands need; omitted ones count as available. */
+export interface CommandFeatures {
+  readonly logs: boolean;
+  readonly shell: boolean;
+  readonly prepareEnvironment: boolean;
+  readonly switchRepository: boolean;
+}
+
+/** Everything availability reads: the UI state, the composer's outboxes and
+ *  what this client can do. */
+export type CommandContext = TuiState & {
+  readonly outbox?: Outboxes;
+  readonly features?: Partial<CommandFeatures>;
 };
 
-export interface KeyHint {
-  keys: string;
-  label: string;
-  act: ActName;
-  footer?: boolean;
+/** One command as it stands for one target, right now. */
+export interface CommandAction {
+  readonly id: ActName;
+  readonly scope: CommandScope;
+  /** The key for the surface it was described for ("" = palette only). */
+  readonly keys: string;
+  readonly label: string;
+  readonly description: string;
+  /** The session the action acts on — the one it was described for. */
+  readonly target: string | null;
+  /** Why it cannot run; absent when it can. */
+  readonly disabled?: string;
+  /** Whether the bottom key bar carries it (while enabled). */
+  readonly bar: boolean;
 }
-export const commandHint = (
-  act: ActName,
-  options: Partial<Omit<KeyHint, "act">> = {},
-): KeyHint => ({
-  act,
-  keys: definitions[act][0],
-  label: definitions[act][1],
-  ...options,
-});
 
+/** Where the actions are offered: the fleet, or an open send composer. */
+export type CommandSurface = "browse" | "composer";
+
+/** Per-command availability: `null` hides the command. */
+type Availability = {
+  disabled?: string | undefined;
+  bar?: boolean;
+  label?: string;
+} | null;
+
+const first = (...reasons: (string | false | null | undefined)[]): string | undefined =>
+  reasons.find((r): r is string => typeof r === "string" && r !== "");
+
+const BUSY = new Set(["running", "starting", "working_background"]);
+
+/** Why the target cannot take any session command, or null when it can. */
+const targetGone = (
+  ctx: CommandContext,
+  target: string | null,
+  s: SessionSnapshot | null,
+): string | null => {
+  if (target === null) return "Select a session first.";
+  if (!s) return "That session is no longer in the fleet.";
+  if (ctx.archiving.includes(s.id)) return "Archiving…";
+  return null;
+};
+
+/** The pending decision that blocks ordinary session work, phrased as what to do. */
+const requestFirst = (s: SessionSnapshot): string | undefined => {
+  if (s.status.kind !== "awaiting_input") return undefined;
+  switch (s.status.on) {
+    case "question":
+    case "user_question":
+      return "Answer the pending question first.";
+    case "plan_review":
+      return "Review the pending plan first.";
+    default:
+      return "Approve or deny the pending request first.";
+  }
+};
+
+const noModels = (ctx: CommandContext, s: SessionSnapshot): string | undefined =>
+  modelPickItems(ctx, s.provider).length === 0 && !providerInfo(ctx, s.provider)?.modelsLoading
+    ? `${s.provider} has no alternate models`
+    : undefined;
+
+/** Availability of a session command for a present, non-archiving target. */
+const sessionAvailability = (
+  ctx: CommandContext,
+  id: ActName,
+  s: SessionSnapshot,
+): Availability => {
+  const kind = s.status.kind;
+  const on = s.status.kind === "awaiting_input" ? s.status.on : null;
+  const permission =
+    on !== null && on !== "question" && on !== "user_question" && on !== "plan_review";
+  const stopping = first(
+    s.stopping && "Waiting for the interrupt to settle.",
+    s.stopFailed && "Retry the interrupt first.",
+  );
+  const request = requestFirst(s);
+  const readOnly =
+    s.resumable === false
+      ? (s.resumeBlockedReason ?? "This session is read-only; fork to continue.")
+      : undefined;
+  const settled = first(stopping, request);
+  switch (id) {
+    case "approve":
+      return {
+        disabled: first(stopping, !permission && "No permission request pending."),
+        bar: true,
+      };
+    case "answer":
+      return on === "question" || on === "user_question" ? { disabled: stopping, bar: true } : null;
+    case "planreview":
+      return on === "plan_review" ? { disabled: stopping, bar: true } : null;
+    case "deny":
+      return {
+        disabled: first(
+          stopping,
+          !(permission || on === "user_question") && "No permission request pending.",
+        ),
+        bar: true,
+      };
+    case "interrupt": {
+      let label = "interrupt";
+      if (s.stopping) label = "stopping…";
+      else if (s.stopFailed) label = "retry interrupt";
+      const live = s.stopping || s.stopFailed || BUSY.has(kind) || on !== null;
+      return { label, disabled: live ? undefined : "Nothing is running.", bar: true };
+    }
+    case "send":
+      return {
+        disabled: first(settled, kind === "starting" && "The session is still starting.", readOnly),
+        bar: true,
+      };
+    case "compact": {
+      // Legal on any live session; the bar suggests it once the meter passes
+      // half, when it is worth reaching for.
+      const half = s.contextLimit > 0 && s.contextUsed / s.contextLimit > 0.5;
+      return {
+        disabled: first(
+          settled,
+          readOnly,
+          !["running", "idle", "working_background"].includes(kind) &&
+            "Compaction needs a running or idle session.",
+        ),
+        bar: half,
+      };
+    }
+    case "keepwarm":
+      return {
+        label: s.keepWarm ? "stop keeping cache warm" : "keep cache warm",
+        disabled: first(
+          settled,
+          readOnly,
+          kind !== "running" && kind !== "idle" && "Keep-warm needs a running or idle session.",
+          s.cache.ttlMinutes <= 0 && "No known cache lifetime to keep warm.",
+        ),
+      };
+    case "done":
+      return {
+        disabled: first(
+          settled,
+          kind === "done" && "Already archived.",
+          !["idle", "error", "interrupted", "done"].includes(kind) &&
+            "Interrupt the session before archiving it.",
+        ),
+        bar: true,
+      };
+    case "shell":
+      return {
+        disabled: first(
+          stopping,
+          kind === "starting" && "The session is still starting.",
+          !s.inPlace && !s.worktree && "This session has no workspace.",
+          s.isolation === "vm" && kind === "done" && "An archived VM session has no shell.",
+          ctx.features?.shell === false && "Shell access is unavailable in this client",
+        ),
+      };
+    case "mode":
+      return { disabled: first(settled, readOnly) };
+    case "model":
+      return { disabled: first(settled, readOnly, noModels(ctx, s)) };
+    case "effort":
+      return {
+        disabled: first(
+          settled,
+          readOnly,
+          (!s.model || !modelSupportsEffort(ctx, s.provider, s.model)) &&
+            `${s.provider}${s.model ? `/${s.model}` : ""} has no thinking-effort control`,
+        ),
+      };
+    case "provider":
+      return {
+        disabled: first(
+          settled,
+          readOnly,
+          BUSY.has(kind) && "Interrupt the turn before switching provider.",
+          // With one provider there is nothing to pick: it opens the models.
+          fleetProviders(ctx).length <= 1 && noModels(ctx, s),
+        ),
+      };
+    case "undo":
+      return {
+        disabled: first(
+          settled,
+          readOnly,
+          !s.canRewind && "This provider cannot rewind.",
+          kind !== "idle" && kind !== "interrupted" && "Undo needs a stopped or idle session.",
+          s.turns < 1 && "Nothing to undo yet.",
+        ),
+      };
+    case "fork":
+      return {
+        disabled: first(
+          settled,
+          s.inPlace && s.resumable !== false && "An in-place session cannot be forked.",
+        ),
+        // A read-only session continues only through a fork: say so up front.
+        bar: s.resumable === false,
+      };
+    case "rebase": {
+      const behind = s.git?.behindBase ?? 0;
+      return {
+        // Offered even when `behindBase` reads 0: that count lags a base branch
+        // moved outside Loom, and the RPC is a harmless no-op when current.
+        label: behind > 0 ? `rebase onto base (-${behind})` : "rebase onto base",
+        disabled: first(settled, readOnly, !s.worktree && "This session has no worktree."),
+      };
+    }
+    case "title":
+    case "copyid":
+    case "delete":
+      return { disabled: settled };
+    case "comment":
+      return { label: s.comment ? "edit comment" : "add comment", disabled: settled };
+    case "copybranch":
+      return {
+        disabled: first(settled, !s.branch && !s.worktree && "This session has no branch."),
+      };
+    case "clearqueue":
+      return { disabled: queueFor(ctx, s.id).length ? undefined : "No queued messages." };
+    default:
+      return {};
+  }
+};
+
+/** Availability of a `view` / `app` command. */
+const otherAvailability = (
+  ctx: CommandContext,
+  id: ActName,
+  target: string | null,
+): Availability => {
+  const sel = selectedSession(ctx);
+  const features = ctx.features ?? {};
+  switch (id) {
+    case "childEnter":
+      return sel && target === sel.id && ctx.selectedChild == null && childrenOf(sel).length > 0
+        ? { bar: true }
+        : null;
+    case "childExit":
+      return ctx.selectedChild != null ? { bar: true } : null;
+    case "viewlog":
+      // It opens what the screen shows, so only for the session on screen.
+      return { disabled: target !== ctx.selectedId ? "Select the session to view it." : undefined };
+    case "layout":
+      return { disabled: sel ? undefined : "Select a session first." };
+    case "new":
+    case "find":
+    case "quit":
+    case "palette":
+      return { bar: true };
+    case "theme":
+      return { label: `switch to ${nextThemeMode(ctx.theme)} theme` };
+    case "prepareEnvironment":
+      return {
+        disabled:
+          features.prepareEnvironment === false
+            ? "Environment preparation is unavailable in this client"
+            : undefined,
+      };
+    case "switchRepository":
+      return {
+        disabled:
+          features.switchRepository === false ? "Repository switching is unavailable" : undefined,
+      };
+    case "logs":
+      return {
+        disabled: features.logs === false ? "Logs aren't wired up in this session" : undefined,
+      };
+    case "gc":
+      return {
+        disabled: fleetSessions(ctx).some((x) => x.status.kind === "done" && x.worktree)
+          ? undefined
+          : "No archived session has a worktree left.",
+      };
+    default:
+      return {};
+  }
+};
+
+/**
+ * Every command relevant to `target` (the selection by default) on `surface`,
+ * in palette order, each with its availability. The composer surface offers
+ * only the commands it binds, under their composer keys.
+ */
+export const describeCommands = (
+  ctx: CommandContext,
+  {
+    target = ctx.selectedId,
+    surface = "browse",
+  }: {
+    target?: string | null;
+    surface?: CommandSurface;
+  } = {},
+): CommandAction[] => {
+  const s = target === null ? null : (fleetSessions(ctx).find((x) => x.id === target) ?? null);
+  const gone = targetGone(ctx, target, s);
+  const out: CommandAction[] = [];
+  for (const id of ORDER) {
+    const spec: CommandSpec = COMMANDS[id];
+    const keys = surface === "composer" ? spec.composer : spec.keys;
+    if (keys === undefined) continue;
+    let a: Availability;
+    if (spec.scope !== "session") a = otherAvailability(ctx, id, target);
+    // Request-specific verbs are relevant only while that request is pending.
+    else if (gone !== null) a = id === "answer" || id === "planreview" ? null : { disabled: gone };
+    else a = sessionAvailability(ctx, id, s!);
+    if (a === null) continue;
+    out.push({
+      id,
+      scope: spec.scope,
+      keys,
+      label: a.label ?? spec.label,
+      description: spec.description,
+      target: spec.scope === "app" ? null : target,
+      ...(a.disabled ? { disabled: a.disabled } : {}),
+      bar: a.bar ?? false,
+    });
+  }
+  return out;
+};
+
+/** One command, described for `target` as it stands now; null when not relevant. */
+export const describeCommand = (
+  ctx: CommandContext,
+  id: ActName,
+  target: string | null,
+  surface: CommandSurface = "browse",
+): CommandAction | null =>
+  describeCommands(ctx, { target, surface }).find((a) => a.id === id) ?? null;
+
+/** The enabled command ids for the selection — the set the keymap will run. */
+export const allowedActs = (ctx: CommandContext): Set<ActName> =>
+  new Set(describeCommands(ctx).flatMap((a) => (a.disabled ? [] : [a.id])));
+
+/** The key a press spells in the command table's notation. */
+export const pressedKey = (input: string, key: KeyLike): string => {
+  if (key.return) return "⏎";
+  if (key.tab) return key.shift ? "⇧⇥" : "⇥";
+  if (key.meta) return `⌥${input}`;
+  return input === " " ? "␣" : input;
+};
+
+/**
+ * The command a key press reaches: an enabled match first — `a` both approves
+ * and answers, whichever applies — then a disabled one, so the caller can say
+ * why. Ctrl never dispatches a command (it is the editor's).
+ */
+export const keyAction = (
+  actions: readonly CommandAction[],
+  input: string,
+  key: KeyLike,
+): CommandAction | null => {
+  if (key.ctrl) return null;
+  const pressed = pressedKey(input, key);
+  if (pressed === "") return null;
+  const matches = actions.filter((a) => {
+    if (a.keys === pressed) return true;
+    const aliases: readonly string[] | undefined = (COMMANDS[a.id] as CommandSpec).aliases;
+    return aliases?.includes(pressed) ?? false;
+  });
+  return matches.find((a) => !a.disabled) ?? matches[0] ?? null;
+};
+
+/** The enabled command a key runs, or null. */
 export const keyCommand = (
-  hints: readonly KeyHint[],
+  actions: readonly CommandAction[],
   input: string,
   key: KeyLike,
 ): ActName | null => {
-  if (key.ctrl) return null;
-  let pressed = input;
-  if (key.return) pressed = "⏎";
-  else if (key.tab && key.shift) pressed = "⇧⇥";
-  else if (key.meta) pressed = `⌥${input}`;
-  return (
-    hints.find((h) => {
-      const def: readonly [string, string, (readonly string[])?, string?] = definitions[h.act];
-      return pressed !== "" && (def[0] === pressed || def[2]?.includes(pressed));
-    })?.act ?? null
-  );
+  const a = keyAction(actions, input, key);
+  return a && !a.disabled ? a.id : null;
 };
 
-export const commandHelp = (): Array<[string, string]> =>
-  [...Object.values(sessionCommands), ...Object.values(globalCommands)]
-    .filter((d) => d[0] !== "")
-    .map((d) => [d[0], d.length > 3 ? d[3]! : d[1]]);
+/** One key-bar chip. `command` makes it clickable; plain chips only inform. */
+export interface BarItem {
+  readonly keys: string;
+  readonly label: string;
+  readonly command?: { readonly id: ActName; readonly target: string | null };
+}
+
+const chip = (a: CommandAction): BarItem => ({
+  keys: a.keys,
+  label: a.label,
+  command: { id: a.id, target: a.target },
+});
+
+/**
+ * The browse key bar: the enabled commands that earn a slot, in table order —
+ * except the drill-down pair, which brackets the rest (`←` leads while drilled
+ * in, `→` trails while there is something to drill into).
+ */
+export const browseBar = (ctx: CommandContext): BarItem[] => {
+  const sel = selectedSession(ctx);
+  if (sel && ctx.archiving.includes(sel.id))
+    return [
+      { keys: "", label: "archiving…" },
+      { keys: "↑↓", label: "move" },
+    ];
+  const shown = describeCommands(ctx).filter((a) => a.bar && !a.disabled);
+  const lead = shown.filter((a) => a.id === "childExit");
+  const tail = shown.filter((a) => a.id === "childEnter");
+  const rest = shown.filter((a) => a.id !== "childExit" && a.id !== "childEnter");
+  return [...lead, ...rest, ...tail].map(chip);
+};
+
+/** The session commands an open send composer offers for its target — the same
+ *  descriptions as the fleet's, under their composer keys, enabled ones only. */
+export const composerBar = (ctx: CommandContext, target: string): BarItem[] =>
+  describeCommands(ctx, { target, surface: "composer" })
+    .filter((a) => !a.disabled)
+    .map(chip);
+
+/** The Space palette's rows for `target`: every relevant command but the
+ *  palette itself, enabled ones first so a filter lands on something runnable. */
+export const paletteActions = (ctx: CommandContext, target: string | null): CommandAction[] => {
+  const all = describeCommands(ctx, { target }).filter((a) => a.id !== "palette");
+  return [...all.filter((a) => !a.disabled), ...all.filter((a) => a.disabled)];
+};
+
+/**
+ * The key bar for the current UI mode. `browse` is {@link browseBar}; every
+ * overlay owns the screen and its own fixed keys, so the bar never advertises
+ * a key the overlay won't accept. `prompt` returns `[]` — the composer draws
+ * its own bar (see `FooterArea`).
+ */
+export const footerHints = (ctx: CommandContext): BarItem[] => {
+  switch (ctx.overlay.t) {
+    case "prompt":
+      return [];
+    case "picker":
+      return [
+        { keys: "↑↓", label: "move" },
+        { keys: "enter", label: "pick" },
+        { keys: "esc", label: "cancel" },
+      ];
+    case "confirm":
+      return [
+        { keys: "enter", label: "confirm" },
+        ...(ctx.overlay.confirm.action === "deleteSession" && ctx.overlay.confirm.branchName
+          ? [{ keys: "b", label: ctx.overlay.confirm.deleteBranch ? "keep branch" : "+ branch" }]
+          : []),
+        { keys: "esc", label: "cancel" },
+      ];
+    case "plan":
+      return [
+        { keys: "i", label: "implement" },
+        { keys: "f", label: "fresh" },
+        { keys: "e", label: "edit" },
+        { keys: "d", label: "discuss" },
+        { keys: "⌥o / o", label: "view" },
+      ];
+    case "questions": {
+      // The answer sheet's own keys (see `sheetKey`), by the step it is on.
+      const { sessionId, requestId } = ctx.overlay;
+      const nav = liveQNav(ctx.qnav, sessionId, requestId);
+      const qs = questionsOf(fleetSessions(ctx), sessionId, requestId) ?? [];
+      if (nav?.editing)
+        return [
+          { keys: "enter", label: "done" },
+          { keys: "esc", label: "stop editing" },
+        ];
+      if ((nav?.idx ?? 0) >= qs.length)
+        return [
+          { keys: "enter", label: "submit answers" },
+          { keys: "←", label: "questions" },
+          { keys: "esc", label: "back" },
+        ];
+      return [
+        { keys: "↑↓", label: "move" },
+        { keys: "␣ / 1–9", label: "choose" },
+        { keys: "⇥", label: "custom" },
+        { keys: "enter", label: "next" },
+        { keys: "←→", label: "questions" },
+        { keys: "esc", label: "back" },
+      ];
+    }
+    case "doctor":
+      return [{ keys: "esc", label: "close" }];
+    case "browse":
+      return browseBar(ctx);
+    default:
+      return absurd(ctx.overlay);
+  }
+};

@@ -172,6 +172,8 @@ export interface PickItem {
   hint?: string;
   /** Extra text folded into the fuzzy match (a turn's user text for `undo`). */
   blob?: string;
+  /** Why the item cannot be chosen now; shown, but Enter does nothing. */
+  disabled?: string;
 }
 
 /** Which list the picker is showing. */
@@ -194,8 +196,9 @@ export type PickerDest =
   | { t: "planImpl"; plan: PlanReview }
   /** `u` — rewind to a turn on this session. */
   | { t: "undo"; sessionId: string }
-  /** The command palette; it resolves in the keymap, not here. */
-  | { t: "command" }
+  /** The command palette, bound to the session selected when it opened; it
+   *  resolves in the keymap, not here. */
+  | { t: "command"; target: string | null }
   | { t: "repository" };
 
 export interface Picker {
@@ -282,7 +285,6 @@ export const pickerCurrent = (p: Picker): PickItem | null => {
  */
 export type Overlay =
   | { t: "browse" }
-  | { t: "help" }
   | { t: "doctor" }
   | { t: "prompt"; prompt: Prompt }
   | { t: "confirm"; confirm: Confirm }

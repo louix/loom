@@ -38,7 +38,6 @@ import {
   Fleet,
   FooterArea,
   Header,
-  Help,
   SelectionModal,
   PromptPane,
   NewSessionModal,
@@ -161,13 +160,6 @@ const Layout = ({ view, handle }: Omit<PaneProps, "width">): ReactNode => {
 
   let body: ReactNode;
   switch (view.body.t) {
-    case "help":
-      body = (
-        <Box paddingX={1}>
-          <Help width={Math.max(1, cols - 2)} height={bodyH} scroll={view.planScroll} />
-        </Box>
-      );
-      break;
     case "doctor":
       body = (
         <Box paddingX={1} paddingTop={1}>

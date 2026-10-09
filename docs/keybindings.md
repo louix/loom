@@ -1,8 +1,15 @@
 # Loom TUI — keybindings
 
 A small, consistent grammar. Learn the five rules and the keys fall out of them.
-Press `?` in the TUI for the same thing on one screen; press `Space` for a
-fuzzy, searchable list of every action valid right where you are.
+Press `Space` for the command palette: every command, fuzzy-searchable, with
+its key. A command that can't run right now is still listed, dimmed, with the
+reason; Enter on it does nothing. Pressing a key whose command can't run shows
+the same reason as a notice. The palette, the footer, the keys and clicks on
+the footer all read one description per command, so they never disagree.
+
+A palette pick acts on the session that was selected when the palette opened.
+If that session has gone or its state changed, the command is checked again and
+refused with the reason rather than applied to whatever is selected now.
 
 **Prepare repo environment** in that palette runs `loom vm prepare`
 with live output in the terminal. It refreshes the base for future sessions and
@@ -23,7 +30,7 @@ when you launch `loom` outside a Git repository. Open a repository once with
 | **`Shift`+key** | the heavier / structural sibling of the lowercase — creates or destroys session / daemon state                                     |
 | **`Ctrl`+key**  | text editing only, inside the prompt and the pickers' filter line — the readline motions. `⌃c` quits (the one universal exception) |
 | **`Alt`+key**   | run an action _without leaving the prompt_ — "step out to a bigger tool"                                                           |
-| **`Space`**     | the command palette: everything valid right now, fuzzy-filtered, each row showing its key                                          |
+| **`Space`**     | the command palette: every command with its key; one that can't run now says why                                                   |
 
 Consequences:
 
@@ -65,7 +72,6 @@ returns to Chat. Large inspection output is bounded and marked when truncated.
 | `⇥`                  | toggle the fleet list: **overview** (fleet + detail + events) ↔ **session** (detail + events, full width)                                          |
 | `Esc`                | one step back: the session view → overview, then out of a drill-down, then out of an overlay — never quits                                         |
 | `Space`              | open the command palette                                                                                                                           |
-| `?`                  | keys & the grammar                                                                                                                                 |
 
 On a narrow terminal (under 80 columns — a small window or an SSH session from a
 phone) there's no room for the three-column split, so `overview` is the fleet
@@ -90,7 +96,7 @@ worktree, inside its VM when applicable. Exit or Ctrl-D returns to the same Loom
 view. Ctrl-C belongs to the shell while it is open. You can also run
 `loom shell <session>` from another terminal.
 
-### Second tier (palette + `?` only)
+### Second tier (palette only)
 
 | key  | action                                                                                                       |
 | ---- | ------------------------------------------------------------------------------------------------------------ |
@@ -167,9 +173,10 @@ to the request panel with the answers kept, and `a` resumes where you left off.
 | `⇧⇥` | cycle the permission mode — the new session's _(new prompt)_, or the one you're messaging, live _(send prompt)_                                                                            |
 | `⌥m` | switch the model — a model step for the new session _(new prompt)_, or a live switch on the one you're messaging _(send prompt, draft kept)_                                               |
 | `⌥t` | switch the thinking-effort level, same shape as `⌥m` — only offered when the current (or chosen) model takes one                                                                           |
-| `⌥p` | pick the provider / model _(new-session prompt only)_ — a model that takes a thinking-effort level asks for one as a third step                                                            |
+| `⌥p` | pick the provider / model — for the new session, or live on the one you're messaging _(send prompt)_; a model that takes a thinking-effort level asks for one as a third step              |
 | `⌥q` | queue the message for turn end while the session is still working; on an idle session, plain send _(send prompt only)_                                                                     |
 | `⌥x` | clear the session's queued messages _(send prompt only)_                                                                                                                                   |
+| `⌥i` | interrupt the session you're messaging; the draft stays _(send prompt only)_                                                                                                               |
 
 `⇧⏎` / `⌥⏎` insert a newline inline; `⌥e` hands the whole thing to `$EDITOR`
 for heavier multi-line editing.

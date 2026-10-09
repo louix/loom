@@ -50,7 +50,7 @@ import {
   type Term,
 } from "@loom/tui/fleet-handle";
 import { initialState, fleetSessions, shownLog, reduce, sessionLog } from "@loom/tui/model";
-import { openPrompt, sessionPrompt } from "@loom/tui/overlay";
+import { openPrompt, pickerCurrent, sessionPrompt } from "@loom/tui/overlay";
 import { requestsFor } from "@loom/tui/interactions";
 import type { FakeProvider } from "@loom/connector-mock";
 import { makeHarness, type Harness } from "@loom/harness";
@@ -168,7 +168,7 @@ const harness = async (
 // own a daemon + temp repo; display-only tests use mountFleet snapshots.
 // Bound concurrency so small machines don't host every daemon at once.
 describe("tui-render", { concurrency: 4 }, () => {
-  test("renders the fleet, tracks selection by key, and shows help", async () => {
+  test("renders the fleet, tracks selection by key, and lists commands", async () => {
     const { stdout, stdin, app, settle } = await mountFleet([
       snap({ id: "running", title: "add a --json flag", status: "running" }),
       snap({
@@ -195,10 +195,18 @@ describe("tui-render", { concurrency: 4 }, () => {
       assert.match(stdout.last, /interrupt/);
       assert.doesNotMatch(stdout.last, /approve/);
 
+      // The Space palette is the command reference: unavailable commands are
+      // listed with the reason, not hidden. `?` no longer opens a help view.
       stdin.feed("?");
       await settle();
-      assert.match(stdout.last, /loom — keys/);
-      assert.match(stdout.last, /archive the session/);
+      assert.doesNotMatch(stdout.last, /loom — keys|COMMANDS/);
+      stdin.feed(" ");
+      await settle();
+      assert.match(stdout.last, /COMMANDS/);
+      assert.match(stdout.last, /interrupt/);
+      stdin.feed("approve");
+      await settle();
+      assert.match(stdout.last, /approve +a · No permission request pending/);
     } finally {
       app.unmount();
     }
@@ -2518,10 +2526,12 @@ describe("tui fleet-handle effects", () => {
       await delay(0);
       assert.equal(animationNeed(handle.getView()), "spin", "a running session spins on screen");
 
-      // `?` — the help overlay owns the whole screen. The session is still
+      // The doctor overlay owns the whole screen. The session is still
       // running; not one pixel of it is being drawn.
-      handle.handleKey("?", {} as Key);
-      assert.equal(handle.getView().body.t, "help");
+      handle.handleKey(" ", {} as Key);
+      handle.handleKey("doctor", {} as Key);
+      handle.handleKey("", { return: true } as Key);
+      assert.equal(handle.getView().body.t, "doctor");
       assert.equal(animationNeed(handle.getView()), null, "nothing behind an overlay animates");
 
       handle.handleKey("", { escape: true } as Key);
@@ -3049,23 +3059,46 @@ test("an unchanged memoized header reads the new palette when the theme changes"
   }
 });
 
-test("help fits short and narrow viewports and keeps the last bindings reachable", async () => {
-  const { Help } = await import("@loom/tui/components");
+test("the palette fits short and narrow viewports and keeps the last command reachable", async () => {
+  const { Picker } = await import("@loom/tui/components");
+  const { paletteActions } = await import("@loom/tui/commands");
+  const { makePicker } = await import("@loom/tui/overlay");
+  const state = reduce(initialState(), { t: "state", state: fleetOf(testSession({ id: "a" })) });
+  const items = paletteActions(state, "a").map((a) => ({
+    id: a.id,
+    label: a.label,
+    hint: a.keys,
+    ...(a.disabled ? { disabled: a.disabled } : {}),
+  }));
   for (const [width, height] of [
-    [118, 38],
-    [28, 8],
+    [96, 38],
+    [28, 12],
   ]) {
-    const top = renderToString(createElement(Help, { width: width!, height: height!, scroll: 0 }), {
-      columns: width!,
-    });
-    assert.ok(top.split("\n").length <= height!);
-    assert.match(top, /loom — keys/);
-    const end = renderToString(
-      createElement(Help, { width: width!, height: height!, scroll: 10000 }),
-      { columns: width! },
-    );
+    const at = (index: number) =>
+      stripVTControlCharacters(
+        renderToString(
+          createElement(Picker, {
+            picker: makePicker({
+              step: "command",
+              title: "commands",
+              items,
+              index,
+              dest: { t: "command", target: "a" },
+            }),
+            width: width!,
+            height: height!,
+          }),
+          { columns: width! },
+        ),
+      );
+    assert.ok(at(0).split("\n").length <= height!);
+    assert.match(at(0), /COMMANDS/);
+    const last = items.at(-1)!;
+    const end = at(items.length - 1);
     assert.ok(end.split("\n").length <= height!);
-    assert.match(end, /remotes/);
+    assert.match(end, new RegExp(last.label.slice(0, 8)));
+    // The highlighted row's reason replaces the key hints when it can't run.
+    if (last.disabled && width! > 40) assert.match(end, new RegExp(last.disabled.slice(0, 12)));
   }
 });
 
@@ -3438,8 +3471,8 @@ test("environment checks do not block input or history loading", async () => {
   try {
     await waitFor(mounted.stdout, /loading history/);
     assert.doesNotMatch(mounted.stdout.last, /\(quiet\)/);
-    mounted.stdin.feed("?");
-    await waitFor(mounted.stdout, /loom — keys/);
+    mounted.stdin.feed(" ");
+    await waitFor(mounted.stdout, /COMMANDS/);
     mounted.stdin.feed(ESC);
     fake.heads()[0]!.resolve({ items: [], olderCursor: null });
     await waitFor(mounted.stdout, /\(quiet\)/);
@@ -3881,6 +3914,55 @@ test("startup repository menu selects and cancels without a daemon", async () =>
   }
 });
 
+test("a palette pick acts on the session it opened for, revalidated when it runs", () => {
+  const fake = mkFakeClient();
+  const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+  const stop = handle.effectStart();
+  const press = (input: string, key = {}) => handle.handleKey(input, key as Key);
+  const current = () => {
+    const o = handle.getView().ui.overlay;
+    return o.t === "picker" ? pickerCurrent(o.picker) : null;
+  };
+  try {
+    const a = testSession({ id: "a", status: stateIdle, title: "first" });
+    const b = testSession({ id: "b", status: stateIdle, title: "second" });
+    fake.deliver(fleetOf(a, b));
+    const opened = handle.getView().ui.selectedId!;
+    const other = opened === "a" ? b : a;
+    press(" ");
+    press("rename");
+    assert.equal(current()?.id, "title");
+    assert.equal(current()?.disabled, undefined);
+
+    // The palette's session leaves; the selection moves on, the palette does not.
+    fake.deliver(fleetOf(other));
+    assert.equal(handle.getView().ui.selectedId, other.id);
+    assert.equal(current()?.disabled, "That session is no longer in the fleet.");
+    press("", { return: true });
+    assert.equal(handle.getView().ui.overlay.t, "picker", "a disabled row is inert");
+    assert.ok(!fake.calls.some((c) => c.method === "session.setTitle"));
+    press("", { escape: true });
+
+    // A state change while open re-describes the row, and a pick runs on the
+    // palette's own session once it can.
+    press(" ");
+    press("rename");
+    fake.deliver(fleetOf({ ...other, status: stateAwaitingInput("permission") }));
+    assert.equal(current()?.disabled, "Approve or deny the pending request first.");
+    fake.deliver(fleetOf(other));
+    press("", { return: true });
+    const prompt = openPrompt(handle.getView().ui.overlay);
+    assert.equal(prompt?.t === "session" ? prompt.sessionId : null, other.id);
+
+    // A key whose command can't run says why instead of doing nothing.
+    press("", { escape: true });
+    press("a");
+    assert.equal(handle.getView().ui.notice?.text, "No permission request pending.");
+  } finally {
+    stop();
+  }
+});
+
 test("number tabs preserve navigation, isolate scroll, and leave text editing alone", async () => {
   const fake = mkFakeClient();
   fake.deliver(
@@ -3924,7 +4006,7 @@ test("number tabs preserve navigation, isolate scroll, and leave text editing al
     assert.equal(handle.searches.get()?.buffer.text, "2");
     assert.equal(handle.getView().ui.sessionTab, "chat");
     press("", { escape: true });
-    press("?");
+    press(" ");
     press("3");
     assert.equal(handle.getView().ui.sessionTab, "chat");
   } finally {

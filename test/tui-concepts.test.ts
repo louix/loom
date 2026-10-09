@@ -6,10 +6,9 @@ import { PALETTES } from "@loom/tui/theme";
 import { Fields, Line, Lines, PaletteContext } from "@loom/tui/ui";
 import { Doctor } from "@loom/tui/components";
 import { Box, renderToString } from "ink";
-import { bindCommand, keyCommand } from "@loom/tui/commands";
+import { describeCommands, keyAction, keyCommand } from "@loom/tui/commands";
 import { detailLayout } from "@loom/tui/components";
 import {
-  commandHints,
   escapePicker,
   initialState,
   reduce,
@@ -72,30 +71,30 @@ test("shortcuts resolve the current decision and bind session commands to their 
   ] as const) {
     const s = snap({ id: "one", status: "awaiting_input", awaitReason: reason });
     const state = reduce(initialState(), fleet([s]));
-    const hints = commandHints(state);
-    assert.equal(keyCommand(hints, "a", {}), action);
-    assert.equal(keyCommand(hints, "m", { meta: true }), null);
-    assert.equal(keyCommand(hints, "a", { ctrl: true }), null);
-    assert.deepEqual(bindCommand(action, s.id), { tag: "session", name: action, sessionId: "one" });
+    const actions = describeCommands(state);
+    assert.equal(keyCommand(actions, "a", {}), action);
+    assert.equal(keyAction(actions, "a", {})?.target, "one");
+    // Request mode: the model switch is still described, disabled with a reason.
+    assert.equal(keyCommand(actions, "m", { meta: true }), null);
+    assert.match(keyAction(actions, "m", { meta: true })?.disabled ?? "", /first\.$/);
+    assert.equal(keyCommand(actions, "a", { ctrl: true }), null);
   }
-  assert.equal(bindCommand("send", null), null);
-  assert.deepEqual(bindCommand("new", null), { tag: "global", name: "new" });
+  const none = describeCommands(reduce(initialState(), fleet([])));
+  assert.equal(keyAction(none, "", { return: true })?.disabled, "Select a session first.");
+  assert.equal(keyAction(none, "n", {})?.target, null);
   const state = reduce(initialState(), fleet([snap({ status: "idle" })]));
-  assert.equal(keyCommand(commandHints(state), "v", {}), "filter");
-  assert.equal(keyCommand(commandHints(state), "", { tab: true, shift: true }), "mode");
+  assert.equal(keyCommand(describeCommands(state), "v", {}), "filter");
+  assert.equal(keyCommand(describeCommands(state), "", { tab: true, shift: true }), "mode");
+  assert.equal(keyCommand(describeCommands(state), " ", {}), "palette");
 });
 
 test("y copies the branch and shift+y copies the session id", () => {
   const s = snap({ id: "one", branch: "loom/one" });
   const state = reduce(initialState(), fleet([s]));
-  const hints = commandHints(state);
-  assert.equal(keyCommand(hints, "y", {}), "copybranch");
-  assert.equal(keyCommand(hints, "Y", {}), "copyid");
-  assert.deepEqual(bindCommand("copyid", s.id), {
-    tag: "session",
-    name: "copyid",
-    sessionId: "one",
-  });
+  const actions = describeCommands(state);
+  assert.equal(keyCommand(actions, "y", {}), "copybranch");
+  assert.equal(keyCommand(actions, "Y", {}), "copyid");
+  assert.equal(keyAction(actions, "Y", {})?.target, "one");
 });
 
 test("detail budgets and click regions match rendered panes across widths and expiry", () => {

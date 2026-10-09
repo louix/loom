@@ -18,7 +18,7 @@ test("every picker floats over the fleet with the selected row and actions in vi
       const picker = makePicker({
         step,
         title: step,
-        dest: { t: "command" },
+        dest: { t: "command", target: null },
         index: 19,
         items: Array.from({ length: 20 }, (_, i) => ({ id: String(i), label: `choice ${i}` })),
       });
