@@ -1,0 +1,564 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "version": {
+      "type": "number",
+      "const": 1
+    },
+    "backend": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "default": "smolvm",
+          "type": "string",
+          "const": "smolvm"
+        },
+        "artifact": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 65536
+        },
+        "executable": {
+          "description": "smolvm path, or a name searched on PATH.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 65536
+        }
+      },
+      "additionalProperties": false
+    },
+    "environment": {
+      "description": "Host defaults for every environment.",
+      "type": "object",
+      "properties": {
+        "nix": {
+          "description": "Activate the checkout's devenv, flake, shell.nix or default.nix.",
+          "type": "object",
+          "properties": {
+            "auto": {
+              "type": "boolean"
+            }
+          },
+          "required": ["auto"],
+          "additionalProperties": false
+        },
+        "commandPrefix": {
+          "description": "Literal argv that wraps activation; an alternative to nix.auto.",
+          "minItems": 1,
+          "maxItems": 64,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 65536
+          }
+        },
+        "timeoutSeconds": {
+          "description": "Activation timeout.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2073600
+        },
+        "resources": {
+          "type": "object",
+          "properties": {
+            "cpus": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 64
+            },
+            "memoryMiB": {
+              "type": "integer",
+              "minimum": 512,
+              "maximum": 65536
+            }
+          },
+          "additionalProperties": false
+        },
+        "prepare": {
+          "description": "Workspace preparation hooks. Replaces any earlier layer's list.",
+          "maxItems": 64,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 65536
+              },
+              "run": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 65536,
+                "description": "Shell command run in the guest workspace."
+              },
+              "timeoutSeconds": {
+                "default": 900,
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3600
+              }
+            },
+            "required": ["run"],
+            "additionalProperties": false
+          }
+        },
+        "start": {
+          "description": "Hooks run before each start becomes available. Replaces any earlier layer's list.",
+          "maxItems": 64,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 65536
+              },
+              "run": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 65536,
+                "description": "Shell command run in the guest workspace."
+              },
+              "timeoutSeconds": {
+                "default": 900,
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3600
+              }
+            },
+            "required": ["run"],
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "access": {
+      "type": "object",
+      "properties": {
+        "network": {
+          "type": "object",
+          "properties": {
+            "presets": {
+              "maxItems": 16,
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": ["nix", "javascript", "python", "rust"]
+              }
+            },
+            "hosts": {
+              "maxItems": 64,
+              "type": "array",
+              "items": {
+                "type": "string",
+                "maxLength": 253,
+                "pattern": "^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false,
+      "description": "Network the host applies directly, without a project request."
+    },
+    "profiles": {
+      "default": {},
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "maxLength": 100,
+        "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]*$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "entrypoint": {
+            "minItems": 1,
+            "maxItems": 1024,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 65536
+            },
+            "description": "Literal argv; run arguments are appended."
+          },
+          "artifact": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 65536
+          },
+          "environment": {
+            "type": "object",
+            "properties": {
+              "nix": {
+                "description": "Activate the checkout's devenv, flake, shell.nix or default.nix.",
+                "type": "object",
+                "properties": {
+                  "auto": {
+                    "type": "boolean"
+                  }
+                },
+                "required": ["auto"],
+                "additionalProperties": false
+              },
+              "commandPrefix": {
+                "description": "Literal argv that wraps activation; an alternative to nix.auto.",
+                "minItems": 1,
+                "maxItems": 64,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 65536
+                }
+              },
+              "timeoutSeconds": {
+                "description": "Activation timeout.",
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 2073600
+              },
+              "resources": {
+                "type": "object",
+                "properties": {
+                  "cpus": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 64
+                  },
+                  "memoryMiB": {
+                    "type": "integer",
+                    "minimum": 512,
+                    "maximum": 65536
+                  }
+                },
+                "additionalProperties": false
+              },
+              "prepare": {
+                "description": "Workspace preparation hooks. Replaces any earlier layer's list.",
+                "maxItems": 64,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 65536
+                    },
+                    "run": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 65536,
+                      "description": "Shell command run in the guest workspace."
+                    },
+                    "timeoutSeconds": {
+                      "default": 900,
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 3600
+                    }
+                  },
+                  "required": ["run"],
+                  "additionalProperties": false
+                }
+              },
+              "start": {
+                "description": "Hooks run before each start becomes available. Replaces any earlier layer's list.",
+                "maxItems": 64,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 65536
+                    },
+                    "run": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 65536,
+                      "description": "Shell command run in the guest workspace."
+                    },
+                    "timeoutSeconds": {
+                      "default": 900,
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 3600
+                    }
+                  },
+                  "required": ["run"],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "required": ["entrypoint"],
+        "additionalProperties": false
+      }
+    },
+    "limits": {
+      "description": "Ceilings for resolved resources; never clamped.",
+      "type": "object",
+      "properties": {
+        "cpus": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64
+        },
+        "memoryMiB": {
+          "type": "integer",
+          "minimum": 512,
+          "maximum": 65536
+        }
+      },
+      "additionalProperties": false
+    },
+    "lifecycle": {
+      "type": "object",
+      "properties": {
+        "workspace": {
+          "type": "string",
+          "enum": ["in-place", "worktree", "clone"]
+        },
+        "execution": {
+          "type": "string",
+          "enum": ["vm", "local"]
+        },
+        "idleTimeoutMinutes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1440
+        }
+      },
+      "additionalProperties": false
+    },
+    "repos": {
+      "default": [],
+      "maxItems": 1024,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 65536
+          },
+          "environment": {
+            "description": "Final host overrides.",
+            "type": "object",
+            "properties": {
+              "nix": {
+                "description": "Activate the checkout's devenv, flake, shell.nix or default.nix.",
+                "type": "object",
+                "properties": {
+                  "auto": {
+                    "type": "boolean"
+                  }
+                },
+                "required": ["auto"],
+                "additionalProperties": false
+              },
+              "commandPrefix": {
+                "description": "Literal argv that wraps activation; an alternative to nix.auto.",
+                "minItems": 1,
+                "maxItems": 64,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 65536
+                }
+              },
+              "timeoutSeconds": {
+                "description": "Activation timeout.",
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 2073600
+              },
+              "resources": {
+                "type": "object",
+                "properties": {
+                  "cpus": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 64
+                  },
+                  "memoryMiB": {
+                    "type": "integer",
+                    "minimum": 512,
+                    "maximum": 65536
+                  }
+                },
+                "additionalProperties": false
+              },
+              "prepare": {
+                "description": "Workspace preparation hooks. Replaces any earlier layer's list.",
+                "maxItems": 64,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 65536
+                    },
+                    "run": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 65536,
+                      "description": "Shell command run in the guest workspace."
+                    },
+                    "timeoutSeconds": {
+                      "default": 900,
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 3600
+                    }
+                  },
+                  "required": ["run"],
+                  "additionalProperties": false
+                }
+              },
+              "start": {
+                "description": "Hooks run before each start becomes available. Replaces any earlier layer's list.",
+                "maxItems": 64,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 65536
+                    },
+                    "run": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 65536,
+                      "description": "Shell command run in the guest workspace."
+                    },
+                    "timeoutSeconds": {
+                      "default": 900,
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 3600
+                    }
+                  },
+                  "required": ["run"],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "additionalProperties": false
+          },
+          "access": {
+            "type": "object",
+            "properties": {
+              "network": {
+                "type": "object",
+                "properties": {
+                  "presets": {
+                    "maxItems": 16,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": ["nix", "javascript", "python", "rust"]
+                    }
+                  },
+                  "hosts": {
+                    "maxItems": 64,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "maxLength": 253,
+                      "pattern": "^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+                    }
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false,
+            "description": "Network the host applies directly, without a project request."
+          },
+          "lifecycle": {
+            "type": "object",
+            "properties": {
+              "workspace": {
+                "type": "string",
+                "enum": ["in-place", "worktree", "clone"]
+              },
+              "execution": {
+                "type": "string",
+                "enum": ["vm", "local"]
+              },
+              "idleTimeoutMinutes": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1440
+              }
+            },
+            "additionalProperties": false
+          },
+          "grants": {
+            "default": {},
+            "type": "object",
+            "properties": {
+              "setup": {
+                "default": false,
+                "description": "Let the project request nix.auto, commandPrefix, prepare and start hooks.",
+                "type": "boolean"
+              },
+              "network": {
+                "description": "Hosts the project may request.",
+                "type": "object",
+                "properties": {
+                  "presets": {
+                    "default": [],
+                    "maxItems": 16,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": ["nix", "javascript", "python", "rust"]
+                    }
+                  },
+                  "hosts": {
+                    "default": [],
+                    "maxItems": 64,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "maxLength": 253,
+                      "pattern": "^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+                    }
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "required": ["path"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["version"],
+  "additionalProperties": false
+}

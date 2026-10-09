@@ -6,6 +6,7 @@
     "aisdk",
     "runtime",
     "isolation",
+    "environment-config",
     "harness",
     "backend/daemon",
     "frontend/tui",
@@ -50,13 +51,13 @@
     "erasableSyntaxOnly": true
   },
   "tasks": {
-    "config:schema": "deno run -A scripts/config-schema.ts && deno run -A npm:oxfmt@0.70.0 backend/daemon/config.schema.json",
+    "config:schema": "deno run -A scripts/config-schema.ts && deno run -A npm:oxfmt@0.70.0 backend/daemon/config.schema.json environment-config/*.schema.json",
     "runtime:hashes": "deno run -A scripts/update-runtime-hashes.ts",
     "runtime:update": "deno run -A cli/src/loom.ts runtime update",
     "loom": "deno run -A --deny-net cli/src/loom.ts",
     "daemon": "deno run -A --deny-net cli/src/loomd.ts",
     "isolate": "deno run -A --deny-net cli/src/loom-isolate.ts",
-    "typecheck": "deno check core client aisdk runtime isolation harness backend/daemon frontend/tui connectors/generic connectors/claude connectors/gemini connectors/mock connectors/echo connectors/chatgpt cli scripts test",
+    "typecheck": "deno check core client aisdk runtime isolation environment-config harness backend/daemon frontend/tui connectors/generic connectors/claude connectors/gemini connectors/mock connectors/echo connectors/chatgpt cli scripts test",
     "typecheck:silent": "deno task typecheck",
     "watch": "deno task typecheck --watch",
     "test": "NO_COLOR=1 deno run -A scripts/test.ts",

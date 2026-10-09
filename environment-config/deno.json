@@ -1,0 +1,9 @@
+{
+  "name": "@loom/environment-config",
+  "exports": {
+    "./schema": "./src/schema.ts",
+    "./resolution": "./src/resolution.ts",
+    "./load": "./src/load.ts",
+    "./paths": "./src/paths.ts"
+  }
+}

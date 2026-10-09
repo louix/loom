@@ -1,0 +1,171 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "version": {
+      "type": "number",
+      "const": 1
+    },
+    "environment": {
+      "type": "object",
+      "properties": {
+        "nix": {
+          "description": "Activate the checkout's devenv, flake, shell.nix or default.nix.",
+          "type": "object",
+          "properties": {
+            "auto": {
+              "type": "boolean"
+            }
+          },
+          "required": ["auto"],
+          "additionalProperties": false
+        },
+        "commandPrefix": {
+          "description": "Literal argv that wraps activation; an alternative to nix.auto.",
+          "minItems": 1,
+          "maxItems": 64,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 65536
+          }
+        },
+        "timeoutSeconds": {
+          "description": "Activation timeout.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2073600
+        },
+        "resources": {
+          "type": "object",
+          "properties": {
+            "cpus": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 64
+            },
+            "memoryMiB": {
+              "type": "integer",
+              "minimum": 512,
+              "maximum": 65536
+            }
+          },
+          "additionalProperties": false
+        },
+        "prepare": {
+          "description": "Workspace preparation hooks. Replaces any earlier layer's list.",
+          "maxItems": 64,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 65536
+              },
+              "run": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 65536,
+                "description": "Shell command run in the guest workspace."
+              },
+              "timeoutSeconds": {
+                "default": 900,
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3600
+              }
+            },
+            "required": ["run"],
+            "additionalProperties": false
+          }
+        },
+        "start": {
+          "description": "Hooks run before each start becomes available. Replaces any earlier layer's list.",
+          "maxItems": 64,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 65536
+              },
+              "run": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 65536,
+                "description": "Shell command run in the guest workspace."
+              },
+              "timeoutSeconds": {
+                "default": 900,
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3600
+              }
+            },
+            "required": ["run"],
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "access": {
+      "type": "object",
+      "properties": {
+        "network": {
+          "type": "object",
+          "properties": {
+            "presets": {
+              "default": [],
+              "maxItems": 16,
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": ["nix", "javascript", "python", "rust"]
+              }
+            },
+            "hosts": {
+              "default": [],
+              "maxItems": 64,
+              "type": "array",
+              "items": {
+                "type": "string",
+                "maxLength": 253,
+                "pattern": "^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "mcp": {
+          "maxItems": 64,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]*$"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "skills": {
+      "maxItems": 64,
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 65536
+      }
+    }
+  },
+  "required": ["version"],
+  "additionalProperties": false
+}
