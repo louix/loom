@@ -835,7 +835,13 @@ export const mkFleetHandle = ({
   const planReviewFor = (sessionId: string): PlanReview | null => {
     const r = requestsFor(fleetSessions(state), sessionId).find((x) => x.kind === "plan_review");
     return r?.kind === "plan_review"
-      ? { sessionId, requestId: r.id, text: r.plan, mode: "acceptEdits", impl: null }
+      ? {
+          sessionId,
+          requestId: r.id,
+          text: r.plan,
+          mode: r.implementMode ?? "acceptEdits",
+          impl: null,
+        }
       : null;
   };
 
@@ -1302,18 +1308,9 @@ export const mkFleetHandle = ({
           prompt: sessionPrompt("comment", s.id, "comment", s.comment ?? ""),
         });
       case "planreview": {
-        const plan = requestsFor(fleetSessions(state), s.id).find((r) => r.kind === "plan_review");
+        const plan = planReviewFor(s.id);
         if (!plan) return note("no plan pending", "dim");
-        return void show({
-          t: "plan",
-          plan: {
-            sessionId: s.id,
-            requestId: plan.id,
-            text: plan.plan,
-            mode: "acceptEdits",
-            impl: null,
-          },
-        });
+        return void show({ t: "plan", plan });
       }
       case "interrupt":
         return perform(async () => {

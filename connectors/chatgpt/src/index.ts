@@ -11,6 +11,7 @@ import type { ConnectorContext } from "@loom/core/connector";
 import { toolSteer, mcpToolPreferences } from "@loom/runtime/instructions";
 import { ChatGPTCatalog } from "./catalog.ts";
 import { CodexAppServerSession } from "./app-server.ts";
+import { CODEX_PERMISSION_MODES } from "./agent-modes.ts";
 import { resolveCodexHome, type CodexHome } from "./codex-home.ts";
 import { discoverCodexModels } from "./discovery.ts";
 import { spawnCodex, type CodexLauncher } from "./launch.ts";
@@ -33,7 +34,7 @@ const withTimeout = <T>(p: Promise<T>, ms: number, label: string): Promise<T> =>
 
 /**
  * The dynamic tools `CodexAppServerSession` mounts (`commit`/`status`/
- * `ask_user`/`exit_plan`, see `app-server.ts`) are Loom's own; the daemon's
+ * `ask_user`, see `app-server.ts`) are Loom's own; the daemon's
  * `systemPromptAppend` is written assuming Claude/aisdk's full loom-mcp/tool
  * set (a superset with different naming), so it would tell the model about
  * tools shaped differently than what's actually mounted here — recompute the
@@ -61,9 +62,9 @@ const withTimeout = <T>(p: Promise<T>, ms: number, label: string): Promise<T> =>
  * have is safe, over-claiming one an older thread doesn't have is not (the
  * model's call would just error). A session that needs `ask_user` after a
  * daemon restart has to be started fresh; Phase 6's forced-restart-on-demand
- * is the eventual real fix. `exit_plan` needs no equivalent guard: its usage
- * guidance lives entirely in the tool's own `description`, visible only if
- * Codex actually has it registered — there's nothing here to over-claim.
+ * is the eventual real fix. Older threads may still carry a registered
+ * `exit_plan`; its only guidance is its own `description` (and the dispatcher
+ * now redirects it to native Plan), so there is nothing here to over-claim.
  */
 export const codeModeInstructions = (
   workspaceRoot: string,
@@ -137,7 +138,9 @@ class ChatGPTProvider implements AgentProvider {
       ownsTranscript: false,
       oneShot: true,
       partialTokens: true,
-      permissionModes: ["default", "plan", "acceptEdits", "auto"],
+      // Codex's native presets. `acceptEdits` is not offered: it would only
+      // duplicate Manual (see `codexAgentMode`, which maps it explicitly).
+      permissionModes: CODEX_PERMISSION_MODES,
       models,
     };
   }

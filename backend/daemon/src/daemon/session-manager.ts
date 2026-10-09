@@ -232,7 +232,7 @@ export class SessionManager {
       operation: "create",
       elapsedMs: Math.round(performance.now() - started),
     });
-    this.#attach(provider.id, opts.sessionId, session, stateStarting, started);
+    this.#attach(provider.id, opts.sessionId, session, stateStarting, started, opts.mode);
   }
 
   async resume(provider: AgentProvider, ref: SessionRef): Promise<void> {
@@ -250,7 +250,7 @@ export class SessionManager {
     // follow-up send read as a mid-turn injection (`injected: true`), which the
     // TUI renders as "sent mid-turn" and the daemon treats as not-a-turn-start
     // (no transition to running, no checkpoint user-text seed).
-    this.#attach(provider.id, ref.sessionId, session, stateIdle);
+    this.#attach(provider.id, ref.sessionId, session, stateIdle, undefined, ref.mode);
   }
 
   #attach(
@@ -259,6 +259,7 @@ export class SessionManager {
     session: AgentSession,
     state: SessionState = stateStarting,
     started = performance.now(),
+    requestedMode?: SessionMode,
   ): void {
     const run: Running = {
       provider: providerId,
@@ -288,6 +289,11 @@ export class SessionManager {
       userTurn: state.kind === "starting",
     };
     this.#running.set(id, run);
+    // The adapter may have landed on another mode than the one it was given:
+    // Codex maps `acceptEdits` onto Manual and reports a resumed thread's
+    // effective mode.
+    if (requestedMode !== undefined && session.snapshot().mode !== requestedMode)
+      this.#hooks.onMode(id);
     // `#drain` handles its own stream errors; this catch is for the pathological
     // case where the error path itself throws, so the rejection is never left
     // unhandled (callers only `.catch(() => {})` it from close()/shutdown()).
@@ -844,7 +850,9 @@ export class SessionManager {
    *  transition carries it, and when the turn stays blocked the overlay hook
    *  does — otherwise the other clients keep offering an answered request. */
   #resumeAfterAnswer(id: string, run: Running): void {
-    if (run.cancellation === "none" && run.state.kind !== "interrupted") {
+    // Only a still-blocked turn resumes: an answer can also end the turn (a
+    // Codex plan handoff settles it), and its result may already be drained.
+    if (run.cancellation === "none" && run.state.kind === "awaiting_input") {
       if (this.#transition(id, run, this.#interactionState(run, stateRunning))) return;
     }
     this.#hooks.onOverlay(id);
@@ -966,7 +974,7 @@ export class SessionManager {
         const session = await newProvider.resumeSession(ref);
         // #attach replaces #running[id] with a fresh Running (new gate,
         // refReported=false) and starts its own drain.
-        this.#attach(newProvider.id, id, session, stateIdle);
+        this.#attach(newProvider.id, id, session, stateIdle, undefined, ref.mode);
       } catch (err) {
         this.#running.delete(id);
         throw err;

@@ -107,6 +107,7 @@ import { ProviderRegistry } from "./provider-registry.ts";
 import type { ConnectorManifest } from "@loom/core/connector";
 import {
   isSessionMode,
+  SESSION_MODES,
   type CreateSessionOptions,
   type EffortLevel,
   type McpServerHandle,
@@ -986,6 +987,8 @@ export class Daemon {
     if (keepWarm !== out.keepWarm) out = { ...out, keepWarm };
     const canRewind = this.#canRewind(s.provider, s.isolation);
     if (canRewind !== out.canRewind) out = { ...out, canRewind };
+    const { modes } = this.#modesOf(s.provider, s.isolation);
+    if (modes) out = { ...out, modes };
     const reason = this.#resumeBlockedReason(s);
     out = { ...out, resumable: !reason, ...(reason ? { resumeBlockedReason: reason } : {}) };
     // An in-place session works in the repo root; show that dir's git state.
@@ -1250,6 +1253,7 @@ export class Daemon {
         defaultModel: this.#defaultModelFor(id),
         defaultEffort: this.#defaultEffortFor(id),
         defaultMode: mode,
+        ...this.#modesOf(id),
         defaultIsolation: this.#providers.defaultIsolation(id),
         ...(this.#providers.vmUnavailableReason(id)
           ? { vmUnavailableReason: this.#providers.vmUnavailableReason(id)! }
@@ -2156,6 +2160,14 @@ export class Daemon {
     const caps = this.#providers.capsOf(providerId, isolation);
     if (caps) return caps.rewind;
     return this.#isAisdk(providerId) || providerId === "fake" || isClaudeId(providerId);
+  }
+
+  /** The modes `providerId` offers when it reports fewer than all four. Known
+   *  once the provider is built; until then clients offer every mode and the
+   *  adapter maps whichever it is given (Codex: `acceptEdits` is Manual). */
+  #modesOf(providerId: string, isolation?: "vm" | "local"): { modes?: SessionMode[] } {
+    const modes = this.#providers.capsOf(providerId, isolation)?.permissionModes;
+    return modes && modes.length < SESSION_MODES.length ? { modes } : {};
   }
 
   /** Whether `providerId`'s adapter owns its transcript in Loom's own store
@@ -3530,6 +3542,7 @@ export class Daemon {
         // Rechecked *inside* the queue: the session may have been removed, or a
         // plan review raised, while this command waited its turn.
         if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
+        let effective = mode;
         if (this.#sessions.has(id) && !this.#sessions.isEnded(id)) {
           const r = await this.#sessions.setMode(id, mode);
           // Rejected: leave the registry and the defaults alone. Publishing the
@@ -3540,10 +3553,14 @@ export class Daemon {
               "a plan review is pending — resolve it in the plan review before changing mode",
             );
           }
+          // Record what the adapter took, which an adapter may map explicitly
+          // (Codex selects Manual for `acceptEdits`).
+          const live = this.#sessions.snapshot(id)?.mode;
+          if (isSessionMode(live)) effective = live;
         }
-        const snap = this.#registry.setFields(id, { mode });
+        const snap = this.#registry.setFields(id, { mode: effective });
         // A deliberate switch is also "the last mode used" for the next new session.
-        this.#providerDefaults.rememberMode(mode);
+        this.#providerDefaults.rememberMode(effective);
         this.#publishState(snap.id);
         return this.#enrich(snap, false);
       });

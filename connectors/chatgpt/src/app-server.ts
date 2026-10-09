@@ -25,6 +25,13 @@ import type {
   SessionRef,
 } from "@loom/core/types";
 import { CodexRpcClient } from "./rpc.ts";
+import {
+  CodexNativeModes,
+  codexAgentMode,
+  reviewerFor,
+  type CodexAgentMode,
+  type CodexExecutionMode,
+} from "./agent-modes.ts";
 import { verifyChatGptAccount } from "./account.ts";
 import { rateLimitEvents } from "./rate-limits.ts";
 import type { CodexHome } from "./codex-home.ts";
@@ -114,24 +121,20 @@ const launchOptions = (
   },
 });
 
-const EXIT_PLAN_DESC =
-  "Call this only in plan mode, once your plan is complete. Pass the full plan text; " +
-  "the user reviews it and decides whether to implement, revise, or keep discussing.";
-
 /**
- * Loom's own tools (`commit`, `status`, `ask_user`, `exit_plan`), mounted as
- * Codex dynamic tools (`thread/start`'s `dynamicTools`) rather than a
- * separate stdio MCP server — Codex calls them directly via a
- * server-initiated `item/tool/call` request (`#toolCall` below). Only ever
- * called from `start()` — `thread/resume` has no `dynamicTools` field at all
- * (see the comment on `resume()` below), so there is nothing to (re)send on
- * resume regardless of which tools a given call site wants.
+ * Loom's own tools (`commit`, `status`, `ask_user`), mounted as Codex dynamic
+ * tools (`thread/start`'s `dynamicTools`) rather than a separate stdio MCP
+ * server — Codex calls them directly via a server-initiated `item/tool/call`
+ * request (`#toolCall` below). Only ever called from `start()` —
+ * `thread/resume` has no `dynamicTools` field at all (see the comment on
+ * `resume()` below), so there is nothing to (re)send on resume regardless of
+ * which tools a given call site wants.
  *
- * `exit_plan` has no native Codex equivalent (Codex's own "plan mode" is
- * just a read-only sandbox — there is no protocol concept of presenting a
- * plan for human review) — it's Loom's own emulation, the same shape as
- * aisdk's bespoke `exit_plan` tool (`aisdk/src/session.ts`), reusing its
- * description text for cross-provider consistency.
+ * No `exit_plan`: Plan is Codex's native collaboration mode, whose own
+ * instructions end a planning turn with a `<proposed_plan>` block that Codex
+ * reports as a `plan` item. Loom reviews that item (`#offerPlan`). Threads
+ * created before this keep their registered `exit_plan`; the dispatcher
+ * redirects such calls to the native flow.
  */
 const loomDynamicTools = (): Record<string, unknown>[] => [
   {
@@ -192,29 +195,13 @@ const loomDynamicTools = (): Record<string, unknown>[] => [
       additionalProperties: false,
     },
   },
-  {
-    type: "function",
-    name: "exit_plan",
-    description: EXIT_PLAN_DESC,
-    inputSchema: {
-      type: "object",
-      properties: {
-        plan: { type: "string", description: "The complete implementation plan, in markdown." },
-      },
-      required: ["plan"],
-      additionalProperties: false,
-    },
-  },
 ];
 
-const policyFor = (mode: SessionMode): "untrusted" | "on-request" =>
-  mode === "default" || mode === "plan" ? "untrusted" : "on-request";
-
-const sandboxFor = (mode: SessionMode): "read-only" | "workspace-write" =>
-  mode === "plan" ? "read-only" : "workspace-write";
-
-export const approvalsReviewerFor = (mode: SessionMode): "user" | "auto_review" =>
-  mode === "auto" ? "auto_review" : "user";
+/** A native plan Loom is holding the planning turn open on, for review. */
+interface PlanReview {
+  id: string;
+  text: string;
+}
 
 export class CodexAppServerSession implements AgentSession {
   readonly id: string;
@@ -258,7 +245,7 @@ export class CodexAppServerSession implements AgentSession {
    * admitted and now running (possibly paused on its own async work, e.g. a
    * slow external call inside an injected `ToolDispatcher`) when the turn
    * ends. `#toolCall` captures this turn's `.signal` at admission time and
-   * hands it to `#askUser`/`#requestPlan`/`#requestApproval`, so any of
+   * hands it to `#askUser`/`#requestApproval`, so either of
    * those — called at any point during that dispatch's execution, not just
    * at its start — refuses to park a new, never-to-be-answered interaction
    * once the turn is gone.
@@ -275,26 +262,34 @@ export class CodexAppServerSession implements AgentSession {
    */
   #turnAbort = new AbortController();
   /**
-   * Bumped only by an *external* `interrupt()`/`close()` call — never by
-   * `setMode`'s own internal turn-ending step (see `#endTurn`). A multi-step
-   * transition that spans several `await`s (`respondToPlan`'s setMode-then-
-   * send sequence) snapshots this before starting and rechecks it after each
-   * await; if it has changed, something *outside* that transition decided to
-   * stop the session while it was in flight, and the transition must not
-   * finish implementing a plan (or report "approved") on the strength of
-   * work that started before that decision. `#turnAbort` alone can't
-   * distinguish this: `setMode` aborts it too, as an expected, internal part
-   * of successfully completing the very same transition — a signal that's
-   * "already aborted" doesn't say *why*.
+   * Bumped only by an *external* `interrupt()`/`close()` call. A multi-step
+   * transition that spans several `await`s (`respondToPlan`'s mode-change-
+   * then-send sequence) snapshots this before starting and rechecks it after
+   * each await; if it has changed, something *outside* that transition
+   * decided to stop the session while it was in flight, and the transition
+   * must not go on to start implementing a plan on the strength of work that
+   * started before that decision.
    */
   #interruptGeneration = 0;
   #threadId: string | null = null;
   #turnId: string | null = null;
   #model: string;
   #effort: EffortLevel | null;
-  #mode: SessionMode;
-  #appliedMode: SessionMode;
-  #startingMode: SessionMode | null = null;
+  /** Effective native settings, as Codex last reported them. */
+  readonly #modes = new CodexNativeModes();
+  /** Loom's saved or last selected mode. Reported only while Codex has never
+   *  named one (a server without collaboration modes, or a resume whose mode
+   *  could not be confirmed); any report from Codex supersedes it. */
+  #requestedMode: CodexAgentMode;
+  /** The mode the running turn started under. Settings changes apply to
+   *  subsequent turns, so until it ends a newer selection is pending. */
+  #turnMode: CodexAgentMode | null = null;
+  /** Serializes mode changes, so each one waits for its own observation. */
+  #modeChange: Promise<void> = Promise.resolve();
+  /** The current turn's native proposed plan, if it produced one. */
+  #proposedPlan: PlanReview | null = null;
+  /** A completed planning turn held open on the user's review. */
+  #planReview: PlanReview | null = null;
   #cwd: string;
   readonly #base: string | undefined;
   readonly #dispatch: ToolDispatcher;
@@ -323,8 +318,7 @@ export class CodexAppServerSession implements AgentSession {
     this.#networkAccess = networkAccess;
     this.#model = opts.model ?? "";
     this.#effort = opts.effort ?? null;
-    this.#mode = opts.mode;
-    this.#appliedMode = opts.mode;
+    this.#requestedMode = codexAgentMode(opts.mode);
     this.#cwd = opts.cwd;
     this.#base = base;
     this.#dispatch = dispatch;
@@ -333,6 +327,9 @@ export class CodexAppServerSession implements AgentSession {
     this.#rpc.onNotification((method, params) => this.#notification(method, params));
     this.#rpc.onClose((err) => {
       this.#turnAbort.abort();
+      this.#modes.close(
+        new Error("the provider connection closed before Codex reported the agent mode"),
+      );
       this.#pending.failAll(
         { behavior: "deny", message: "the provider connection closed" },
         "(the provider connection closed before this was answered)",
@@ -373,12 +370,16 @@ export class CodexAppServerSession implements AgentSession {
     const s = new CodexAppServerSession(opts, proc, base, dispatch, networkAccess);
     try {
       await s.#initialize();
+      // A fresh Plan session has no earlier reviewer to keep; it exits to Manual.
+      const target = s.#requestedMode;
       const started = await s.#rpc.requestStartup("thread/start", {
         ...(opts.model ? { model: opts.model } : {}),
         cwd: opts.cwd,
-        approvalPolicy: opts.oneShot ? "never" : policyFor(opts.mode),
-        approvalsReviewer: approvalsReviewerFor(opts.mode),
-        sandbox: opts.oneShot ? "read-only" : sandboxFor(opts.mode),
+        approvalPolicy: opts.oneShot ? "never" : "on-request",
+        ...(opts.oneShot
+          ? {}
+          : { approvalsReviewer: reviewerFor(target === "plan" ? "default" : target) }),
+        sandbox: opts.oneShot ? "read-only" : "workspace-write",
         ...(opts.effort ? { effort: opts.effort } : {}),
         ...(opts.oneShot
           ? {
@@ -407,6 +408,7 @@ export class CodexAppServerSession implements AgentSession {
       });
       s.#threadId = (started as any)?.thread?.id ?? null;
       if (!s.#threadId) throw new Error("codex app-server did not return a thread id");
+      if (!opts.oneShot) await s.#establishMode(started, true);
       if (opts.prompt) await s.#startTurn(opts.prompt);
       else s.#idle();
       return s;
@@ -451,9 +453,10 @@ export class CodexAppServerSession implements AgentSession {
       const resumed = await s.#rpc.requestStartup("thread/resume", {
         threadId: ref.providerRef,
         cwd: ref.cwd,
-        approvalPolicy: policyFor(opts.mode),
-        approvalsReviewer: approvalsReviewerFor(opts.mode),
-        sandbox: sandboxFor(opts.mode),
+        // No reviewer: Codex restores the saved one, which is also the
+        // execution choice a saved Plan session exits to.
+        approvalPolicy: "on-request",
+        sandbox: "workspace-write",
         config: { "sandbox_workspace_write.network_access": networkAccess },
         excludeTurns: true,
         ...(ref.systemPromptAppend ? { developerInstructions: ref.systemPromptAppend } : {}),
@@ -477,6 +480,7 @@ export class CodexAppServerSession implements AgentSession {
         // one that doesn't (and watching the model's call error) is not.
       });
       s.#threadId = (resumed as any)?.thread?.id ?? ref.providerRef;
+      await s.#establishMode(resumed, false);
       s.#idle();
       return s;
     } catch (err) {
@@ -499,6 +503,45 @@ export class CodexAppServerSession implements AgentSession {
     } catch {
       // Older servers and temporarily unavailable usage endpoints still support chat.
     }
+  }
+
+  /**
+   * Learn the thread's effective native settings and bring them to Loom's
+   * requested mode — the creation request, or on resume the saved session
+   * mode (mapped by `codexAgentMode`: a saved `acceptEdits` becomes Manual).
+   * Loom's saved mode wins over what Codex restored because it is the user's
+   * last confirmed choice: a Plan selected after the thread's last turn, or a
+   * thread from before native modes (whose "plan" was only a read-only
+   * sandbox), resumes in native Plan with the restored reviewer as its exit.
+   *
+   * A resume reply may omit the collaboration mode; applying the saved mode
+   * then doubles as the settings refresh. None of this is fatal: Codex
+   * without collaboration modes, or a change it rejects or never confirms,
+   * leaves the session on whatever Codex last reported, with a diagnostic.
+   */
+  async #establishMode(reply: unknown, fresh: boolean): Promise<void> {
+    this.#modes.initialize(reply, fresh);
+    const problem = await this.#modes.discover((method, params) =>
+      this.#rpc.request(method, params, { timeoutMs: 5000 }),
+    );
+    if (problem) this.#diagnose(problem);
+    const target = this.#requestedMode;
+    if (this.#modes.mode === target) return;
+    try {
+      await this.#selectMode(target);
+    } catch (err) {
+      if (this.#rpc.closed) throw err;
+      const reason = err instanceof Error ? err.message : String(err);
+      this.#diagnose(
+        this.#modes.mode
+          ? `Codex did not switch this session to ${modeName(target)} (${reason}); it remains in ${modeName(this.#modes.mode)}.`
+          : `Codex did not report this session's agent mode (${reason}); Loom shows the saved ${modeName(target)} mode until Codex confirms a change.`,
+      );
+    }
+  }
+
+  #diagnose(message: string): void {
+    this.#events.push({ type: "error", sessionId: this.id, ts: now(), message, fatal: false });
   }
 
   get providerRef(): string | null {
@@ -598,95 +641,80 @@ export class CodexAppServerSession implements AgentSession {
     });
     return decision;
   }
-  /** loom `exit_plan` handler: emit a `plan_review` event, block until
-   *  decided. `id`/`signal`: see `#askUser`'s doc comment. */
-  #requestPlan(plan: string, id: string, signal: AbortSignal | undefined): Promise<PlanDecision> {
-    if (signal?.aborted)
-      return Promise.resolve({ action: "discuss", message: "the turn was interrupted" });
-    const decision = this.#pending.requestPlan(id);
-    this.#events.push({ type: "plan_review", sessionId: this.id, ts: now(), id, plan });
-    return decision;
+  /**
+   * A planning turn ended with a native proposed plan while Plan is still
+   * selected. Hold the turn open on a `plan_review` — its `result` is deferred
+   * to `respondToPlan` — offering the reviewer Plan kept (the execution
+   * choice) as the implementation mode.
+   */
+  #offerPlan(plan: PlanReview): void {
+    this.#planReview = plan;
+    this.#events.push({
+      type: "plan_review",
+      sessionId: this.id,
+      ts: now(),
+      id: plan.id,
+      plan: plan.text,
+      implementMode: this.#modes.executionMode ?? "default",
+    });
+  }
+  /** End a planning turn held for review: the result it deferred, then idle. */
+  #settlePlanTurn(): void {
+    this.#events.push({ type: "result", sessionId: this.id, ts: now(), kind: "ok" });
+    this.#idle();
   }
   /**
-   * Codex has no native tool call to resolve/deny for `exit_plan` (unlike
-   * Claude's SDK-native `ExitPlanMode`) — the dynamic tool call's own
-   * response ("Plan approved...", see `tool-dispatch.ts`'s `exit_plan`
-   * branch) is what tells the model it can stop waiting, so it must not go
-   * out until the mode/turn transition below has actually succeeded — never
-   * resolve `#requestPlan`'s pending promise *before* attempting it. A
-   * `discuss`/`handoff` decision has no transition to make (the model was
-   * already told to keep planning, or that implementation continues
-   * elsewhere) — those resolve immediately.
+   * Answer a held native plan review (`#offerPlan`). The planning turn has
+   * already ended, and Plan is a collaboration mode rather than a read-only
+   * sandbox, so implementing needs no interrupt — only what the user could do
+   * by hand: change mode, then send a message.
    *
-   * For `implement`/`revise`, and — for now — `implement_fresh` too (its
-   * context-reset/compaction is explicitly Phase 6's job per the plan doc,
-   * so it's treated as a plain `implement` here rather than half-built):
-   * `respondToPlan` explicitly interrupts the still-running planning turn
-   * (plan mode's turn was snapshotted read-only at its own `turn/start`, and
-   * nothing short of a fresh turn can make it writable) and `send` starts a
-   * genuinely new one carrying the revised instructions — both awaited, in
-   * order, *before* the pending plan resolves. If either fails, the plan
-   * resolves as a `discuss` instead (telling the model the transition
-   * didn't happen, never "approved") and the error is rethrown so the
-   * caller (the daemon) sees the failure too, rather than this method
-   * quietly swallowing it after having already un-blocked the old turn.
+   * - `implement` / `revise` / `implement_fresh`: select the decision's mode
+   *   (`acceptEdits` is Manual, see `codexAgentMode`), else the execution
+   *   choice Plan kept; wait until Codex reports it effective; then send the
+   *   implementation request. `revise` sends the user's edited plan text. A
+   *   Codex thread cannot shed its context, so `implement_fresh` implements
+   *   in place.
+   * - `discuss`: stay in Plan and send the note as the next message.
+   * - `handoff`: implementation moved to another session; end the turn.
    *
-   * `detachPlan`, not `resolvePlan`, on this path: interrupting the
-   * planning turn (above) drains every *other* currently pending interaction
-   * via `#pending.failAll` — including, if left tracked, this very plan
-   * review, racing this method's own deliberate resolution and resolving it
-   * first with a generic "the turn was interrupted" cancellation instead of
-   * the real decision. Detaching removes it from that drain's reach for the
-   * rest of this transition; the raw resolve function is invoked explicitly,
-   * once, with whatever this method itself determines the outcome to be.
-   *
-   * `#interruptGeneration` is checked after *each* await, not just relied on
-   * via `setMode`/`send` throwing: an external `interrupt()` (someone
-   * stopping the session for reasons unrelated to this plan — e.g. mid-flight
-   * while a held `thread/settings/update` response is still pending) doesn't
-   * make `setMode`/`send` fail — by the time the held response arrives,
-   * `this.#turnId` is already `null` (the external interrupt already ended
-   * that turn), so the internal stop sees nothing left to interrupt, and
-   * `send` just starts a fresh turn as if nothing had happened. Without this
-   * check, that fresh turn — and the "approved" report — would go out anyway,
-   * silently overriding the very interrupt that was supposed to stop
-   * everything. `generation` deliberately snapshots `#interruptGeneration`,
-   * not `#turnAbort`'s signal: this transition's internal turn-ending step
-   * (`#endTurn`) aborts that signal too, as an expected part of *this*
-   * transition succeeding, so it can't tell "an external stop happened" from
-   * "the planning turn was interrupted right on schedule."
+   * A failed transition settles the turn (Plan stays effective) and rethrows.
+   * An external `interrupt()`/`close()` while it is in flight
+   * (`#interruptGeneration`) stops it before any implementation request goes
+   * out, and ends a turn whose start was already on the wire.
    */
   async respondToPlan(id: string, decision: PlanDecision): Promise<void> {
-    if (decision.action === "discuss" || decision.action === "handoff") {
-      this.#pending.resolvePlan(id, decision);
+    if (this.#planReview?.id !== id) return;
+    this.#planReview = null;
+    if (
+      decision.action === "handoff" ||
+      (decision.action === "discuss" && !decision.message.trim())
+    ) {
+      this.#settlePlanTurn();
       return;
     }
-    const resolve = this.#pending.detachPlan(id);
-    if (!resolve) return;
     const generation = this.#interruptGeneration;
     const ensureNotSuperseded = async (): Promise<void> => {
       if (generation === this.#interruptGeneration) return;
-      // Something external ended the session while this transition was in
-      // flight — clean up anything this transition itself already started
-      // (best-effort; the session is being torn down or already idle either
-      // way) and refuse to report success on its behalf.
       if (this.#turnId && !this.#closing) await this.#endTurn().catch(() => {});
       throw new Error("the session was interrupted before the plan could be implemented");
     };
     try {
-      await this.setMode(decision.mode ?? "acceptEdits");
+      if (decision.action === "discuss") {
+        await this.send(decision.message);
+      } else {
+        const chosen = decision.mode ? codexAgentMode(decision.mode) : "plan";
+        const execution: CodexExecutionMode =
+          chosen === "plan" ? (this.#modes.executionMode ?? "default") : chosen;
+        await this.#selectMode(execution);
+        await ensureNotSuperseded();
+        const planText =
+          decision.action === "revise" ? decision.plan : "the plan you just presented";
+        await this.send(`The plan is approved. Implement it now:\n\n${planText}`);
+      }
       await ensureNotSuperseded();
-      // An approved plan needs a new writable turn; an ordinary mode change
-      // only updates the defaults and lets the current turn finish.
-      await this.#endTurn();
-      await ensureNotSuperseded();
-      const planText = decision.action === "revise" ? decision.plan : "the plan you just presented";
-      await this.send(`The plan is approved. Implement it now:\n\n${planText}`);
-      await ensureNotSuperseded();
-      resolve(decision);
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      resolve({ action: "discuss", message: `the plan could not be implemented — ${message}` });
+      if (generation === this.#interruptGeneration && !this.#turnId) this.#settlePlanTurn();
       throw err;
     }
   }
@@ -696,7 +724,7 @@ export class CodexAppServerSession implements AgentSession {
    * `#turnId`/`#staleTurnIds`/`#turnAbort` bookkeeping, and draining every
    * parked interaction — always, even when the RPC itself throws (a
    * `try`/`finally`, not a bare `await`): a failed interrupt request must
-   * not leave a permission/question/plan promise (or the caller waiting on
+   * not leave a permission/question promise (or the caller waiting on
    * this method) hanging forever just because the underlying RPC call
    * failed. `this.#turnId` is captured and cleared *before* that RPC call,
    * and the old id is recorded in `#staleTurnIds` *and* `#turnAbort` is
@@ -704,18 +732,21 @@ export class CodexAppServerSession implements AgentSession {
    * is rejected by `#serverRequest`'s guard before it can even reach a
    * dispatcher, and any dispatch already admitted and running sees its
    * captured `signal` flip to aborted the moment it next calls
-   * `#askUser`/`#requestPlan`/`#requestApproval`, rather than starting new
-   * work under a turn Loom already considers over.
+   * `#askUser`/`#requestApproval`, rather than starting new
+   * work under a turn Loom already considers over. A plan review held on
+   * the turn ends with it.
    *
    * Deliberately **not** public, and does **not** touch
    * `#interruptGeneration` — shared by the public `interrupt()` (an
-   * external, unrelated-to-any-transition stop) and `respondToPlan`'s internal
-   * turn-ending step (starting implementation in a fresh turn). Only the former
-   * should ever invalidate an in-flight `respondToPlan` transition.
+   * external, unrelated-to-any-transition stop) and `respondToPlan`'s cleanup
+   * of an implementation turn that started after such a stop.
    */
   async #endTurn(): Promise<void> {
     const turnId = this.#turnId;
     this.#turnId = null;
+    this.#turnMode = null;
+    this.#proposedPlan = null;
+    this.#planReview = null;
     if (turnId) this.#staleTurnIds.add(turnId);
     this.#turnAbort.abort();
     try {
@@ -733,8 +764,7 @@ export class CodexAppServerSession implements AgentSession {
   }
   /**
    * The public, externally-triggered stop (a user hitting stop, the daemon
-   * tearing down a session) — as opposed to `respondToPlan`'s own internal,
-   * expected turn-ending step. Bumps `#interruptGeneration` *before* doing
+   * tearing down a session). Bumps `#interruptGeneration` *before* doing
    * the actual work, so an in-flight `respondToPlan` transition that
    * snapshotted the generation earlier reliably observes the change as soon
    * as it next checks, regardless of how long `#endTurn`'s own RPC call
@@ -747,21 +777,42 @@ export class CodexAppServerSession implements AgentSession {
   async rewind(): Promise<void> {
     throw new Error("Codex app-server rewind is not yet supported by Loom");
   }
-  /** Save the mode for subsequent turns without interrupting current work.
-   * Approval policy and sandbox are fixed at turn/start, so the snapshot keeps
-   * the selection pending until a new turn actually starts with it. */
+  /**
+   * Select an agent mode for subsequent turns without interrupting current
+   * work. Resolves once Codex reports the mode effective; a rejected or
+   * unconfirmed change throws and leaves the reported mode alone. A change
+   * made during a turn is reported as pending until the next turn starts.
+   */
   async setMode(mode: SessionMode): Promise<void> {
     if (!this.#threadId) throw new Error("Codex thread has not started");
-    const deferred =
-      this.#turnId !== null || this.#startingMode !== null || this.#mode !== this.#appliedMode;
-    await this.#rpc.request("thread/settings/update", {
-      threadId: this.#threadId,
-      approvalPolicy: policyFor(mode),
-      approvalsReviewer: approvalsReviewerFor(mode),
-      sandboxPolicy: this.#sandboxPolicyFor(mode),
+    if (this.#oneShot) throw new Error("a one-shot Codex session has no agent mode");
+    await this.#selectMode(codexAgentMode(mode));
+  }
+  /** One native settings change at a time, each settled by its own observation. */
+  #selectMode(target: CodexAgentMode): Promise<void> {
+    const change = this.#modeChange.then(async () => {
+      const params = this.#modes.updateFor(target, this.#model || null, this.#effort);
+      if (params) {
+        const observed = this.#modes.until(target);
+        try {
+          await this.#rpc.request("thread/settings/update", {
+            threadId: this.#threadId,
+            ...params,
+          });
+        } catch (err) {
+          observed.cancel();
+          throw err;
+        }
+        await observed.wait();
+      }
+      this.#requestedMode = target;
     });
-    this.#mode = mode;
-    if (!deferred && !this.#turnId && this.#startingMode === null) this.#appliedMode = mode;
+    this.#modeChange = change.catch(() => {});
+    return change;
+  }
+  /** The thread's mode: what Codex reports, else the saved selection. */
+  #currentMode(): CodexAgentMode {
+    return this.#modes.mode ?? this.#requestedMode;
   }
   async setModel(model: string): Promise<void> {
     this.#model = model;
@@ -770,13 +821,14 @@ export class CodexAppServerSession implements AgentSession {
     this.#effort = effort;
   }
   snapshot(): AdapterSnapshot {
+    const mode = this.#currentMode();
     return {
       status: this.#status,
       providerRef: this.#threadId,
       model: this.#model || null,
       effort: this.#effort,
-      mode: this.#mode,
-      ...(this.#mode !== this.#appliedMode ? { pendingMode: this.#mode } : {}),
+      mode,
+      ...(this.#turnMode !== null && this.#turnMode !== mode ? { pendingMode: mode } : {}),
       usage: this.#usage,
       contextUsed: this.#contextUsed,
       contextLimit: this.#contextLimit,
@@ -788,6 +840,7 @@ export class CodexAppServerSession implements AgentSession {
     if (this.#closing) return;
     this.#closing = true;
     this.#interruptGeneration++; // see the doc comment on the field
+    this.#planReview = null;
     this.#turnAbort?.abort();
     this.#pending.failAll(
       { behavior: "deny", message: "the session was closed before this was answered" },
@@ -799,6 +852,9 @@ export class CodexAppServerSession implements AgentSession {
   }
 
   async #startTurn(input: string): Promise<void> {
+    // A turn runs under the settings Codex holds when it starts, so it never
+    // overtakes a mode change still waiting for its observation.
+    await this.#modeChange;
     this.#startedUsageTurn = true;
     // Replace only an already-spent controller (aborted by a *previous*
     // turn's end) — never one that's still live, which is exactly the case
@@ -810,8 +866,8 @@ export class CodexAppServerSession implements AgentSession {
     // turn's dispatch captured the now-aborted controller, not this one.
     if (this.#turnAbort.signal.aborted) this.#turnAbort = new AbortController();
     this.#startingUsageTurn = true;
-    const mode = this.#mode;
-    this.#startingMode = mode;
+    this.#turnMode = this.#currentMode();
+    this.#proposedPlan = null;
     let result: unknown;
     try {
       result = await this.#rpc.request("turn/start", {
@@ -819,14 +875,16 @@ export class CodexAppServerSession implements AgentSession {
         input: [textInput(input)],
         model: this.#model || undefined,
         effort: this.#effort ?? undefined,
-        approvalPolicy: this.#oneShot ? "never" : policyFor(mode),
-        approvalsReviewer: approvalsReviewerFor(mode),
-        sandboxPolicy: this.#sandboxPolicyFor(mode),
+        // Approvals and collaboration are thread settings (`setMode`). Only
+        // the sandbox is restated, and it never depends on the agent mode.
+        ...(this.#oneShot ? { approvalPolicy: "never" } : {}),
+        sandboxPolicy: this.#sandboxPolicy(),
       });
-      this.#appliedMode = mode;
+    } catch (err) {
+      if (!this.#turnId) this.#turnMode = null;
+      throw err;
     } finally {
       this.#startingUsageTurn = false;
-      this.#startingMode = null;
     }
     this.#turnId = (result as any)?.turn?.id ?? this.#turnId;
     for (const update of this.#pendingUsage.splice(0))
@@ -848,9 +906,9 @@ export class CodexAppServerSession implements AgentSession {
       status: this.#status,
     });
   }
-  #sandboxPolicyFor(mode: SessionMode): Record<string, unknown> {
+  /** Fixed by the isolation configuration, never by the agent mode. */
+  #sandboxPolicy(): Record<string, unknown> {
     if (this.#oneShot) return { type: "readOnly", networkAccess: false };
-    if (mode === "plan") return { type: "readOnly", networkAccess: this.#networkAccess };
     return {
       type: "workspaceWrite",
       writableRoots: [this.#cwd],
@@ -1016,7 +1074,8 @@ export class CodexAppServerSession implements AgentSession {
     this.#rpc.respond(rpcId, { answers });
   }
   /** `item/tool/call` — Codex invoking one of Loom's own dynamic tools
-   *  (`commit`/`status`/`ask_user`/`exit_plan`, see `loomDynamicTools`).
+   *  (`commit`/`status`/`ask_user`, see `loomDynamicTools`; older threads
+   *  may still call `exit_plan`).
    *  Reply on the envelope `id`, not `params.callId` — they're different
    *  fields in the protocol. The actual gating/execution lives in
    *  `#dispatch` (see `tool-dispatch.ts`) — this is just the RPC adapter:
@@ -1030,10 +1089,10 @@ export class CodexAppServerSession implements AgentSession {
     // `ThreadItem::DynamicToolCall.id == call_id`) to be the exact id the
     // eventual `dynamicToolCall` item — and therefore this call's own
     // `tool_call`/`tool_result` events (`#item()`) — will carry. Reused as
-    // the id for any pending interaction this call raises (`ask_user`,
-    // `exit_plan`, a `commit` approval wait) instead of minting a fresh one,
-    // so a persisted-event-log replay can correlate "this question/plan/
-    // approval was resolved" from the id alone, the same way it already can
+    // the id for any pending interaction this call raises (`ask_user`, a
+    // `commit` approval wait) instead of minting a fresh one, so a
+    // persisted-event-log replay can correlate "this question/approval was
+    // resolved" from the id alone, the same way it already can
     // for `ask_user`'s own `question`/`answer` pair.
     const callId = typeof p["callId"] === "string" && p["callId"] ? p["callId"] : randomUUID();
     // Captured now, at admission — the *this* turn's signal, not whatever
@@ -1069,12 +1128,13 @@ export class CodexAppServerSession implements AgentSession {
       this.#rpc.respond(id, { contentItems: [{ type: "inputText", text }], success });
     };
     this.#dispatch(tool, args, {
-      mode: this.#startingMode ?? this.#appliedMode,
+      // Loom's own tool policy follows the Loom mode this turn runs under —
+      // independent of Codex's reviewer, which never sees these calls.
+      mode: this.#turnMode ?? this.#currentMode(),
       cwd: this.#cwd,
       ...(this.#base ? { base: this.#base } : {}),
       ...(signal ? { signal } : {}),
       askUser: (q, c) => this.#askUser(q, c, callId, signal),
-      requestPlan: (plan) => this.#requestPlan(plan, callId, signal),
       requestApproval: (t, a) => this.#requestApproval(t, a, callId, signal),
     }).then(
       (res) => respond(res.text, res.ok),
@@ -1159,6 +1219,10 @@ export class CodexAppServerSession implements AgentSession {
       }
       return;
     }
+    if (method === "thread/settings/updated") {
+      if (p["threadId"] === this.#threadId) this.#modes.observe(p["threadSettings"]);
+      return;
+    }
     const item = p["item"] as Record<string, unknown> | undefined;
     if (method === "item/completed" && item) this.#item(item);
     if (method === "item/agentMessage/delta") return; // final item is authoritative and avoids duplicate transcript text.
@@ -1177,6 +1241,14 @@ export class CodexAppServerSession implements AgentSession {
       // for a turn Loom itself chose to abandon early are presumptively
       // stale.
       if (completedId && completedId !== this.#turnId) return;
+      // A planning turn that proposed a plan, with Plan still selected, is
+      // offered for review; one the user already switched away from is not.
+      const plan =
+        turn?.status === "completed" && this.#turnMode === "plan" && this.#modes.mode === "plan"
+          ? this.#proposedPlan
+          : null;
+      this.#proposedPlan = null;
+      this.#turnMode = null;
       this.#turnId = null;
       // Not added to `#staleTurnIds` (see above), but a dispatch still
       // mid-flight for this now-completed turn (e.g. a slow `ToolDispatcher`
@@ -1200,6 +1272,7 @@ export class CodexAppServerSession implements AgentSession {
           message: turn?.error?.message ?? "Codex turn failed",
           fatal: true,
         });
+      else if (plan) return this.#offerPlan(plan);
       else this.#events.push({ type: "result", sessionId: this.id, ts: now(), kind: "ok" });
       this.#idle();
     }
@@ -1210,7 +1283,12 @@ export class CodexAppServerSession implements AgentSession {
     const ts = now();
     if (type === "agentMessage" && typeof item["text"] === "string")
       this.#events.push({ type: "assistant_text", sessionId: this.id, ts, text: item["text"] });
-    else if (type === "reasoning")
+    else if (type === "plan" && typeof item["text"] === "string") {
+      // Native Plan's `<proposed_plan>`, split out of the agent message. It is
+      // transcript text either way; at turn end it may also be offered for review.
+      this.#events.push({ type: "assistant_text", sessionId: this.id, ts, text: item["text"] });
+      if (id) this.#proposedPlan = { id, text: item["text"] };
+    } else if (type === "reasoning")
       this.#events.push({
         type: "thinking",
         sessionId: this.id,
@@ -1337,3 +1415,10 @@ const textInput = (text: string): Record<string, unknown> => ({
   text,
   text_elements: [],
 });
+
+const MODE_NAMES: Record<CodexAgentMode, string> = {
+  auto: "Auto",
+  default: "Manual",
+  plan: "Plan",
+};
+const modeName = (mode: CodexAgentMode): string => MODE_NAMES[mode];

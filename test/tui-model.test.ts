@@ -7,6 +7,7 @@ import { test } from "node:test";
 import type { AwaitReason, HarnessEvent } from "@loom/core/events";
 import type { SessionInteraction } from "@loom/core/interaction";
 import { stateIdle } from "@loom/core/session-state";
+import type { SessionMode } from "@loom/core/types";
 import type { ProviderInfo, SessionSnapshot } from "@loom/core/wire";
 import { loadableFailed, loadableLoaded, loadablePending } from "@loom/core/loadable";
 import type { PushFrame, EventPush, HistoryCursor, HistoryPage } from "@loom/core/wire";
@@ -1266,6 +1267,18 @@ test("a plan_review stashes the plan text; the plan overlay carries its own mode
   assert.equal(shown(s, "a"), null);
 });
 
+test("the plan overlay cycles only implementation modes the session's provider offers", () => {
+  const a = snap({ id: "a", status: "awaiting_input", awaitReason: "plan_review" });
+  const codex = { ...a, modes: ["default", "plan", "auto"] as SessionMode[] };
+  let s = reduce(initialState(), fleet([codex]));
+  // Codex suggests the execution choice Plan kept.
+  s = reduce(s, open({ t: "plan", plan: { ...review("pr1", "the plan"), mode: "auto" } }));
+  s = reduce(s, { t: "cyclePlanMode" });
+  assert.equal(planOf(s)?.mode, "default");
+  s = reduce(s, { t: "cyclePlanMode" });
+  assert.equal(planOf(s)?.mode, "auto", "acceptEdits is not offered");
+});
+
 test("a detour off the plan review carries it, so backing out restores it exactly", () => {
   const a = snap({ id: "a", status: "awaiting_input", awaitReason: "plan_review" });
   let s = reduce(initialState(), fleet([a]));
@@ -2067,6 +2080,24 @@ test("promptCycleMode only cycles for a `new` prompt", () => {
   let t = reduce(initialState(), open({ t: "prompt", prompt: sessionPrompt("send", "a", "send") }));
   t = reduce(t, { t: "promptCycleMode" });
   assert.equal(promptOf(t)?.t, "session", "a send prompt has no mode to cycle");
+
+  // A provider that offers fewer modes (Codex: no acceptEdits) cycles only those.
+  const codex: ProviderInfo = {
+    id: "codex",
+    models: [],
+    defaultModel: "",
+    defaultEffort: "",
+    defaultMode: "default",
+    modes: ["default", "plan", "auto"],
+    tag: "codex",
+    color: "",
+    isDefault: true,
+  };
+  let u = reduce(initialState(), fleet([], [codex]));
+  u = reduce(u, open({ t: "prompt", prompt: newPrompt({ ...settings, provider: "codex" }) }));
+  u = reduce(u, { t: "promptCycleMode" });
+  u = reduce(u, { t: "promptCycleMode" });
+  assert.equal(mode(u), "auto");
 });
 
 test("pushHistory dedupes, keeps newest-last, and caps at 50; promptHistoryNav walks it", () => {

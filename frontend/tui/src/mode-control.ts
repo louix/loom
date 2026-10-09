@@ -36,12 +36,12 @@ export type ModeChoice =
 /** Per session; a session with no entry has nothing in progress. */
 export type ModeChoices = Record<string, ModeChoice>;
 
-/** The four modes cycle in the order `⇧⇥` walks them. Takes the snapshot's raw
- *  string — the wire types `mode` loosely — and starts the cycle over for
- *  anything the four don't cover. */
-export const nextMode = (m: string): SessionMode =>
-  SESSION_MODES[((SESSION_MODES as readonly string[]).indexOf(m) + 1) % SESSION_MODES.length] ??
-  "default";
+/** The session's modes cycle in the order `⇧⇥` walks them — all four unless
+ *  its provider offers fewer (`SessionSnapshot.modes`). Takes the snapshot's
+ *  raw string — the wire types `mode` loosely — and starts the cycle over for
+ *  anything the modes don't cover. */
+export const nextMode = (m: string, modes: readonly SessionMode[] = SESSION_MODES): SessionMode =>
+  modes[((modes as readonly string[]).indexOf(m) + 1) % modes.length] ?? "default";
 
 /** Where a choice is heading — the last mode the user asked for, which is the
  *  one the next `⇧⇥` cycles on from. */
@@ -178,7 +178,7 @@ export const mkModeControl = ({
       const c = choices()[sessionId];
       // Cycle on from where the selection is heading, not from the snapshot:
       // three quick presses move three modes, whatever the daemon has taken.
-      const target = nextMode(targetOf(c) ?? s.mode);
+      const target = nextMode(targetOf(c) ?? s.mode, s.modes);
       if (c?.t === "applying") commit(sessionId, { ...c, next: target });
       else choose(sessionId, target);
       note(`mode → ${modeLabel(target)}`, "good");

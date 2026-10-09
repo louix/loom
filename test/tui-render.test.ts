@@ -1141,6 +1141,34 @@ describe("tui-render", { concurrency: 4 }, () => {
     }
   });
 
+  test("plan review · the overlay starts on the provider's suggested implementation mode", async () => {
+    const { h, connect, cleanup } = await harness();
+    const client = await connect();
+    const snap = await client.request<SessionSnapshot>("session.create", {
+      prompt: "plan this",
+      provider: "fake",
+    });
+    const fs = ((await h.daemon.providers.get("fake")) as FakeProvider).session(snap.id);
+    const { stdout, stdin, app } = mount(client);
+    try {
+      await delay(150);
+      fs?.finishTurn({ contextUsed: 10_000 });
+      // Codex offers the execution choice its native Plan kept.
+      fs?.emit({ type: "plan_review", id: "pr1", plan: "1. go", implementMode: "auto" });
+      await delay(200);
+      stdin.feed("a");
+      await delay(150);
+      assert.match(stdout.last, /implementation mode \[auto\]/);
+      stdin.feed("i");
+      await delay(200);
+      assert.deepEqual(fs?.planResponses[0]?.decision, { action: "implement", mode: "auto" });
+    } finally {
+      app.unmount();
+      await client.close();
+      await cleanup();
+    }
+  });
+
   test("plan review · ⌥p retargets implement-fresh; a new provider forks a session", async () => {
     const { h, connect, cleanup } = await harness({ config: OAI_CFG });
     const client = await connect();

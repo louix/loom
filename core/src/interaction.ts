@@ -58,6 +58,8 @@ export const planReviewInteractionSchema = z.object({
   kind: z.literal("plan_review"),
   id: z.string(),
   plan: z.string(),
+  /** The implementation mode the provider suggests (Codex: Plan's exit choice). */
+  implementMode: z.enum(["default", "acceptEdits", "auto"]).optional(),
   at: z.number(),
 });
 export type PlanReviewInteraction = z.infer<typeof planReviewInteractionSchema>;
@@ -122,7 +124,13 @@ export const interactionFor = (ev: HarnessEvent): SessionInteraction | null => {
         at: ev.ts,
       };
     case "plan_review":
-      return { kind: "plan_review", id: ev.id, plan: ev.plan, at: ev.ts };
+      return {
+        kind: "plan_review",
+        id: ev.id,
+        plan: ev.plan,
+        ...(ev.implementMode !== undefined ? { implementMode: ev.implementMode } : {}),
+        at: ev.ts,
+      };
     default:
       return null;
   }

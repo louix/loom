@@ -279,6 +279,33 @@ describe("session-manager", { concurrency: 4 }, () => {
     await c.close();
   });
 
+  test("an answer that ends the turn leaves the session idle, even when its result drains first", async () => {
+    const c = await client();
+    const { id, fs } = await createFake(c);
+    fs.emit({ type: "plan_review", id: "pr-handoff", plan: "1. elsewhere" });
+    await waitFor(async () => (await awaitReasonOf(c, id)) === "plan_review");
+    // As a Codex plan handoff (or an empty discussion): the held planning
+    // turn ends with the answer.
+    const respond = fs.respondToPlan.bind(fs);
+    fs.respondToPlan = async (requestId, decision) => {
+      await respond(requestId, decision);
+      fs.emit({ type: "result", kind: "ok" });
+      await waitFor(
+        async () =>
+          (await c.request<SessionSnapshot>("session.get", { id })).status.kind === "idle",
+      );
+    };
+    await c.request("session.respondPlan", {
+      id,
+      requestId: "pr-handoff",
+      action: "discuss",
+      message: "later",
+    });
+    await delay(50);
+    assert.equal((await c.request<SessionSnapshot>("session.get", { id })).status.kind, "idle");
+    await c.close();
+  });
+
   test("session.respondPlan carries the revise plan / discuss message and validates them", async () => {
     const c = await client();
     const { id, fs } = await createFake(c);
@@ -1006,6 +1033,21 @@ describe("session-manager", { concurrency: 4 }, () => {
     assert.equal(snap.mode, "plan");
     assert.deepEqual(fs.modeChanges, ["plan"]);
     await assert.rejects(c.request("session.setMode", { id, mode: "bogus" }), /mode must be/);
+    await c.close();
+  });
+
+  test("setMode records the mode a live adapter took, not merely the one requested", async () => {
+    const c = await client();
+    const { id, fs } = await createFake(c);
+    fs.modeMap = { acceptEdits: "default" }; // as Codex selects Manual
+    const snap = await c.request<SessionSnapshot>("session.setMode", {
+      id,
+      mode: "acceptEdits",
+      by: "tester",
+    });
+    assert.deepEqual(fs.modeChanges, ["acceptEdits"]);
+    assert.equal(snap.mode, "default");
+    assert.equal((await c.request<SessionSnapshot>("session.get", { id })).mode, "default");
     await c.close();
   });
 

@@ -15,14 +15,17 @@ import { resolveCodexHome } from "@loom/connector-chatgpt/codex-home";
 import { discoverCodexModels } from "@loom/connector-chatgpt/discovery";
 import { CodexRpcClient } from "@loom/connector-chatgpt/rpc";
 import { makeLogger } from "@loom/core/logger";
-import type { PlanDecision } from "@loom/core/types";
+import type { HarnessEvent } from "@loom/core/events";
+import type { PlanDecision, SessionMode } from "@loom/core/types";
 import { writtenPaths } from "@loom/core/tool-paths";
 import { policy } from "@loom/runtime/policy";
+import { CodexAppServerSession, mcpConfig } from "@loom/connector-chatgpt/app-server";
 import {
-  approvalsReviewerFor,
-  CodexAppServerSession,
-  mcpConfig,
-} from "@loom/connector-chatgpt/app-server";
+  CODEX_PERMISSION_MODES,
+  CodexNativeModes,
+  codexAgentMode,
+  reviewerFor,
+} from "@loom/connector-chatgpt/agent-modes";
 import {
   spawnCodex,
   type CodexLaunchSpec,
@@ -104,6 +107,8 @@ test("ChatGPT provider capabilities reflect a Codex-owned thread, not a Loom-own
   assert.equal(provider.capabilities.compaction, true);
   // Code Mode's `thread/compact/start` accepts no instruction payload.
   assert.equal(provider.capabilities.compactionInstructions, false);
+  // Native presets only: offering acceptEdits would duplicate Manual.
+  assert.deepEqual(provider.capabilities.permissionModes, ["default", "plan", "auto"]);
 });
 
 test("createProvider rejects the obsolete direct-backend base_url setting", () => {
@@ -216,11 +221,15 @@ test("Codex requires explicitly selected command and remote tools", () => {
   );
 });
 
-test("Code Mode routes auto-mode approvals through Codex's automatic reviewer", () => {
-  assert.equal(approvalsReviewerFor("auto"), "auto_review");
-  assert.equal(approvalsReviewerFor("acceptEdits"), "user");
-  assert.equal(approvalsReviewerFor("default"), "user");
-  assert.equal(approvalsReviewerFor("plan"), "user");
+test("Loom modes map explicitly onto Codex's native presets; acceptEdits is Manual, not a duplicate choice", () => {
+  assert.equal(codexAgentMode("auto"), "auto");
+  assert.equal(codexAgentMode("default"), "default");
+  assert.equal(codexAgentMode("plan"), "plan");
+  // Its old Codex pair (on-request, user) is exactly Manual's.
+  assert.equal(codexAgentMode("acceptEdits"), "default");
+  assert.equal(reviewerFor("auto"), "auto_review");
+  assert.equal(reviewerFor("default"), "user");
+  assert.deepEqual(CODEX_PERMISSION_MODES, ["default", "plan", "auto"]);
 });
 
 test("resolveCodexHome: config_dir, then CODEX_HOME, then ~/.codex", () => {
@@ -687,7 +696,7 @@ for (const mode of ["default", "plan", "acceptEdits"] as const) {
   test(`Codex's item/tool/call raises a real permission_request for commit in ${mode} mode instead of denying it outright`, async () => {
     // `@loom/runtime/policy`'s `policy()` never auto-allows `commit` outside
     // `auto` mode — every other mode blocks on a human decision through the
-    // same pending-interaction machinery `ask_user`/`exit_plan`/native
+    // same pending-interaction machinery `ask_user`/native
     // approvals use, rather than denying immediately.
     const { root, git, cleanup } = repo();
     const codexHome = {
@@ -999,51 +1008,13 @@ test("interrupt() drains a pending ask_user question instead of leaving it parke
   }
 });
 
-const planDecisionCases: Array<{
-  name: string;
-  decision: PlanDecision;
-  expectText: RegExp;
-  expectMode?: "acceptEdits";
-}> = [
-  {
-    name: "discuss",
-    decision: { action: "discuss", message: "not ready yet" },
-    expectText: /not ready to implement.*not ready yet.*call exit_plan again/s,
-  },
-  {
-    name: "handoff",
-    decision: { action: "handoff" },
-    expectText: /continues in a separate session/,
-  },
-  {
-    name: "implement",
-    decision: { action: "implement" },
-    expectText: /Plan approved\. Implementing now\./,
-    expectMode: "acceptEdits",
-  },
-  {
-    name: "revise",
-    decision: { action: "revise", plan: "the revised plan" },
-    expectText: /Plan approved\. Implementing now\./,
-    expectMode: "acceptEdits",
-  },
-  {
-    name: "implement_fresh",
-    // implement_fresh's context-reset is explicitly Phase 6's job — treated
-    // like a plain `implement` here (see `respondToPlan`'s doc comment).
-    decision: { action: "implement_fresh" },
-    expectText: /Plan approved\. Implementing now\./,
-    expectMode: "acceptEdits",
-  },
-];
-
-for (const { name, decision, expectText, expectMode } of planDecisionCases) {
-  test(`Codex's exit_plan dynamic tool round-trips a "${name}" plan decision`, async () => {
+for (const mode of ["plan", "default"] as const) {
+  test(`a pre-native thread's exit_plan call (${mode}) is redirected to native Plan, never raising a review`, async () => {
     const codexHome = {
-      dir: `/tmp/loom-codex-dyntool-exitplan-${name}`,
-      authJsonPath: `/tmp/loom-codex-dyntool-exitplan-${name}/auth.json`,
+      dir: `/tmp/loom-codex-dyntool-exitplan-${mode}`,
+      authJsonPath: `/tmp/loom-codex-dyntool-exitplan-${mode}/auth.json`,
     };
-    const resultFile = join(tmpdir(), `tool-call-result-exitplan-${name}-${process.pid}.json`);
+    const resultFile = join(tmpdir(), `tool-call-result-exitplan-${mode}-${process.pid}.json`);
     try {
       Deno.env.set(
         "LOOM_TEST_TOOL_CALL_SPEC",
@@ -1051,36 +1022,21 @@ for (const { name, decision, expectText, expectMode } of planDecisionCases) {
       );
       Deno.env.set("LOOM_TEST_TOOL_CALL_RESULT_FILE", resultFile);
       const s = await CodexAppServerSession.start(
-        {
-          sessionId: "s1",
-          cwd: "/tmp",
-          prompt: "go",
-          mode: "plan",
-          mcpServers: [],
-          loomServer: true,
-        },
+        { sessionId: "s1", cwd: "/tmp", prompt: "", mode, mcpServers: [], loomServer: true },
         codexHome,
         FAKE_CODEX,
       );
       try {
-        let planId = "";
-        for await (const ev of s.events()) {
-          if (ev.type === "plan_review") {
-            assert.equal(ev.plan, "do the thing");
-            planId = ev.id;
-            break;
-          }
-        }
-        await s.respondToPlan(planId, decision);
-        const raw = await waitForFile(resultFile);
-        const result = JSON.parse(raw) as {
+        const result = JSON.parse(await waitForFile(resultFile)) as {
           contentItems: Array<{ text: string }>;
           success: boolean;
         };
-        assert.equal(result.success, true);
-        assert.match(result.contentItems[0]?.text ?? "", expectText);
-        if (expectMode) assert.equal(s.snapshot().mode, expectMode);
-        else assert.equal(s.snapshot().mode, "plan");
+        assert.equal(result.success, false);
+        assert.match(result.contentItems[0]?.text ?? "", /retired.*<proposed_plan>/s);
+        await s.close();
+        const events: string[] = [];
+        for await (const ev of s.events()) events.push(ev.type);
+        assert(!events.includes("plan_review"));
       } finally {
         await s.close();
       }
@@ -1091,46 +1047,6 @@ for (const { name, decision, expectText, expectMode } of planDecisionCases) {
     }
   });
 }
-
-test("exit_plan is refused outside plan mode instead of silently presenting a plan", async () => {
-  const codexHome = {
-    dir: "/tmp/loom-codex-dyntool-exitplan-wrongmode",
-    authJsonPath: "/tmp/loom-codex-dyntool-exitplan-wrongmode/auth.json",
-  };
-  const resultFile = join(tmpdir(), `tool-call-result-exitplan-wrongmode-${process.pid}.json`);
-  try {
-    Deno.env.set(
-      "LOOM_TEST_TOOL_CALL_SPEC",
-      JSON.stringify({ tool: "exit_plan", arguments: { plan: "do the thing" } }),
-    );
-    Deno.env.set("LOOM_TEST_TOOL_CALL_RESULT_FILE", resultFile);
-    const s = await CodexAppServerSession.start(
-      {
-        sessionId: "s1",
-        cwd: "/tmp",
-        prompt: "go",
-        mode: "default",
-        mcpServers: [],
-        loomServer: true,
-      },
-      codexHome,
-      FAKE_CODEX,
-    );
-    try {
-      const raw = await waitForFile(resultFile);
-      const result = JSON.parse(raw) as { contentItems: Array<{ text: string }>; success: boolean };
-      assert.equal(result.success, false);
-      assert.match(result.contentItems[0]?.text ?? "", /only usable in plan mode/);
-    } finally {
-      await s.close();
-    }
-  } finally {
-    Deno.env.delete("LOOM_TEST_TOOL_CALL_SPEC");
-    Deno.env.delete("LOOM_TEST_TOOL_CALL_RESULT_FILE");
-    await rm(resultFile, { force: true });
-  }
-});
-
 test("Codex's native item/tool/requestUserInput round-trips through the same AskUserQuestion permission shape the TUI already renders", async () => {
   const codexHome = {
     dir: "/tmp/loom-codex-native-question",
@@ -1322,80 +1238,6 @@ test("a server request tagged with an observed sub-agent's threadId is accepted 
   }
 });
 
-for (const [from, to, label] of [
-  ["auto", "default", "tightening (policy + reviewer axes)"],
-  ["default", "acceptEdits", "a pure relaxation (policy axis only)"],
-  ["plan", "acceptEdits", "leaving plan's read-only sandbox (sandbox axis)"],
-] as const) {
-  test(`setMode defers ${label} until the next turn without interrupting`, async () => {
-    const codexHome = {
-      dir: `/tmp/loom-codex-setmode-${from}-${to}`,
-      authJsonPath: `/tmp/loom-codex-setmode-${from}-${to}/auth.json`,
-    };
-    const markerFile = join(tmpdir(), `interrupt-marker-${from}-${to}-${process.pid}.txt`);
-    const releaseFile = `${markerFile}.complete`;
-    const requestLog = `${markerFile}.requests`;
-    try {
-      Deno.env.set("LOOM_TEST_HOLD_TURN", "1");
-      Deno.env.set("LOOM_TEST_INTERRUPT_MARKER_FILE", markerFile);
-      Deno.env.set("LOOM_TEST_COMPLETE_TURN_FILE", releaseFile);
-      Deno.env.set("LOOM_TEST_REQUEST_LOG", requestLog);
-      const s = await CodexAppServerSession.start(
-        { sessionId: "s1", cwd: "/tmp", prompt: "go", mode: from, mcpServers: [] },
-        codexHome,
-        FAKE_CODEX,
-      );
-      try {
-        await s.setMode(to);
-        assert.equal(s.snapshot().pendingMode, to);
-        await s.setMode(from);
-        assert.equal(
-          s.snapshot().pendingMode,
-          undefined,
-          "cycling back cancels the deferred change",
-        );
-        await s.setMode(to);
-        assert.equal(s.snapshot().status.kind, "running");
-        await s.send("continue working"); // steering still uses the current turn
-        assert.equal(
-          await waitForExists(markerFile, 50),
-          false,
-          "a mode change must not interrupt the active turn",
-        );
-        await writeFile(releaseFile, "");
-        for await (const event of s.events()) if (event.type === "result") break;
-        assert.equal(s.snapshot().pendingMode, to, "still pending between turns");
-        await rm(releaseFile);
-        await s.send("next turn");
-        assert.equal(s.snapshot().pendingMode, undefined);
-        const requests = (await readFile(requestLog, "utf8"))
-          .trim()
-          .split("\n")
-          .map((line) => JSON.parse(line));
-        const starts = requests.filter((r) => r.method === "turn/start");
-        assert.equal(starts.length, 2);
-        assert.equal(
-          starts[1].params.approvalPolicy,
-          to === "default" ? "untrusted" : "on-request",
-        );
-        assert.equal(starts[1].params.sandboxPolicy.type, "workspaceWrite");
-        assert.equal(starts[1].params.approvalsReviewer, "user");
-        assert.equal(requests.filter((r) => r.method === "turn/steer").length, 1);
-      } finally {
-        await s.close();
-      }
-    } finally {
-      Deno.env.delete("LOOM_TEST_HOLD_TURN");
-      Deno.env.delete("LOOM_TEST_INTERRUPT_MARKER_FILE");
-      Deno.env.delete("LOOM_TEST_COMPLETE_TURN_FILE");
-      Deno.env.delete("LOOM_TEST_REQUEST_LOG");
-      await rm(markerFile, { force: true });
-      await rm(releaseFile, { force: true });
-      await rm(requestLog, { force: true });
-    }
-  });
-}
-
 test("setMode does not interrupt when the mode isn't actually changing", async () => {
   const codexHome = {
     dir: "/tmp/loom-codex-setmode-noop",
@@ -1522,261 +1364,6 @@ test("a dynamic tool call arriving for an already-interrupted turn is rejected i
   }
 });
 
-test("exit_plan's plan_review event id matches the dynamic tool call's own callId, for replay correlation", async () => {
-  const codexHome = {
-    dir: "/tmp/loom-codex-exitplan-id-correlation",
-    authJsonPath: "/tmp/loom-codex-exitplan-id-correlation/auth.json",
-  };
-  const resultFile = join(tmpdir(), `tool-call-result-exitplan-idcheck-${process.pid}.json`);
-  const callId = "fake-call-1"; // the fixture's hardcoded item/tool/call callId
-  try {
-    Deno.env.set(
-      "LOOM_TEST_TOOL_CALL_SPEC",
-      JSON.stringify({ tool: "exit_plan", arguments: { plan: "do the thing" } }),
-    );
-    Deno.env.set("LOOM_TEST_TOOL_CALL_RESULT_FILE", resultFile);
-    const s = await CodexAppServerSession.start(
-      {
-        sessionId: "s1",
-        cwd: "/tmp",
-        prompt: "go",
-        mode: "plan",
-        mcpServers: [],
-        loomServer: true,
-      },
-      codexHome,
-      FAKE_CODEX,
-    );
-    try {
-      let planId = "";
-      for await (const ev of s.events()) {
-        if (ev.type === "plan_review") {
-          planId = ev.id;
-          break;
-        }
-      }
-      // Codex's own dynamic-tool-call identity, confirmed against the
-      // codex-rs test suite to equal the eventual completed item's `id` —
-      // the same id a persisted `tool_call`/`tool_result` pair for this
-      // exact call would carry, so replay can tell the plan was resolved.
-      assert.equal(planId, callId);
-      await s.respondToPlan(planId, { action: "handoff" });
-      await waitForFile(resultFile);
-    } finally {
-      await s.close();
-    }
-  } finally {
-    Deno.env.delete("LOOM_TEST_TOOL_CALL_SPEC");
-    Deno.env.delete("LOOM_TEST_TOOL_CALL_RESULT_FILE");
-    await rm(resultFile, { force: true });
-  }
-});
-
-test("respondToPlan never tells the model 'approved' when the mode/turn transition itself fails", async () => {
-  const codexHome = {
-    dir: "/tmp/loom-codex-exitplan-transition-fails",
-    authJsonPath: "/tmp/loom-codex-exitplan-transition-fails/auth.json",
-  };
-  const resultFile = join(tmpdir(), `tool-call-result-exitplan-failtransition-${process.pid}.json`);
-  try {
-    Deno.env.set("LOOM_TEST_FAIL_THREAD_SETTINGS_UPDATE", "1");
-    Deno.env.set(
-      "LOOM_TEST_TOOL_CALL_SPEC",
-      JSON.stringify({ tool: "exit_plan", arguments: { plan: "do the thing" } }),
-    );
-    Deno.env.set("LOOM_TEST_TOOL_CALL_RESULT_FILE", resultFile);
-    const s = await CodexAppServerSession.start(
-      {
-        sessionId: "s1",
-        cwd: "/tmp",
-        prompt: "go",
-        mode: "plan",
-        mcpServers: [],
-        loomServer: true,
-      },
-      codexHome,
-      FAKE_CODEX,
-    );
-    try {
-      let planId = "";
-      for await (const ev of s.events()) {
-        if (ev.type === "plan_review") {
-          planId = ev.id;
-          break;
-        }
-      }
-      await assert.rejects(
-        () => s.respondToPlan(planId, { action: "implement" }),
-        /forced thread\/settings\/update failure/,
-      );
-      const raw = await waitForFile(resultFile);
-      const result = JSON.parse(raw) as { contentItems: Array<{ text: string }>; success: boolean };
-      // Never "Plan approved. Implementing now." — the transition didn't happen.
-      assert.doesNotMatch(result.contentItems[0]?.text ?? "", /Plan approved/);
-      assert.match(result.contentItems[0]?.text ?? "", /could not be implemented/);
-      assert.equal(s.snapshot().mode, "plan", "mode must not have changed either");
-    } finally {
-      await s.close();
-    }
-  } finally {
-    Deno.env.delete("LOOM_TEST_FAIL_THREAD_SETTINGS_UPDATE");
-    Deno.env.delete("LOOM_TEST_TOOL_CALL_SPEC");
-    Deno.env.delete("LOOM_TEST_TOOL_CALL_RESULT_FILE");
-    await rm(resultFile, { force: true });
-  }
-});
-
-test("an external interrupt() while a plan's settings update is still in flight prevents the transition from restarting implementation afterward", async () => {
-  const codexHome = {
-    dir: "/tmp/loom-codex-exitplan-cancel-settings",
-    authJsonPath: "/tmp/loom-codex-exitplan-cancel-settings/auth.json",
-  };
-  const resultFile = join(
-    tmpdir(),
-    `tool-call-result-exitplan-cancel-settings-${process.pid}.json`,
-  );
-  const holdBase = join(tmpdir(), `hold-settings-update-${process.pid}`);
-  try {
-    Deno.env.set("LOOM_TEST_HOLD_THREAD_SETTINGS_UPDATE", holdBase);
-    Deno.env.set(
-      "LOOM_TEST_TOOL_CALL_SPEC",
-      JSON.stringify({ tool: "exit_plan", arguments: { plan: "do the thing" } }),
-    );
-    Deno.env.set("LOOM_TEST_TOOL_CALL_RESULT_FILE", resultFile);
-    const s = await CodexAppServerSession.start(
-      {
-        sessionId: "s1",
-        cwd: "/tmp",
-        prompt: "go",
-        mode: "plan",
-        mcpServers: [],
-        loomServer: true,
-      },
-      codexHome,
-      FAKE_CODEX,
-    );
-    try {
-      let planId = "";
-      for await (const ev of s.events()) {
-        if (ev.type === "plan_review") {
-          planId = ev.id;
-          break;
-        }
-      }
-      // Approve the plan — respondToPlan is now awaiting setMode(), which is
-      // awaiting the (held) thread/settings/update response. Don't await
-      // respondToPlan itself yet; the whole point is to race it.
-      const responded = assert.rejects(
-        () => s.respondToPlan(planId, { action: "implement" }),
-        /the session was interrupted before the plan could be implemented/,
-      );
-      await waitForExists(`${holdBase}.received`, 2000);
-
-      // An interrupt from *outside* this transition entirely (e.g. the user
-      // hitting stop) — reproducing exactly this: "1. Approve a plan; hold
-      // the settings RPC response. 2. Call interrupt() and await it — session
-      // becomes idle. 3. Release the settings response. 4. The detached
-      // transition [used to] start a new implementation turn."
-      await s.interrupt();
-      assert.equal(s.snapshot().status.kind, "idle");
-
-      await writeFile(`${holdBase}.release`, "");
-      await responded;
-
-      const raw = await waitForFile(resultFile);
-      const result = JSON.parse(raw) as { contentItems: Array<{ text: string }>; success: boolean };
-      assert.doesNotMatch(result.contentItems[0]?.text ?? "", /Plan approved/);
-      assert.match(result.contentItems[0]?.text ?? "", /interrupted/);
-      // The transition must not have snuck a fresh turn in on the way out.
-      assert.equal(s.snapshot().status.kind, "idle");
-    } finally {
-      await s.close();
-    }
-  } finally {
-    Deno.env.delete("LOOM_TEST_HOLD_THREAD_SETTINGS_UPDATE");
-    Deno.env.delete("LOOM_TEST_TOOL_CALL_SPEC");
-    Deno.env.delete("LOOM_TEST_TOOL_CALL_RESULT_FILE");
-    await rm(resultFile, { force: true });
-    await rm(`${holdBase}.received`, { force: true });
-    await rm(`${holdBase}.release`, { force: true });
-  }
-});
-
-test("an external interrupt() while a plan's fresh implementation turn is starting also prevents reporting approval", async () => {
-  const codexHome = {
-    dir: "/tmp/loom-codex-exitplan-cancel-turnstart",
-    authJsonPath: "/tmp/loom-codex-exitplan-cancel-turnstart/auth.json",
-  };
-  const resultFile = join(
-    tmpdir(),
-    `tool-call-result-exitplan-cancel-turnstart-${process.pid}.json`,
-  );
-  const holdBase = join(tmpdir(), `hold-turn-start-${process.pid}`);
-  try {
-    // Call #1 is the initial "go" turn (needed just to get the exit_plan
-    // tool call); call #2 is the fresh turn respondToPlan starts once the
-    // plan is approved — that's the one this test holds.
-    Deno.env.set("LOOM_TEST_HOLD_TURN_START_CALL", "2");
-    Deno.env.set("LOOM_TEST_HOLD_TURN_START", holdBase);
-    Deno.env.set(
-      "LOOM_TEST_TOOL_CALL_SPEC",
-      JSON.stringify({ tool: "exit_plan", arguments: { plan: "do the thing" } }),
-    );
-    Deno.env.set("LOOM_TEST_TOOL_CALL_RESULT_FILE", resultFile);
-    const s = await CodexAppServerSession.start(
-      {
-        sessionId: "s1",
-        cwd: "/tmp",
-        prompt: "go",
-        mode: "plan",
-        mcpServers: [],
-        loomServer: true,
-      },
-      codexHome,
-      FAKE_CODEX,
-    );
-    try {
-      let planId = "";
-      for await (const ev of s.events()) {
-        if (ev.type === "plan_review") {
-          planId = ev.id;
-          break;
-        }
-      }
-      const responded = assert.rejects(
-        () => s.respondToPlan(planId, { action: "implement" }),
-        /the session was interrupted before the plan could be implemented/,
-      );
-      // setMode's own thread/settings/update (call it doesn't hold) has
-      // already succeeded and interrupted the planning turn by the time
-      // send()'s turn/start (the held, second call) is in flight.
-      await waitForExists(`${holdBase}.received`, 2000);
-
-      await s.interrupt();
-      assert.equal(s.snapshot().status.kind, "idle");
-
-      await writeFile(`${holdBase}.release`, "");
-      await responded;
-
-      const raw = await waitForFile(resultFile);
-      const result = JSON.parse(raw) as { contentItems: Array<{ text: string }>; success: boolean };
-      assert.doesNotMatch(result.contentItems[0]?.text ?? "", /Plan approved/);
-      assert.match(result.contentItems[0]?.text ?? "", /interrupted/);
-      assert.equal(s.snapshot().status.kind, "idle");
-    } finally {
-      await s.close();
-    }
-  } finally {
-    Deno.env.delete("LOOM_TEST_HOLD_TURN_START_CALL");
-    Deno.env.delete("LOOM_TEST_HOLD_TURN_START");
-    Deno.env.delete("LOOM_TEST_TOOL_CALL_SPEC");
-    Deno.env.delete("LOOM_TEST_TOOL_CALL_RESULT_FILE");
-    await rm(resultFile, { force: true });
-    await rm(`${holdBase}.received`, { force: true });
-    await rm(`${holdBase}.release`, { force: true });
-  }
-});
-
 test("interrupt() invalidates an in-flight dispatch's askUser callback instead of letting it park a new question after the turn is gone", async () => {
   const codexHome = {
     dir: "/tmp/loom-codex-cancel-inflight-dispatch",
@@ -1887,14 +1474,12 @@ test("localToolDispatcher rechecks cancellation after an approval wait, before r
 
 test("Loom's own tool policy is independent of Codex's approvals reviewer — auto_review can never approve a Loom tool request on its behalf", () => {
   // The dynamic-tool dispatcher (`tool-dispatch.ts`) gates purely on
-  // `@loom/runtime/policy`'s `policy()`, never on `approvalsReviewerFor` —
-  // asserting both here as a single fact keeps that independence from
-  // silently drifting apart as either side changes.
-  for (const mode of ["default", "plan", "acceptEdits"] as const) {
-    assert.equal(approvalsReviewerFor(mode), "user");
+  // `@loom/runtime/policy`'s `policy()` of the Loom mode, never on Codex's
+  // reviewer — Plan keeps whichever reviewer it exits to, yet still asks.
+  for (const mode of ["default", "plan", "acceptEdits"] as const)
     assert.equal(policy(mode, "commit"), "ask");
-  }
-  assert.equal(approvalsReviewerFor("auto"), "auto_review");
+  assert.equal(reviewerFor("default"), "user");
+  assert.equal(reviewerFor("auto"), "auto_review");
   assert.equal(policy("auto", "commit"), "allow");
 });
 
@@ -2081,16 +1666,19 @@ test("Codex VM network access survives turns, mode changes and resume; host stay
       assert.equal(starts.length, 2);
       for (const { params } of starts)
         assert.equal(params.config["sandbox_workspace_write.network_access"], allowed);
-      const policies = requests.filter((r) =>
-        ["turn/start", "thread/settings/update"].includes(r.method),
-      );
-      assert.equal(policies.length, 9);
-      for (const { params } of policies) {
+      // Every turn restates the same writable sandbox, Plan included; mode
+      // changes are collaboration/reviewer settings and never touch it.
+      const turns = requests.filter((r) => r.method === "turn/start");
+      assert.equal(turns.length, 5);
+      for (const { params } of turns) {
         assert.equal(params.sandboxPolicy.networkAccess, allowed);
-        if (params.sandboxPolicy.type === "workspaceWrite")
-          assert.deepEqual(params.sandboxPolicy.writableRoots, [root]);
-        else assert.equal(params.sandboxPolicy.type, "readOnly");
+        assert.equal(params.sandboxPolicy.type, "workspaceWrite");
+        assert.deepEqual(params.sandboxPolicy.writableRoots, [root]);
       }
+      // Plan, Manual (for acceptEdits), Auto, Manual; resuming in Manual is a no-op.
+      const updates = requests.filter((r) => r.method === "thread/settings/update");
+      assert.equal(updates.length, 4);
+      for (const { params } of updates) assert.equal(params.sandboxPolicy, undefined);
     }
   } finally {
     Deno.env.delete("LOOM_TEST_REQUEST_LOG");
@@ -2379,3 +1967,552 @@ test("natural turn completion settles an unanswered dynamic question", async () 
     await rm(directory, { recursive: true, force: true });
   }
 });
+// --- Native agent modes ------------------------------------------------------
+
+type Logged = { method: string; params: Record<string, any> };
+const modesHome = {
+  dir: "/tmp/loom-codex-native-modes",
+  authJsonPath: "/tmp/loom-codex-native-modes/auth.json",
+};
+
+/** Run `body` against the fake app-server with its knobs set (`env` may name
+ *  files in the scratch directory), logging every request it receives. */
+const withFakeCodex = async (
+  env: Record<string, string> | ((dir: string) => Record<string, string>),
+  body: (requests: (method?: string) => Promise<Logged[]>, dir: string) => Promise<void>,
+): Promise<void> => {
+  const dir = await mkdtemp(join(tmpdir(), "loom-codex-modes-"));
+  const log = join(dir, "requests.jsonl");
+  const all = { LOOM_TEST_REQUEST_LOG: log, ...(typeof env === "function" ? env(dir) : env) };
+  for (const [name, value] of Object.entries(all)) Deno.env.set(name, value);
+  try {
+    await body(async (method) => {
+      const text = await readFile(log, "utf8").catch(() => "");
+      return text
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as Logged)
+        .filter((r) => !method || r.method === method);
+    }, dir);
+  } finally {
+    for (const name of Object.keys(all)) Deno.env.delete(name);
+    await rm(dir, { recursive: true, force: true });
+  }
+};
+
+const startCodex = (mode: SessionMode, prompt = "") =>
+  CodexAppServerSession.start(
+    { sessionId: "s1", cwd: "/tmp", prompt, mode, mcpServers: [] },
+    modesHome,
+    FAKE_CODEX,
+  );
+const resumeCodex = (mode?: SessionMode) =>
+  CodexAppServerSession.resume(
+    { sessionId: "s1", cwd: "/tmp", providerRef: "fake-thread-1", ...(mode ? { mode } : {}) },
+    modesHome,
+    FAKE_CODEX,
+  );
+
+/** Events up to and including the first one `done` accepts. */
+const eventsUntil = async (
+  s: CodexAppServerSession,
+  done: (ev: HarnessEvent) => boolean,
+): Promise<HarnessEvent[]> => {
+  const seen: HarnessEvent[] = [];
+  for await (const ev of s.events()) {
+    seen.push(ev);
+    if (done(ev)) return seen;
+  }
+  throw new Error(`events ended without a match: ${seen.map((ev) => ev.type).join(", ")}`);
+};
+const inputText = (r: Logged): string => r.params.input?.[0]?.text ?? "";
+
+test("CodexNativeModes reports only what Codex reports; an acknowledgement alone never settles a change", async () => {
+  const modes = new CodexNativeModes(20);
+  const presets = {
+    data: [
+      { name: "Plan", mode: "plan", model: null, reasoning_effort: "medium" },
+      { name: "Default", mode: "default", model: null, reasoning_effort: null },
+    ],
+  };
+  assert.equal(await modes.discover(async () => presets), null);
+  const reply = { model: "m", approvalPolicy: "on-request", approvalsReviewer: "auto_review" };
+  modes.initialize(reply, true);
+  assert.equal(modes.mode, "auto", "a fresh thread is in Default collaboration");
+  modes.initialize(reply, false);
+  assert.equal(modes.mode, null, "a resume reply without collaboration is not guessed");
+  assert.equal(modes.collaborationKnown, false);
+  assert.equal(modes.executionMode, "auto");
+  modes.initialize({ ...reply, collaborationMode: { mode: "plan" } }, false);
+  assert.equal(modes.mode, "plan");
+  assert.equal(modes.executionMode, "auto", "Plan keeps the reviewer it exits to");
+  assert.equal(modes.updateFor("plan", null, null), null, "native no-ops are never sent");
+  assert.deepEqual(modes.updateFor("default", null, "low"), {
+    approvalPolicy: "on-request",
+    approvalsReviewer: "user",
+    collaborationMode: {
+      mode: "default",
+      settings: { model: "m", reasoning_effort: "low", developer_instructions: null },
+    },
+  });
+
+  const unobserved = modes.until("default");
+  await assert.rejects(unobserved.wait(), /did not report the default mode as effective/);
+  assert.equal(modes.mode, "plan");
+
+  // Another mode's report doesn't settle the watch; the target's does, even
+  // when it arrives before the acknowledgement (before `wait()`).
+  const observed = modes.until("default");
+  const settings = {
+    model: "m",
+    approvalPolicy: "on-request",
+    collaborationMode: { mode: "default" },
+  };
+  modes.observe({ ...settings, approvalsReviewer: "auto_review" });
+  assert.equal(modes.mode, "auto");
+  modes.observe({ ...settings, approvalsReviewer: "user" });
+  await observed.wait();
+  assert.equal(modes.mode, "default");
+  modes.observe({ ...settings, approvalPolicy: "never", approvalsReviewer: "user" });
+  assert.equal(modes.mode, null, "settings outside Loom's presets name no mode");
+
+  const pending = modes.until("auto");
+  modes.close(new Error("connection gone"));
+  await assert.rejects(pending.wait(), /connection gone/);
+  await assert.rejects(modes.until("plan").wait(), /connection gone/);
+});
+
+test("CodexNativeModes reports missing or malformed collaboration presets instead of inventing them", async () => {
+  const none = new CodexNativeModes();
+  const failure = await none.discover(async () => {
+    throw new Error("unknown method");
+  });
+  assert.match(failure ?? "", /did not list its collaboration modes \(unknown method\)/);
+  none.initialize({ model: "m", approvalPolicy: "on-request", approvalsReviewer: "user" }, true);
+  assert.equal(none.mode, "default");
+  assert.throws(() => none.updateFor("plan", null, null), /does not offer a Plan/);
+  assert.throws(() => none.updateFor("auto", null, null), /does not offer its default/);
+
+  const planOnly = new CodexNativeModes();
+  const missing = await planOnly.discover(async () => ({ data: [{ name: "Plan", mode: "plan" }] }));
+  assert.match(missing ?? "", /Auto and Manual cannot be selected/);
+  const twice = await new CodexNativeModes().discover(async () => ({
+    data: [{ mode: "plan" }, { mode: "plan" }],
+  }));
+  assert.match(twice ?? "", /twice/);
+  assert.match((await new CodexNativeModes().discover(async () => ({}))) ?? "", /malformed/);
+});
+
+for (const [mode, effective, reviewer] of [
+  ["auto", "auto", "auto_review"],
+  ["default", "default", "user"],
+  ["acceptEdits", "default", "user"],
+  ["plan", "plan", "user"],
+] as const) {
+  test(`a fresh Codex session requested in ${mode} starts on-request, workspace-write, and reports ${effective}`, () =>
+    withFakeCodex({}, async (requests) => {
+      const s = await startCodex(mode);
+      try {
+        assert.equal(s.snapshot().mode, effective);
+        assert.equal(s.snapshot().pendingMode, undefined);
+        const [start] = await requests("thread/start");
+        assert.equal(start!.params.approvalPolicy, "on-request");
+        assert.equal(start!.params.sandbox, "workspace-write");
+        // A fresh Plan session has no earlier reviewer; it exits to Manual.
+        assert.equal(start!.params.approvalsReviewer, reviewer);
+        assert.equal((await requests("collaborationMode/list")).length, 1);
+        const updates = await requests("thread/settings/update");
+        if (mode === "plan") {
+          assert.equal(updates.length, 1);
+          assert.equal(updates[0]!.params.collaborationMode.mode, "plan");
+          assert.equal(updates[0]!.params.approvalsReviewer, undefined);
+          assert.equal(updates[0]!.params.sandboxPolicy, undefined);
+        } else assert.equal(updates.length, 0, "the start already selected it");
+      } finally {
+        await s.close();
+      }
+    }));
+}
+
+for (const execution of ["auto", "default"] as const) {
+  test(`${execution} -> plan -> ${execution} keeps the execution choice, and choosing a preset in Plan selects its reviewer`, () =>
+    withFakeCodex({}, async (requests) => {
+      const other = execution === "auto" ? "default" : "auto";
+      const s = await startCodex(execution);
+      try {
+        await s.setMode("plan");
+        assert.equal(s.snapshot().mode, "plan");
+        await s.setMode(execution);
+        assert.equal(s.snapshot().mode, execution);
+        await s.setMode("plan");
+        await s.setMode(other);
+        assert.equal(s.snapshot().mode, other);
+        await s.setMode(other); // already effective: nothing to send or observe
+        const updates = (await requests("thread/settings/update")).map((r) => r.params);
+        assert.deepEqual(
+          updates.map((p) => [p.collaborationMode.mode, p.approvalsReviewer ?? "kept"]),
+          [
+            ["plan", "kept"],
+            ["default", reviewerFor(execution)],
+            ["plan", "kept"],
+            ["default", reviewerFor(other)],
+          ],
+        );
+        for (const p of updates) {
+          assert.equal(p.approvalPolicy, "on-request");
+          assert.equal(p.sandboxPolicy, undefined);
+          assert.equal(p.collaborationMode.settings.developer_instructions, null);
+        }
+        assert.equal(updates[0]!.collaborationMode.settings.reasoning_effort, "medium");
+      } finally {
+        await s.close();
+      }
+    }));
+}
+
+for (const first of [false, true]) {
+  test(`setMode settles on the observed mode whether Codex reports it ${first ? "before" : "after"} acknowledging`, () =>
+    withFakeCodex(first ? { LOOM_TEST_SETTINGS_NOTIFICATION_FIRST: "1" } : {}, async () => {
+      const s = await startCodex("default");
+      try {
+        await s.setMode("plan");
+        assert.equal(s.snapshot().mode, "plan");
+        await s.setMode("auto");
+        assert.equal(s.snapshot().mode, "auto");
+      } finally {
+        await s.close();
+      }
+    }));
+}
+
+test("a mid-turn mode change applies to the next turn: pending until then, and never interrupting", () =>
+  withFakeCodex(
+    (dir) => ({ LOOM_TEST_HOLD_TURN: "1", LOOM_TEST_COMPLETE_TURN_FILE: join(dir, "complete") }),
+    async (requests, dir) => {
+      const s = await startCodex("default", "go");
+      try {
+        await s.setMode("auto");
+        assert.equal(s.snapshot().status.kind, "running");
+        assert.equal(s.snapshot().mode, "auto");
+        assert.equal(s.snapshot().pendingMode, "auto", "the running turn started in Manual");
+        await s.send("steer"); // still the current turn
+        assert.equal((await requests("turn/interrupt")).length, 0);
+        await writeFile(join(dir, "complete"), "");
+        await eventsUntil(s, (ev) => ev.type === "result");
+        assert.equal(s.snapshot().pendingMode, undefined, "nothing runs under the old mode");
+        await rm(join(dir, "complete"));
+        await s.send("next");
+        assert.equal(s.snapshot().mode, "auto");
+        assert.equal(s.snapshot().pendingMode, undefined);
+        const turns = await requests("turn/start");
+        assert.equal(turns.length, 2);
+        assert.equal((await requests("turn/steer")).length, 1);
+        for (const { params } of turns) {
+          // Thread settings own the mode; turns restate only the sandbox.
+          assert.equal(params.approvalPolicy, undefined);
+          assert.equal(params.approvalsReviewer, undefined);
+          assert.equal(params.collaborationMode, undefined);
+          assert.equal(params.sandboxPolicy.type, "workspaceWrite");
+        }
+      } finally {
+        await s.close();
+      }
+    },
+  ));
+
+test("a rejected mode change throws and leaves the reported mode and the session usable", () =>
+  withFakeCodex({ LOOM_TEST_FAIL_THREAD_SETTINGS_UPDATE: "1" }, async () => {
+    const s = await startCodex("default");
+    try {
+      await assert.rejects(s.setMode("plan"), /forced thread\/settings\/update failure/);
+      assert.equal(s.snapshot().mode, "default");
+      await assert.rejects(s.setMode("auto"), /forced thread\/settings\/update failure/);
+      assert.equal(s.snapshot().mode, "default");
+      await s.send("still usable");
+      await eventsUntil(s, (ev) => ev.type === "result");
+    } finally {
+      await s.close();
+    }
+  }));
+
+test("a disconnect during a mode change rejects it without claiming the requested mode", () =>
+  withFakeCodex({ LOOM_TEST_EXIT_ON_SETTINGS_UPDATE: "1" }, async () => {
+    const s = await startCodex("auto");
+    try {
+      await assert.rejects(s.setMode("plan"));
+      assert.equal(s.snapshot().mode, "auto");
+    } finally {
+      await s.close();
+    }
+  }));
+
+test("Codex without collaboration modes is reported: Plan is refused, nothing is invented", () =>
+  withFakeCodex({ LOOM_TEST_NO_COLLABORATION_MODES: "1" }, async (requests) => {
+    const s = await startCodex("plan");
+    try {
+      const events = await eventsUntil(s, (ev) => ev.type === "status_changed");
+      const notes = events.flatMap((ev) => (ev.type === "error" ? [ev] : []));
+      assert(notes.some((ev) => !ev.fatal && /collaboration modes/.test(ev.message)));
+      assert(notes.some((ev) => !ev.fatal && /remains in Manual/.test(ev.message)));
+      assert.equal(s.snapshot().mode, "default", "the reviewer Codex reported, in Default");
+      await assert.rejects(s.setMode("plan"), /does not offer a Plan collaboration mode/);
+      assert.equal((await requests("thread/settings/update")).length, 0);
+    } finally {
+      await s.close();
+    }
+  }));
+
+for (const { saved, mode, expect, update } of [
+  {
+    // Codex restores the reviewer; Loom's saved mode agrees.
+    saved: { approvalsReviewer: "auto_review" },
+    mode: "auto",
+    expect: "auto",
+    update: null,
+  },
+  {
+    // Plan was selected after the thread's last turn, or (legacy) Loom's
+    // "plan" was only a read-only sandbox: restore native Plan, keep the reviewer.
+    saved: { approvalsReviewer: "auto_review" },
+    mode: "plan",
+    expect: "plan",
+    update: ["plan", "kept"],
+  },
+  {
+    // The reply omits the collaboration mode: applying the saved mode refreshes it.
+    saved: { approvalsReviewer: "auto_review", collaborationMode: null },
+    mode: "default",
+    expect: "default",
+    update: ["default", "user"],
+  },
+  {
+    // Old acceptEdits sessions were on-request/user — Manual, mapped explicitly.
+    saved: { approvalsReviewer: "user" },
+    mode: "acceptEdits",
+    expect: "default",
+    update: null,
+  },
+] as const) {
+  test(`resuming a ${mode} session restores the saved reviewer and reports ${expect}${saved.collaborationMode === null ? " after refreshing" : ""}`, () =>
+    withFakeCodex({ LOOM_TEST_RESUME_SETTINGS: JSON.stringify(saved) }, async (requests) => {
+      const s = await resumeCodex(mode);
+      try {
+        assert.equal(s.snapshot().mode, expect);
+        const [resume] = await requests("thread/resume");
+        assert.equal(resume!.params.approvalsReviewer, undefined, "the saved reviewer is kept");
+        assert.equal(resume!.params.approvalPolicy, "on-request");
+        assert.equal(resume!.params.sandbox, "workspace-write");
+        const updates = (await requests("thread/settings/update")).map((r) => [
+          r.params.collaborationMode.mode,
+          r.params.approvalsReviewer ?? "kept",
+        ]);
+        assert.deepEqual(updates, update ? [update] : []);
+      } finally {
+        await s.close();
+      }
+    }));
+}
+
+const planReview = async (s: CodexAppServerSession) => {
+  const events = await eventsUntil(s, (ev) => ev.type === "plan_review" || ev.type === "result");
+  const review = events.at(-1)!;
+  assert.equal(review.type, "plan_review", "the planning turn is held open, not finished");
+  assert(events.some((ev) => ev.type === "assistant_text" && ev.text === "1. do it"));
+  return review as Extract<HarnessEvent, { type: "plan_review" }>;
+};
+
+for (const { name, start, decision, mode, reviewer, text } of [
+  {
+    name: "implement exits to the execution choice Plan kept",
+    start: "auto",
+    decision: { action: "implement" },
+    mode: "auto",
+    reviewer: "auto_review",
+    text: /^The plan is approved\. Implement it now:\n\nthe plan you just presented$/,
+  },
+  {
+    name: "implement in an explicitly chosen mode selects its reviewer",
+    start: "default",
+    decision: { action: "implement", mode: "auto" },
+    mode: "auto",
+    reviewer: "auto_review",
+    text: /the plan you just presented/,
+  },
+  {
+    name: "revise implements the edited plan; acceptEdits runs as Manual",
+    start: "auto",
+    decision: { action: "revise", plan: "1. do it better", mode: "acceptEdits" },
+    mode: "default",
+    reviewer: "user",
+    text: /Implement it now:\n\n1\. do it better$/,
+  },
+  {
+    name: "implement_fresh implements in place",
+    start: "default",
+    decision: { action: "implement_fresh" },
+    mode: "default",
+    reviewer: "user",
+    text: /the plan you just presented/,
+  },
+  {
+    name: "discuss stays in Plan and sends the note",
+    start: "auto",
+    decision: { action: "discuss", message: "tighten step 2" },
+    mode: "plan",
+    reviewer: null,
+    text: /^tighten step 2$/,
+  },
+] as const) {
+  test(`native plan review: ${name}`, () =>
+    withFakeCodex({ LOOM_TEST_PLAN_ITEM: "1. do it" }, async (requests) => {
+      const s = await startCodex(start);
+      try {
+        await s.setMode("plan");
+        await s.send("go");
+        const review = await planReview(s);
+        assert.equal(review.id, "fake-plan-1");
+        assert.equal(review.plan, "1. do it");
+        assert.equal(review.implementMode, start);
+        const before = (await requests("thread/settings/update")).length;
+        await s.respondToPlan(review.id, decision as PlanDecision);
+        assert.equal(s.snapshot().mode, mode);
+        const updates = (await requests("thread/settings/update")).slice(before);
+        if (reviewer) {
+          assert.equal(updates.length, 1);
+          assert.equal(updates[0]!.params.collaborationMode.mode, "default");
+          assert.equal(updates[0]!.params.approvalsReviewer, reviewer);
+        } else assert.equal(updates.length, 0);
+        const turns = await requests("turn/start");
+        assert.equal(turns.length, 2, "one new message, no interrupt");
+        assert.match(inputText(turns[1]!), text);
+        assert.equal((await requests("turn/interrupt")).length, 0);
+        // The implementation turn ends the engagement; a discussion plans again.
+        const next = await eventsUntil(
+          s,
+          (ev) => ev.type === "result" || ev.type === "plan_review",
+        );
+        assert.equal(next.at(-1)!.type, mode === "plan" ? "plan_review" : "result");
+      } finally {
+        await s.close();
+      }
+    }));
+}
+
+test("native plan review: handoff ends the held turn without a mode change or message", () =>
+  withFakeCodex({ LOOM_TEST_PLAN_ITEM: "1. do it" }, async (requests) => {
+    const s = await startCodex("plan", "go");
+    try {
+      const review = await planReview(s);
+      assert.equal(review.implementMode, "default", "a fresh Plan session exits to Manual");
+      await s.respondToPlan(review.id, { action: "handoff" });
+      await eventsUntil(s, (ev) => ev.type === "result");
+      assert.equal(s.snapshot().status.kind, "idle");
+      assert.equal(s.snapshot().mode, "plan");
+      assert.equal((await requests("turn/start")).length, 1);
+      assert.equal((await requests("thread/settings/update")).length, 1); // entering Plan
+      // Answered once; a stale answer is ignored.
+      await s.respondToPlan(review.id, { action: "implement" });
+      assert.equal((await requests("turn/start")).length, 1);
+    } finally {
+      await s.close();
+    }
+  }));
+
+test("a plan is not offered for review once the user left Plan during its turn", () =>
+  withFakeCodex(
+    (dir) => ({
+      LOOM_TEST_PLAN_ITEM: "1. do it",
+      LOOM_TEST_HOLD_TURN: "1",
+      LOOM_TEST_COMPLETE_TURN_FILE: join(dir, "complete"),
+    }),
+    async (_requests, dir) => {
+      const s = await startCodex("plan", "go");
+      try {
+        await s.setMode("default");
+        assert.equal(s.snapshot().pendingMode, "default");
+        await writeFile(join(dir, "complete"), "");
+        const events = await eventsUntil(s, (ev) => ev.type === "result");
+        assert(!events.some((ev) => ev.type === "plan_review"));
+        assert(events.some((ev) => ev.type === "assistant_text" && ev.text === "1. do it"));
+      } finally {
+        await s.close();
+      }
+    },
+  ));
+
+test("a failed plan exit settles the turn in Plan and never sends the implementation request", () =>
+  withFakeCodex(
+    { LOOM_TEST_PLAN_ITEM: "1. do it", LOOM_TEST_FAIL_THREAD_SETTINGS_UPDATE_FROM: "2" },
+    async (requests) => {
+      const s = await startCodex("plan", "go");
+      try {
+        const review = await planReview(s);
+        await assert.rejects(
+          s.respondToPlan(review.id, { action: "implement" }),
+          /forced thread\/settings\/update failure/,
+        );
+        await eventsUntil(s, (ev) => ev.type === "result");
+        assert.equal(s.snapshot().mode, "plan");
+        assert.equal(s.snapshot().status.kind, "idle");
+        assert.equal((await requests("turn/start")).length, 1);
+      } finally {
+        await s.close();
+      }
+    },
+  ));
+
+test("an external interrupt while a plan exit's mode change is in flight stops the implementation request", () =>
+  withFakeCodex(
+    (dir) => ({
+      LOOM_TEST_PLAN_ITEM: "1. do it",
+      LOOM_TEST_HOLD_THREAD_SETTINGS_UPDATE: join(dir, "hold"),
+      LOOM_TEST_HOLD_THREAD_SETTINGS_UPDATE_CALL: "2",
+    }),
+    async (requests, dir) => {
+      const s = await startCodex("plan", "go");
+      try {
+        const review = await planReview(s);
+        const responded = assert.rejects(
+          s.respondToPlan(review.id, { action: "implement" }),
+          /interrupted before the plan could be implemented/,
+        );
+        assert(await waitForExists(join(dir, "hold.received"), 2000));
+        await s.interrupt();
+        assert.equal(s.snapshot().status.kind, "idle");
+        await writeFile(join(dir, "hold.release"), "");
+        await responded;
+        assert.equal((await requests("turn/start")).length, 1);
+        assert.equal(s.snapshot().status.kind, "idle");
+      } finally {
+        await s.close();
+      }
+    },
+  ));
+
+test("an external interrupt while a plan's implementation turn is starting ends that turn", () =>
+  withFakeCodex(
+    (dir) => ({
+      LOOM_TEST_PLAN_ITEM: "1. do it",
+      LOOM_TEST_HOLD_TURN_START: join(dir, "turn"),
+      LOOM_TEST_HOLD_TURN_START_CALL: "2",
+    }),
+    async (requests, dir) => {
+      const s = await startCodex("plan", "go");
+      try {
+        const review = await planReview(s);
+        const responded = assert.rejects(
+          s.respondToPlan(review.id, { action: "implement" }),
+          /interrupted before the plan could be implemented/,
+        );
+        assert(await waitForExists(join(dir, "turn.received"), 2000));
+        await s.interrupt();
+        assert.equal(s.snapshot().status.kind, "idle");
+        await writeFile(join(dir, "turn.release"), "");
+        await responded;
+        assert.equal((await requests("turn/interrupt")).length, 1);
+        assert.equal(s.snapshot().status.kind, "idle");
+      } finally {
+        await s.close();
+      }
+    },
+  ));

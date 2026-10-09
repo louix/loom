@@ -248,6 +248,8 @@ export class FakeSession implements AgentSession {
     return release;
   }
 
+  /** Modes this adapter takes as another, as Codex takes `acceptEdits` as Manual. */
+  modeMap: Partial<Record<SessionMode, SessionMode>> = {};
   async setMode(mode: SessionMode): Promise<void> {
     const gate = this.#modeGate;
     if (gate) {
@@ -255,7 +257,7 @@ export class FakeSession implements AgentSession {
       await gate;
     }
     this.modeChanges.push(mode);
-    this.#snap.mode = mode;
+    this.#snap.mode = this.modeMap[mode] ?? mode;
   }
 
   async setModel(model: string): Promise<void> {

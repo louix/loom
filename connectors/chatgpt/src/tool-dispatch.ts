@@ -9,7 +9,7 @@
 import { commitInWorktree } from "@loom/core/commit";
 import { statusInWorktree } from "@loom/core/status";
 import { policy } from "@loom/runtime/policy";
-import type { PermissionDecision, PlanDecision, SessionMode } from "@loom/core/types";
+import type { PermissionDecision, SessionMode } from "@loom/core/types";
 
 export interface ToolDispatchContext {
   mode: SessionMode;
@@ -26,9 +26,6 @@ export interface ToolDispatchContext {
    *  Supplied by `CodexAppServerSession` for the `ask_user` tool — omitted
    *  (e.g. in a test-only dispatcher) means `ask_user` isn't available. */
   askUser?: (question: string, context: string | undefined) => Promise<string>;
-  /** Present a plan for human review; resolves with their decision.
-   *  Supplied by `CodexAppServerSession` for the `exit_plan` tool. */
-  requestPlan?: (plan: string) => Promise<PlanDecision>;
   /** Raise a real permission request and block on a human decision, for a
    *  mutating loom tool `policy()` won't auto-allow in the current mode.
    *  Supplied by `CodexAppServerSession`; omitted means there's no wait
@@ -62,7 +59,7 @@ export type ToolDispatcher = (
  * `auto` mode for a non-readonly name like `commit`; every other mode
  * (including `plan`) raises a real `permission_request` via
  * `ctx.requestApproval` and blocks on a human decision — the same
- * pending-interaction machinery `ask_user`/`exit_plan` use, not a different
+ * pending-interaction machinery `ask_user` uses, not a different
  * path. Loom's own tool requests are a separate side channel Codex's own
  * approvals reviewer never touches, so `auto_review` can never approve one
  * of these on its behalf regardless of mode. Denial (explicit, or a
@@ -70,18 +67,19 @@ export type ToolDispatcher = (
  * approval) returns before `commitInWorktree` ever runs — cancellation
  * always prevents execution, never races it. `ctx.requestApproval` being
  * absent (a caller that hasn't wired the wait machinery) falls back to an
- * outright deny with guidance, rather than hanging forever. `ask_user`/
- * `exit_plan` are exempt from this gate entirely: both are read-only by name
+ * outright deny with guidance, rather than hanging forever. `ask_user` is
+ * exempt from this gate entirely: it is read-only by name
  * (`@loom/runtime/policy`'s `READONLY_EXACT`), so `policy()` would always
- * return "allow" for them anyway — they just ask/present, they don't mutate
- * anything.
+ * return "allow" for it anyway — it just asks, it doesn't mutate anything.
+ * The mode is Loom's, not Codex's reviewer: in Plan with an Auto exit, a
+ * `commit` still asks.
  *
  * Cancellation: checked once up front (an already-ended turn's dispatch
  * should never even start its own tool's work) and again immediately before
  * `commitInWorktree` — specifically *after* the `requestApproval` wait,
  * since that's the one `await` in this function that can span an
  * `interrupt()`. `ctx.signal` itself is what actually protects `ask_user`/
- * `exit_plan`/`requestApproval`'s own pending-interaction parking (see
+ * `requestApproval`'s own pending-interaction parking (see
  * `CodexAppServerSession#askUser` et al.) — the checks here are this
  * dispatcher's *own* responsibility for the one thing it alone controls:
  * not running the mutation after cancellation, even if some other check
@@ -128,34 +126,15 @@ export const localToolDispatcher: ToolDispatcher = async (tool, args, ctx) => {
     return { ok: true, text: answer };
   }
   if (tool === "exit_plan") {
-    if (!ctx.requestPlan) return { ok: false, text: "exit_plan is not available in this session" };
-    // Dynamic tools can't be unregistered mid-thread (no `dynamicTools` field
-    // on `thread/resume`), so `exit_plan` stays mounted even after the
-    // session leaves plan mode — gate its actual use here instead of at
-    // mount time, matching how `commit`/`status` gate on `policy()` instead
-    // of on whether they were ever mounted.
-    if (ctx.mode !== "plan") {
-      return {
-        ok: false,
-        text: "exit_plan is only usable in plan mode; the session is not currently in plan mode.",
-      };
-    }
-    const plan = typeof args["plan"] === "string" ? args["plan"] : "";
-    const decision = await ctx.requestPlan(plan);
-    if (decision.action === "discuss") {
-      return {
-        ok: true,
-        text:
-          `The user is not ready to implement. Their note:\n\n${decision.message}\n\n` +
-          "Stay in planning, address this, and call exit_plan again when ready.",
-      };
-    }
-    if (decision.action === "handoff") {
-      return { ok: true, text: "Plan approved. Implementation continues in a separate session." };
-    }
-    // implement / implement_fresh / revise — respondToPlan (app-server.ts)
-    // re-drives the session (setMode + a follow-up send) after this returns.
-    return { ok: true, text: "Plan approved. Implementing now." };
+    // Registered only on threads created before Plan became Codex's native
+    // collaboration mode — dynamic tools can't be withdrawn (no `dynamicTools`
+    // on `thread/resume`). A native plan is reviewed once its turn ends.
+    return {
+      ok: false,
+      text:
+        "exit_plan is retired. In Plan mode, present the complete plan in a <proposed_plan> " +
+        "block and end your turn; the user reviews it then.",
+    };
   }
   return { ok: false, text: `unsupported loom tool: ${tool}` };
 };

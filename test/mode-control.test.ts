@@ -37,6 +37,20 @@ const mkModes = (sessions: SessionSnapshot[], debounceMs = 5) => {
   };
 };
 
+test("a session whose provider offers fewer modes cycles only through those", async () => {
+  // Codex: Manual, Plan, Auto — `acceptEdits` would only duplicate Manual.
+  const modes: SessionMode[] = ["default", "plan", "auto"];
+  const m = mkModes([snap({ id: "a", status: "idle", mode: "plan", modes })]);
+  m.ctl.cycle("a");
+  assert.equal(m.pending("a"), "auto");
+  m.ctl.cycle("a");
+  assert.equal(m.pending("a"), "default");
+  m.ctl.cycle("a");
+  assert.equal(m.pending("a"), "plan");
+  await m.wait();
+  assert.deepEqual(m.sent, ["plan"]);
+});
+
 test("a rapid cycle shows every press and applies only the mode it settles on", async () => {
   const m = mkModes([snap({ id: "a", status: "idle", mode: "default" })]);
 

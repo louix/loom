@@ -246,6 +246,9 @@ export const sessionSnapshotSchema = z.object({
   mode: z.string(),
   /** Server-confirmed selection waiting to take effect on the next turn. */
   pendingMode: sessionModeSchema.optional(),
+  /** The modes this session's provider offers, in cycle order, when it offers
+   *  fewer than all four (Codex: no `acceptEdits`). Runtime-only. */
+  modes: z.array(sessionModeSchema).optional(),
   status: sessionStateSchema,
   title: z.union([z.string(), z.null()]),
   /** A user-authored note about the session — meta, not part of the event log. */
@@ -483,6 +486,9 @@ export const providerInfoSchema = z.object({
    * (manual). Same value on every entry — it isn't per-provider.
    */
   defaultMode: sessionModeSchema,
+  /** The modes this provider offers, in cycle order, once known and when
+   *  fewer than all four (Codex: no `acceptEdits`). */
+  modes: z.array(sessionModeSchema).optional(),
   defaultIsolation: z.enum(["vm", "local"]).optional(),
   vmUnavailableReason: z.string().optional(),
   /** Short label (Detail pane, `loom ls`). */

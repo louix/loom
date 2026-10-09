@@ -9,6 +9,7 @@
     "./rpc": "./src/rpc.ts",
     "./account": "./src/account.ts",
     "./launch": "./src/launch.ts",
-    "./tool-dispatch": "./src/tool-dispatch.ts"
+    "./tool-dispatch": "./src/tool-dispatch.ts",
+    "./agent-modes": "./src/agent-modes.ts"
   }
 }

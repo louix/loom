@@ -60,6 +60,18 @@
  * holding only the *second* turn a session starts, for racing an interrupt
  * against a slow `turn/start` without also blocking the first turn a test
  * needs just to get set up.
+ *
+ * Native settings are modelled the way Codex 0.156 behaves: start/resume
+ * replies carry the effective approval policy and reviewer (a resume reply
+ * also the saved collaboration mode, unless LOOM_TEST_RESUME_SETTINGS says
+ * `collaborationMode: null`); `collaborationMode/list` offers Default and
+ * Plan; `thread/settings/update` acknowledges and then, only if something
+ * changed, sends `thread/settings/updated`. Knobs: LOOM_TEST_RESUME_SETTINGS,
+ * LOOM_TEST_COLLABORATION_MODES / LOOM_TEST_NO_COLLABORATION_MODES,
+ * LOOM_TEST_SETTINGS_NOTIFICATION_FIRST, LOOM_TEST_SUPPRESS_SETTINGS_
+ * NOTIFICATION, LOOM_TEST_FAIL_THREAD_SETTINGS_UPDATE_FROM, LOOM_TEST_HOLD_
+ * THREAD_SETTINGS_UPDATE_CALL, LOOM_TEST_EXIT_ON_SETTINGS_UPDATE, and
+ * LOOM_TEST_PLAN_ITEM (a turn started in Plan ends with that proposed plan).
  */
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -100,6 +112,53 @@ const pendingOutgoing = new Map();
 let startedThreadId; // set once thread/start replies, for handlers below it
 let afterInterruptFired = false; // LOOM_TEST_TOOL_CALL_AFTER_INTERRUPT_SPEC fires once
 let turnStartCount = 0; // for LOOM_TEST_HOLD_TURN_START_CALL
+let settingsUpdateCount = 0; // for the *_THREAD_SETTINGS_UPDATE_* call knobs
+
+/** The thread's native settings, as `thread/settings/updated` reports them. */
+let threadSettings = {
+  approvalPolicy: "on-request",
+  approvalsReviewer: "user",
+  sandboxPolicy: { type: "workspaceWrite", writableRoots: [], networkAccess: false },
+  model: "fake-model",
+  effort: null,
+  collaborationMode: {
+    mode: "default",
+    settings: { model: "fake-model", reasoning_effort: null, developer_instructions: null },
+  },
+};
+const settingsReply = () => ({
+  model: threadSettings.model,
+  reasoningEffort: threadSettings.effort,
+  approvalPolicy: threadSettings.approvalPolicy,
+  approvalsReviewer: threadSettings.approvalsReviewer,
+  sandbox: threadSettings.sandboxPolicy,
+});
+const notifySettings = () =>
+  send({
+    jsonrpc: "2.0",
+    method: "thread/settings/updated",
+    params: { threadId: startedThreadId, threadSettings },
+  });
+/** Apply a `thread/settings/update`; returns whether anything changed (Codex
+ *  acknowledges a no-op without any settings notification). */
+const updateSettings = (params) => {
+  const before = JSON.stringify(threadSettings);
+  const next = structuredClone(threadSettings);
+  for (const key of ["approvalPolicy", "approvalsReviewer", "sandboxPolicy", "model", "effort"])
+    if (params?.[key] != null) next[key] = params[key];
+  if (params?.collaborationMode) {
+    const { mode, settings } = params.collaborationMode;
+    // Codex fills in the preset's own instructions for `null`.
+    next.collaborationMode = {
+      mode,
+      settings: { ...settings, developer_instructions: `${mode} instructions` },
+    };
+    next.model = settings.model;
+    next.effort = settings.reasoning_effort;
+  }
+  threadSettings = next;
+  return JSON.stringify(next) !== before;
+};
 
 /** Captures the client's eventual response to a fixture-initiated request
  *  (`item/tool/call`, `item/tool/requestUserInput`, an approval-shaped
@@ -165,7 +224,13 @@ const handle = (req) => {
     }
     const started = fixture("thread-start");
     startedThreadId = started.thread.id;
-    send({ jsonrpc: "2.0", id, result: started });
+    updateSettings({
+      approvalPolicy: params?.approvalPolicy,
+      approvalsReviewer: params?.approvalsReviewer,
+      model: params?.model,
+    });
+    // Like Codex, a start reply carries no collaboration mode: new threads use Default.
+    send({ jsonrpc: "2.0", id, result: { ...started, ...settingsReply() } });
 
     // Deferred (setTimeout, not sent synchronously alongside the thread/start
     // reply above): the client's `await` that assigns `this.#threadId` from
@@ -280,8 +345,27 @@ const handle = (req) => {
     const id_ = params?.developerInstructions
       ? `${base.thread.id}-with-instructions`
       : base.thread.id;
-    send({ jsonrpc: "2.0", id, result: { thread: { id: id_ } } });
+    // LOOM_TEST_RESUME_SETTINGS (JSON) is what Codex saved for the thread; a
+    // `collaborationMode: null` there makes the reply omit the field.
+    const saved = JSON.parse(process.env["LOOM_TEST_RESUME_SETTINGS"] || "{}");
+    if (saved.collaborationMode) updateSettings({ collaborationMode: saved.collaborationMode });
+    // A reviewer in the resume request replaces the saved one.
+    updateSettings({
+      approvalPolicy: params?.approvalPolicy,
+      approvalsReviewer: params?.approvalsReviewer ?? saved.approvalsReviewer,
+    });
     startedThreadId = id_;
+    send({
+      jsonrpc: "2.0",
+      id,
+      result: {
+        thread: { id: id_ },
+        ...settingsReply(),
+        ...(saved.collaborationMode === null
+          ? {}
+          : { collaborationMode: threadSettings.collaborationMode }),
+      },
+    });
     const replay = process.env["LOOM_TEST_USAGE_REPLAY"];
     if (replay)
       send({
@@ -293,6 +377,27 @@ const handle = (req) => {
   }
   if (method === "turn/start") {
     turnStartCount++;
+    // A turn runs under the collaboration mode in effect when it starts.
+    // LOOM_TEST_PLAN_ITEM: a planning turn ends with that native proposed plan.
+    const planning = threadSettings.collaborationMode.mode === "plan";
+    const planId = `fake-plan-${turnStartCount}`;
+    const completeTurn = () => {
+      if (planning && process.env["LOOM_TEST_PLAN_ITEM"])
+        send({
+          jsonrpc: "2.0",
+          method: "item/completed",
+          params: {
+            threadId: startedThreadId,
+            turnId: "fake-turn-1",
+            item: { type: "plan", id: planId, text: process.env["LOOM_TEST_PLAN_ITEM"] },
+          },
+        });
+      send({
+        jsonrpc: "2.0",
+        method: "turn/completed",
+        params: { turn: { id: "fake-turn-1", status: "completed" } },
+      });
+    };
     const respondToTurnStart = () => {
       send({ jsonrpc: "2.0", id, result: fixture("turn-start") });
       const limits = process.env["LOOM_TEST_LIMITS_UPDATE"];
@@ -329,11 +434,7 @@ const handle = (req) => {
                 },
               },
             });
-          send({
-            jsonrpc: "2.0",
-            method: "turn/completed",
-            params: { turn: { id: "fake-turn-1", status: "completed" } },
-          });
+          completeTurn();
         }, 0);
       }
       // Let tests complete a held turn naturally, without turn/interrupt.
@@ -342,11 +443,7 @@ const handle = (req) => {
         const timer = setInterval(() => {
           if (!existsSync(release)) return;
           clearInterval(timer);
-          send({
-            jsonrpc: "2.0",
-            method: "turn/completed",
-            params: { turn: { id: "fake-turn-1", status: "completed" } },
-          });
+          completeTurn();
         }, 10);
       }
     };
@@ -422,8 +519,16 @@ const handle = (req) => {
     return;
   }
   if (method === "thread/settings/update") {
+    // LOOM_TEST_EXIT_ON_SETTINGS_UPDATE=1: the server dies with the update unanswered.
+    if (process.env["LOOM_TEST_EXIT_ON_SETTINGS_UPDATE"]) process.exit(1);
+    settingsUpdateCount++;
+    // LOOM_TEST_FAIL_THREAD_SETTINGS_UPDATE_FROM (1-indexed) rejects that call and later ones.
+    const failFrom = Number(process.env["LOOM_TEST_FAIL_THREAD_SETTINGS_UPDATE_FROM"] || "0");
     const respondNow = () => {
-      if (process.env["LOOM_TEST_FAIL_THREAD_SETTINGS_UPDATE"]) {
+      if (
+        process.env["LOOM_TEST_FAIL_THREAD_SETTINGS_UPDATE"] ||
+        (failFrom && settingsUpdateCount >= failFrom)
+      ) {
         send({
           jsonrpc: "2.0",
           id,
@@ -432,17 +537,26 @@ const handle = (req) => {
             message: "fake app-server: forced thread/settings/update failure",
           },
         });
-      } else {
-        send({ jsonrpc: "2.0", id, result: {} });
+        return;
       }
+      const changed = updateSettings(params);
+      // Codex acknowledges first and reports the settings after; the knobs
+      // reverse that order, or never report them at all.
+      const notify =
+        changed && !process.env["LOOM_TEST_SUPPRESS_SETTINGS_NOTIFICATION"] ? notifySettings : null;
+      if (process.env["LOOM_TEST_SETTINGS_NOTIFICATION_FIRST"]) notify?.();
+      send({ jsonrpc: "2.0", id, result: {} });
+      if (!process.env["LOOM_TEST_SETTINGS_NOTIFICATION_FIRST"]) notify?.();
     };
     // A test can hold this response to simulate a slow settings RPC racing
     // against an independent interrupt()/close() — LOOM_TEST_HOLD_THREAD_
     // SETTINGS_UPDATE names a base path; `${base}.received` is written
     // immediately (so the test knows the request is genuinely in flight
     // before acting), and the response waits for `${base}.release` to exist.
+    // LOOM_TEST_HOLD_THREAD_SETTINGS_UPDATE_CALL (1-indexed) holds only that call.
     const holdBase = process.env["LOOM_TEST_HOLD_THREAD_SETTINGS_UPDATE"];
-    if (holdBase) {
+    const holdCall = Number(process.env["LOOM_TEST_HOLD_THREAD_SETTINGS_UPDATE_CALL"] || "0");
+    if (holdBase && (!holdCall || holdCall === settingsUpdateCount)) {
       try {
         writeFileSync(`${holdBase}.received`, "");
       } catch {
@@ -466,6 +580,22 @@ const handle = (req) => {
     method === "thread/compact/start"
   ) {
     send({ jsonrpc: "2.0", id, result: {} });
+    return;
+  }
+  if (method === "collaborationMode/list") {
+    // LOOM_TEST_COLLABORATION_MODES (JSON array) replaces Codex's presets;
+    // LOOM_TEST_NO_COLLABORATION_MODES=1 makes the method unknown, as on older servers.
+    if (process.env["LOOM_TEST_NO_COLLABORATION_MODES"]) {
+      send({ jsonrpc: "2.0", id, error: { code: -32601, message: "unknown method" } });
+      return;
+    }
+    const data = process.env["LOOM_TEST_COLLABORATION_MODES"]
+      ? JSON.parse(process.env["LOOM_TEST_COLLABORATION_MODES"])
+      : [
+          { name: "Plan", mode: "plan", model: null, reasoning_effort: "medium" },
+          { name: "Default", mode: "default", model: null, reasoning_effort: null },
+        ];
+    send({ jsonrpc: "2.0", id, result: { data } });
     return;
   }
   if (method === "model/list") {

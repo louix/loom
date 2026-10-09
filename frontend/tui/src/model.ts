@@ -370,7 +370,10 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
       if (p?.t !== "new") return s;
       // A session that doesn't exist yet has no daemon to tell: the `new`
       // prompt's mode is settled the moment it's cycled.
-      const mode = nextMode(p.settings.mode);
+      const mode = nextMode(
+        p.settings.mode,
+        fleetProviders(s).find((x) => x.id === p.settings.provider)?.modes,
+      );
       return withPrompt(s, { ...p, settings: { ...p.settings, mode } });
     }
 
@@ -417,9 +420,13 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
 
     case "cyclePlanMode": {
       if (s.overlay.t !== "plan") return s;
-      // The modes an implementation can run in — `plan` itself is excluded.
-      const order: readonly SessionMode[] = ["default", "acceptEdits", "auto"];
-      const mode = order[(order.indexOf(s.overlay.plan.mode) + 1) % order.length] ?? "acceptEdits";
+      // The modes an implementation can run in — `plan` itself is excluded,
+      // and so is any mode the session's provider doesn't offer.
+      const sessionId = s.overlay.plan.sessionId;
+      const offered = fleetSessions(s).find((x) => x.id === sessionId)?.modes;
+      const implementing: SessionMode[] = ["default", "acceptEdits", "auto"];
+      const order = implementing.filter((m) => !offered || offered.includes(m));
+      const mode = order[(order.indexOf(s.overlay.plan.mode) + 1) % order.length] ?? "default";
       return { ...s, overlay: { t: "plan", plan: { ...s.overlay.plan, mode } } };
     }
 

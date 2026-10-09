@@ -103,6 +103,9 @@ export const planReviewEventSchema = harnessEventBaseSchema.extend({
   type: z.literal("plan_review"),
   id: z.string(),
   plan: z.string(),
+  /** The mode implementation runs in unless the reviewer picks another —
+   *  Codex's execution choice, which native Plan preserves. */
+  implementMode: z.enum(["default", "acceptEdits", "auto"]).optional(),
 });
 export type PlanReviewEvent = z.infer<typeof planReviewEventSchema>;
 
