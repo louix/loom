@@ -66,11 +66,13 @@ import {
 } from "./overlay.ts";
 import {
   bar,
+  costScope,
   humanDuration,
   humanTokens,
   mmss,
   modeChipText,
   modeText,
+  sessionCost,
   shortId,
   spinnerFrame,
   statusLook,
@@ -392,10 +394,7 @@ const FleetRow = ({
   let titleColor = selected ? C.text : C.dim;
   if (blocked) titleColor = C.faint;
   const id = shortId(s.id);
-  const cost =
-    s.costSource === "none" || s.costSource === "partial"
-      ? "--"
-      : `${s.costSource === "provider" ? "" : "~"}$${s.costUsd.toFixed(2)}`;
+  const cost = sessionCost(s);
   const heat = cacheHeat(cacheStatus(s, now));
   // Always 2 cols so titles stay aligned whether or not a session has a warm cache.
   const cacheColor = heat ? C[cacheHeatTone(heat)] : null;
@@ -610,8 +609,9 @@ export const detailLayout = (
         label="tokens"
         tone="faint"
         suffix={
-          <Line tone={s.costUsd ? "good" : "faint"}>
-            {` ${s.costSource === "none" || s.costSource === "partial" ? "--" : `${s.costSource === "provider" ? "" : "~"}$${s.costUsd.toFixed(2)}`}`}
+          <Line>
+            <Text tone={s.costUsd ? "good" : "faint"}>{` ${sessionCost(s)}`}</Text>
+            <Text tone="faint">{` ${costScope(s.costSource)}`}</Text>
           </Line>
         }
       >

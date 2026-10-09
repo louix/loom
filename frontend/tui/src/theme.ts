@@ -323,6 +323,27 @@ export const money = (usd: number): string => {
   return usd && Number.isFinite(usd) ? `$${usd.toFixed(2)}` : "—";
 };
 
+type CostSource = "provider" | "table" | "mixed" | "partial" | "none";
+
+/**
+ * A session's lifetime cost: `$` as the provider reported it, `~$` when any of
+ * it was estimated from a price table, `--` when some or all of it is unknown.
+ */
+export const sessionCost = (s: { costUsd: number; costSource: CostSource }): string =>
+  s.costSource === "none" || s.costSource === "partial"
+    ? "--"
+    : `${s.costSource === "provider" ? "" : "~"}$${s.costUsd.toFixed(2)}`;
+
+/** What {@link sessionCost} is, in a word or two, for where there is room. */
+export const costScope = (source: CostSource): string =>
+  ({
+    provider: "reported",
+    table: "estimated",
+    mixed: "part estimated",
+    partial: "part unpriced",
+    none: "unavailable",
+  })[source];
+
 /** How a permission mode reads in the UI. The wire / SDK value stays `default`;
  *  we call it `manual` — you approve everything yourself. */
 export const modeLabel = (mode: string | null | undefined): string => {
