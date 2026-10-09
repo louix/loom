@@ -1612,6 +1612,7 @@ test("SessionManager drains an aisdk session: usage rollup + result + idle", asy
       onResult: () => {
         results += 1;
       },
+      onTurnCompleted: () => {},
       onOverlay: () => {},
       onProviderRef: () => {},
       onMode: () => {},
@@ -1699,6 +1700,7 @@ test("SessionManager.respondToPlan pushes the decision's mode — no stale plan 
       onResult: () => {
         results += 1;
       },
+      onTurnCompleted: () => {},
       onOverlay: () => {},
       onProviderRef: () => {},
       // The notification carries no value — the mode is read back off the
@@ -1798,6 +1800,7 @@ test("setMode refuses to leave `plan` while a review is pending, instead of sile
       onResult: () => {
         results += 1;
       },
+      onTurnCompleted: () => {},
       onOverlay: () => {},
       onProviderRef: () => {},
       // The notification carries no value — the mode is read back off the
@@ -1864,6 +1867,7 @@ test("SessionManager keep-warm: toggle, ping counter, and cleanup on close", asy
       onResult: () => {
         results += 1;
       },
+      onTurnCompleted: () => {},
       onOverlay: () => {},
       onProviderRef: () => {},
       onMode: () => {},

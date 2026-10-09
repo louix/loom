@@ -52,6 +52,12 @@ export interface ManagerHooks {
   /** A turn ended (clean or not). Fires after the usage rollup for that turn. */
   onResult(sessionId: string, ok: boolean): void;
   /**
+   * A user-submitted root turn ended at `at` (epoch ms) — the fleet's recency
+   * key. Mutation only, like {@link onUsage}: the transition or overlay that
+   * goes out for the same event carries it.
+   */
+  onTurnCompleted(sessionId: string, at: number): void;
+  /**
    * Publish the session's snapshot: something about it changed and no status
    * transition carried it out. That covers the outstanding-request set, the
    * sub-agent set, the live background-task set, the restructuring gate,
@@ -129,6 +135,12 @@ interface Running {
   /** Cancellation is independent of turn state; failed stops must be retried before sending. */
   cancellation: "none" | "stopping" | "failed" | "stopped";
   interruptOperation: Promise<void> | null;
+  /**
+   * The user gave this session input (opening prompt, send, answer, approval,
+   * plan decision) and the root turn it drives has not reported an outcome
+   * yet. That outcome is the session's fleet turn boundary — see `#turnEnded`.
+   */
+  userTurn: boolean;
 }
 
 export class SessionManager {
@@ -272,6 +284,8 @@ export class SessionManager {
       compaction: null,
       cancellation: "none",
       interruptOperation: null,
+      // A create carries its opening prompt; a resume parks until the next send.
+      userTurn: state.kind === "starting",
     };
     this.#running.set(id, run);
     // `#drain` handles its own stream errors; this catch is for the pathological
@@ -336,6 +350,7 @@ export class SessionManager {
             this.#trackBackgroundTasks(run, ev),
             ev.type === "rate_limit",
             this.#trackUsage(id, ev),
+            this.#trackTurnBoundary(id, run, ev),
           ].some((c) => c);
           this.#trackRef(id, run);
           // Publishes when it fires, carrying everything applied above.
@@ -554,6 +569,36 @@ export class SessionManager {
     return false;
   }
 
+  /**
+   * The fleet's turn boundary: the agent finished responding to the user. Only
+   * a root outcome of a user-driven turn counts, whatever that outcome was —
+   * matching main-new, where every root `outcome` record (`completed`,
+   * `failed`, `interrupted`, `unknown`) is a boundary and nothing else is:
+   *
+   * - completed: a root `result` with `kind: "ok"`;
+   * - failed: a root `result` with `kind: "error"`, or a fatal root `error`
+   *   (Codex reports a failed turn that way);
+   * - interrupted: a user stop the provider confirmed (see {@link interrupt}).
+   *
+   * Never a boundary: streaming, tool and sub-agent events, usage, a result
+   * nobody asked for (keep-warm ping, Loom nudge, background re-drive after
+   * the turn already ended), and a turn that vanished without an outcome
+   * (stream ended, daemon restart) — there is no outcome to date it by.
+   * Returns whether it recorded one.
+   */
+  #trackTurnBoundary(id: string, run: Running, ev: HarnessEvent): boolean {
+    if (ev.agentId !== undefined) return false;
+    if (ev.type !== "result" && !(ev.type === "error" && ev.fatal)) return false;
+    return this.#turnEnded(id, run, ev.ts);
+  }
+
+  #turnEnded(id: string, run: Running, at: number): boolean {
+    if (!run.userTurn) return false;
+    run.userTurn = false;
+    this.#hooks.onTurnCompleted(id, at);
+    return true;
+  }
+
   /** Returns whether it published a transition. */
   #applyStatus(id: string, run: Running, ev: HarnessEvent): boolean {
     if (run.cancellation !== "none") {
@@ -655,11 +700,14 @@ export class SessionManager {
    * already-live turn (`injected: true`) vs. the start of a fresh turn — read
    * synchronously from the tracked status before handing off, since the adapter
    * `send()` returns before any turn events land.
+   *
+   * `automated` marks Loom's own messages (nudges, hook feedback, auto-resume);
+   * like a keep-warm ping, their turn's outcome is not a fleet turn boundary.
    */
   async send(
     id: string,
     text: string,
-    opts: { keepWarm?: boolean; signal?: AbortSignal } = {},
+    opts: { keepWarm?: boolean; automated?: boolean; signal?: AbortSignal } = {},
   ): Promise<{ injected: boolean }> {
     const run = this.#require(id);
     if (run.ended) throw new Error("session has ended");
@@ -682,7 +730,16 @@ export class SessionManager {
       const injected = isLiveState(run.state);
       const before = run.state;
       if (!injected) run.firstOutputSince = performance.now();
-      await run.session.send(text);
+      // Armed before the hand-off: a fast turn can report its outcome before
+      // the adapter's `send()` resolves. An injection joins the live turn.
+      const armed = run.userTurn;
+      if (!opts.keepWarm && !opts.automated) run.userTurn = true;
+      try {
+        await run.session.send(text);
+      } catch (err) {
+        run.userTurn = armed;
+        throw err;
+      }
       // Closed out from under us mid-send — let teardown settle the state.
       if (this.#running.get(id) !== run) return { injected };
       // For an injection, leave the state (and its pending requests) alone; the
@@ -749,7 +806,12 @@ export class SessionManager {
         await run.session.interrupt();
         run.cancellation = "stopped";
         this.#clearOverlays(run);
-        if (!run.ended && !compactOnly) this.#transition(id, run, stateInterrupted("user"), "user");
+        if (!run.ended && !compactOnly) {
+          // A confirmed user stop is the turn's (interrupted) outcome — unless
+          // a trailing result already reported one first.
+          this.#turnEnded(id, run, Date.now());
+          this.#transition(id, run, stateInterrupted("user"), "user");
+        }
       } catch (err) {
         run.cancellation = "failed";
         const message = `Could not stop all session work: ${err instanceof Error ? err.message : String(err)} — retry interrupt`;
@@ -797,6 +859,10 @@ export class SessionManager {
     if (run.ended) return { ok: false, alreadyResolved: true };
     if (!run.pending.has(requestId)) return { ok: false, alreadyResolved: true };
     run.pending.delete(requestId);
+    // The user's answer drives the turn on (an approved plan can even start a
+    // new SDK turn), so its outcome is theirs. Armed before the adapter call,
+    // as in `send`; the same holds for questions and plan decisions.
+    run.userTurn = true;
     await run.session.respondToPermission(requestId, decision);
     // Optimistic: the approved tool call will confirm `running` on its own.
     this.#resumeAfterAnswer(id, run);
@@ -808,6 +874,7 @@ export class SessionManager {
     if (run.ended) return { ok: false, alreadyResolved: true };
     if (!run.pending.has(questionId)) return { ok: false, alreadyResolved: true };
     run.pending.delete(questionId);
+    run.userTurn = true;
     await run.session.answerQuestion(questionId, text);
     // The `answer` event the adapter emits will also carry status back to
     // running; set it now so a client sees the change without waiting.
@@ -824,6 +891,7 @@ export class SessionManager {
     if (run.ended) return { ok: false, alreadyResolved: true };
     if (!run.pending.has(requestId)) return { ok: false, alreadyResolved: true };
     run.pending.delete(requestId);
+    run.userTurn = true;
     await run.session.respondToPlan(requestId, decision);
     // Every branch of respondToPlan either leaves plan mode or (for `discuss`)
     // stays in it deliberately; either way, push whatever the adapter landed

@@ -371,6 +371,11 @@ export const sessionSnapshotSchema = z.object({
   git: z.union([gitFactsSchema, z.null()]),
   createdAt: z.number(),
   updatedAt: z.number(),
+  /**
+   * Epoch ms the last user-submitted root turn ended (completed, failed or
+   * stopped by the user). Fleet recency key; absent until one has. Persisted.
+   */
+  turnCompletedAt: z.number().optional(),
 });
 export type SessionSnapshot = z.infer<typeof sessionSnapshotSchema>;
 

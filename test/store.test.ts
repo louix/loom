@@ -147,6 +147,46 @@ test("a corrective migration reclassifies history_backend for a db that already 
   }
 });
 
+test("the fleet turn boundary is seeded from a stored session's last root result and persists", () => {
+  const { path, cleanup } = tmpDb();
+  try {
+    const db = new DatabaseSync(path);
+    db.exec("PRAGMA foreign_keys = ON");
+    for (let v = 0; v < 27; v++) db.exec(MIGRATIONS[v]!);
+    db.exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+    db.prepare("INSERT INTO meta (key, value) VALUES ('schema_version', '27')").run();
+    for (const id of ["finished", "never"]) {
+      db.prepare(
+        "INSERT INTO sessions (id, provider, mode, status, in_place, created_at, updated_at) " +
+          "VALUES (?, 'fake', 'default', 'idle', 1, 1, 1)",
+      ).run(id);
+    }
+    const event = (id: string, ts: number, ev: Record<string, unknown>): void => {
+      db.prepare(
+        "INSERT INTO session_events (session_id, type, payload, ts) VALUES (?, ?, ?, ?)",
+      ).run(id, ev.type as string, JSON.stringify({ sessionId: id, ts, ...ev }), ts);
+    };
+    event("finished", 10, { type: "result", kind: "ok" });
+    event("finished", 20, { type: "result", kind: "error", error: "boom" });
+    event("finished", 30, { type: "result", kind: "ok", agentId: "child" });
+    event("finished", 40, { type: "assistant_text", text: "streaming" });
+    event("never", 50, { type: "assistant_text", text: "streaming" });
+    db.close();
+
+    const migrated = openDb(path);
+    const store = new SessionStore(migrated);
+    assert.equal(store.get("finished")?.turnCompletedAt, 20, "newest root outcome, any kind");
+    assert.equal(store.get("never")?.turnCompletedAt, undefined, "falls back to created_at");
+    store.setTurnCompletedAt("never", 60);
+    migrated.close();
+    const reopened = openDb(path);
+    assert.equal(new SessionStore(reopened).get("never")?.turnCompletedAt, 60);
+    reopened.close();
+  } finally {
+    cleanup();
+  }
+});
+
 test("withTransaction rolls back every write when the body throws, and rejects nesting", () => {
   const { path, cleanup } = tmpDb();
   try {

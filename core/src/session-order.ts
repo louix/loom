@@ -19,13 +19,19 @@ export const STATUS_ORDER: readonly SessionStateKind[] = (
 ).sort((a, b) => RANK[a] - RANK[b]);
 
 /**
- * Status group, then newest-created first. Only immutable fields break ties:
- * activity, naming and incoming snapshot order cannot shuffle a group.
+ * A session's position within its group: when its last user-submitted root
+ * turn ended, else when it was created. The key only moves at a turn boundary
+ * the daemon persists, so streaming, tool and sub-agent activity, usage,
+ * renames and incoming snapshot order cannot shuffle a group.
  */
+const recency = (s: SessionSnapshot): number => s.turnCompletedAt ?? s.createdAt;
+
+/** Status group, then most recent turn boundary first, then id. */
 export const sortSessions = (list: readonly SessionSnapshot[]): SessionSnapshot[] =>
   [...list].sort((a, b) => {
     const group = RANK[a.status.kind] - RANK[b.status.kind];
     if (group !== 0) return group;
-    if (a.createdAt !== b.createdAt) return b.createdAt - a.createdAt;
+    const recent = recency(b) - recency(a);
+    if (recent !== 0) return recent;
     return a.id < b.id ? -1 : Number(a.id > b.id);
   });

@@ -35,6 +35,7 @@ interface SessionRow {
   fork_turn: number | null;
   created_at: number;
   updated_at: number;
+  turn_completed_at: number | null;
 }
 
 interface UsageRow {
@@ -560,6 +561,13 @@ export class SessionStore {
       .run(turns, Date.now(), id);
   }
 
+  /** When the last user-submitted root turn ended — the fleet recency key. */
+  setTurnCompletedAt(id: string, at: number): void {
+    this.#db
+      .prepare("UPDATE sessions SET turn_completed_at = ?, updated_at = ? WHERE id = ?")
+      .run(at, Date.now(), id);
+  }
+
   /** The provider's own persisted session id, once the adapter reports it. */
   providerRef(id: string): string | null {
     const row = this.#db.prepare("SELECT provider_ref FROM sessions WHERE id = ?").get(id) as
@@ -911,5 +919,6 @@ const toSnapshot = (row: SessionRow, usage: UsageRow | undefined): SessionSnapsh
     git: null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    ...(row.turn_completed_at !== null ? { turnCompletedAt: row.turn_completed_at } : {}),
   };
 };

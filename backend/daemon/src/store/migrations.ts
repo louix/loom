@@ -366,4 +366,17 @@ export const MIGRATIONS: string[] = [
   `ALTER TABLE sessions ADD COLUMN isolation TEXT CHECK (isolation IN ('vm', 'local'));`,
   // 27 — how the session reaches the repository; NULL is a host worktree (or in-place).
   `ALTER TABLE sessions ADD COLUMN checkout TEXT CHECK (checkout IN ('worktree', 'clone'));`,
+  // 28 — fleet recency: when the last user-submitted root turn ended. Existing
+  // rows are seeded from their newest persisted root `result`; that cannot tell
+  // a user turn from a keep-warm or background re-drive, but it is the closest
+  // evidence on disk. Rows without one stay NULL and order by `created_at`.
+  /* sql */ `
+  ALTER TABLE sessions ADD COLUMN turn_completed_at INTEGER;
+  UPDATE sessions SET turn_completed_at = (
+    SELECT MAX(ts) FROM session_events
+    WHERE session_events.session_id = sessions.id
+      AND session_events.type = 'result'
+      AND json_extract(session_events.payload, '$.agentId') IS NULL
+  );
+  `,
 ];

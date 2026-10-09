@@ -427,7 +427,7 @@ export class Daemon {
       // `#lastSend` so it seeds neither the undo picker nor the auto-title.
       onFeedback: async (id, text, signal) => {
         if (this.#stopping || signal.aborted) return;
-        const send = () => this.#sessions.send(id, text, { signal });
+        const send = () => this.#sessions.send(id, text, { signal, automated: true });
         const { injected } =
           this.#registry.get(id)?.checkout === "clone"
             ? await this.#queue.run(id, send)
@@ -485,6 +485,12 @@ export class Daemon {
         });
         this.#titleJobs.add(job);
         void job.finally(() => this.#titleJobs.delete(job));
+      },
+      onTurnCompleted: (id, at) => {
+        if (this.#stopping) return;
+        // Persisted so a restart or reconnect reorders nothing. No publish: the
+        // manager's transition or overlay for the same event carries it.
+        this.#registry.setTurnCompletedAt(id, at);
       },
       onOverlay: (id) => {
         if (this.#stopping) return;
@@ -1727,7 +1733,7 @@ export class Daemon {
         text,
         injected: false,
       });
-      void this.#sessions.send(id, text).catch((err) => {
+      void this.#sessions.send(id, text, { automated: true }).catch((err) => {
         this.#log.warn("auto-resume send failed", { id, err: String(err) });
       });
     }
@@ -1909,7 +1915,7 @@ export class Daemon {
     // Mirror the `session.send` RPC's echo, minus `#lastSend`: this nudge is
     // Loom's, so it shouldn't seed the undo picker or the next auto-title.
     this.emitEvent({ type: "user_message", sessionId: id, ts: Date.now(), text, injected: false });
-    void this.#sessions.send(id, text).catch((err) => {
+    void this.#sessions.send(id, text, { automated: true }).catch((err) => {
       this.#log.warn("auto-rebase nudge failed", { id, err: String(err) });
     });
     return { outcome: res, nudged: true };
@@ -1950,7 +1956,7 @@ export class Daemon {
     // Loom's own message, like the auto-rebase nudge: keep it out of `#lastSend`
     // so it seeds neither the undo picker nor the auto-title.
     this.emitEvent({ type: "user_message", sessionId: id, ts: Date.now(), text, injected: false });
-    void this.#sessions.send(id, text).catch((err) => {
+    void this.#sessions.send(id, text, { automated: true }).catch((err) => {
       this.#log.warn("commit reminder failed", { id, err: String(err) });
     });
   }

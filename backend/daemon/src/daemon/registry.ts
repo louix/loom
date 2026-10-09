@@ -45,7 +45,7 @@ export class Registry {
     return this.#store.list();
   }
 
-  /** Snapshots in fleet-view order: status group, then newest-created first. */
+  /** Snapshots in fleet-view order: status group, then most recent turn boundary. */
   listSorted(): SessionSnapshot[] {
     return sortSnapshots(this.#store.list());
   }
@@ -67,6 +67,11 @@ export class Registry {
 
   relinkProvider(from: string, to: string): number {
     return this.#store.relinkProvider(from, to);
+  }
+
+  /** Record the end of a user-submitted root turn — the fleet recency key. */
+  setTurnCompletedAt(id: string, at: number): void {
+    this.#store.setTurnCompletedAt(id, at);
   }
 
   /** Set the turn counter directly (undo). */

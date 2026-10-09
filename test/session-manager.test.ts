@@ -1732,6 +1732,7 @@ nodeTest("a failing emitEvent does not stop the session's state advancing", asyn
     },
     onUsage: () => {},
     onResult: () => {},
+    onTurnCompleted: () => {},
     onOverlay: () => {},
     onProviderRef: () => {},
     onMode: () => {},
@@ -2149,4 +2150,160 @@ test("adapter settlement derives the blocked state from remaining requests", asy
   } finally {
     await c.close();
   }
+});
+
+// Fleet ordering keys on the end of a turn the user asked for (A3). Driven
+// against a bare `SessionManager` so every non-boundary event can be shown to
+// leave the key alone without a daemon in the way.
+nodeTest("only a user-driven root turn's outcome is a fleet turn boundary", async () => {
+  const provider = new FakeProviderClass();
+  const seen: number[] = [];
+  const boundaries: number[] = [];
+  const mgr = new SessionManager({
+    emitEvent: (ev) => {
+      seen.push(ev.ts);
+    },
+    onStatus: () => {},
+    onUsage: () => {},
+    onResult: () => {},
+    onTurnCompleted: (_id, at) => {
+      boundaries.push(at);
+    },
+    onOverlay: () => {},
+    onProviderRef: () => {},
+    onMode: () => {},
+    log: makeLogger("test"),
+  });
+  await mgr.create(provider, {
+    sessionId: "s1",
+    cwd: "/tmp",
+    prompt: "opening prompt",
+    mode: "default",
+    mcpServers: [],
+    loomServer: false,
+  });
+  const fs = provider.session("s1")!;
+  /** Wait until the manager has drained the event stamped `ts`. */
+  const drained = (ts: number) => waitFor(() => seen.includes(ts), 2000);
+
+  // The opening prompt's turn: streaming, tools, usage and a sub-agent's own
+  // outcome do not end it; its root result does.
+  fs.emit({ type: "assistant_text", text: "working", ts: 1 });
+  fs.emit({ type: "thinking", text: "hmm", ts: 2 });
+  fs.emit({ type: "tool_call", id: "t1", name: "Bash", input: {}, ts: 3 });
+  fs.emit({ type: "tool_result", id: "t1", ok: true, output: "", ts: 4 });
+  fs.emit({ type: "subagent_started", subagentId: "sub", name: "explore", ts: 5 });
+  fs.emit({ type: "result", kind: "ok", agentId: "sub", ts: 6 });
+  fs.emit({ type: "error", message: "child died", fatal: true, agentId: "sub", ts: 7 });
+  fs.emit({ type: "subagent_stopped", subagentId: "sub", ts: 8 });
+  fs.emit({
+    type: "usage",
+    tokens: { input: 1, output: 1, cacheRead: 1, cacheWrite: 0 },
+    contextUsed: 1,
+    contextLimit: 10,
+    ts: 9,
+  });
+  await drained(9);
+  assert.deepEqual(boundaries, []);
+  fs.emit({ type: "result", kind: "ok", ts: 100 });
+  await drained(100);
+  assert.deepEqual(boundaries, [100], "completed");
+
+  // A background task re-driving the settled turn is not the user's turn.
+  fs.emit({ type: "assistant_text", text: "background done", ts: 110 });
+  fs.emit({ type: "result", kind: "ok", ts: 120 });
+  await drained(120);
+  // Neither is a keep-warm ping, nor one of Loom's own messages.
+  await mgr.send("s1", "warm", { keepWarm: true });
+  fs.emit({ type: "result", kind: "ok", ts: 130 });
+  await drained(130);
+  await mgr.send("s1", "[loom] commit your work", { automated: true });
+  fs.emit({ type: "result", kind: "ok", ts: 140 });
+  await drained(140);
+  assert.deepEqual(boundaries, [100]);
+
+  // Failed outcomes count, whether reported as a failed result or a fatal error.
+  await mgr.send("s1", "try this");
+  fs.emit({ type: "result", kind: "error", error: "boom", ts: 200 });
+  await drained(200);
+  await mgr.send("s1", "and this");
+  fs.emit({ type: "error", message: "turn failed", fatal: true, ts: 300 });
+  await drained(300);
+  assert.deepEqual(boundaries, [100, 200, 300], "failed");
+
+  // A confirmed user stop is the interrupted outcome; a trailing result from
+  // the stopped turn is not a second one.
+  await mgr.send("s1", "long job");
+  fs.emit({ type: "assistant_text", text: "on it", ts: 400 });
+  await drained(400);
+  const beforeStop = Date.now();
+  await mgr.interrupt("s1");
+  assert.equal(boundaries.length, 4, "interrupted");
+  assert.ok(boundaries[3]! >= beforeStop);
+  fs.emit({ type: "result", kind: "ok", ts: 410 });
+  await drained(410);
+  assert.equal(boundaries.length, 4);
+
+  // Answering a request re-arms: the user drove whatever the turn does next,
+  // even when a turn they did not start raised it.
+  await mgr.send("s1", "warm", { keepWarm: true });
+  fs.emit({ type: "permission_request", id: "p1", tool: "Bash", input: {}, ts: 510 });
+  await drained(510);
+  await mgr.respondToPermission("s1", "p1", { behavior: "allow" });
+  fs.emit({ type: "result", kind: "ok", ts: 520 });
+  await drained(520);
+  assert.deepEqual(boundaries.slice(4), [520], "answered");
+
+  // A turn that vanishes without an outcome has nothing to date a boundary by.
+  await mgr.send("s1", "one more");
+  fs.emit({ type: "assistant_text", text: "…", ts: 600 });
+  await drained(600);
+  fs.endStream();
+  await waitFor(() => mgr.isEnded("s1"), 2000);
+  assert.equal(boundaries.length, 5);
+
+  await mgr.shutdown();
+});
+
+test("the turn boundary orders the fleet, survives a daemon restart and ignores streaming", async () => {
+  let c = await client();
+  const a = await createFake(c, "first");
+  await delay(2); // distinct creation times, so the id tie-break can't decide
+  const b = await createFake(c, "second");
+  const order = async (): Promise<string[]> =>
+    (await c.request<SessionSnapshot[]>("session.list", {}))
+      .map((s) => s.id)
+      .filter((id) => id === a.id || id === b.id);
+  const get = (id: string) => c.request<SessionSnapshot>("session.get", { id });
+
+  for (const { fs } of [b, a]) fs.emit({ type: "assistant_text", text: "working" });
+  await waitFor(async () => (await statusOf(c, a.id)) === "running");
+  await waitFor(async () => (await statusOf(c, b.id)) === "running");
+  // Newest-created first while neither has finished a turn.
+  assert.deepEqual(await order(), [b.id, a.id]);
+  assert.equal((await get(b.id)).turnCompletedAt, undefined);
+
+  b.fs.finishTurn();
+  await waitFor(async () => (await statusOf(c, b.id)) === "idle");
+  await delay(2);
+  a.fs.finishTurn();
+  await waitFor(async () => (await statusOf(c, a.id)) === "idle");
+  const done = (await get(a.id)).turnCompletedAt;
+  assert.ok(done !== undefined && done > (await get(b.id)).turnCompletedAt!);
+  // `a` finished last, so it now leads the idle group despite being older.
+  assert.deepEqual(await order(), [a.id, b.id]);
+
+  // `b` streams, uses tools and settles again with no user send: no promotion.
+  b.fs.emit({ type: "assistant_text", text: "background task finished" });
+  b.fs.emit({ type: "tool_call", id: "t1", name: "Bash", input: {} });
+  b.fs.finishTurn();
+  await waitFor(async () => (await get(b.id)).turns === 2);
+  assert.deepEqual(await order(), [a.id, b.id]);
+
+  await c.close();
+  await harness().restart();
+  c = await client();
+  assert.equal((await get(a.id)).turnCompletedAt, done);
+  assert.deepEqual(await order(), [a.id, b.id]);
+  await c.close();
 });
