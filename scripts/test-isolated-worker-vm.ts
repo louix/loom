@@ -12,7 +12,13 @@
  */
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { createIsolatedWorkerLauncher } from "../backend/daemon/src/daemon/isolated-worker.ts";
+import {
+  createIsolatedWorkerLauncher,
+  type IsolatedLaunchOptions,
+} from "../backend/daemon/src/daemon/isolated-worker.ts";
+import { leasedVmUsage } from "../backend/daemon/src/daemon/session-inspection.ts";
+import { guestShellArgv } from "../runtime/src/session-vm/shell.ts";
+import type { SessionExecutions } from "../core/src/connector.ts";
 import { RemoteWorkerSession } from "../backend/daemon/src/daemon/worker-provider.ts";
 import { mockLaunchSpec } from "../backend/daemon/src/daemon/worker-launch.ts";
 import {
@@ -111,7 +117,7 @@ const profile = {
 };
 const launch = async (
   id: string,
-  extra: { signal?: AbortSignal; onStop?: (isCurrent: () => boolean) => Promise<void> } = {},
+  extra: Pick<IsolatedLaunchOptions, "signal" | "onStop" | "executions"> = {},
 ) => {
   await stoppedSessionVm(f.repo, id);
   return await launcher.launch({
@@ -267,6 +273,103 @@ try {
     await assertCleaned(id, state);
   }
   {
+    console.error("shells, hooks and inspection beside the worker");
+    const id = "executions";
+    let executions: SessionExecutions | undefined;
+    let withdrawn = 0;
+    const worker = await launch(id, {
+      executions: (published) => {
+        executions = published;
+        return () => void withdrawn++;
+      },
+    });
+    assert(executions, "the running environment's executions are published");
+    assert.equal(executions.workspace, await Deno.realPath(f.workspace));
+    const session = await connect(id, worker);
+    await session.attachTranscript(new WorkerTranscript(id, () => {}));
+    await session.start({
+      method: "create",
+      args: [{ ...options(id), prompt: "", mcpServers: [] }],
+    });
+    // The session shell's own argv and wrapper, without a terminal: an interactive
+    // shell reading its commands from the client's stdin.
+    const open = () => {
+      const owner = new AbortController();
+      const target = executions!.open({ argv: guestShellArgv, stdin: true, tty: false }, owner);
+      const child = new Deno.Command(target.vm.executable, {
+        args: target.vm.args,
+        env: target.vm.env,
+        clearEnv: true,
+        stdin: "piped",
+        stdout: "piped",
+        stderr: "null",
+      }).spawn();
+      return { owner, target, child };
+    };
+    const shell = open();
+    // The worker takes a turn while the shell is open; neither disturbs the other.
+    await session.send("Reply OK.");
+    assert.equal(await turn(session), "OK");
+    const input = shell.child.stdin.getWriter();
+    await input.write(
+      new TextEncoder().encode('printf "%s|%s|%s\\n" shell "$GIT_AUTHOR_NAME" "$PWD"; exit\n'),
+    );
+    await input.close();
+    const shellOutput = new TextDecoder().decode((await shell.child.output()).stdout);
+    assert.match(shellOutput, /^shell\|Isolated author\|\/.+$/m, shellOutput);
+    executions.close(shell.target.token, shell.owner);
+    assert(launcher.leases.has(id), "the worker keeps its own lease");
+    // A daemon hook: a bounded guest command under its own lease, with hook variables.
+    const hook = await executions.command(
+      'printf "%s:%s" "$LOOM_HOOK" "$GIT_AUTHOR_NAME" > hook.txt && git status --short hook.txt',
+      30_000,
+      new AbortController().signal,
+      { LOOM_HOOK: "check edits" },
+    );
+    assert.equal(hook.code, 0, hook.output);
+    assert.equal(hook.output.trim(), "?? hook.txt");
+    assert.equal(
+      await Deno.readTextFile(join(f.workspace, "hook.txt")),
+      "check edits:Isolated author",
+    );
+    await Deno.remove(join(f.workspace, "hook.txt"));
+    // Inspection: the agent VM's guest counters run under a lease too.
+    let record: Awaited<ReturnType<typeof listVms>>["vms"][number] | undefined;
+    await eventually(async () => {
+      record = (await listVms(await Deno.realPath(f.repo))).vms.find(
+        (vm) => vm.sessionId === id && vm.state === "running",
+      );
+      return !!record;
+    }, "the environment is running in the VM inventory");
+    assert(record);
+    const usage = await leasedVmUsage(executions)(record, new AbortController().signal);
+    assert(usage.memoryTotal && usage.memoryTotal > 0, JSON.stringify(usage));
+    await session.send("Reply OK again.");
+    assert.equal(await turn(session), "OK");
+    // The worker's VM ends under an open shell and a running hook, as before; every
+    // lease is gone before the environment stops.
+    const open2 = open();
+    const sleeping = executions.command("sleep 600", 900_000, new AbortController().signal).then(
+      (result) => "completed " + result.code,
+      () => "cancelled",
+    );
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    const state = worker.binding.state;
+    await session.close("session_close");
+    assert.equal(withdrawn, 1);
+    // Killed with the VM: smolvm exec reports the signal, or the transport fails.
+    assert.match(await sleeping, /^(completed (?!0$)\d+|cancelled)$/);
+    const ended = await open2.child.status;
+    assert(!ended.success, "the shell ended with its VM");
+    await open2.child.stdin.close().catch(() => {});
+    executions.close(open2.target.token, open2.owner);
+    await assert.rejects(
+      executions.command("true", 1000, new AbortController().signal),
+      /not running/,
+    );
+    await assertCleaned(id, state);
+  }
+  {
     console.error("external stop suspends the session before the VM");
     const id = "stopped";
     const order: string[] = [];
@@ -386,10 +489,10 @@ try {
     await session.close();
     await assertCleaned(id, state);
   }
-  assert.equal(requests, 3, "guest requests reached the fixture only through the relay");
+  assert.equal(requests, 5, "guest requests reached the fixture only through the relay");
   passed = true;
   console.log(
-    "Passed: create/send, idle suspension, transcript resume, external stop, startup cancellation, worker crash and VM crash on the isolation launcher, with lease/VM/process/state cleanup",
+    "Passed: create/send, idle suspension, transcript resume, shells/hooks/inspection beside the worker, external stop, startup cancellation, worker crash and VM crash on the isolation launcher, with lease/VM/process/state cleanup",
   );
 } finally {
   clearTimeout(deadline);
