@@ -46,7 +46,7 @@ import {
 export const HELP = `loom-isolate — run commands in a smolvm VM over a workspace
 
 usage:
-  loom-isolate prepare [options]               verify the runtime and boot the environment once
+  loom-isolate prepare [options]               verify the runtime, boot, run prepare and start hooks
   loom-isolate exec [options] -- CMD [ARG]...  run CMD with literal arguments in the VM
   loom-isolate run [options] PROFILE [-- ARG]...  run a launch profile's entrypoint with ARGs
   loom-isolate config inspect [options]        show the resolved configuration and its sources
