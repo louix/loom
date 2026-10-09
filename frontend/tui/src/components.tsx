@@ -1,4 +1,5 @@
 import { SessionTabs } from "./session-tabs.tsx";
+import type { SessionTab } from "../../../core/src/session-inspection.ts";
 /**
  * Ink components for the TUI. Written in JSX and run with no bundler — `@oxc-node`
  * transforms `.tsx` on the fly (the `loom`/`loomd` bins and the test runner both
@@ -194,6 +195,7 @@ export const Fleet = memo(
     width,
     now,
     archiving = [],
+    hover = null,
   }: {
     view: FleetPaneView;
     /** The `/` filter's buffer, drawn under the title. Separate from `view`
@@ -203,6 +205,8 @@ export const Fleet = memo(
     width: number;
     now: number;
     archiving?: readonly string[];
+    /** The hovered target (`hitKey`), underlined if it is one of these rows. */
+    hover?: string | null;
   }): ReactNode => {
     const iw = inside(width);
     const childKeyOf = (s: SessionSnapshot): string | null =>
@@ -260,6 +264,7 @@ export const Fleet = memo(
                 pcolor: view.providerColors,
                 compacting: entry.s.compacting !== undefined,
                 archiving: archiving.includes(entry.s.id),
+                hovered: hover === `session:${entry.s.id}`,
               });
             case "child":
               return FleetChildRow({
@@ -269,10 +274,15 @@ export const Fleet = memo(
                 sel: entry.c.key === childKeyOf(entry.s),
                 tick,
                 iw,
+                hovered: hover === `child:${entry.s.id}:${entry.c.key}`,
               });
             case "childMore":
               return (
-                <Text key={`more-${entry.s.id}`} tone="faint">
+                <Text
+                  key={`more-${entry.s.id}`}
+                  tone="faint"
+                  underline={hover === `childMore:${entry.s.id}`}
+                >
                   {`  └ +${entry.extra} more`}
                 </Text>
               );
@@ -354,6 +364,7 @@ const FleetRow = ({
   pcolor,
   compacting = false,
   archiving = false,
+  hovered = false,
 }: {
   s: SessionSnapshot;
   selected: boolean;
@@ -368,6 +379,8 @@ const FleetRow = ({
   /** A compaction is in flight — show a `⇊` in the cache-dot slot. */
   compacting?: boolean;
   archiving?: boolean;
+  /** Under the mouse pointer: a click selects it. */
+  hovered?: boolean;
 }): ReactNode => {
   const C = useTheme();
   const look = statusLook(s.status.kind);
@@ -409,7 +422,7 @@ const FleetRow = ({
         <Text color={cacheColor ?? C.faint}>{cacheColor ? "⟢ " : "  "}</Text>
       )}
       <Text tone="faint">{s.comment ? "✎ " : "  "}</Text>
-      <Text color={titleColor} bold={selected && !blocked}>
+      <Text color={hovered ? C.text : titleColor} bold={selected && !blocked} underline={hovered}>
         {title}
       </Text>
       <Text tone="faint">{` ${cost}`}</Text>
@@ -443,6 +456,7 @@ const FleetChildRow = ({
   sel,
   tick,
   iw,
+  hovered = false,
 }: {
   /** Session-qualified key — plain child keys aren't unique across sessions
    *  once every row sits in one flat list. */
@@ -454,6 +468,8 @@ const FleetChildRow = ({
   sel: boolean;
   tick: number;
   iw: number;
+  /** Under the mouse pointer: a click selects it. */
+  hovered?: boolean;
 }): ReactNode => {
   const room = Math.max(6, iw - 8);
   return (
@@ -462,7 +478,7 @@ const FleetChildRow = ({
       <Text tone="faint">{isLast ? "└ " : "├ "}</Text>
       <Text tone="accentDim">{spinnerFrame(tick) + " "}</Text>
       <Text tone="faint">{childGlyph(c) + " "}</Text>
-      <Text tone={sel ? "text" : "dim"} bold={sel}>
+      <Text tone={sel || hovered ? "text" : "dim"} bold={sel} underline={hovered}>
         {truncate(c.label.replace(/\s+/g, " ").trim(), room)}
       </Text>
     </Line>
@@ -496,7 +512,8 @@ export const detailLayout = (
     archiving?: boolean;
   } = {},
 ) => {
-  type Content = (now: number) => ReactNode;
+  // `hovered`: the mouse pointer is over this row's click target.
+  type Content = (now: number, hovered?: boolean) => ReactNode;
   const rows: LayoutRow<Content, "mode">[] = [];
   const add = (value: ReactNode | Content) =>
     rows.push({ tag: "content", value: typeof value === "function" ? value : () => value });
@@ -542,14 +559,16 @@ export const detailLayout = (
       kind: "mode",
       x: [...status].length + 2,
       width: [...chip].length,
-      value: () => (
+      value: (_now, hovered = false) => (
         <Box gap={2}>
           <Line tone={archiving ? "dim" : statusTone(s.status.kind)} bold={!archiving}>
             {status}
           </Line>
           <Line>
             <Text tone="dim">mode </Text>
-            <Text tone={mode != null ? "dim" : "warn"}>{modeChipText(s.mode, mode)}</Text>
+            <Text tone={mode != null ? "dim" : "warn"} underline={hovered}>
+              {modeChipText(s.mode, mode)}
+            </Text>
           </Line>
           <Line tone="dim">{`${s.turns} turn${s.turns === 1 ? "" : "s"}`}</Line>
         </Box>
@@ -655,11 +674,16 @@ export const detailLayout = (
   const layout = rowLayout(width, rows, { x: 2, y: 1 });
   return {
     ...layout,
-    render: (now: number): ReactNode => (
+    /** `hover`: the frame's hovered target (`hitKey`). */
+    render: (now: number, hover: string | null = null): ReactNode => (
       <Panel width={width} tone={s ? statusTone(s.status.kind) : "faint"}>
         {layout.rows.map((row, i) => (
           <Box key={i} height={1} flexShrink={0}>
-            {row.tag === "space" ? <Text> </Text> : row.value(now)}
+            {row.tag === "space" ? (
+              <Text> </Text>
+            ) : (
+              row.value(now, row.tag === "target" && hover === row.kind)
+            )}
           </Box>
         ))}
       </Panel>
@@ -699,7 +723,18 @@ export const Detail = memo(
 // ---------------------------------------------------------------------------
 
 export const EventLog = memo(
-  ({ view, width, spinner }: { view: LogView; width: number; spinner?: ReactNode }): ReactNode => {
+  ({
+    view,
+    width,
+    spinner,
+    hoverTab = null,
+  }: {
+    view: LogView;
+    width: number;
+    spinner?: ReactNode;
+    /** The session tab under the mouse pointer. */
+    hoverTab?: SessionTab | null;
+  }): ReactNode => {
     const palette = useTheme();
     const { child, rows } = view;
     let empty = child
@@ -717,7 +752,7 @@ export const EventLog = memo(
 
     return (
       <Panel width={width} tone={view.scrolled ? "accentDim" : "faint"} flexGrow={1}>
-        <SessionTabs active="chat" />
+        <SessionTabs active="chat" hover={hoverTab} />
         <Box justifyContent="space-between">
           <Line tone="dim">{title}</Line>
           <Text tone="faint">{view.tag + (view.scrolled ? `  ·  ↑${view.above} more` : "")}</Text>
@@ -869,9 +904,17 @@ const MODE_HINT: Record<Exclude<PromptKind, "new">, string> = {
 };
 
 /** Show the selected mode in grey until the server confirms the change. */
-const modeChip = (mode: string | null | undefined, pending?: SessionMode | null): ReactNode => {
+const modeChip = (
+  mode: string | null | undefined,
+  pending?: SessionMode | null,
+  hovered = false,
+): ReactNode => {
   const settledTone = mode && mode !== "default" ? "warn" : "faint";
-  return <Line tone={pending != null ? "dim" : settledTone}>{modeChipText(mode, pending)}</Line>;
+  return (
+    <Line tone={pending != null ? "dim" : settledTone} underline={hovered}>
+      {modeChipText(mode, pending)}
+    </Line>
+  );
 };
 
 const pendingPromptHint = (p: Prompt): string | null => {
@@ -964,6 +1007,7 @@ export const FooterArea = ({
   outbox = {},
   modes = {},
   bar,
+  hover = null,
 }: {
   state: TuiState;
   width: number;
@@ -972,17 +1016,20 @@ export const FooterArea = ({
   /** The bar the frame's click targets were measured from (see `FleetView`);
    *  computed here when the caller has none. */
   bar?: readonly BarItem[];
+  /** The frame's hovered target (`hitKey`); a bar chip under it is underlined. */
+  hover?: string | null;
 }): ReactNode => {
   const palette = useTheme();
   const p = openPrompt(state.overlay);
   if (p?.t === "new") return <Box height={2} />;
   const items = bar ?? footerBar({ ...state, outbox }, modes);
+  const hovered = items.findIndex((item) => item.command && `bar:${item.command.id}` === hover);
   if (p) {
     // A reply to a session — the input lives on that session's EVENTS pane
     // (`PromptPane`, under the log); the footer keeps only the hints row.
     return (
       <Box width={width} paddingX={1}>
-        <Hints items={items} />
+        <Hints items={items} hover={hovered} />
       </Box>
     );
   }
@@ -1004,7 +1051,7 @@ export const FooterArea = ({
       ) : null}
       <Text tone="faint">{"─".repeat(width)}</Text>
       <Box paddingX={1}>
-        <Hints items={items} />
+        <Hints items={items} hover={hovered} />
       </Box>
     </Box>
   );
@@ -1049,10 +1096,13 @@ export const NewSessionModal = ({
   state,
   cols,
   rows,
+  hover = false,
 }: {
   state: TuiState;
   cols: number;
   rows: number;
+  /** The mouse pointer is over the mode chip. */
+  hover?: boolean;
 }): ReactNode => {
   const palette = useTheme();
   const p = openPrompt(state.overlay);
@@ -1088,7 +1138,7 @@ export const NewSessionModal = ({
           <Text tone="faint">{"  ⌥p change"}</Text>
         </Line>
         <Box gap={1}>
-          <Box flexShrink={0}>{modeChip(p.settings.mode)}</Box>
+          <Box flexShrink={0}>{modeChip(p.settings.mode, null, hover)}</Box>
           <Line tone="dim">{`[${isolation}]  ⇧⇥ mode · ⌥i isolation`}</Line>
         </Box>
         {!g.compact && <Box height={1} flexShrink={0} />}
@@ -1137,10 +1187,13 @@ export const PromptPane = ({
   state,
   width,
   modes = {},
+  hover = false,
 }: {
   state: TuiState;
   width: number;
   modes?: ModeChoices;
+  /** The mouse pointer is over the mode chip. */
+  hover?: boolean;
 }): ReactNode => {
   const p = openPrompt(state.overlay);
   if (!p || p.t === "new") return null;
@@ -1154,7 +1207,7 @@ export const PromptPane = ({
         <Line tone="accent" bold>
           {p.label}
         </Line>
-        {sess ? modeChip(sess.mode, pendingMode(modes, sess.id) ?? sess.pendingMode) : null}
+        {sess ? modeChip(sess.mode, pendingMode(modes, sess.id) ?? sess.pendingMode, hover) : null}
       </Box>
       <InputLine
         buf={p.buffer}

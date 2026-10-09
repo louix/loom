@@ -8,13 +8,20 @@ export const SESSION_TABS = [
   { tab: "monitor", label: "3 VM MONITOR" },
 ] as const;
 
-export const SessionTabs = ({ active }: { active: SessionTab }): ReactNode => (
+export const SessionTabs = ({
+  active,
+  hover = null,
+}: {
+  active: SessionTab;
+  /** The tab under the mouse pointer, underlined. */
+  hover?: SessionTab | null;
+}): ReactNode => (
   <Line>
     {SESSION_TABS.map(({ tab, label }, index) => (
       <Text key={tab} tone={active === tab ? "accent" : "dim"} bold={active === tab}>
         {index ? "  " : ""}
         {active === tab ? "[" : " "}
-        {label}
+        <Text underline={hover === tab}>{label}</Text>
         {active === tab ? "]" : " "}
       </Text>
     ))}
@@ -27,19 +34,21 @@ export const InspectionPane = ({
   scroll,
   width,
   height,
+  hoverTab = null,
 }: {
   tab: SessionTab;
   text: string;
   scroll: number;
   width: number;
   height: number;
+  hoverTab?: SessionTab | null;
 }): ReactNode => {
   const lines = text.split("\n");
   const room = Math.max(1, height - 4);
   const start = Math.min(scroll, Math.max(0, lines.length - room));
   return (
     <Panel width={width} height={height} flexShrink={0} overflow="hidden">
-      <SessionTabs active={tab} />
+      <SessionTabs active={tab} hover={hoverTab} />
       <Line tone="faint">{`o editor · PgUp/PgDn scroll${lines.length > room ? ` · ${start + 1}–${Math.min(lines.length, start + room)}/${lines.length}` : ""}`}</Line>
       {lines
         .slice(start, start + room)

@@ -200,6 +200,13 @@ Ink parses as a meta keypress. If your terminal instead sends the high-bit form
 (`Meta sends 8-bit`), the `⌥` prompt actions won't register — switch it to
 "`Esc`+" / "meta sends escape".
 
+Clickable things underline under the mouse pointer: FLEET rows, the session
+tabs, the mode chips and the footer's key chips. A footer chip runs its command
+for the session the footer was drawn for, checked again first. Moving the mouse
+never runs anything, and a key press hides the underline until the mouse moves.
+The wheel scrolls whatever is being read: the plan review, the answer sheet,
+the active tab.
+
 The permission-mode chip also accepts mouse clicks in DETAIL and in the new-session
 and reply composers, using the same cycle as `⇧⇥`. It is disabled while a send is
 pending or its outcome needs review. Starting or resuming a session displays

@@ -1,4 +1,4 @@
-import { InspectionPane } from "./session-tabs.tsx";
+import { InspectionPane, SESSION_TABS } from "./session-tabs.tsx";
 /**
  * Root Ink component. All logic — state, keymap, daemon round-trips — lives in
  * {@link mkFleetHandle}; this file gathers the terminal capabilities the handle
@@ -278,7 +278,12 @@ const Layout = ({ view, handle }: Omit<PaneProps, "width">): ReactNode => {
       {body}
       {view.body.t === "fleetOnly" ? <RequestArea view={view} width={cols} /> : null}
       <InputArea view={view} handle={handle} width={cols} />
-      <NewSessionModal state={state} cols={cols} rows={view.rows} />
+      <NewSessionModal
+        state={state}
+        cols={cols}
+        rows={view.rows}
+        hover={view.hover === "promptMode"}
+      />
       <SelectionModal state={state} cols={cols} rows={view.rows} />
       {view.environmentWarning && (
         <Box height={2} flexShrink={0} flexDirection="column">
@@ -316,6 +321,7 @@ const FleetArea = ({ view, handle, width }: PaneProps): ReactNode => {
       archiving={view.ui.archiving}
       width={width}
       tick={frame.tick}
+      hover={view.hover}
       now={frame.now}
     />
   );
@@ -323,7 +329,7 @@ const FleetArea = ({ view, handle, width }: PaneProps): ReactNode => {
 
 const DetailArea = ({ view, handle }: PaneProps): ReactNode => {
   const now = useSyncExternalStore(handle.animation.subscribe, handle.animation.getNow);
-  return view.detail.render(now);
+  return view.detail.render(now, view.hover);
 };
 
 const Working = ({ handle, starting }: { handle: FleetHandle; starting: boolean }): ReactNode => {
@@ -341,6 +347,7 @@ const LogArea = ({ view, handle, width }: PaneProps): ReactNode => {
   const boxes = useSyncExternalStore(handle.composer.subscribe, handle.composer.get);
   const box = outboxOf(boxes, view.sel?.id ?? null);
   const { selectedChild, logFilter } = view.ui;
+  const hoverTab = SESSION_TABS.find(({ tab }) => view.hover === `sessionTab:${tab}`)?.tab ?? null;
   const child = useMemo(
     () => (view.sel ? (childrenOf(view.sel).find((c) => c.key === selectedChild) ?? null) : null),
     [view.sel, selectedChild],
@@ -368,9 +375,10 @@ const LogArea = ({ view, handle, width }: PaneProps): ReactNode => {
         scroll={view.inspectionScroll}
         width={width}
         height={view.splitLogH}
+        hoverTab={hoverTab}
       />
     );
-  return <EventLog view={pane} width={width} spinner={spinner} />;
+  return <EventLog view={pane} width={width} spinner={spinner} hoverTab={hoverTab} />;
 };
 
 /** The selected session's pending request (approve / answer / plan review) —
@@ -394,8 +402,15 @@ const InputArea = ({
   const outbox = useSyncExternalStore(handle.composer.subscribe, handle.composer.get);
   const modes = useSyncExternalStore(handle.modes.subscribe, handle.modes.get);
   return pane ? (
-    <PromptPane state={view.ui} width={width} modes={modes} />
+    <PromptPane state={view.ui} width={width} modes={modes} hover={view.hover === "promptMode"} />
   ) : (
-    <FooterArea state={view.ui} width={width} modes={modes} outbox={outbox} bar={view.bar} />
+    <FooterArea
+      state={view.ui}
+      width={width}
+      modes={modes}
+      outbox={outbox}
+      bar={view.bar}
+      hover={view.hover}
+    />
   );
 };

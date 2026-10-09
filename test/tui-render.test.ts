@@ -44,6 +44,8 @@ import {
 } from "@loom/tui/transcript";
 import {
   animationNeed,
+  hitAt,
+  hitKey,
   mkFleetHandle,
   type FleetClient,
   type FleetHandle,
@@ -52,6 +54,7 @@ import {
 import { initialState, fleetSessions, shownLog, reduce, sessionLog } from "@loom/tui/model";
 import { openPrompt, pickerCurrent, sessionPrompt } from "@loom/tui/overlay";
 import { requestsFor } from "@loom/tui/interactions";
+import { MOUSE_OFF, MOUSE_ON, PASTE_OFF, PASTE_ON, mouseReport } from "@loom/tui/mouse";
 import type { FakeProvider } from "@loom/connector-mock";
 import { makeHarness, type Harness } from "@loom/harness";
 
@@ -3814,10 +3817,10 @@ test("s hands off the selected session and restores the TUI after shell exit or 
       handle.handleKey("s", {} as Key);
       handle.handleKey("s", {} as Key);
       handle.handleKey("c", { ctrl: true } as Key);
-      assert.deepEqual(steps, ["suspend", "\x1b[?1006l\x1b[?1000l\x1b[?2004l", "shell:a"]);
+      assert.deepEqual(steps, ["suspend", MOUSE_OFF + PASTE_OFF, "shell:a"]);
       finish();
       await delay(0);
-      assert.deepEqual(steps.slice(-2), ["restore", "\x1b[?2004h\x1b[?1000h\x1b[?1006h"]);
+      assert.deepEqual(steps.slice(-2), ["restore", PASTE_ON + MOUSE_ON]);
       assert.equal(handle.getView().sel?.id, before.sel?.id);
       assert.equal(handle.getView().layoutView, before.layoutView);
       assert.equal(handle.getView().ui.overlay.t, "browse");
@@ -4006,6 +4009,152 @@ test("the key bar projects the command model, and its chips run their commands",
     click("palette");
     const o = handle.getView().ui.overlay;
     assert.deepEqual(o.t === "picker" ? o.picker.dest : null, { t: "command", target: "a" });
+  } finally {
+    stop();
+  }
+});
+
+test("mouse motion and drags are never clicks", () => {
+  assert.equal(mouseReport("[<35;10;3M")?.kind, "move");
+  assert.equal(mouseReport("[<32;10;3M")?.kind, "move", "a drag is motion with a button held");
+  assert.deepEqual(mouseReport("[<0;10;3M"), {
+    button: 0,
+    x: 10,
+    y: 3,
+    kind: "button",
+    pressed: true,
+  });
+  assert.equal(mouseReport("[<0;10;3m")?.pressed, false);
+  assert.equal(mouseReport("[<64;10;3M")?.kind, "wheel");
+  assert.equal(mouseReport("[<68;10;3M")?.button, 64, "modifier bits are not buttons");
+  assert.equal(mouseReport("hello"), null);
+  assert.ok(MOUSE_ON.includes("?1003h") && MOUSE_OFF.includes("?1003l"));
+});
+
+test("hover follows the pointer over enabled targets and never activates them", () => {
+  const fake = mkFakeClient();
+  let size = { cols: 120, rows: 40 };
+  let resized = () => {};
+  let renders = 0;
+  const handle = mkFleetHandle({
+    client: fake.client,
+    term: {
+      ...fakeTerm,
+      getSize: () => size,
+      onResize: (fn) => {
+        resized = fn;
+        return () => {};
+      },
+    },
+  });
+  const stop = handle.effectStart();
+  const off = handle.subscribe(() => renders++);
+  const press = (input: string, key = {}) => handle.handleKey(input, key as Key);
+  const move = (x: number, y: number) => press(`[<35;${x};${y}M`);
+  const target = (key: string) => {
+    const hit = handle.getView().hits.find((h) => hitKey(h) === key);
+    assert.ok(hit, `${key} is not a target`);
+    return hit;
+  };
+  try {
+    const a = testSession({ id: "a", status: stateIdle, title: "first", updatedAt: 2 });
+    const b = testSession({ id: "b", status: stateIdle, title: "second", updatedAt: 1 });
+    fake.deliver(fleetOf(a, b));
+    const selected = handle.getView().ui.selectedId;
+    const other = selected === "a" ? "b" : "a";
+    const row = target(`session:${other}`);
+    const calls = fake.calls.length;
+
+    // Motion shows the target under the pointer, and only redraws on a change
+    // of target, not for every cell crossed.
+    move(row.x0 + 1, row.y);
+    assert.equal(handle.getView().hover, `session:${other}`);
+    const before = renders;
+    for (const x of [row.x0 + 2, row.x0 + 3, row.x0 + 4]) move(x, row.y);
+    assert.equal(renders, before);
+    // …and does nothing else: no selection, no request, a drag included.
+    press(`[<32;${row.x0 + 5};${row.y}M`);
+    assert.equal(handle.getView().ui.selectedId, selected);
+    assert.equal(fake.calls.length, calls);
+
+    // A stationary pointer over a layout that changed under it: the row it
+    // pointed at went away, and the feedback follows what is there now.
+    fake.deliver(fleetOf(testSession({ id: selected!, status: stateIdle, title: "kept" })));
+    assert.notEqual(handle.getView().hover, `session:${other}`);
+    fake.deliver(fleetOf(a, b));
+    assert.equal(
+      handle.getView().hover,
+      hitKey(hitAt(handle.getView().hits, { x: row.x0 + 4, y: row.y })!),
+    );
+
+    // A resize re-hit-tests too: the bar moves to the new last row.
+    const chip = target("bar:new");
+    move(chip.x0, chip.y);
+    assert.equal(handle.getView().hover, "bar:new");
+    size = { cols: 120, rows: 30 };
+    resized();
+    assert.equal(handle.getView().hover, null, "the old last row is body now");
+    move(target("bar:new").x0, 30);
+    assert.equal(handle.getView().hover, "bar:new");
+
+    // A key takes the feedback away until the mouse moves again.
+    press("v");
+    assert.equal(handle.getView().hover, null);
+
+    // A modal owns the pointer: nothing under it is a target.
+    move(target("bar:palette").x0, 30);
+    press(`[<0;${target("bar:palette").x0};30M`);
+    assert.equal(handle.getView().ui.overlay.t, "picker");
+    assert.equal(handle.getView().hover, null);
+    press("", { escape: true });
+
+    // A target that can't run is not offered: an awaiting session's mode chip.
+    fake.deliver(
+      fleetOf(
+        testSession({ id: "a", status: stateAwaitingInput("permission"), updatedAt: 2 }),
+        testSession({ id: "b", status: stateAwaitingInput("permission"), updatedAt: 1 }),
+      ),
+    );
+    assert.ok(!handle.getView().hits.some((h) => h.kind === "mode"));
+  } finally {
+    off();
+    stop();
+  }
+});
+
+test("the wheel over the answer sheet scrolls the sheet, not the hidden transcript", () => {
+  const fake = mkFakeClient();
+  const handle = mkFleetHandle({
+    client: fake.client,
+    term: { ...fakeTerm, getSize: () => ({ cols: 80, rows: 16 }) },
+  });
+  const stop = handle.effectStart();
+  const press = (input: string, key = {}) => handle.handleKey(input, key as Key);
+  try {
+    const options = Array.from({ length: 9 }, (_, i) => ({
+      label: `option ${i + 1}`,
+      description: "a reason that takes up a row of its own in a narrow sheet",
+    }));
+    const request: SessionInteraction = {
+      kind: "user_question",
+      id: "p1",
+      tool: "AskUserQuestion",
+      input: { questions: [{ question: "Which?", header: "Pick", options }] },
+      at: 1,
+    };
+    fake.deliver(
+      fleetOf(
+        testSession({ id: "a", status: stateAwaitingInput("user_question"), requests: [request] }),
+      ),
+    );
+    press("a");
+    assert.equal(handle.getView().ui.overlay.t, "questions");
+    const scroll = handle.transcript.get().scroll;
+    press("[<65;10;8M");
+    assert.ok((handle.getView().ui.qnav?.offset ?? 0) > 0, "the sheet scrolled");
+    assert.equal(handle.transcript.get().scroll, scroll, "the transcript behind it did not");
+    press("[<64;10;8M");
+    assert.equal(handle.getView().ui.qnav?.offset, 0);
   } finally {
     stop();
   }

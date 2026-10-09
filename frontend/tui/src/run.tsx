@@ -22,6 +22,7 @@ import { pickerCurrent, pickerVisible } from "./overlay.ts";
 import { repositoryPicker } from "./repositories.ts";
 import type { LoomClient } from "@loom/client";
 import { App } from "./app.tsx";
+import { MOUSE_OFF, MOUSE_ON, PASTE_OFF, PASTE_ON } from "./mouse.ts";
 
 const encoder = new TextEncoder();
 const writeStdout = (s: string): void => void Deno.stdout.writeSync(encoder.encode(s));
@@ -47,7 +48,8 @@ export const runTui = async (
     // SGR mouse reporting so the wheel arrives as its own escape sequence —
     // without it, terminals translate wheel scroll into Up/Down arrow keys on
     // the alt screen, which App's keymap reads as fleet-selection movement.
-    if (Deno.stdout.isTerminal()) writeStdout("\x1b[?2004h\x1b[?1000h\x1b[?1006h");
+    // Any-motion tracking lets hover feedback follow the pointer (see mouse.ts).
+    if (Deno.stdout.isTerminal()) writeStdout(PASTE_ON + MOUSE_ON);
 
     const instance = render(
       <App
@@ -76,7 +78,7 @@ export const runTui = async (
     await instance.waitUntilExit();
     return nextRepository;
   } finally {
-    if (Deno.stdout.isTerminal()) writeStdout("\x1b[?1006l\x1b[?1000l\x1b[?2004l");
+    if (Deno.stdout.isTerminal()) writeStdout(MOUSE_OFF + PASTE_OFF);
     await client.close();
   }
 };

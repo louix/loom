@@ -23,6 +23,7 @@
     "./clock": "./src/clock.ts",
     "./commands": "./src/commands.ts",
     "./layout": "./src/layout.ts",
+    "./mouse": "./src/mouse.ts",
     "./ui": "./src/ui.tsx"
   }
 }

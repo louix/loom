@@ -45,6 +45,7 @@ import type {
 import { LOOM_VERSION } from "@loom/core/version";
 import { spawnEditor, type EditorHandoff } from "./editor-handoff.ts";
 import { applyKey, buffer } from "./editor.ts";
+import { MOUSE_OFF, MOUSE_ON, PASTE_OFF, PASTE_ON, mouseReport } from "./mouse.ts";
 import { setThemeMode, shortId, truncate, modeChipText } from "./theme.ts";
 import { loadPersistedTheme, persistTheme } from "./theme-store.ts";
 import {
@@ -196,6 +197,29 @@ export type LayoutView = "overview" | "session";
 /** Anything a left click can land on in a frame. */
 export type ViewHit = FleetHit | BarHit;
 
+/** A hit's identity across frames — what hover feedback compares, so moving
+ *  within one target, or a redraw that keeps it in place, changes nothing. */
+export const hitKey = (hit: ViewHit): string => {
+  switch (hit.kind) {
+    case "session":
+      return `session:${hit.id}`;
+    case "child":
+      return `child:${hit.sessionId}:${hit.key}`;
+    case "childMore":
+      return `childMore:${hit.sessionId}`;
+    case "sessionTab":
+      return `sessionTab:${hit.tab}`;
+    case "bar":
+      return `bar:${hit.command.id}`;
+    default:
+      return hit.kind;
+  }
+};
+
+/** The target under a point, if any. */
+export const hitAt = (hits: readonly ViewHit[], point: { x: number; y: number }): ViewHit | null =>
+  hits.find((h) => point.y === h.y && point.x >= h.x0 && point.x <= h.x1) ?? null;
+
 /** Which body the layout draws — each overlay owns the screen, and carries what
  *  it draws, so the renderer never has to guard a payload against a mode.
  *  `fleetOnly` is the narrow `overview` (the fleet list alone); `sessionPane`
@@ -243,6 +267,10 @@ export interface FleetView {
    *  session tabs and key-bar commands. The keymap's mouse branch hit-tests a
    *  left click against these. */
   readonly hits: readonly ViewHit[];
+  /** The enabled target under the mouse pointer ({@link hitKey}), re-hit-tested
+   *  against this frame's targets: a resize, a scroll, a modal or a snapshot
+   *  that moves things under a stationary pointer moves the feedback with it. */
+  readonly hover: string | null;
 }
 
 export interface FleetHandle {
@@ -314,6 +342,9 @@ const deriveView = (
   layoutView: LayoutView,
   dims: { cols: number; rows: number },
   bar: readonly BarItem[] = [],
+  pointer: { x: number; y: number } | null = null,
+  /** Whether the selection's mode can be cycled: its chips are targets only then. */
+  modeEnabled = true,
 ): Omit<FleetView, "inspectionText" | "inspectionScroll"> => {
   const sel = selectedSession(state);
   mode ??= sel?.pendingMode ?? null;
@@ -408,11 +439,11 @@ const deriveView = (
   const fleetGeom = { originX: 1, originY: 2, maxY: bodyH + 1 };
   if (body.t === "split") {
     hits.push(...fleetHits({ ...state, find }, { ...fleetGeom, listW: leftW }, layout));
-    hits.push(...detail.hits({ x: leftW + 2, y: 2 }));
+    if (modeEnabled) hits.push(...detail.hits({ x: leftW + 2, y: 2 }));
   } else if (body.t === "fleetOnly") {
     hits.push(...fleetHits({ ...state, find }, { ...fleetGeom, listW: cols }, layout));
   } else if (body.t === "sessionPane") {
-    hits.push(...detail.hits({ x: 1, y: 2 }));
+    if (modeEnabled) hits.push(...detail.hits({ x: 1, y: 2 }));
   }
 
   if (body.t === "split" || body.t === "sessionPane") {
@@ -435,7 +466,7 @@ const deriveView = (
   if (prompt && !prompt.feedback?.pending && !prompt.feedback?.uncertain) {
     const isNew = prompt.t === "new";
     const isSend = prompt.t === "session" && prompt.kind === "send";
-    if (isNew || (isSend && body.t !== "fleetOnly" && sel?.resumable !== false)) {
+    if (isNew || (isSend && body.t !== "fleetOnly" && modeEnabled)) {
       const width = isNew ? cols : eventsW;
       const originX = isNew || body.t === "sessionPane" ? 1 : leftW + 2;
       const padding = isNew ? 1 : 2;
@@ -450,6 +481,7 @@ const deriveView = (
   }
   // The key bar is the frame's last row, inside the footer's one-column padding.
   hits.push(...barHits(bar, rows, 2, cols - 1));
+  const hovered = pointer ? hitAt(hits, pointer) : null;
 
   return {
     ui: state,
@@ -472,6 +504,7 @@ const deriveView = (
     logPage,
     bar,
     hits,
+    hover: hovered ? hitKey(hovered) : null,
   };
 };
 
@@ -545,6 +578,9 @@ export const mkFleetHandle = ({
   const connected = (): boolean => state.fleet.tag === "data";
   const animation = mkStore({ tick: 0, now: Date.now() });
   let planScroll = 0;
+  // Where the mouse pointer was last reported, while it is over the UI. Any
+  // key clears it: the feedback belongs to the mouse, not to the keyboard.
+  let pointer: { x: number; y: number } | null = null;
   let inspection: { key: string; text: string } | null = null;
   let inspectionPending: string | null = null;
   let inspectionGeneration = 0;
@@ -746,6 +782,8 @@ export const mkFleetHandle = ({
       layoutView,
       { ...dims, rows: dims.rows - (environmentWarning ? 2 : 0) },
       footerBar(commandCtx(), modes.get()),
+      pointer,
+      !describeCommand(commandCtx(), "mode", state.selectedId)?.disabled,
     ),
   });
   const store = mkStore(view());
@@ -791,6 +829,20 @@ export const mkFleetHandle = ({
   const planScrollBy = (by: number): void => {
     planScroll = Math.max(0, planScroll + by);
     publish();
+  };
+
+  /** Wheel over the answer sheet: scroll its body, as PgUp/PgDn do, clamped
+   *  to what the sheet draws — not the transcript hidden behind it. */
+  const scrollSheet = (by: number): void => {
+    if (state.overlay.t !== "questions") return;
+    const { sessionId, requestId } = state.overlay;
+    const qs = questionsOf(fleetSessions(state), sessionId, requestId);
+    if (!qs) return;
+    const nav = liveQNav(state.qnav, sessionId, requestId) ?? qnav(sessionId, requestId);
+    const { cols, bodyH } = store.get();
+    const { lines, room } = sheetLayout(qs, nav, cols, bodyH);
+    const offset = Math.max(0, Math.min(Math.max(0, lines.length - room), nav.offset + by));
+    if (offset !== nav.offset) dispatch({ t: "qnavSet", nav: { ...nav, offset } });
   };
 
   /** The Space palette's rows: every relevant command for `target`. */
@@ -977,6 +1029,8 @@ export const mkFleetHandle = ({
     let saved: string | null = null;
     try {
       await term.suspendTerminal(async () => {
+        // The editor gets the terminal as it found it: no motion reports in its input.
+        if (term.isTTY) term.write(MOUSE_OFF + PASTE_OFF);
         saved = spawnEditor(text, opts);
       });
     } catch (e) {
@@ -985,7 +1039,9 @@ export const mkFleetHandle = ({
       log?.warn("editor handoff failed", { err: msg });
       note(msg, "bad");
     }
-    if (term.isTTY) term.write("\x1b[?2004h\x1b[?1000h\x1b[?1006h");
+    // Whatever the pointer was over before the handoff, it is not now.
+    pointer = null;
+    if (term.isTTY) term.write(PASTE_ON + MOUSE_ON);
     return saved;
   };
 
@@ -997,7 +1053,7 @@ export const mkFleetHandle = ({
     try {
       let code = 0;
       await term.suspendTerminal(async () => {
-        if (term.isTTY) term.write("\x1b[?1006l\x1b[?1000l\x1b[?2004l");
+        if (term.isTTY) term.write(MOUSE_OFF + PASTE_OFF);
         code = await openShell(id);
       });
       if (code !== 0) note(`Shell exited with status ${code}`, "bad");
@@ -1005,7 +1061,9 @@ export const mkFleetHandle = ({
       note(error instanceof Error ? error.message : String(error), "bad");
     } finally {
       shellOpen = false;
-      if (term.isTTY) term.write("\x1b[?2004h\x1b[?1000h\x1b[?1006h");
+      // Whatever the pointer was over before the handoff, it is not now.
+      pointer = null;
+      if (term.isTTY) term.write(PASTE_ON + MOUSE_ON);
     }
   };
 
@@ -1018,6 +1076,7 @@ export const mkFleetHandle = ({
     try {
       let code = 1;
       await term.suspendTerminal(async () => {
+        if (term.isTTY) term.write(MOUSE_OFF + PASTE_OFF);
         code = await prepareEnvironment();
         if (checkEnvironment) {
           environmentCheck += 1;
@@ -1032,7 +1091,9 @@ export const mkFleetHandle = ({
       note(error instanceof Error ? error.message : String(error), "bad");
     } finally {
       preparingRepo = false;
-      if (term.isTTY) term.write("\x1b[?2004h\x1b[?1000h\x1b[?1006h");
+      // Whatever the pointer was over before the handoff, it is not now.
+      pointer = null;
+      if (term.isTTY) term.write(PASTE_ON + MOUSE_ON);
     }
   };
 
@@ -2104,39 +2165,43 @@ export const mkFleetHandle = ({
     }
 
     // SGR mouse reports arrive as raw `input` (`[<Cb;Cx;Cy(M|m)`, `run.tsx` turns
-    // the reporting on) with every `key.*` flag false. The wheel scrolls the
-    // plan-review body while that overlay owns the screen, otherwise the event
-    // log; a left click hit-tests against the frame's `hits` map — FLEET rows and
-    // the Detail `[mode]` chip (built in `deriveView`).
-    const mouse = /^\[<(\d+);(\d+);(\d+)([Mm])/.exec(input);
+    // the reporting on) with every `key.*` flag false. Every report moves the
+    // pointer hover feedback follows; motion never does more than that. The
+    // wheel scrolls whatever reading view owns the screen (plan review, answer
+    // sheet), otherwise the event log; a left press hit-tests against the
+    // frame's `hits` — the same targets hover shows (built in `deriveView`).
+    const mouse = mouseReport(input);
     if (mouse) {
-      const rawBtn = Number(mouse[1]);
-      const col = Number(mouse[2]);
-      const row = Number(mouse[3]);
-      const base = rawBtn & ~(4 | 8 | 16); // strip shift/meta/ctrl bits
-      if (base === 64 || base === 65) {
+      const hoverBefore = store.get().hover;
+      pointer = { x: mouse.x, y: mouse.y };
+      const hoverNow = hitAt(store.get().hits, pointer);
+      // Only a change of target redraws, not every cell the pointer crosses.
+      if ((hoverNow ? hitKey(hoverNow) : null) !== hoverBefore) publish();
+      if (mouse.kind === "move") return;
+      if (mouse.kind === "wheel" && (mouse.button === 64 || mouse.button === 65)) {
         if (
           openPrompt(state.overlay)?.t === "new" ||
           state.overlay.t === "picker" ||
           state.overlay.t === "confirm"
         )
           return;
-        // One wheel step for both readers. Plans count from the top; events
-        // count backwards from the live tail.
-        const delta = base === 64 ? -3 : 3;
+        // One wheel step for every reader. Plans and the answer sheet count
+        // from the top; events count backwards from the live tail.
+        const delta = mouse.button === 64 ? -3 : 3;
+        if (state.overlay.t === "questions") return scrollSheet(delta);
         if (state.overlay.t === "browse" && state.sessionTab !== "chat")
           return scrollInspection(delta);
         return state.overlay.t === "plan" ? planScrollBy(delta) : transcripts.scrollBy(-delta);
       }
-      // Left press (final `M`, not a release; bit 32 = drag) → click a FLEET row
-      // or the mode chip. Only in browse — overlays own the screen.
+      // Left press (not a release, not a drag) → click a target. Only in
+      // browse or under a prompt — other overlays own the screen.
       if (
-        base === 0 &&
-        mouse[4] === "M" &&
-        (rawBtn & 32) === 0 &&
+        mouse.kind === "button" &&
+        mouse.button === 0 &&
+        mouse.pressed &&
         (state.overlay.t === "browse" || state.overlay.t === "prompt")
       ) {
-        const hit = store.get().hits.find((h) => row === h.y && col >= h.x0 && col <= h.x1);
+        const hit = hitAt(store.get().hits, pointer);
         if (!hit) return;
         if (hit.kind === "promptMode") return handleKey("", { tab: true, shift: true } as Key);
         if (hit.kind === "bar") {
@@ -2159,7 +2224,12 @@ export const mkFleetHandle = ({
         if (hit.kind === "mode") return void execute("mode", state.selectedId);
         return;
       }
-      return; // release / middle / right / drag / horizontal wheel — ignore
+      return; // release / middle / right / horizontal wheel — ignore
+    }
+    // A key takes the hover feedback away until the mouse moves again.
+    if (pointer) {
+      pointer = null;
+      if (store.get().hover !== null) publish();
     }
 
     const openP = openPrompt(state.overlay);

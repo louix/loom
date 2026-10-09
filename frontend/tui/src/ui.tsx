@@ -147,16 +147,24 @@ export const Section = ({ title, children }: { title: string; children: ReactNod
 export const Hints = ({
   items,
   gap = 1,
+  hover = -1,
 }: {
   items: readonly { keys: string; label: string }[];
   gap?: number;
+  /** The item under the mouse pointer, drawn underlined. */
+  hover?: number;
 }): ReactNode => (
   <Line>
     {items.map(({ keys, label }, i) => (
       <Text key={i}>
         {i > 0 && <Text tone="faint">{" ".repeat(gap) + "·" + " ".repeat(gap)}</Text>}
-        <Text tone="accent">{keys}</Text>
-        <Text tone="dim">{" ".repeat(gap) + label}</Text>
+        <Text tone="accent" underline={i === hover}>
+          {keys}
+        </Text>
+        <Text tone={i === hover ? "text" : "dim"}>{" ".repeat(gap)}</Text>
+        <Text tone={i === hover ? "text" : "dim"} underline={i === hover}>
+          {label}
+        </Text>
       </Text>
     ))}
   </Line>
