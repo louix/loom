@@ -29,7 +29,8 @@ export const vmExecutionCommand = (
       "exec",
       "--name",
       sessionVmName,
-      ...(stdin ? ["-i"] : []),
+      // Without -i, smolvm buffers all output until exit unless asked to stream it.
+      ...(stdin ? ["-i"] : ["--stream"]),
       ...(tty
         ? [
             "-t",

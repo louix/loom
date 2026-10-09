@@ -40,6 +40,7 @@ Deno.test("direct execution preserves literal argv, activated environment, separ
     const target = vmExecutionCommand(binding, command);
     assert(!target.args.includes("-t"));
     assert(!target.args.includes("-i"));
+    assert(target.args.includes("--stream"), "output streams without stdin too");
     const args = target.args.slice(target.args.indexOf("--") + 1);
     // Execute the exact guest wrapper locally, substituting only its private profile path.
     args[2] = args[2]!.replace(
