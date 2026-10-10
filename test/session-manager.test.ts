@@ -1855,6 +1855,50 @@ nodeTest("a failing emitEvent does not stop the session's state advancing", asyn
   await mgr.shutdown();
 });
 
+// What a Stop dropped is handed to its own hook — never persisted, broadcast
+// or read as a state change.
+nodeTest("input a Stop discarded reaches onInputDiscarded, not the transcript", async () => {
+  const provider = new FakeProviderClass();
+  const emitted: string[] = [];
+  const reported: Array<{ id: string; items: readonly unknown[] }> = [];
+  const mgr = new SessionManager({
+    emitEvent: (ev) => {
+      emitted.push(ev.type);
+    },
+    onStatus: () => {},
+    onUsage: () => {},
+    onResult: () => {},
+    onTurnCompleted: () => {},
+    onOverlay: () => {},
+    onProviderRef: () => {},
+    onMode: () => {},
+    onInputDiscarded: (id, items) => {
+      reported.push({ id, items });
+    },
+    log: makeLogger("test"),
+  });
+  await mgr.create(provider, {
+    sessionId: "s1",
+    cwd: "/tmp",
+    prompt: "go",
+    mode: "default",
+    mcpServers: [],
+    loomServer: false,
+  });
+  const fs = provider.session("s1");
+  assert.ok(fs);
+  const items = [
+    { kind: "message" as const, text: "also do this", ref: "u1" },
+    { kind: "notification" as const, ref: "u2" },
+  ];
+  fs.emit({ type: "input_discarded", items });
+  fs.emit({ type: "assistant_text", text: "after" });
+  await waitFor(() => emitted.includes("assistant_text"), 2000);
+  assert.deepEqual(reported, [{ id: "s1", items }]);
+  assert.ok(!emitted.includes("input_discarded"), emitted.join(" "));
+  await mgr.shutdown();
+});
+
 test("account usage is shared with sibling and new sessions and survives daemon restart", async () => {
   let c = await client();
   const a = await createFake(c);

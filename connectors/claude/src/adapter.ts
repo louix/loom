@@ -23,7 +23,7 @@ import type {
   SDKMessage,
   SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
-import type { HarnessEvent, ProviderTotal } from "@loom/core/events";
+import type { DiscardedInput, HarnessEvent, ProviderTotal } from "@loom/core/events";
 import { stateRunning } from "@loom/core/session-state";
 import { makeLogger, type Logger } from "@loom/core/logger";
 import { AsyncChannel } from "@loom/core/channel";
@@ -329,14 +329,22 @@ const parseContextTag = (s: string): number => {
   return Math.round(parseFloat(m[1]!) * (m[2]!.toLowerCase() === "m" ? 1_000_000 : 1_000));
 };
 
-const userMessage = (text: string): SDKUserMessage => {
+const userMessage = (text: string, uuid: string): SDKUserMessage => {
   return {
     type: "user",
     // The interrupt receipt only lists UUID-stamped queued messages.
-    uuid: randomUUID(),
+    uuid,
     message: { role: "user", content: text },
     parent_tool_use_id: null,
   } as unknown as SDKUserMessage;
+};
+
+/** How many queued-input uuids {@link ClaudeSession} remembers, either way. */
+const QUEUED_INPUTS_MAX = 256;
+
+/** Hold an insertion-ordered collection to its bound, the oldest out first. */
+const bounded = <K>(into: Map<K, unknown> | Set<K>): void => {
+  if (into.size > QUEUED_INPUTS_MAX) into.delete(into.keys().next().value as K);
 };
 
 const mcpConfig = (handles: McpServerHandle[]): Record<string, McpServerConfig> => {
@@ -397,6 +405,17 @@ class ClaudeSession implements AgentSession {
 
   /** Follow-up turns fed into the streaming-input prompt. */
   #inbox = new AsyncChannel<SDKUserMessage>();
+  /**
+   * Input Loom queued for the CLI that the agent has not yet been seen taking
+   * up, by the uuid it was stamped with. A Stop reports the entries its
+   * receipt names as cancelled, along with whatever `#inbox` still held; an
+   * assistant frame's `user_message_uuids` retires them as consumed.
+   */
+  #queued = new Map<string, DiscardedInput>();
+  /** Uuids the agent took up or a Stop already reported: a receipt that lists
+   *  one again (a repeat interrupt, a fold the abort caught after the agent
+   *  answered it) must not report it as never seen. */
+  #settledInputs = new Set<string>();
   /** Normalized events out: SDK messages + permission prompts, merged. */
   #outbox = new AsyncChannel<HarnessEvent>();
   #pending = new PendingInteractions<PermissionResult | null, PermissionResult | null>();
@@ -486,7 +505,10 @@ class ClaudeSession implements AgentSession {
     this.#startOpts = opts;
     this.#startExtra = extra;
     const { resume, cli, promptCacheTtl, configDir } = extra;
-    if (opts.prompt) this.#inbox.push(userMessage(opts.prompt));
+    // A new CLI process: the old one's queue and its uuids are gone with it.
+    this.#queued.clear();
+    this.#settledInputs.clear();
+    if (opts.prompt) this.#enqueueInput(opts.prompt, "message");
 
     const canUseTool: CanUseTool = (toolName, input, ctx) => {
       // C6: a turn already sitting in the SDK's own command queue when the user
@@ -797,6 +819,7 @@ class ClaudeSession implements AgentSession {
         // diffed against a baseline that is still being read.
         if (msg.type === "result" && seeding) await seeding;
         this.#trackTasks(msg);
+        this.#trackConsumed(msg);
         if (msg.type === "system" && msg.subtype === "init") {
           const missing = (this.#startOpts?.mcpServers ?? []).filter(
             (server) =>
@@ -896,13 +919,40 @@ class ClaudeSession implements AgentSession {
     return this.#outbox;
   }
 
-  async send(input: UserInput): Promise<void> {
+  send(input: UserInput): Promise<void> {
+    return this.#submit(input, "message");
+  }
+
+  /** A new turn's input: `send()`'s, or the adapter's own follow-up. */
+  async #submit(input: UserInput, kind: "message" | "command"): Promise<void> {
     if (this.#closing) throw new Error("session is closing");
     if (this.#interruptOperation || this.#interruptFailed || this.#taskStops.size > 0)
       throw new Error("Claude cancellation is unresolved — retry interrupt before sending");
     if (this.#rewindInFlight) throw new Error("a context replacement is in progress");
     this.#interrupted = false; // a fresh user turn supersedes any prior interrupt
-    this.#inbox.push(userMessage(input));
+    this.#enqueueInput(input, kind);
+  }
+
+  /** Queue `text` for the CLI, remembered under its uuid until the agent takes
+   *  it up — see {@link #queued}. */
+  #enqueueInput(text: string, kind: "message" | "command"): void {
+    const uuid = randomUUID();
+    this.#queued.set(uuid, { kind, text, ref: uuid });
+    bounded(this.#queued);
+    this.#inbox.push(userMessage(text, uuid));
+  }
+
+  /** The agent took these queued inputs up; a Stop can no longer discard them. */
+  #trackConsumed(msg: SDKMessage): void {
+    if (msg.type !== "assistant") return;
+    const uuids = msg.user_message_uuids ?? (msg.user_message_uuid ? [msg.user_message_uuid] : []);
+    for (const uuid of uuids) this.#settleInput(uuid);
+  }
+
+  #settleInput(uuid: string): void {
+    this.#queued.delete(uuid);
+    this.#settledInputs.add(uuid);
+    bounded(this.#settledInputs);
   }
 
   /**
@@ -919,7 +969,7 @@ class ClaudeSession implements AgentSession {
     if (this.#closing) throw new Error("session is closing");
     if (this.#rewindInFlight) throw new Error("a context replacement is in progress");
     const trimmed = instructions?.trim();
-    this.#inbox.push(userMessage(trimmed ? `/compact ${trimmed}` : "/compact"));
+    this.#enqueueInput(trimmed ? `/compact ${trimmed}` : "/compact", "command");
     // One tracked compaction at a time. The daemon's op gate serialises
     // `session.compact` calls, so this only spins for the plan-approval path
     // racing a manual one; the CLI runs the queued `/compact`s in input order.
@@ -1093,7 +1143,7 @@ class ClaudeSession implements AgentSession {
     });
     await this.setMode(decision.mode ?? "acceptEdits");
     const plan = decision.action === "revise" ? decision.plan : "the plan you just presented";
-    await this.send(`The plan is approved. Implement it now:\n\n${plan}`);
+    await this.#submit(`The plan is approved. Implement it now:\n\n${plan}`, "command");
   }
 
   async #implementFresh(
@@ -1192,7 +1242,8 @@ class ClaudeSession implements AgentSession {
     // C6: release any gate / ask_user / plan promise parked on this turn now —
     // don't wait for the stream to end or `close()` to run.
     this.#rejectPending("the turn was interrupted");
-    this.#inbox.drain();
+    const drained = this.#inbox.drain();
+    let cancelled: readonly string[] = [];
     const failures: string[] = [];
     const parent = Promise.resolve().then(async () => {
       try {
@@ -1203,6 +1254,7 @@ class ClaudeSession implements AgentSession {
         const receipt = q
           ? await (q.interrupt as InterruptWithOptions).call(q, CANCEL_QUEUED)
           : undefined;
+        cancelled = receipt?.cancelled ?? [];
         if (receipt?.still_queued?.length)
           failures.push(`Claude still has ${receipt.still_queued.length} queued turn(s)`);
       } catch (err) {
@@ -1224,9 +1276,43 @@ class ClaudeSession implements AgentSession {
     // awaiting a child), then sweep registrations that arrived during its ACK.
     await stopChildren();
     await parent;
+    // Reported whether or not the rest of the stop succeeds: these are gone.
+    this.#reportDiscarded(drained, cancelled);
     await stopChildren();
     this.#interruptFailed = failures.length > 0;
     if (failures.length) throw new Error(`Claude cancellation incomplete: ${failures.join("; ")}`);
+  }
+
+  /**
+   * Tell the session manager what this Stop dropped that the agent never saw:
+   * sends the SDK had not yet pulled from `#inbox`, and the queued commands
+   * the interrupt receipt lists under `cancelled` (uuid-stamped main-thread
+   * commands only — the CLI dequeues its uuid-less task notifications too, but
+   * cannot name them). A cancelled uuid Loom never sent is the CLI's own.
+   */
+  #reportDiscarded(drained: readonly SDKUserMessage[], cancelled: readonly string[]): void {
+    // In queue order: the CLI's queue holds what the SDK pulled before
+    // anything still sitting in `#inbox`.
+    const items: DiscardedInput[] = [];
+    for (const uuid of cancelled) {
+      if (this.#settledInputs.has(uuid)) continue;
+      items.push(this.#queued.get(uuid) ?? { kind: "notification", ref: uuid });
+      this.#settleInput(uuid);
+    }
+    for (const msg of drained) {
+      const uuid = msg.uuid ?? randomUUID();
+      const content = msg.message.content;
+      items.push(
+        this.#queued.get(uuid) ?? {
+          kind: "message",
+          text: typeof content === "string" ? content : "",
+          ref: uuid,
+        },
+      );
+      this.#settleInput(uuid);
+    }
+    if (items.length)
+      this.#outbox.push({ type: "input_discarded", sessionId: this.id, ts: Date.now(), items });
   }
 
   #stopTask(id: string): Promise<void> {

@@ -495,6 +495,110 @@ test("interrupt has Claude cancel the turns queued behind it", async (t) => {
   await s.send("next");
 });
 
+type Pulled = { uuid?: string; message: { content: unknown } };
+
+/** A live session whose fake SDK pulls its prompt stream only when the test
+ *  says so — which sends reached the CLI's queue and which still sit in the
+ *  adapter's inbox is the test's choice — and whose interrupt receipt cancels
+ *  whatever `cancelled` holds at the time. */
+const setupPulled = async (t: TestContext) => {
+  let prompt!: AsyncIterator<Pulled>;
+  const receipt = { cancelled: [] as string[] };
+  let q!: ReturnType<typeof fakeLiveQuery>;
+  __setClaudeSdk({
+    query: (args: unknown) => {
+      prompt = (args as { prompt: AsyncIterable<Pulled> }).prompt[Symbol.asyncIterator]();
+      q = fakeLiveQuery();
+      q.interrupt = async () => ({ still_queued: [], cancelled: receipt.cancelled });
+      return q as never;
+    },
+  });
+  const s = await new ClaudeProvider().createSession({
+    sessionId: "c1",
+    cwd: "/tmp",
+    prompt: "go",
+    mode: "default",
+    mcpServers: [],
+    loomServer: false,
+  });
+  const seen: HarnessEvent[] = [];
+  const reader = (async () => {
+    for await (const ev of s.events()) seen.push(ev);
+  })();
+  t.after(async () => {
+    await s.close();
+    await reader.catch(() => {});
+  });
+  const pull = async (): Promise<Pulled> => (await prompt.next()).value as Pulled;
+  const discarded = () =>
+    seen.filter(
+      (e): e is Extract<HarnessEvent, { type: "input_discarded" }> => e.type === "input_discarded",
+    );
+  return { s, q, receipt, pull, discarded };
+};
+
+test("a Stop reports the queued input it cancelled that the agent never took up", async (t) => {
+  const { s, q, receipt, pull, discarded } = await setupPulled(t);
+  // The SDK takes the opening prompt and two mid-turn sends into the CLI's
+  // queue, and the agent answers the first of them. The last send never
+  // leaves the adapter's inbox.
+  const opening = await pull();
+  await s.send("first mid-turn");
+  const first = await pull();
+  await s.send("second mid-turn");
+  const second = await pull();
+  await s.send("still in the inbox");
+  q.push({
+    type: "assistant",
+    parent_tool_use_id: null,
+    uuid: "a-1",
+    user_message_uuid: first.uuid,
+    user_message_uuids: [opening.uuid, first.uuid],
+    message: { content: [] },
+  });
+  await delay(20);
+
+  // The receipt re-lists the send the agent already took up (a fold the abort
+  // caught), cancels the second, and one command the CLI queued itself.
+  receipt.cancelled = [first.uuid!, second.uuid!, "cli-own"];
+  await s.interrupt();
+  await delay(20);
+  const reports = discarded();
+  assert.equal(reports.length, 1, "one report per Stop");
+  const items = reports[0]!.items;
+  assert.deepEqual(items, [
+    { kind: "message", text: "second mid-turn", ref: second.uuid },
+    { kind: "notification", ref: "cli-own" },
+    { kind: "message", text: "still in the inbox", ref: items[2]?.ref },
+  ]);
+  assert.ok(items[2]?.ref, "an inbox send carries the uuid it was stamped with");
+
+  // A repeat Stop over the same receipt reports nothing new.
+  await s.interrupt();
+  await delay(20);
+  assert.equal(discarded().length, 1);
+});
+
+test("a Stop that dropped nothing is silent; a dropped /compact is a command", async (t) => {
+  const { s, receipt, pull, discarded } = await setupPulled(t);
+  await pull();
+  await s.interrupt();
+  await delay(20);
+  assert.equal(discarded().length, 0, "an empty receipt and inbox say nothing");
+
+  await s.send("again");
+  await pull();
+  const compaction = s.compact("keep the plan");
+  const compact = await pull();
+  receipt.cancelled = [compact.uuid!];
+  await s.interrupt();
+  await compaction;
+  await delay(20);
+  assert.deepEqual(discarded()[0]?.items, [
+    { kind: "command", text: "/compact keep the plan", ref: compact.uuid },
+  ]);
+});
+
 test("a task completing while its stop request fails is already cancelled", async (t) => {
   let reject!: (err: Error) => void;
   const { s, q } = await setupLive(t, (q) => {

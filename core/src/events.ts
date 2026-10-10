@@ -360,6 +360,43 @@ export const userMessageEventSchema = harnessEventBaseSchema.extend({
 export type UserMessageEvent = z.infer<typeof userMessageEventSchema>;
 
 /**
+ * One queued input a Stop cancelled before the agent ever saw it.
+ *
+ * - `message`: text handed to the session's `send()` — the user's message, or
+ *   one Loom sent on the same path (a nudge, hook feedback); the caller knows
+ *   which.
+ * - `command`: control input the adapter queued itself (Claude: a `/compact`,
+ *   the plan-approval follow-up).
+ * - `notification`: input the provider queued on its own — a task
+ *   notification, a sub-agent hand-back, a scheduled trigger. Its content is
+ *   not reported, only its `ref`.
+ */
+export const discardedInputSchema = z.object({
+  kind: z.enum(["message", "command", "notification"]),
+  /** What it said; absent for a `notification`. */
+  text: z.string().optional(),
+  /** The provider's id for it (Claude: the queued command's uuid). */
+  ref: z.string().optional(),
+});
+export type DiscardedInput = z.infer<typeof discardedInputSchema>;
+
+/**
+ * An interrupt dropped input that was queued behind the stopped turn, and none
+ * of it reached the agent. Lists only what the provider confirmed cancelled or
+ * the adapter discarded before handing it over — input the provider cannot
+ * name (Claude's uuid-less task notifications) is not reported. Emitted at
+ * most once per interrupt, on the event stream, with no ordering promise
+ * against `interrupt()` settling.
+ *
+ * Consumed by the session manager; not transcript, not persisted.
+ */
+export const inputDiscardedEventSchema = harnessEventBaseSchema.extend({
+  type: z.literal("input_discarded"),
+  items: z.array(discardedInputSchema).min(1),
+});
+export type InputDiscardedEvent = z.infer<typeof inputDiscardedEventSchema>;
+
+/**
  * The provider's own account-plan usage, for a subscription session (not an
  * API-key one, which has no such window). One event covers one window
  * (`rateLimitType`) — e.g. Claude reports `five_hour` and `seven_day`
@@ -401,6 +438,7 @@ export const harnessEventSchema = z.discriminatedUnion("type", [
   rewindEventSchema,
   providerChangedEventSchema,
   userMessageEventSchema,
+  inputDiscardedEventSchema,
   rateLimitEventSchema,
 ]);
 export type HarnessEvent = z.infer<typeof harnessEventSchema>;

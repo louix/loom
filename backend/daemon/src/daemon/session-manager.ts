@@ -9,7 +9,7 @@
  */
 import { VmTerminationError, type HostStopReason } from "../../../../core/src/vm-termination.ts";
 import { signalOf } from "./startup.ts";
-import type { BackgroundTaskInfo, HarnessEvent } from "@loom/core/events";
+import type { BackgroundTaskInfo, DiscardedInput, HarnessEvent } from "@loom/core/events";
 import { interactionFor, type SessionInteraction } from "@loom/core/interaction";
 import {
   isLiveState,
@@ -80,6 +80,13 @@ export interface ManagerHooks {
    * {@link SessionManager.snapshot} when you handle it.
    */
   onMode(sessionId: string): void;
+  /**
+   * An interrupt dropped input queued behind the stopped turn that never
+   * reached the agent (an `input_discarded` event). Not transcript: this
+   * hook is the event's only consumer. May land just before or after
+   * {@link SessionManager.interrupt} settles.
+   */
+  onInputDiscarded?(sessionId: string, items: readonly DiscardedInput[]): void;
   log: Logger;
 }
 
@@ -329,6 +336,23 @@ export class SessionManager {
         if (ev.type === "result" || (ev.type === "error" && ev.fatal)) run.firstOutputSince = null;
         if (ev.type === "error" && ev.fatal) {
           this.#hooks.log.warn("session error", { id, message: ev.message });
+        }
+        // What a Stop dropped is neither transcript nor state: it goes to its
+        // own hook alone.
+        if (ev.type === "input_discarded") {
+          this.#hooks.log.info("interrupt discarded queued input", {
+            id,
+            kinds: ev.items.map((item) => item.kind),
+          });
+          try {
+            this.#hooks.onInputDiscarded?.(id, ev.items);
+          } catch (err) {
+            this.#hooks.log.error("input-discarded hook threw; continuing drain", {
+              id,
+              err: err instanceof Error ? err.message : String(err),
+            });
+          }
+          continue;
         }
         // Persisting and broadcasting the raw event is its own concern, and its
         // own failure. It runs first (the transcript should carry the event

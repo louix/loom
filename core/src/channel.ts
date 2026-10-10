@@ -41,9 +41,10 @@ export class AsyncChannel<T> implements AsyncIterable<T> {
     return this.#dropped;
   }
 
-  /** Discard buffered items the consumer hasn't taken yet; keep the stream open. */
-  drain(): void {
-    this.#queue.length = 0;
+  /** Discard buffered items the consumer hasn't taken yet, oldest first, and
+   *  return them; keep the stream open. */
+  drain(): T[] {
+    return this.#queue.splice(0);
   }
 
   push(value: T): void {
