@@ -7,7 +7,7 @@ import type { HookAttempt } from "../../../../core/src/shell-hook.ts";
 import { pruneVmInventory } from "../../../../runtime/src/session-vm/inventory.ts";
 import { startupSignal } from "./startup.ts";
 import { stateInterrupted } from "@loom/core/session-state";
-import { settleProcessGroups } from "@loom/core/process-group";
+import { PROCESS_GROUP_GRACE_MS, settleProcessGroups } from "@loom/core/process-group";
 import type { RpcParams } from "@loom/core/rpc-params";
 import {
   currentRepoBase,
@@ -146,6 +146,21 @@ const GIT_FACTS_SWEEP_MS = 15_000;
  *  the pidfile and resolve `whenClosed()` regardless. A wedged adapter must not
  *  make the daemon unkillable. */
 const SHUTDOWN_GRACE_MS = 5_000;
+/** Once `promise` has settled or `ms` have passed, whichever is first. */
+const settledWithin = async (promise: Promise<unknown>, ms: number): Promise<void> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      promise.then(
+        () => {},
+        () => {},
+      ),
+      new Promise((resolve) => (timer = setTimeout(resolve, ms))),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+};
 /** Re-prime once the prompt cache has this little of its TTL left — the TUI's "red" band. */
 const KEEP_WARM_RED_FRACTION = 0.08;
 /**
@@ -319,7 +334,8 @@ export class Daemon {
    *  sessions (untracked by SessionManager) don't outlive the daemon. */
   readonly #titleJobs = new Set<Promise<void>>();
 
-  readonly #revivals = new Map<string, Lifecycle>();
+  /** The lifecycle operation (start, suspend or refresh) in flight, per session. */
+  readonly #lifecycles = new Map<string, Lifecycle>();
   #stopping = false;
   #closed: Promise<void>;
   #resolveClosed!: () => void;
@@ -745,13 +761,11 @@ export class Daemon {
     for (const [sig, fn] of this.#signalHandlers) Deno.removeSignalListener(sig, fn);
     this.#signalHandlers = [];
 
+    const drained = this.#sessions.shutdown().catch(() => {});
     try {
       // Time-bound the session drain: one adapter whose close() never settles
       // must not hang shutdown before the pidfile is released.
-      await Promise.race([
-        this.#sessions.shutdown(),
-        new Promise((r) => setTimeout(r, SHUTDOWN_GRACE_MS).unref()),
-      ]);
+      await settledWithin(drained, SHUTDOWN_GRACE_MS);
       // Discovery probes first: their utility workers belong to the providers.
       await this.#catalogues.close();
       await this.#providers.close().catch((error) => {
@@ -773,12 +787,17 @@ export class Daemon {
         this.#log.warn("db close failed", { err: String(err) });
       }
     } finally {
-      // Last before exit: every phase above can end process groups (a session
-      // close outlasting the drain bound, a titler closed in the title window,
-      // a provider's utility worker), and the exit after `whenClosed()` would
-      // SIGKILL any group still within its SIGTERM grace, leaving a `git` in it
-      // no chance to drop its index.lock. Settling waits for escalations that
-      // start meanwhile too; each is bounded by its grace.
+      // Last before exit: every phase above can end process groups (a titler
+      // closed in the title window, a provider's utility worker, a session
+      // close), and the exit after `whenClosed()` SIGKILLs any group still
+      // within its SIGTERM grace, leaving a `git` in it no chance to drop its
+      // index.lock. A session close that outlasted the drain bound ends its
+      // worker's group only when it gets there, so it has up to one grace more
+      // to do so. Settling then waits for every escalation already started and
+      // any that starts while it waits; each is bounded by its grace. Not
+      // covered: a close still running after that extra window. A group it ends
+      // later is SIGKILLed at exit, with no grace.
+      await settledWithin(drained, PROCESS_GROUP_GRACE_MS);
       await settleProcessGroups().catch((error) => {
         this.#log.warn("process group shutdown failed", { error: String(error) });
       });
@@ -977,7 +996,7 @@ export class Daemon {
       const s = this.#registry.get(id);
       // A VM being suspended or replaced would kill the probe mid-command; the
       // lifecycle operation publishes (and so re-probes) once it settles.
-      if (!s || this.#stopping || this.#revivals.has(id)) return;
+      if (!s || this.#stopping || this.#lifecycles.has(id)) return;
       try {
         const facts = await this.#cloneGit(s).facts(s.baseBranch, this.#guestStop.signal);
         if (this.#stopping || this.#registry.get(id)?.worktree !== s.worktree) return;
@@ -2116,34 +2135,44 @@ export class Daemon {
 
   /**
    * When bringing `id` back first builds the VM runtime, start its revival (or
-   * join the one under way) and leave it to finish in the background: build
-   * progress and the outcome reach clients as session events and state, and
-   * whatever waits in its queue goes once it runs. False when the session is
-   * live or nothing needs building; the caller then revives as usual. A revival
-   * refused outright (no such session, nothing to resume) still throws here, as
-   * does `beforeStart`, which runs just before a revival this call begins.
+   * join the start or environment refresh under way, either of which may be
+   * building it) and leave it to finish in the background: build progress and
+   * the outcome reach clients as session events and state, and whatever waits in
+   * its queue goes once it runs. A refresh reports its own failure; the session
+   * then stays as the refresh left it. False when the session is live or nothing
+   * needs building; the caller then revives as usual. A revival refused outright
+   * (no such session, nothing to resume) still throws here, as does
+   * `beforeStart`, which runs just before a revival this call begins.
    */
   async #reviveDetached(id: string, beforeStart?: () => void): Promise<boolean> {
     const cold = () => !this.#sessions.has(id) || this.#sessions.isEnded(id);
-    if (!cold() && !this.#revivals.has(id)) return false;
+    if (!cold() && !this.#lifecycles.has(id)) return false;
     const row = this.#registry.get(id);
     if (!row || !(await this.#runtimeBuildPending(row.provider, row.isolation))) return false;
-    // Only a start is joined. An idle shutdown or an environment refresh under
-    // way may yet stop the live session: it settles first, as on the usual path,
-    // and the session is judged once it has.
-    for (let op = this.#revivals.get(id); op && op.kind !== "start"; op = this.#revivals.get(id))
-      await op.operation;
+    // An idle shutdown under way may yet stop the live session: it settles
+    // first, as on the usual path, and the session is judged once it has.
     let revival: Promise<SessionSnapshot> | undefined;
-    if (!this.#revivals.has(id)) {
+    if (!(await this.#lifecycleSettled(id, { stopAt: ["start", "refresh"] }))) {
       if (!cold()) return false;
       beforeStart?.();
       revival = this.#reviveSession(id);
-      if (this.#revivals.get(id)?.operation !== revival) await revival;
+      if (this.#lifecycles.get(id)?.operation !== revival) await revival;
     }
     void (async () => {
       if (revival) await revival;
-      // Whatever began meanwhile settles first.
-      await this.#lifecycleSettled(id);
+      // Whatever began meanwhile settles first; a failed refresh has said so.
+      for (
+        let refresh = await this.#lifecycleSettled(id, { stopAt: ["refresh"] });
+        refresh;
+        refresh = await this.#lifecycleSettled(id, { stopAt: ["refresh"] })
+      )
+        if (
+          !(await refresh.operation.then(
+            () => true,
+            () => false,
+          ))
+        )
+          return;
       if (cold()) await this.#reviveSession(id);
       this.#publishState(id);
       this.#onActivityChange("session-resumed");
@@ -2157,9 +2186,20 @@ export class Daemon {
     return true;
   }
 
-  /** Wait until no lifecycle operation is in flight for `id`; a failed one rejects. */
-  async #lifecycleSettled(id: string): Promise<void> {
-    for (let op = this.#revivals.get(id); op; op = this.#revivals.get(id)) await op.operation;
+  /**
+   * Wait until no lifecycle operation is in flight for `id`, or until the one in
+   * flight is of a kind in `stopAt`, which is returned unsettled. A failed
+   * operation waited for rejects.
+   */
+  async #lifecycleSettled(
+    id: string,
+    { stopAt = [] }: { stopAt?: readonly Lifecycle["kind"][] } = {},
+  ): Promise<Lifecycle | undefined> {
+    for (let op = this.#lifecycles.get(id); op; op = this.#lifecycles.get(id)) {
+      if (stopAt.includes(op.kind)) return op;
+      await op.operation;
+    }
+    return undefined;
   }
 
   /** Wake on demand for operations that need an adapter, sharing concurrent revivals. */
@@ -2182,7 +2222,7 @@ export class Daemon {
    * Returns the fresh snapshot; the caller publishes it.
    */
   #reviveSession(id: string): Promise<SessionSnapshot> {
-    const pending = this.#revivals.get(id);
+    const pending = this.#lifecycles.get(id);
     if (pending) return pending.operation;
     const row = this.#registry.get(id);
     if (!row) return Promise.reject(new RpcError("not_found", `no such session: ${id}`));
@@ -2206,10 +2246,10 @@ export class Daemon {
         throw error;
       })
       .finally(() => {
-        this.#revivals.delete(id);
+        this.#lifecycles.delete(id);
         this.#publishState(id);
       });
-    this.#revivals.set(id, { kind: "start", operation });
+    this.#lifecycles.set(id, { kind: "start", operation });
     this.#log.info("session_resume_start", { sessionId: id, providerId: row.provider });
     this.#registry.setStatus(id, stateStarting, "resuming");
     this.#publishState(id);
@@ -2826,7 +2866,11 @@ export class Daemon {
    *  a name literal, so a custom chatgpt-sdk profile is covered exactly like
    *  the built-in `chatgpt` id. */
   #resumeBlockedReason(row: SessionSnapshot): string | undefined {
-    if (this.#sessions.has(row.id) || this.#revivals.has(row.id) || row.status.kind === "starting")
+    if (
+      this.#sessions.has(row.id) ||
+      this.#lifecycles.has(row.id) ||
+      row.status.kind === "starting"
+    )
       return;
     const unavailable = this.#providers.unavailableReason(row.provider);
     if (unavailable) return unavailable;
@@ -3038,7 +3082,7 @@ export class Daemon {
         !this.#sessions.keepWarm(id) &&
         !this.#shells.has(id) &&
         !this.#hooks.isRunning(id) &&
-        !this.#revivals.has(id) &&
+        !this.#lifecycles.has(id) &&
         !this.#queue.activeKeys.includes(id)
       );
     };
@@ -3077,11 +3121,11 @@ export class Daemon {
           return this.#registry.mustGet(id);
         })
         .finally(() => {
-          this.#revivals.delete(id);
+          this.#lifecycles.delete(id);
           this.#vmIdleSince.delete(id);
           if (!this.#stopping) this.#publishState(id);
         });
-      this.#revivals.set(id, { kind: "suspend", operation });
+      this.#lifecycles.set(id, { kind: "suspend", operation });
       stopping.push(operation);
     }
     await Promise.allSettled(stopping);
@@ -3104,7 +3148,7 @@ export class Daemon {
         const generation = basename(base);
         if (
           !this.#sessions.has(id) &&
-          !this.#revivals.has(id) &&
+          !this.#lifecycles.has(id) &&
           this.#registry.get(id)?.status.kind !== "starting"
         ) {
           this.#vmGenerations.delete(id);
@@ -3113,7 +3157,7 @@ export class Daemon {
         if (
           generation === previous ||
           this.#shells.has(id) ||
-          this.#revivals.has(id) ||
+          this.#lifecycles.has(id) ||
           !this.#sessions.canRefresh(id) ||
           this.#hooks.isRunning(id)
         )
@@ -3160,10 +3204,10 @@ export class Daemon {
             throw error;
           })
           .finally(() => {
-            this.#revivals.delete(id);
+            this.#lifecycles.delete(id);
             if (!this.#stopping) this.#publishState(id);
           });
-        this.#revivals.set(id, { kind: "refresh", operation });
+        this.#lifecycles.set(id, { kind: "refresh", operation });
         void operation.catch(() => {});
       }
     } catch (error) {
@@ -3402,7 +3446,7 @@ export class Daemon {
       this.#queue.run(params.id, async () => {
         const session = this.#registry.get(params.id);
         if (!session) throw new RpcError("not_found", `no such session: ${params.id}`);
-        if (this.#revivals.has(params.id)) throw new RpcError("busy", "The session is starting.");
+        if (this.#lifecycles.has(params.id)) throw new RpcError("busy", "The session is starting.");
         this.#vmIdleSince.delete(params.id);
         return await this.#shells.open(
           this.repoRoot,

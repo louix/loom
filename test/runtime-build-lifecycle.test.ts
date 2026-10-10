@@ -1,9 +1,13 @@
 // While a VM runtime build is pending, a message that needs the session started
 // replies at once and the start goes on in the background. That shortcut is
-// for a start alone: an idle shutdown under way is waited out, as usual, and a
-// clone's workspace operation still refuses the message.
+// for what may build the runtime, a start or an environment refresh: an idle
+// shutdown under way is waited out, as usual, and a clone's workspace
+// operation still refuses the message.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import type { HarnessEvent } from "@loom/core/events";
+import { repoBaseDirectory } from "../runtime/src/session-vm/repo-base.ts";
 import { join } from "node:path";
 import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
@@ -196,6 +200,170 @@ test("with a runtime build pending, a send waits out an idle shutdown and respec
     await h.cleanup();
     if (previous === undefined) Deno.env.delete("LOOM_BUNDLED_RUNTIMES");
     else Deno.env.set("LOOM_BUNDLED_RUNTIMES", previous);
+    await Deno.remove(bundleDir, { recursive: true });
+  }
+});
+
+test("with a runtime build pending, a send during an environment refresh replies at once and waits for it", async () => {
+  const build: RuntimeBuild = {
+    version: 1,
+    identity: "d".repeat(32),
+    builder: `/nix/store/${"b".repeat(32)}-loom-build-runtime/bin/loom-build-runtime`,
+  };
+  const bundleDir = await Deno.makeTempDir({ prefix: "loom-runtime-bundle-" });
+  const bundle = join(bundleDir, "bundle.json");
+  await Deno.writeTextFile(
+    bundle,
+    JSON.stringify({
+      claude: {
+        version: 1,
+        source: "claude",
+        smolvm: `/nix/store/${"c".repeat(32)}-smolvm/bin/smolvm`,
+        preparedAt: "on-demand",
+        build,
+      },
+    }),
+  );
+  const previous = Deno.env.get("LOOM_BUNDLED_RUNTIMES");
+  Deno.env.set("LOOM_BUNDLED_RUNTIMES", bundle);
+  // The runtime's link resolves (prepared environments are found by it) but to
+  // no usable runtime: its build is still pending.
+  const artifact = builtRuntimePath(build);
+  const unusable = join(bundleDir, "unusable");
+  await Deno.mkdir(unusable);
+  await Deno.mkdir(join(artifact, ".."), { recursive: true });
+  await Deno.symlink(unusable, artifact);
+
+  const fake = new FakeProvider();
+  /** The prepared environment a VM starting now runs on. */
+  let generation = "base-first";
+  /** Holds a resume, standing in for the runtime build a refresh's start runs. */
+  let building: PromiseWithResolvers<void> | undefined;
+  let failBuild = false;
+  let resumes = 0;
+  const connectors: ConnectorManifest = {
+    "@loom/connector-claude": async () => ({
+      createProvider: (ctx) => {
+        const ready = async (id: string, session: Promise<unknown>) => {
+          const s = await session;
+          Object.defineProperty(s, "providerRef", { value: id });
+          const history = join(
+            sessionVmDirectory(ctx.config.sessionVm!.repoRoot, id),
+            "profile/projects/loom-session",
+          );
+          await Deno.mkdir(history, { recursive: true });
+          await Deno.writeTextFile(join(history, `${id}.jsonl`), "saved VM history");
+          ctx.onVmStarted?.(id, generation);
+          return s as Awaited<ReturnType<FakeProvider["createSession"]>>;
+        };
+        return {
+          id: ctx.id,
+          capabilities: fake.capabilities,
+          listPersistedSessions: () => fake.listPersistedSessions(),
+          createSession: (opts) => ready(opts.sessionId, fake.createSession(opts)),
+          resumeSession: async (ref) => {
+            resumes++;
+            await building?.promise;
+            if (failBuild) throw new Error("the VM runtime build failed");
+            return await ready(ref.sessionId, fake.resumeSession(ref));
+          },
+        };
+      },
+    }),
+  };
+  const h = await makeHarness({
+    connectors,
+    config: JSON.stringify({
+      session: {
+        titles: { enabled: false },
+        auto_resume: { enabled: false },
+        auto_rebase: { enabled: false },
+        commit_reminder: { enabled: false },
+        isolation: { enabled: true, claude: { artifact } },
+      },
+    }),
+  });
+  const errors: string[] = [];
+  const emit = h.daemon.emitEvent.bind(h.daemon);
+  h.daemon.emitEvent = (event: HarnessEvent) => {
+    if (event.type === "error") errors.push(event.message);
+    return emit(event);
+  };
+  const c = await LoomClient.connect({
+    repoRoot: h.repoRoot,
+    sockPath: h.sockPath,
+    autospawn: false,
+  });
+  const status = (id: string) => h.daemon.registry.get(id)?.status.kind;
+  /** Publish a new prepared environment: idle VM sessions refresh onto it. */
+  const publish = async (directory: string) => {
+    const home = repoBaseDirectory(h.repoRoot);
+    await Deno.mkdir(join(home, directory), { recursive: true });
+    const identity = createHash("sha256")
+      .update(await Deno.realPath(artifact))
+      .digest("hex")
+      .slice(0, 32);
+    await Deno.writeTextFile(join(home, `current-${identity}.json`), JSON.stringify({ directory }));
+    generation = directory;
+  };
+  /** The reply, which must not wait for the (held) build. */
+  const prompt = async <T>(reply: Promise<T>): Promise<T> => {
+    const late = Symbol("late");
+    const result = await Promise.race([reply, delay(3_000).then(() => late)]);
+    if (result === late) throw new Error("the reply waited for the runtime build");
+    return result as T;
+  };
+  try {
+    const s = await c.request<SessionSnapshot>("session.create", {
+      provider: "claude",
+      prompt: "go",
+    });
+    await until(() => fake.session(s.id) !== undefined, "session started");
+    const first = fake.session(s.id)!;
+    first.finishTurn();
+    await until(() => status(s.id) === "idle", "idle");
+
+    // A refresh stops the VM and starts it again, building the runtime first.
+    building = Promise.withResolvers<void>();
+    await publish("base-second");
+    await until(() => first.closed && resumes === 1, "refresh building");
+    const reply = await prompt(
+      c.request<SessionSnapshot & { state: string }>("session.send", { id: s.id, text: "hello" }),
+    );
+    assert.equal(reply.status.kind, "starting");
+    assert.equal(reply.state, "queued");
+    building.resolve();
+    building = undefined;
+    await until(() => fake.session(s.id)?.sends.includes("hello") ?? false, "message delivered");
+    const second = fake.session(s.id)!;
+    assert.notEqual(second, first);
+    assert.equal(resumes, 1, "the refresh's start was the only one");
+    second.finishTurn();
+    await until(() => status(s.id) === "idle", "idle again");
+
+    // A refresh whose build fails reports it once; the message waits.
+    building = Promise.withResolvers<void>();
+    failBuild = true;
+    errors.length = 0;
+    await publish("base-third");
+    await until(() => second.closed && resumes === 2, "second refresh building");
+    const queued = await prompt(
+      c.request<SessionSnapshot & { state: string }>("session.send", { id: s.id, text: "again" }),
+    );
+    assert.equal(queued.state, "queued");
+    building.resolve();
+    await until(() => status(s.id) === "error", "refresh failed");
+    await delay(300);
+    assert.equal(errors.length, 1, errors.join("\n"));
+    assert.match(errors[0]!, /^Environment update failed: .*the VM runtime build failed/);
+    assert.equal(resumes, 2, "nothing started again after the failed refresh");
+  } finally {
+    building?.resolve();
+    c.close();
+    await h.cleanup();
+    if (previous === undefined) Deno.env.delete("LOOM_BUNDLED_RUNTIMES");
+    else Deno.env.set("LOOM_BUNDLED_RUNTIMES", previous);
+    await Deno.remove(artifact).catch(() => {});
     await Deno.remove(bundleDir, { recursive: true });
   }
 });
