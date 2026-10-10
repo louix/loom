@@ -88,6 +88,12 @@ test("rule 5: idle with no next_boundary left hands over one end_of_turn entry; 
   assert.deepEqual(nextAction(eot, null, view()), { t: "handover", ids: ["e1"], fresh: true });
   assert.deepEqual(nextAction(eot, null, view({ state: stateWorkingBackground })), NONE);
   assert.deepEqual(nextAction(eot, null, view({ state: stateRunning, rootTool: "Bash" })), NONE);
+  // A stopped turn has finished too: a released queue goes on from there.
+  assert.deepEqual(nextAction(eot, null, view({ state: stateInterrupted("user") })), {
+    t: "handover",
+    ids: ["e1"],
+    fresh: true,
+  });
   // The head one is on its way: the next waits for the following idle, which
   // the turn it starts brings.
   const after = [entry("e1", "end_of_turn", "delivering"), entry("e2", "end_of_turn")];

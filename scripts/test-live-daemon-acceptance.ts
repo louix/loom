@@ -20,6 +20,8 @@
  *   models                              discovery + Refresh models, per provider
  *   cost                                Claude cost across a daemon restart
  *   forks                               native Claude/Codex forks, Claude→Codex handoff
+ *   queue-claude | queue-codex          a message folded in at a Bash boundary; three
+ *                                       held by an interrupt, released in order
  */
 import assert from "node:assert/strict";
 import { join } from "node:path";
@@ -132,6 +134,14 @@ const start = async () => {
       permission_request: () => ({ tool: event["tool"] }),
       error: () => ({ message: String(event["message"]).slice(0, 200) }),
       result: () => ({ kind: event["kind"] }),
+      // The queue check orders these: a root tool, and the message folded in.
+      tool_call: () => ({ id: event["id"], name: event["name"], agentId: event["agentId"] }),
+      tool_result: () => ({ id: event["id"], agentId: event["agentId"] }),
+      user_message: () => ({
+        text: String(event["text"]).slice(0, 80),
+        injected: event["injected"],
+        entry: event["queueEntryId"],
+      }),
     };
     const describe = detail[event.type];
     if (describe) events.push({ id: event.sessionId, type: event.type, detail: describe() });
@@ -551,6 +561,104 @@ const forks = async () => {
   assert(hr.ok, "the handoff carried the remembered word");
 };
 
+/**
+ * The message queue (docs/message-queue.md): a message queued during a long
+ * root Bash reaches the log only after that tool finishes and the agent takes
+ * it; an interrupt with three end-of-turn entries leaves three held; release
+ * delivers them in order, one per finish.
+ */
+const queue = async (provider: string) => {
+  await writeConfig({});
+  await start();
+  await waitCatalogue(provider);
+  const model = await cheapModel(provider);
+  const s = await create(provider, "Reply with exactly ok. Do not use tools.", {
+    model,
+    isolation: "local",
+  });
+  const mine = () => events.filter((e) => e.id === s.id);
+  const rootBash = () =>
+    mine().find(
+      (e) =>
+        e.type === "tool_call" &&
+        (e.detail as { agentId?: string; name: string }).agentId === undefined &&
+        (e.detail as { name: string }).name === "Bash",
+    );
+  const settleFor = async (cond: () => boolean, what: string, ms = 180_000) => {
+    const deadline = Date.now() + ms;
+    while (!cond()) {
+      assert(Date.now() < deadline, `timed out waiting for ${what}`);
+      await new Promise((r) => setTimeout(r, 200));
+    }
+  };
+
+  // 1. Folded in at the boundary of a running Bash, and not logged before it.
+  const from = mine().length;
+  await rpc("session.send", {
+    id: s.id,
+    text: "Run the Bash command `sleep 12; echo slept`, then say what it printed in one sentence.",
+  });
+  await settleFor(() => rootBash() !== undefined, "the root Bash");
+  const bash = (rootBash()!.detail as { id: string }).id;
+  const folded = await rpc<SessionSnapshot & { state: string; entryId: string }>("session.send", {
+    id: s.id,
+    text: "Also end your reply with the word BANANA.",
+  });
+  log("queued during Bash", { state: folded.state, dequeue: folded.queue?.entries[0]?.dequeue });
+  const after = await settle(s.id, (x) => x.status.kind === "idle" && x.queue === undefined);
+  const timeline = mine().slice(from);
+  const resultAt = timeline.findIndex(
+    (e) => e.type === "tool_result" && (e.detail as { id: string }).id === bash,
+  );
+  const loggedAt = timeline.findIndex(
+    (e) => e.type === "user_message" && (e.detail as { entry?: string }).entry === folded.entryId,
+  );
+  log("fold", { resultAt, loggedAt, text: texts.get(s.id)?.slice(-80), turns: after.turns });
+  assert(resultAt >= 0 && loggedAt > resultAt, "logged only after the tool it waited for");
+  assert(/BANANA/.test(texts.get(s.id) ?? ""), "the agent took it in");
+
+  // 2. Interrupt with three end-of-turn entries: three held; release, in order.
+  const second = mine().length;
+  await rpc("session.send", {
+    id: s.id,
+    text: "Run the Bash command `sleep 60`, then reply with exactly done.",
+  });
+  await settleFor(
+    () =>
+      mine()
+        .slice(second)
+        .some((e) => e.type === "tool_call"),
+    "a tool",
+  );
+  const held: string[] = [];
+  for (const word of ["ONE", "TWO", "THREE"]) {
+    const r = await rpc<SessionSnapshot & { entryId: string }>("session.send", {
+      id: s.id,
+      text: `Reply with exactly ${word}. Do not use tools.`,
+      delivery: "end_of_turn",
+    });
+    held.push(r.entryId);
+  }
+  await rpc("session.interrupt", { id: s.id });
+  const stopped = await get(s.id);
+  log("after interrupt", { hold: stopped.queue?.hold, n: stopped.queue?.entries.length });
+  assert.equal(stopped.queue?.hold, "interrupt");
+  assert.deepEqual(
+    stopped.queue?.entries.map((e) => [e.id, e.state]),
+    held.map((id) => [id, "queued"]),
+  );
+  const third = mine().length;
+  await rpc("session.queueRelease", { id: s.id });
+  await settle(s.id, (x) => x.status.kind === "idle" && x.queue === undefined, 300_000);
+  const order = mine()
+    .slice(third)
+    .flatMap((e) =>
+      e.type === "user_message" ? [(e.detail as { entry?: string }).entry ?? ""] : [],
+    );
+  log("released", { order });
+  assert.deepEqual(order, held, "delivered in order");
+};
+
 const run = async () => {
   let passed = false;
   try {
@@ -560,6 +668,8 @@ const run = async () => {
     else if (check === "models") await models();
     else if (check === "cost") await cost();
     else if (check === "forks") await forks();
+    else if (check === "queue-claude") await queue(CLAUDE);
+    else if (check === "queue-codex") await queue(CODEX);
     else throw new Error("unknown check " + check);
     log("PASSED");
     passed = true;

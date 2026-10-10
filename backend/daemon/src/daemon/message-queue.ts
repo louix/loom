@@ -66,8 +66,9 @@ const blocked = (v: DispatchView): boolean =>
  * - rule 3, the model only writing: nothing — entries stay editable;
  * - rule 4, the turn ended: every queued `next_boundary` entry, as one fresh
  *   turn;
- * - rule 5, idle with none of those left: the head `end_of_turn` entry, one
- *   per idle (the turn it starts makes the next idle a new one).
+ * - rule 5, settled with none of those left (idle, or a turn that was
+ *   stopped or failed — not background work): the head `end_of_turn` entry,
+ *   one per finish (the turn it starts makes the next finish a new one).
  */
 export const nextAction = (
   entries: readonly QueueEntry[],
@@ -87,8 +88,12 @@ export const nextAction = (
       : NONE;
   if (!turnEnded(view.state)) return NONE;
   if (boundary.length > 0) return { t: "handover", ids: boundary, fresh: true };
+  // "When the agent has finished" is ⌥q's old meaning: settled, background
+  // work included — a stopped or failed turn has finished too.
   const last = queued.find((e) => e.delivery === "end_of_turn");
-  return view.state.kind === "idle" && last ? { t: "handover", ids: [last.id], fresh: true } : NONE;
+  return view.state.kind !== "working_background" && last
+    ? { t: "handover", ids: [last.id], fresh: true }
+    : NONE;
 };
 
 /** When each live entry will go, by id — what every client shows beside it. */

@@ -119,6 +119,8 @@ executes it under its op gate (`#enqueue`).
 5. **Idle** with no `next_boundary` left: the head `end_of_turn` entry starts a
    turn; one per turn, the next waits for the following `idle`. This keeps
    today's ⌥q meaning, "when the agent has finished", background work included.
+   A stopped or failed turn has finished too, so a released queue goes on
+   from `interrupted`.
 6. `session.send` to an idle, unheld session still creates an entry; rule 4
    dispatches it at once, so idle sends behave as today.
 
