@@ -2,13 +2,16 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { gitFixture } from "./lib/git-fixture.ts";
-import { launchSessionVm } from "../backend/daemon/src/daemon/session-vm-worker.ts";
+import { launchTestSessionVm } from "./lib/session-launch.ts";
+import { sessionVmDirectory } from "../backend/daemon/src/daemon/session-vm-state.ts";
 import { RemoteWorkerSession } from "../backend/daemon/src/daemon/worker-provider.ts";
 import { mockLaunchSpec } from "../backend/daemon/src/daemon/worker-launch.ts";
 import { sessionCheckoutPath } from "../runtime/src/session-vm/clone.ts";
 const [artifact, smolvm] = Deno.args;
 assert(artifact && smolvm, "Pass rebuilt session runtime and smolvm");
 const f = await gitFixture();
+// Keep this run's VM inventory and session state out of the user's.
+Deno.env.set("XDG_STATE_HOME", join(f.root, "xdg-state"));
 const identity = { name: "Loom (vm-test)", email: "loom+vm-test@localhost" };
 // The host-resolved session identity outranks the clone's configured default.
 const gitIdentity = {
@@ -25,10 +28,10 @@ try {
   const sibling = await f.git("-C", f.workspace, "rev-parse", "HEAD");
   await f.git("-C", f.repo, "branch", "loom/livetest", "main");
   const main = await f.git("-C", f.repo, "rev-parse", "main");
-  const sessionDirectory = join(f.root, "state/session");
+  const sessionDirectory = sessionVmDirectory(f.repo, "guest-checkout");
   const checkout = sessionCheckoutPath(sessionDirectory);
   await Deno.mkdir(checkout, { recursive: true });
-  const worker = await launchSessionVm({
+  const worker = await launchTestSessionVm({
     workspace: checkout,
     repoRoot: f.repo,
     sessionDirectory,

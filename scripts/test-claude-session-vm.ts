@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { gitFixture } from "./lib/git-fixture.ts";
-import { launchSessionVm } from "../backend/daemon/src/daemon/session-vm-worker.ts";
+import { launchTestSessionVm } from "./lib/session-launch.ts";
 import { RemoteWorkerSession } from "../backend/daemon/src/daemon/worker-provider.ts";
 import { mockLaunchSpec } from "../backend/daemon/src/daemon/worker-launch.ts";
 import { vmEnvironment, sessionVmName } from "../runtime/src/packaged/vm.ts";
@@ -25,7 +25,9 @@ const smolvmPath =
 assert(smolvmPath, "Run in nix develop, or pass the smolvm executable as the second argument");
 const smolvm = await Deno.realPath(smolvmPath);
 const f = await gitFixture();
-let worker: Awaited<ReturnType<typeof launchSessionVm>> | undefined;
+// Keep this run's VM inventory and session state out of the user's.
+Deno.env.set("XDG_STATE_HOME", join(f.root, "xdg-state"));
+let worker: Awaited<ReturnType<typeof launchTestSessionVm>> | undefined;
 let session: RemoteWorkerSession | undefined;
 let passed = false;
 try {
@@ -44,7 +46,7 @@ try {
     );
     auth.CLAUDE_CODE_OAUTH_TOKEN = credentials.claudeAiOauth.accessToken;
   }
-  worker = await launchSessionVm({ workspace: f.workspace, artifact, smolvm, auth });
+  worker = await launchTestSessionVm({ workspace: f.workspace, artifact, smolvm, auth });
   const { binding } = worker;
   const state = binding.state;
   const command = async (args: string[]) => {

@@ -2,7 +2,8 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { gitFixture } from "./lib/git-fixture.ts";
-import { launchSessionVm } from "../backend/daemon/src/daemon/session-vm-worker.ts";
+import { launchTestSessionVm } from "./lib/session-launch.ts";
+import { sessionVmDirectory } from "../backend/daemon/src/daemon/session-vm-state.ts";
 import { RemoteWorkerSession } from "../backend/daemon/src/daemon/worker-provider.ts";
 import { mockLaunchSpec } from "../backend/daemon/src/daemon/worker-launch.ts";
 import { sessionCheckoutPath } from "../runtime/src/session-vm/clone.ts";
@@ -11,13 +12,15 @@ import { CloneGit } from "../backend/daemon/src/daemon/clone-git.ts";
 const [artifact, smolvm] = Deno.args;
 assert(artifact && smolvm);
 const f = await gitFixture();
+// Keep this run's VM inventory and session state out of the user's.
+Deno.env.set("XDG_STATE_HOME", join(f.root, "xdg-state"));
 try {
   const branch = "loom/git-test";
   await f.git("-C", f.repo, "branch", branch, "main");
-  const directory = join(f.root, "state"),
+  const directory = sessionVmDirectory(f.repo, "clone-git"),
     cwd = sessionCheckoutPath(directory);
   await Deno.mkdir(cwd, { recursive: true });
-  const worker = await launchSessionVm({
+  const worker = await launchTestSessionVm({
     workspace: cwd,
     repoRoot: f.repo,
     sessionDirectory: directory,

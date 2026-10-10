@@ -9,7 +9,8 @@ import {
   repoBaseDirectory,
   seedRepoWorkspace,
 } from "../runtime/src/session-vm/repo-base.ts";
-import { launchSessionVm } from "../backend/daemon/src/daemon/session-vm-worker.ts";
+import { launchTestSessionVm } from "./lib/session-launch.ts";
+import { sessionVmDirectory } from "../backend/daemon/src/daemon/session-vm-state.ts";
 import { RemoteWorkerSession } from "../backend/daemon/src/daemon/worker-provider.ts";
 import { mockLaunchSpec } from "../backend/daemon/src/daemon/worker-launch.ts";
 import { sessionCheckoutPath } from "../runtime/src/session-vm/clone.ts";
@@ -17,6 +18,8 @@ import { sessionCheckoutPath } from "../runtime/src/session-vm/clone.ts";
 const [artifact, smolvm] = Deno.args;
 assert(artifact && smolvm, "Pass rebuilt session runtime and smolvm");
 const f = await gitFixture();
+// Keep this run's VM inventory and session state out of the user's.
+Deno.env.set("XDG_STATE_HOME", join(f.root, "xdg-state"));
 const home = repoBaseDirectory(f.repo);
 const config = normalizeConfig({
   hooks: [
@@ -39,7 +42,7 @@ const config = normalizeConfig({
 });
 const boot = async (directory: string, branch: string) => {
   const checkout = sessionCheckoutPath(directory);
-  const worker = await launchSessionVm({
+  const worker = await launchTestSessionVm({
     workspace: checkout,
     repoRoot: f.repo,
     sessionDirectory: directory,
@@ -93,7 +96,7 @@ try {
   );
   await f.git("-C", f.repo, "commit", "--allow-empty", "-m", "base moved after preparation");
   const head = await f.git("-C", f.repo, "rev-parse", "HEAD");
-  const directories = [join(f.root, "a"), join(f.root, "b")];
+  const directories = [sessionVmDirectory(f.repo, "a"), sessionVmDirectory(f.repo, "b")];
   for (const [index, directory] of directories.entries()) {
     await seedRepoWorkspace(home, directory, artifact);
     const branch = "loom/prepared-" + index;

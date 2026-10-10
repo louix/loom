@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gitFixture } from "./lib/git-fixture.ts";
-import { launchSessionVm } from "../backend/daemon/src/daemon/session-vm-worker.ts";
+import { launchTestSessionVm } from "./lib/session-launch.ts";
+import { sessionVmDirectory } from "../backend/daemon/src/daemon/session-vm-state.ts";
 import { RemoteWorkerSession } from "../backend/daemon/src/daemon/worker-provider.ts";
 import { mockLaunchSpec } from "../backend/daemon/src/daemon/worker-launch.ts";
 import { normalizeSessionEnvironment } from "../core/src/session-environment.ts";
@@ -152,11 +153,11 @@ try {
   const home = repoBaseDirectory(f.repo);
   const selected = await currentRepoBase(home, artifact);
   // A fresh worktree must materialize dependencies entirely from the VM cache.
-  const directory = join(f.root, "session");
+  const directory = sessionVmDirectory(f.repo, "prepared-test");
   const environment = normalizeSessionEnvironment({ command_prefix: ["env"] });
   const start = async (expectedBase: number, during?: () => Promise<void>) => {
     const progress: string[] = [];
-    const worker = await launchSessionVm({
+    const worker = await launchTestSessionVm({
       onProgress: (message) => progress.push(message),
       workspace: f.workspace,
       repoRoot: f.repo,

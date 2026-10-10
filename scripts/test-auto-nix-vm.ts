@@ -3,6 +3,9 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { gitFixture } from "./lib/git-fixture.ts";
 import { launchSessionVm } from "../backend/daemon/src/daemon/session-vm-worker.ts";
+// Preparation is not an agent session: it stays on the legacy path on either launcher.
+import { launchTestSessionVm } from "./lib/session-launch.ts";
+import { sessionVmDirectory } from "../backend/daemon/src/daemon/session-vm-state.ts";
 import { RemoteWorkerSession } from "../backend/daemon/src/daemon/worker-provider.ts";
 import { mockLaunchSpec } from "../backend/daemon/src/daemon/worker-launch.ts";
 import { normalizeSessionEnvironment } from "../core/src/session-environment.ts";
@@ -66,12 +69,12 @@ try {
   );
   const start = async (expected: string, cached: boolean) => {
     const progress: string[] = [];
-    const worker = await launchSessionVm({
+    const worker = await launchTestSessionVm({
       artifact,
       smolvm,
       workspace: f.workspace,
       repoRoot: f.repo,
-      sessionDirectory: join(f.root, "session"),
+      sessionDirectory: sessionVmDirectory(f.repo, "auto-nix"),
       environment,
       auth: {},
       providerHosts: [],

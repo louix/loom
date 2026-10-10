@@ -5,6 +5,9 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gitFixture } from "./lib/git-fixture.ts";
 import { launchSessionVm } from "../backend/daemon/src/daemon/session-vm-worker.ts";
+// Preparation is not an agent session: it stays on the legacy path on either launcher.
+import { launchTestSessionVm } from "./lib/session-launch.ts";
+import { sessionVmDirectory } from "../backend/daemon/src/daemon/session-vm-state.ts";
 import { RemoteWorkerSession } from "../backend/daemon/src/daemon/worker-provider.ts";
 import { mockLaunchSpec } from "../backend/daemon/src/daemon/worker-launch.ts";
 import {
@@ -23,9 +26,8 @@ const nested = join(f.repo, ".loom/trees/session");
 await Deno.mkdir(dirname(nested), { recursive: true });
 await f.git("-C", f.repo, "worktree", "move", f.workspace, nested);
 f.workspace = nested;
-const sessionDirectory = await Deno.realPath(
-  await Deno.makeTempDir({ dir: "/tmp", prefix: "loom-env-persist-" }),
-);
+const sessionDirectory = sessionVmDirectory(f.repo, "environment");
+await Deno.mkdir(sessionDirectory, { recursive: true });
 try {
   // Copy current source, including new files, without the host's Git metadata,
   // ignored caches, credentials or sockets. Git operations use the fixture repo.
@@ -95,7 +97,7 @@ try {
   }
   for (const launch of [1, 2]) {
     const started = performance.now();
-    const worker = await launchSessionVm({
+    const worker = await launchTestSessionVm({
       sessionDirectory,
       repoRoot: f.repo,
       workspace: f.workspace,

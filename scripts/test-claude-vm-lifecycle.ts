@@ -1,12 +1,21 @@
-/** Real VM lifecycle acceptance; mock connector, no provider credentials or API calls. */
+/**
+ * Real VM lifecycle acceptance; mock connector, no provider credentials or API calls.
+ * LOOM_TEST_LAUNCHER=isolation runs it on the isolation launcher, where the worker is
+ * an execution beside the environment's own guest: "worker exec SIGKILL" then kills
+ * the worker alone, and "guest exec SIGKILL" kills the environment under it.
+ * "VM process SIGKILL" kills the VMM itself: its executions end before its supervisor
+ * notices, and the session must still get the VM's diagnosis.
+ */
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { launchSessionVm } from "../backend/daemon/src/daemon/session-vm-worker.ts";
 import { RemoteWorkerSession } from "../backend/daemon/src/daemon/worker-provider.ts";
 import { mockLaunchSpec } from "../backend/daemon/src/daemon/worker-launch.ts";
 import { readFrames } from "../runtime/src/worker/transport.ts";
 import { gitFixture } from "./lib/git-fixture.ts";
+import { launchTestSessionVm, testLauncher, type TestSessionWorker } from "./lib/session-launch.ts";
+import { sessionVmDirectory } from "../backend/daemon/src/daemon/session-vm-state.ts";
+import { VmTerminationError } from "../core/src/vm-termination.ts";
 const artifact = Deno.args[0] ?? "/tmp/loom-claude-session-artifact";
 const smolvm =
   Deno.args[1] ??
@@ -55,19 +64,42 @@ const gone = async (state: string) => {
   }
 };
 const f = await gitFixture();
-const sessionDirectory = join(f.root, "persistent");
+// Keep this run's VM inventory and session state out of the user's.
+Deno.env.set("XDG_STATE_HOME", join(f.root, "xdg-state"));
+const sessionDirectory = sessionVmDirectory(f.repo, "lifecycle");
+const modes = [
+  "close",
+  "startup EOF",
+  "supervisor SIGKILL",
+  "guest exec SIGKILL",
+  "VM process SIGKILL",
+];
+/** smolvm's VMM process for this VM, found through its runtime state path. */
+const vmmPid = async (state: string) => {
+  for await (const entry of Deno.readDir("/proc")) {
+    if (!/^\d+$/.test(entry.name)) continue;
+    const cmdline = await Deno.readTextFile(join("/proc", entry.name, "cmdline")).catch(() => "");
+    if (cmdline.includes("_boot-vm") && cmdline.includes(state)) return Number(entry.name);
+  }
+};
+if (testLauncher === "isolation") modes.push("worker exec SIGKILL");
 try {
-  for (const mode of ["close", "startup EOF", "supervisor SIGKILL", "guest exec SIGKILL"]) {
+  for (const mode of modes) {
     console.error(`Testing ${mode}`);
-    const worker = await launchSessionVm({
-      artifact,
-      smolvm,
-      workspace: f.workspace,
-      sessionDirectory,
-      auth: { ANTHROPIC_API_KEY: "disposable-test-key" },
-    });
+    const launch = (): Promise<TestSessionWorker> =>
+      launchTestSessionVm({
+        artifact,
+        smolvm,
+        workspace: f.workspace,
+        repoRoot: f.repo,
+        sessionDirectory,
+        auth: { ANTHROPIC_API_KEY: "disposable-test-key" },
+      });
+    const worker = await launch();
     let session: RemoteWorkerSession | undefined;
-    const pids = [worker.pid];
+    const supervisor = await worker.supervisor();
+    assert(supervisor, "found the VM supervisor");
+    const pids = [worker.pid, supervisor];
     try {
       if (mode.startsWith("startup EOF")) {
         await worker.input.close();
@@ -80,14 +112,12 @@ try {
           120_000,
         ));
         const ready = await worker.status();
-        if (mode === "close") {
-          const duplicate = await launchSessionVm({
-            artifact,
-            smolvm,
-            workspace: f.workspace,
-            sessionDirectory,
-            auth: { ANTHROPIC_API_KEY: "disposable-test-key" },
-          });
+        if (mode === "close" && testLauncher === "isolation") {
+          // The adapter refuses a second generation while one is live.
+          await assert.rejects(launch(), /already running|still running/);
+          assert.equal((await worker.status()).phase, "running");
+        } else if (mode === "close") {
+          const duplicate = await launch();
           try {
             await assert.rejects(
               RemoteWorkerSession.connect(
@@ -109,8 +139,13 @@ try {
           }
         }
         if (ready.execPid) pids.push(ready.execPid);
-        if (mode === "supervisor SIGKILL") Deno.kill(worker.pid, "SIGKILL");
-        else if (mode === "guest exec SIGKILL") {
+        if (mode === "supervisor SIGKILL") Deno.kill(supervisor, "SIGKILL");
+        else if (mode === "worker exec SIGKILL") Deno.kill(worker.pid, "SIGKILL");
+        else if (mode === "VM process SIGKILL") {
+          const vmm = await vmmPid(worker.binding.state);
+          assert(vmm, "found the VMM process");
+          Deno.kill(vmm, "SIGKILL");
+        } else if (mode === "guest exec SIGKILL") {
           const status = await worker.status();
           assert(status.execPid);
           Deno.kill(status.execPid, "SIGKILL");
@@ -123,6 +158,18 @@ try {
           void worker.exited.finally(() => clearTimeout(timer));
         }),
       ]);
+      if (mode.endsWith("SIGKILL")) {
+        // The VM's own diagnosis when it failed; the worker's exit when only it did.
+        const failure = await worker.failure?.();
+        assert(failure instanceof VmTerminationError, String(failure));
+        console.error(mode + ": " + JSON.stringify(failure.termination));
+        if (mode === "worker exec SIGKILL") {
+          assert.equal(failure.termination.reason, "guest_exit");
+          assert.equal(failure.termination.hostReason, "worker_failure");
+        } else if (mode === "supervisor SIGKILL")
+          assert.equal(failure.termination.supervisorExit?.signal, "SIGKILL");
+        else assert.notEqual(failure.termination.hostReason, "worker_failure");
+      }
       await worker.cleanup?.();
       await gone(worker.binding.state);
       await gone(join(sessionDirectory, "active.json"));
@@ -144,6 +191,7 @@ try {
         smolvm,
         f.workspace,
         sessionDirectory,
+        f.repo,
       ],
       stdin: "null",
       stdout: "piped",

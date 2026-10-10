@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { ClaudeAuthOwner } from "../backend/daemon/src/daemon/claude-auth.ts";
-import { launchSessionVm } from "../backend/daemon/src/daemon/session-vm-worker.ts";
+import { launchTestSessionVm } from "./lib/session-launch.ts";
 import { RemoteWorkerSession } from "../backend/daemon/src/daemon/worker-provider.ts";
 import { mockLaunchSpec } from "../backend/daemon/src/daemon/worker-launch.ts";
 import { sessionVmName, vmEnvironment } from "../runtime/src/packaged/vm.ts";
@@ -17,15 +17,23 @@ const owner = new ClaudeAuthOwner({
   report: (code) => console.error(JSON.stringify({ auth: code })),
 });
 const fixtures: Awaited<ReturnType<typeof gitFixture>>[] = [];
-const workers: Awaited<ReturnType<typeof launchSessionVm>>[] = [];
+const workers: Awaited<ReturnType<typeof launchTestSessionVm>>[] = [];
 const sessions: RemoteWorkerSession[] = [];
 let timer: ReturnType<typeof setTimeout> | undefined;
 try {
   for (let i = 0; i < 2; i++) {
     const f = await gitFixture();
     fixtures.push(f);
+    // Keep this run's VM inventory and session state out of the user's.
+    if (!i) Deno.env.set("XDG_STATE_HOME", join(f.root, "xdg-state"));
     workers.push(
-      await launchSessionVm({ artifact, smolvm, workspace: f.workspace, authOwner: owner }),
+      await launchTestSessionVm({
+        artifact,
+        smolvm,
+        workspace: f.workspace,
+        repoRoot: f.repo,
+        authOwner: owner,
+      }),
     );
   }
   for (let i = 0; i < 2; i++) {

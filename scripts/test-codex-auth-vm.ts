@@ -2,7 +2,8 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { CodexAuthOwner, readCodexAccess } from "../backend/daemon/src/daemon/codex-auth.ts";
-import { launchSessionVm } from "../backend/daemon/src/daemon/session-vm-worker.ts";
+import { launchTestSessionVm } from "./lib/session-launch.ts";
+import { sessionVmDirectory } from "../backend/daemon/src/daemon/session-vm-state.ts";
 import { RemoteWorkerSession } from "../backend/daemon/src/daemon/worker-provider.ts";
 import { mockLaunchSpec } from "../backend/daemon/src/daemon/worker-launch.ts";
 import { gitFixture } from "./lib/git-fixture.ts";
@@ -10,8 +11,10 @@ import { sessionVmName, vmEnvironment } from "../runtime/src/packaged/vm.ts";
 const [artifact, smolvm, nativeCli] = Deno.args;
 assert(artifact && smolvm && nativeCli, "Pass ARTIFACT SMOLVM HOST_CODEX");
 const f = await gitFixture();
+// Keep this run's VM inventory and session state out of the user's.
+Deno.env.set("XDG_STATE_HOME", join(f.root, "xdg-state"));
 const profile = join(f.root, "host-auth");
-const sessionDirectory = join(f.root, "native-history");
+const sessionDirectory = sessionVmDirectory(f.repo, "native-history");
 await Deno.mkdir(profile);
 await Deno.mkdir(join(sessionDirectory, "profile"), { recursive: true });
 const jwt = (revision: string, expiresAt = Date.now() + 3600000) =>
@@ -173,7 +176,7 @@ await Deno.writeTextFile(
   `chatgpt_base_url = "http://127.0.0.1:3130/backend-api"\nmodel_provider = "fixture"\n[model_providers.fixture]\nbase_url = "http://localhost:3130/backend-api/codex"\nname = "OpenAI"\nwire_api = "responses"\nrequires_openai_auth = true\nsupports_websockets = false\n`,
 );
 const owner = new CodexAuthOwner({ profile, cli: wrapper, pollMs: 100, refreshAheadMs: 1000 });
-let worker: Awaited<ReturnType<typeof launchSessionVm>> | undefined;
+let worker: Awaited<ReturnType<typeof launchTestSessionVm>> | undefined;
 let session: RemoteWorkerSession | undefined;
 const timeout = Promise.withResolvers<never>();
 const timer = setTimeout(() => {
@@ -183,10 +186,11 @@ const timer = setTimeout(() => {
 try {
   await Promise.race([
     (async () => {
-      worker = await launchSessionVm({
+      worker = await launchTestSessionVm({
         artifact,
         smolvm,
         workspace: f.workspace,
+        repoRoot: f.repo,
         sessionDirectory,
         authOwner: owner,
         providerHosts: [],

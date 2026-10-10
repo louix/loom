@@ -1,7 +1,8 @@
 /** Real AISDK guest requests and fresh-VM resume; synthetic local credentials only. */
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { launchSessionVm } from "../backend/daemon/src/daemon/session-vm-worker.ts";
+import { launchTestSessionVm } from "./lib/session-launch.ts";
+import { sessionVmDirectory } from "../backend/daemon/src/daemon/session-vm-state.ts";
 import { RemoteWorkerSession } from "../backend/daemon/src/daemon/worker-provider.ts";
 import { mockLaunchSpec } from "../backend/daemon/src/daemon/worker-launch.ts";
 import { WorkerTranscript } from "../runtime/src/worker/transcript.ts";
@@ -10,6 +11,8 @@ import { gitFixture } from "./lib/git-fixture.ts";
 const [artifact, smolvm] = Deno.args;
 assert(artifact && smolvm, "Pass AISDK_ARTIFACT SMOLVM");
 const f = await gitFixture();
+// Keep this run's VM inventory and session state out of the user's.
+Deno.env.set("XDG_STATE_HOME", join(f.root, "xdg-state"));
 const transcript = new WorkerTranscript("fixture", () => {});
 let requests = 0;
 let fixtureError: unknown;
@@ -44,18 +47,19 @@ const server = Deno.serve({ hostname: "127.0.0.1", port: 0, onListen() {} }, asy
     return new Response("Fixture assertion failed", { status: 400 });
   }
 });
-let worker: Awaited<ReturnType<typeof launchSessionVm>> | undefined;
+let worker: Awaited<ReturnType<typeof launchTestSessionVm>> | undefined;
 let session: RemoteWorkerSession | undefined;
 let passed = false;
 // Allow both cold boots their 120-second startup budget, plus the two turns.
 const deadline = setTimeout(() => worker?.terminate(), 300_000);
 try {
   for (const resume of [false, true]) {
-    worker = await launchSessionVm({
+    worker = await launchTestSessionVm({
       artifact,
       smolvm,
       workspace: f.workspace,
-      sessionDirectory: join(f.root, "persistent"),
+      sessionDirectory: sessionVmDirectory(f.repo, "fixture"),
+      repoRoot: f.repo,
       auth: {},
       providerHosts: [],
       mcpRelays: [{ port: server.addr.port, guestPort: 3130 }],

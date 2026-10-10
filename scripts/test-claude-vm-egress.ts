@@ -1,8 +1,9 @@
 /** Credential-free live check of trusted repo policy through a real provider VM. */
 import assert from "node:assert/strict";
+import { join } from "node:path";
 import { gitFixture } from "./lib/git-fixture.ts";
 import { loadConfig } from "../backend/daemon/src/config/config.ts";
-import { launchSessionVm } from "../backend/daemon/src/daemon/session-vm-worker.ts";
+import { launchTestSessionVm } from "./lib/session-launch.ts";
 import { RemoteWorkerSession } from "../backend/daemon/src/daemon/worker-provider.ts";
 import { mockLaunchSpec } from "../backend/daemon/src/daemon/worker-launch.ts";
 import { sessionVmName, vmEnvironment } from "../runtime/src/packaged/vm.ts";
@@ -13,7 +14,9 @@ const vm = config.isolation.claude;
 assert(vm, "Missing session VM runtime");
 assert(config.isolation.extraAllowedHosts.includes("registry.npmjs.org"), "Missing registry grant");
 const f = await gitFixture();
-const worker = await launchSessionVm({
+// Keep this run's VM inventory and session state out of the user's.
+Deno.env.set("XDG_STATE_HOME", join(f.root, "xdg-state"));
+const worker = await launchTestSessionVm({
   workspace: f.workspace,
   artifact: vm.artifact,
   smolvm: vm.smolvm,
