@@ -16,6 +16,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { tool, type ToolSet } from "ai";
 import { z } from "zod";
 import { absurd } from "@loom/core/absurd";
+import { escalateProcessGroup } from "@loom/core/process-group";
 import { MAX_OUTPUT_BYTES, collapseLive } from "./bash.ts";
 import { toolSpawnEnv } from "./spawn-env.ts";
 
@@ -349,7 +350,9 @@ const killGroup = (task: Task): void => {
   // descendants the command started go too — as with foreground Bash commands.
   if (typeof c.pid === "number") {
     try {
-      Deno.kill(-c.pid, "SIGKILL");
+      // SIGTERM first: a `git` killed outright leaves its worktree's index.lock behind.
+      Deno.kill(-c.pid, "SIGTERM");
+      void escalateProcessGroup(c.pid);
       return;
     } catch {
       // group already gone / never formed — fall through to the direct kill

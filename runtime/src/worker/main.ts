@@ -37,12 +37,12 @@ export const runWorker = async (
     },
     armWorkerShutdown,
     beforeEvent,
-  ).catch((error) => {
+  ).catch(async (error) => {
     reportWorkerFailure(error, "worker_loop");
-    exitWorker(1);
+    await exitWorker(1);
   });
   // Also terminates a misbehaving adapter that left work pending after parent EOF.
-  exitWorker(0);
+  await exitWorker(0);
 };
 
 if (import.meta.main) await runWorker();

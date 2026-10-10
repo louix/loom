@@ -1,5 +1,6 @@
 import process from "node:process";
 import { spawn } from "node:child_process";
+import { escalateProcessGroup } from "./process-group.ts";
 const OUTPUT_CAP = 8_000;
 export interface HookAttempt {
   code: number;
@@ -34,12 +35,19 @@ export const executeShellHook = (
     };
     child.stdout?.on("data", append);
     child.stderr?.on("data", append);
+    // A hook may be running `git`: SIGTERM first so it can drop its index.lock.
     const kill = (): void => {
+      const pid = child.pid;
       try {
-        if (child.pid !== undefined) process.kill(-child.pid, "SIGKILL");
+        if (pid !== undefined) {
+          process.kill(-pid, "SIGTERM");
+          void escalateProcessGroup(pid);
+          return;
+        }
       } catch {
-        child.kill("SIGKILL"); // group already gone, or no pid — try the shell itself
+        // group already gone — try the shell itself
       }
+      child.kill("SIGKILL");
     };
     const timer = setTimeout(() => {
       timedOut = true;

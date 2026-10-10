@@ -17,6 +17,7 @@
     "./commit": "./src/commit.ts",
     "./status": "./src/status.ts",
     "./git-read": "./src/git-read.ts",
+    "./process-group": "./src/process-group.ts",
     "./tool-paths": "./src/tool-paths.ts",
     "./tokens": "./src/tokens.ts",
     "./paths": "./src/paths.ts",

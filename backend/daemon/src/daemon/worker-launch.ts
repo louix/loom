@@ -1,4 +1,5 @@
 import type { ManagedProcess } from "../../../../runtime/src/process.ts";
+import { escalateProcessGroup } from "@loom/core/process-group";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { Readable, Writable } from "node:stream";
@@ -69,7 +70,10 @@ export const launchLocalWorker: WorkerLauncher = (spec) => {
         if (child.pid && !terminated) {
           terminated = true;
           try {
-            Deno.kill(-child.pid, "SIGKILL");
+            // SIGKILL follows only for what outlives the grace: an agent's `git`
+            // killed outright leaves its index.lock behind.
+            Deno.kill(-child.pid, "SIGTERM");
+            void escalateProcessGroup(child.pid);
           } catch (e) {
             if (e instanceof Deno.errors.NotFound) return;
             // Darwin can report EPERM while the last group member is exiting.

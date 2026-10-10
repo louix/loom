@@ -3,6 +3,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { resolve } from "node:path";
 import { tool } from "ai";
 import { z } from "zod";
+import { escalateProcessGroup } from "@loom/core/process-group";
 import { toolSpawnEnv } from "./spawn-env.ts";
 
 export const DEFAULT_TIMEOUT_MS = 120_000;
@@ -75,10 +76,12 @@ export class BashShell {
   }
 }
 
+// SIGTERM first: a `git` killed outright leaves its worktree's index.lock behind.
 const killGroup = (child: ChildProcess) => {
   if (child.pid !== undefined) {
     try {
-      Deno.kill(-child.pid, "SIGKILL");
+      Deno.kill(-child.pid, "SIGTERM");
+      void escalateProcessGroup(child.pid);
       return;
     } catch {
       // Group already gone or never formed; try the shell itself.
