@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
+import { canonicalHostPath } from "../core/src/host-path.ts";
 import { fileURLToPath } from "node:url";
 import {
   registerVm,
@@ -213,7 +214,9 @@ Deno.test("orphan recovery rejects replacement bindings, missing evidence and sy
     await writeRecoveryFile(r.paths.session!, "active.json", {
       version: 1,
       token: crypto.randomUUID(),
-      state: "/tmp/loom-session-vm-fixture",
+      // Directly in the host's canonical /tmp (/private/tmp on macOS), so only its
+      // instance differs.
+      state: join(canonicalHostPath("/tmp"), "loom-session-vm-fixture"),
       sessionDirectory: r.paths.session,
       smolvm: "/nix/store/" + "a".repeat(32) + "-backend/bin/smolvm",
       recovery: { version: 3, ready: true, reaped: false },

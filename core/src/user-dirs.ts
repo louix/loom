@@ -24,13 +24,29 @@ const inside = (root: string, path: string) => {
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 };
 
+/**
+ * Temporary roots, also by their real paths: fixtures are often realpath'd, and on
+ * macOS /tmp and the per-user temporary directory are behind symlinks (/private).
+ */
+export const temporaryRoots = (): string[] => {
+  const roots = [tmpdir(), "/tmp"];
+  const real = (root: string) => {
+    try {
+      return [Deno.realPathSync(root)];
+    } catch {
+      return []; // A missing temporary directory has no other name.
+    }
+  };
+  return [...roots, ...roots.flatMap(real)];
+};
+
 /** Throw if a test run resolves a per-user path outside its throwaway roots. */
 export const assertTestHome = (
   path: string,
   env: Record<string, string | undefined> = Deno.env.toObject(),
 ): string => {
   const root = env[TEST_HOME_VARIABLE];
-  if (root && ![root, tmpdir(), "/tmp"].some((allowed) => inside(allowed, path)))
+  if (root && ![root, ...temporaryRoots()].some((allowed) => inside(allowed, path)))
     throw new Error(`Test run resolved ${path} outside ${TEST_HOME_VARIABLE}=${root}`);
   return path;
 };

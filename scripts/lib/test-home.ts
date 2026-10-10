@@ -7,6 +7,7 @@
 // Set LOOM_KEEP_TEST_HOME=1 to keep the directory for inspection.
 
 import { existsSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TEST_HOME_VARIABLE } from "../../core/src/user-dirs.ts";
 
@@ -49,6 +50,9 @@ export const createTestHome = async (): Promise<TestHome> => {
     [TEST_HOME_VARIABLE]: root,
     DENO_DIR: await denoDir(),
     GIT_CONFIG_NOSYSTEM: "1",
+    // Fixtures under their real path, as Loom canonicalizes repositories and
+    // workspaces: on macOS $TMPDIR (and /tmp) are symlinks into /private.
+    TMPDIR: await Deno.realPath(tmpdir()),
   });
   for (const [variable, name] of Object.entries(DIRECTORIES)) {
     env[variable] = join(root, name);

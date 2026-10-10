@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { homedir, tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { worktreeDirectory } from "@loom/core/paths";
-import { TEST_HOME_VARIABLE, userDirectory } from "@loom/core/user-dirs";
+import { TEST_HOME_VARIABLE, temporaryRoots, userDirectory } from "@loom/core/user-dirs";
 import { userConfigPath } from "../backend/daemon/src/config-path.ts";
 import { defaultCatalogueDirectory } from "../backend/daemon/src/daemon/model-catalogue-cache.ts";
 import { mcpOAuthStateDirectory } from "../backend/daemon/src/daemon/mcp-oauth-store.ts";
@@ -18,7 +18,7 @@ import { repoBaseDirectory } from "../runtime/src/session-vm/repo-base.ts";
 const root = Deno.env.get(TEST_HOME_VARIABLE);
 // Other test files point XDG variables at their own temp fixtures; both are fine.
 const within = (path: string) =>
-  !!root && [root, tmpdir()].some((dir) => !relative(dir, path).startsWith(".."));
+  !!root && [root, ...temporaryRoots()].some((dir) => !relative(dir, path).startsWith(".."));
 
 test("the suite runs inside a throwaway HOME and XDG root", () => {
   assert.ok(
@@ -35,6 +35,8 @@ test("the suite runs inside a throwaway HOME and XDG root", () => {
   ])
     assert.ok(within(Deno.env.get(variable) ?? "/"), `${variable} escapes ${root}`);
   assert.ok(!relative(root, homedir()).startsWith(".."), `HOME escapes ${root}`);
+  // Fixtures compare with Loom's canonical paths; macOS's $TMPDIR is a symlink.
+  assert.equal(Deno.realPathSync(tmpdir()), tmpdir().replace(/\/$/, ""));
 });
 
 test("every per-user Loom location resolves inside the test roots", { skip: !root }, () => {
@@ -65,6 +67,11 @@ test("a test run refuses per-user paths outside its roots", () => {
   // Tests' own fixture roots live in temporary directories.
   const fixture = join(tmpdir(), "fixture-state");
   assert.equal(userDirectory("state", { ...env, XDG_STATE_HOME: fixture }), fixture);
+  // Also by their real paths: on macOS /tmp and $TMPDIR are symlinks into /private.
+  for (const temporary of [tmpdir(), "/tmp"]) {
+    const real = join(Deno.realPathSync(temporary), "fixture-state");
+    assert.equal(userDirectory("state", { ...env, XDG_STATE_HOME: real }), real);
+  }
   // Outside a test run, resolution follows the XDG spec untouched.
   assert.equal(userDirectory("state", { HOME: "/home/someone" }), "/home/someone/.local/state");
   assert.equal(

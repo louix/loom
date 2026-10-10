@@ -8,6 +8,7 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
+import { canonicalHostPath } from "../core/src/host-path.ts";
 import {
   withVmSessions,
   type SessionVmLauncher,
@@ -167,7 +168,11 @@ const interruptedCleanup = async (dir: string) => {
     JSON.stringify({
       version: 1,
       token,
-      state: "/tmp/loom-session-vm-" + token.replaceAll("-", "").slice(0, 12),
+      // Runtime state lives directly in the host's canonical /tmp (/private/tmp on macOS).
+      state: join(
+        canonicalHostPath("/tmp"),
+        "loom-session-vm-" + token.replaceAll("-", "").slice(0, 12),
+      ),
       smolvm: "/nix/store/" + "a".repeat(32) + "-smolvm/bin/smolvm",
       sessionDirectory: dir,
       recovery: { version: 3, ready: true, reaped: true },
