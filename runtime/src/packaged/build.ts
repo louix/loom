@@ -9,7 +9,6 @@
  */
 import { createHash } from "node:crypto";
 import { basename, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import {
   builtRuntimeHome,
   builtRuntimePath,
@@ -18,7 +17,6 @@ import {
   runtimeHome,
   type RuntimeBuild,
 } from "./artifact.ts";
-import { supervisorGo, supervisorLocked } from "./build-supervisor.ts";
 import { retainedVmStates, vmMaintenanceLock } from "./maintenance.ts";
 
 export type BuildFailure = "network" | "space" | "builder";
@@ -46,9 +44,10 @@ export interface BuildDependencies {
   /**
    * Run the builder into `output`, writing its output to `log` and reporting each
    * line; resolves with success once the builder has exited. The builder outlives
-   * Loom: it holds `lock` from before it starts until it has exited, and
-   * {@link succeeded}`(output)` appears once it has succeeded, so a later Loom can
-   * wait for it and finish the build.
+   * Loom: its processes hold `lock` from before it starts until the last has
+   * exited, and {@link succeeded}`(output)` appears once it has succeeded, so a
+   * later Loom can wait for it and finish the build. A builder never starts once
+   * `signal` has aborted.
    */
   run(
     builder: string,
@@ -69,23 +68,98 @@ export interface BuildDependencies {
 export const succeeded = (output: string) => `${output}.ok`;
 
 const decode = (bytes: Uint8Array) => new TextDecoder().decode(bytes).trim();
-const supervisor = fileURLToPath(new URL("./build-supervisor.ts", import.meta.url));
-/** The arguments that run {@link supervisor} for a builder. */
-export const supervisorCommand = (builder: string, output: string, log: string, lock: string) => [
-  "run",
-  "--no-config",
-  "--no-lock",
-  "--no-prompt",
-  "--allow-read",
-  "--allow-write",
-  "--allow-run",
-  supervisor,
-  lock,
-  builder,
-  output,
-  log,
-  succeeded(output),
-];
+
+/** Written by the holder to stdout once it holds the builder lock. */
+export const holderLocked = "locked";
+/** Read by the holder from stdin: start the builder. End of input without it means Loom has gone. */
+export const holderGo = "go";
+/**
+ * The process a builder runs under, first as Perl (on every Mac) and then, on
+ * Loom's word, as the builder's shell ({@link builderShell}). It opens the
+ * builder lock on a descriptor that is not closed on exec and takes it, so the
+ * shell, the builder and everything they start inherit the lock and hold it
+ * until the last of them has exited: no process outside the builder's own tree,
+ * Loom included, keeps a build looking alive or, by dying, makes it look dead.
+ * It waits only briefly for the lock, which only a builder or a lock holder's
+ * brief check ever holds.
+ */
+const holderScript = `use strict;
+use Fcntl qw(:DEFAULT :flock);
+my $path = shift @ARGV;
+sysopen(my $lock, $path, O_RDWR | O_CREAT, 0600) or exit 2;
+fcntl($lock, F_SETFD, 0) or exit 2;
+my $held = 0;
+for (1 .. 100) {
+  last if ($held = flock($lock, LOCK_EX | LOCK_NB));
+  select(undef, undef, undef, 0.05);
+}
+exit 3 unless $held;
+$| = 1;
+print "${holderLocked}\\n";
+my $word = <STDIN>;
+exit 2 unless defined $word && $word eq "${holderGo}\\n";
+open(STDIN, "<", "/dev/null") or exit 2;
+open(STDOUT, ">", "/dev/null") or exit 2;
+exec { "/bin/sh" } "sh", "-c", @ARGV or exit 2;
+`;
+/**
+ * The builder's shell: runs the builder with output straight to its log, never
+ * through a pipe whose reader may exit, and marks success for whichever Loom
+ * finishes the build, from a subshell that does so even if this shell is
+ * killed. A SIGTERM, interrupt or hangup stops the builder's foreground VM
+ * command and the builder, whose trap then stops and deletes the VM; the shell
+ * exits with the builder. Only a temporary directory reaches the builder: it
+ * sets its own private HOME/XDG paths, and nothing from Loom's environment
+ * (credentials included) reaches it. `$4` is a PATH for stopping it, never
+ * exported.
+ */
+const builderShell = `builder= stopping= interrupted= stop_path=$4
+stop() {
+  stopping=1 interrupted=1
+  [ -n "$builder" ] || return 0
+  PATH=$stop_path
+  for p in $(pgrep -P "$builder"); do pkill -TERM -P "$p"; kill -TERM "$p"; done
+}
+trap stop INT TERM HUP
+( "$0" "$1" >>"$2" 2>&1 && : >"$3" ) &
+builder=$!
+[ -z "$stopping" ] || stop
+while :; do
+  interrupted=
+  wait "$builder"
+  status=$?
+  [ "$status" -gt 128 ] && [ -n "$interrupted" ] || break
+done
+exit "$status"
+`;
+/**
+ * The Perl that takes the builder lock: macOS always has \`/usr/bin/perl\`;
+ * elsewhere (tests) the first on PATH. Undefined when there is none.
+ */
+export const holderPerl = (): string | undefined => {
+  const candidates =
+    Deno.build.os === "darwin"
+      ? ["/usr/bin/perl"]
+      : (Deno.env.get("PATH") ?? "")
+          .split(":")
+          .filter(Boolean)
+          .map((directory) => join(directory, "perl"));
+  for (const candidate of candidates)
+    try {
+      if (Deno.statSync(candidate).isFile) return candidate;
+    } catch {
+      /* not here */
+    }
+  return undefined;
+};
+/** The arguments that run a builder under its holder, for {@link holderPerl}. */
+export const holderCommand = (
+  builder: string,
+  output: string,
+  log: string,
+  lock: string,
+  stopPath = Deno.env.get("PATH") ?? "/usr/bin:/bin",
+) => ["-e", holderScript, lock, builderShell, builder, output, log, succeeded(output), stopPath];
 const command = async (name: string, args: string[]) => {
   let result: Deno.CommandOutput;
   try {
@@ -136,24 +210,21 @@ const follow = async (path: string, onLine: (line: string) => void, exited: Prom
 
 export const buildDependencies: BuildDependencies = {
   async run(builder, output, log, lock, onLine, signal) {
-    // The supervisor holds `lock` for the builder's whole life and starts it with
-    // nothing of Loom's environment; it needs only a PATH to stop the builder.
-    // Darwin's Unix socket limit needs the builder's VM state under a short path.
-    const child = new Deno.Command(Deno.execPath(), {
-      args: supervisorCommand(builder, output, log, lock),
+    const perl = holderPerl();
+    if (!perl) throw new Error("Cannot run perl; the VM runtime build needs /usr/bin/perl");
+    // Nothing of Loom's environment reaches the holder or the builder. Darwin's
+    // Unix socket limit needs the builder's VM state under a short path.
+    const child = new Deno.Command(perl, {
+      args: holderCommand(builder, output, log, lock),
       clearEnv: true,
-      env: {
-        PATH: Deno.env.get("PATH") ?? "/usr/bin:/bin:/usr/sbin:/sbin",
-        TMPDIR: "/tmp",
-        DENO_NO_UPDATE_CHECK: "1",
-      },
+      env: { TMPDIR: "/tmp" },
       stdin: "piped",
       stdout: "piped",
       stderr: "null",
     }).spawn();
-    // SIGTERM stops the builder's foreground VM command so its trap stops and
-    // deletes the VM, or, before the builder starts, ends the supervisor. Loom
-    // exiting mid-build stops it the same way.
+    // SIGTERM ends the holder before the builder starts; after, the builder's
+    // shell stops its foreground VM command so its trap stops and deletes the
+    // VM. Loom exiting mid-build stops it the same way.
     const stop = () => {
       try {
         child.kill("SIGTERM");
@@ -175,8 +246,10 @@ export const buildDependencies: BuildDependencies = {
       }
       await reader.cancel().catch(() => {});
       const writer = child.stdin.getWriter();
-      if (reply.split("\n")[0] === supervisorLocked)
-        await writer.write(new TextEncoder().encode(`${supervisorGo}\n`)).catch(() => {});
+      // An abort before `stop` was listening never reaches it: without go, the
+      // holder exits as soon as its input ends, and nothing builds.
+      if (reply.split("\n")[0] === holderLocked && !signal?.aborted)
+        await writer.write(new TextEncoder().encode(`${holderGo}\n`)).catch(() => {});
       await writer.close().catch(() => {});
       await follow(log, onLine, child.status);
       return (await child.status).success;
@@ -308,6 +381,15 @@ const sleep = (ms: number, signal?: AbortSignal) =>
     }, ms);
     signal?.addEventListener("abort", abort, { once: true });
   });
+/** The lock on `path` once nothing holds it, tried every `intervalMs` until `signal` aborts. */
+const waitForLock = async (path: string, signal: AbortSignal | undefined, intervalMs: number) => {
+  for (;;) {
+    signal?.throwIfAborted();
+    const lock = await tryLock(path);
+    if (lock) return lock;
+    await sleep(intervalMs, signal);
+  }
+};
 const elapsed = (ms: number) => {
   const seconds = Math.floor(ms / 1000);
   return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
@@ -316,7 +398,7 @@ const elapsed = (ms: number) => {
  * Scratch output in the shared temporary directory, named for the runtime home
  * whose lock covers it: another home's builds are none of this one's business.
  */
-const scratchPrefix = (home: string) =>
+export const scratchPrefix = (home: string) =>
   `loom-runtime-build-${createHash("sha256").update(resolve(home)).digest("hex").slice(0, 16)}-`;
 const writable = async (path: string) => {
   const info = await Deno.lstat(path);
@@ -336,23 +418,16 @@ const exists = (path: string) =>
   );
 
 /**
- * The lock a runtime home's builder holds, through its supervisor, from before
- * it starts until it has exited (build-supervisor.ts). The builder outlives the
- * Loom that started it, so whether a build is under way is whether this lock is
- * held; nothing compares process ids or start times. Separate from the lock
- * Loom processes take to build, which goes with its holder.
+ * The lock a runtime home's builder holds from before it starts until it and
+ * every process it started have exited: they inherit it from the holder that
+ * took it ({@link holderCommand}). The builder outlives the Loom that started
+ * it, so whether a build is under way is whether this lock is held; nothing
+ * compares process ids or start times. Separate from the lock Loom processes
+ * take to build, which goes with its holder.
  */
 export const builderLock = (home: string) => join(builtRuntimeHome(home), ".builder.lock");
 /** How often a later Loom checks whether an earlier builder still runs: one `flock`. */
 const builderPollMs = 1_000;
-/** The builder lock once no builder holds it. */
-const builderExited = async (home: string, signal?: AbortSignal) => {
-  for (;;) {
-    const lock = await tryLock(builderLock(home));
-    if (lock) return lock;
-    await sleep(builderPollMs, signal);
-  }
-};
 
 /**
  * The build a runtime home's lock holder starts, written before its builder may
@@ -360,23 +435,30 @@ const builderExited = async (home: string, signal?: AbortSignal) => {
  * is free to go once no builder holds {@link builderLock}.
  */
 interface BuildRecord {
+  version: typeof buildRecordVersion;
   identity: string;
   scratch: string;
   since: number;
 }
+const buildRecordVersion = 1;
+/**
+ * What an earlier lock holder recorded: nothing, a build this Loom understands,
+ * or a record it cannot read (another version's, or damaged), which it treats as
+ * a build it knows nothing about.
+ */
+type EarlierBuild = { kind: "none" } | { kind: "known"; record: BuildRecord } | { kind: "unknown" };
 const buildRecord = (home: string) => join(builtRuntimeHome(home), ".build");
-const readBuildRecord = async (
-  home: string,
-  temporary: string,
-): Promise<BuildRecord | undefined> => {
+const readBuildRecord = async (home: string, temporary: string): Promise<EarlierBuild> => {
   let value: Partial<BuildRecord> | null;
   try {
     value = JSON.parse(await Deno.readTextFile(buildRecord(home)));
-  } catch {
-    return undefined;
+  } catch (error) {
+    return error instanceof Deno.errors.NotFound ? { kind: "none" } : { kind: "unknown" };
   }
-  const { identity, scratch, since } = value ?? {};
+  if (typeof value !== "object" || value === null) return { kind: "unknown" };
+  const { version, identity, scratch, since } = value;
   if (
+    version !== buildRecordVersion ||
     typeof identity !== "string" ||
     !/^[a-f0-9]{32}$/.test(identity) ||
     typeof scratch !== "string" ||
@@ -384,8 +466,8 @@ const readBuildRecord = async (
     !basename(scratch).startsWith(scratchPrefix(home)) ||
     typeof since !== "number"
   )
-    return undefined;
-  return { identity, scratch, since };
+    return { kind: "unknown" };
+  return { kind: "known", record: { version, identity, scratch, since } };
 };
 
 /** A build's progress: its latest output line, at most every `intervalMs`, and each minute. */
@@ -422,9 +504,9 @@ const buildProgress = (
 
 /**
  * Settle whatever build an earlier holder of the lock left. A builder still
- * running is waited for; one that succeeded is registered as its Loom would have
- * done. Only then is this home's scratch output an interrupted build's, and goes.
- * The caller holds the build lock.
+ * running is waited for, whatever its record says or fails to say; one that
+ * succeeded is registered as its Loom would have done. Only then is this home's
+ * scratch output an interrupted build's, and goes. The caller holds the build lock.
  */
 const settleEarlierBuild = async (
   home: string,
@@ -434,46 +516,76 @@ const settleEarlierBuild = async (
   progressIntervalMs: number,
   signal?: AbortSignal,
 ) => {
-  const record = await readBuildRecord(home, temporary);
-  let idle = await tryLock(builderLock(home));
-  if (!idle) {
-    onProgress("Waiting for the VM runtime build an earlier Loom process started…");
-    const exited = builderExited(home, signal);
-    // `follow` only needs to know when to stop; an abort is rethrown below.
-    const stopped = exited.catch(() => {});
-    const progress = buildProgress(onProgress, progressIntervalMs, record?.since);
-    try {
-      if (record) {
-        const log = `${join(builtRuntimeHome(home), record.identity)}.log`;
-        await Deno.writeTextFile(log, "", { append: true, mode: 0o600 });
-        await follow(log, progress.onLine, stopped);
-      } else await stopped;
-    } catch (error) {
-      void exited.then(
-        (lock) => lock.close(),
-        () => {},
-      );
-      throw error;
-    } finally {
-      progress.close();
-    }
-    idle = await exited;
-  }
+  const earlier = await readBuildRecord(home, temporary);
+  const idle =
+    (await tryLock(builderLock(home))) ??
+    (await earlierBuilderExited(home, earlier, onProgress, progressIntervalMs, signal));
   try {
-    await finishEarlierBuild(home, temporary, record, dependencies, onProgress);
+    await finishEarlierBuild(home, temporary, earlier, dependencies, onProgress);
   } finally {
     idle.close();
   }
 };
-/** Register what a finished earlier builder succeeded in, then clear its scratch output. */
+/** The builder lock once an earlier builder has exited, following its log meanwhile. */
+const earlierBuilderExited = async (
+  home: string,
+  earlier: EarlierBuild,
+  onProgress: (message: string) => void,
+  progressIntervalMs: number,
+  signal?: AbortSignal,
+) => {
+  onProgress("Waiting for the VM runtime build an earlier Loom process started…");
+  // The poll stops however this wait ends, an abort included.
+  const polling = new AbortController();
+  const abort = () => polling.abort(signal!.reason);
+  if (signal?.aborted) abort();
+  else signal?.addEventListener("abort", abort, { once: true });
+  const exited = waitForLock(builderLock(home), polling.signal, builderPollMs);
+  // `follow` only needs to know when to stop; an abort is rethrown below.
+  const stopped = exited.then(
+    () => {},
+    () => {},
+  );
+  const progress = buildProgress(
+    onProgress,
+    progressIntervalMs,
+    earlier.kind === "known" ? earlier.record.since : undefined,
+  );
+  let idle: Deno.FsFile | undefined;
+  try {
+    if (earlier.kind === "known") {
+      const log = `${join(builtRuntimeHome(home), earlier.record.identity)}.log`;
+      await Deno.writeTextFile(log, "", { append: true, mode: 0o600 });
+      await follow(log, progress.onLine, stopped);
+    }
+    return (idle = await exited);
+  } finally {
+    progress.close();
+    signal?.removeEventListener("abort", abort);
+    if (!idle) {
+      polling.abort();
+      void exited.then(
+        (lock) => lock.close(),
+        () => {},
+      );
+    }
+  }
+};
+/**
+ * Register what a finished earlier builder succeeded in, then clear its scratch
+ * output. A record this Loom cannot read leaves everything as it is: its scratch
+ * output goes with the next build this Loom can account for.
+ */
 const finishEarlierBuild = async (
   home: string,
   temporary: string,
-  record: BuildRecord | undefined,
+  earlier: EarlierBuild,
   dependencies: BuildDependencies,
   onProgress: (message: string) => void,
 ) => {
-  if (record) {
+  if (earlier.kind === "unknown") return;
+  if (earlier.kind === "known") {
+    const { record } = earlier;
     const link = join(builtRuntimeHome(home), record.identity);
     const output = join(record.scratch, "lvm");
     if ((await exists(succeeded(output))) && !(await exists(link))) {
@@ -535,10 +647,9 @@ export const ensureBuiltRuntime = async (
   const directory = builtRuntimeHome(home);
   await Deno.mkdir(directory, { recursive: true, mode: 0o700 });
   let lock = await tryLock(join(directory, ".lock"));
-  if (!lock) onProgress("Waiting for another Loom process to finish building the VM runtime…");
-  while (!lock) {
-    await sleep(1_000, signal);
-    lock = await tryLock(join(directory, ".lock"));
+  if (!lock) {
+    onProgress("Waiting for another Loom process to finish building the VM runtime…");
+    lock = await waitForLock(join(directory, ".lock"), signal, 1_000);
   }
   try {
     await settleEarlierBuild(home, temporary, dependencies, onProgress, progressIntervalMs, signal);
@@ -568,8 +679,15 @@ export const ensureBuiltRuntime = async (
       );
       const output = join(scratch, "lvm");
       // Recorded before the builder may start, so that a later Loom finds its work.
-      const record: BuildRecord = { identity: build.identity, scratch, since: Date.now() };
+      const record: BuildRecord = {
+        version: buildRecordVersion,
+        identity: build.identity,
+        scratch,
+        since: Date.now(),
+      };
       await Deno.writeTextFile(buildRecord(home), JSON.stringify(record), { mode: 0o600 });
+      // A start cancelled meanwhile starts no builder.
+      signal?.throwIfAborted();
       const success = await dependencies.run(
         build.builder,
         output,
@@ -617,8 +735,9 @@ export const ensureBuiltRuntime = async (
     } finally {
       progress.close();
       // `run` returns once the builder has exited; should it have failed with the
-      // builder still running, the scratch output stays for the next lock holder.
-      const idle = await tryLock(builderLock(home));
+      // builder still running, the scratch output stays for the next lock holder,
+      // as it does when the lock cannot be tried: the build's own outcome stands.
+      const idle = await tryLock(builderLock(home)).catch(() => undefined);
       if (idle)
         try {
           await removeScratch(scratch);

@@ -18,7 +18,9 @@ import {
   builtRuntimeRetentionMs,
   removeBuiltRuntimes,
   succeeded,
-  supervisorCommand,
+  holderCommand,
+  holderPerl,
+  scratchPrefix,
   type BuildDependencies,
 } from "../runtime/src/packaged/build.ts";
 
@@ -27,6 +29,10 @@ const build = (identity = "a".repeat(32)): RuntimeBuild => ({
   identity,
   builder: `/nix/store/${"b".repeat(32)}-loom-build-runtime/bin/loom-build-runtime`,
 });
+
+/** Real builders take their lock with Perl, which every Mac has. */
+const perl = holderPerl();
+const withPerl = { skip: perl ? false : "needs perl to take the builder lock" };
 
 /** Whether a builder holds `lock`: the only liveness a later Loom relies on. */
 const builderHolds = async (lock: string) => {
@@ -194,41 +200,45 @@ test("build failures are actionable and keep the log", async () => {
   }
 });
 
-test("the builder writes to its log, not to Loom, and sees no inherited environment", async () => {
-  const f = await fixture();
-  const secret = "LOOM_BUILD_TEST_SECRET";
-  Deno.env.set(secret, "leaked");
-  try {
-    const builder = join(f.root, "builder");
-    // Builtins only: the builder gets no PATH from Loom.
-    await Deno.writeTextFile(
-      builder,
-      `#!/bin/sh\necho "start $1"\necho "secret=\${${secret}:-none} tmp=$TMPDIR" >&2\n: > "$1"\nexit "\${FAIL:-0}"\n`,
-      { mode: 0o755 },
-    );
-    const log = join(f.root, "build.log");
-    await Deno.writeTextFile(log, "");
-    const seen: string[] = [];
-    const output = join(f.root, "out");
-    const lock = join(f.root, "builder.lock");
-    assert.equal(
-      await buildDependencies.run(builder, output, log, lock, (line) => seen.push(line)),
-      true,
-    );
-    assert.deepEqual(seen, [`start ${output}`, "secret=none tmp=/tmp"]);
-    assert.equal(await Deno.readTextFile(log), `start ${output}\nsecret=none tmp=/tmp\n`);
-    // Success is marked for a Loom that outlives this one; the exited builder holds no lock.
-    await Deno.lstat(succeeded(output));
-    assert.equal(await builderHolds(lock), false);
-    await Deno.remove(succeeded(output));
-    await Deno.writeTextFile(builder, "#!/bin/sh\necho failing\nexit 3\n");
-    assert.equal(await buildDependencies.run(builder, output, log, lock, () => {}), false);
-    await assert.rejects(Deno.lstat(succeeded(output)));
-  } finally {
-    Deno.env.delete(secret);
-    await f.cleanup();
-  }
-});
+test(
+  "the builder writes to its log, not to Loom, and sees no inherited environment",
+  withPerl,
+  async () => {
+    const f = await fixture();
+    const secret = "LOOM_BUILD_TEST_SECRET";
+    Deno.env.set(secret, "leaked");
+    try {
+      const builder = join(f.root, "builder");
+      // Builtins only: the builder gets no PATH from Loom.
+      await Deno.writeTextFile(
+        builder,
+        `#!/bin/sh\necho "start $1"\necho "secret=\${${secret}:-none} tmp=$TMPDIR" >&2\n: > "$1"\nexit "\${FAIL:-0}"\n`,
+        { mode: 0o755 },
+      );
+      const log = join(f.root, "build.log");
+      await Deno.writeTextFile(log, "");
+      const seen: string[] = [];
+      const output = join(f.root, "out");
+      const lock = join(f.root, "builder.lock");
+      assert.equal(
+        await buildDependencies.run(builder, output, log, lock, (line) => seen.push(line)),
+        true,
+      );
+      assert.deepEqual(seen, [`start ${output}`, "secret=none tmp=/tmp"]);
+      assert.equal(await Deno.readTextFile(log), `start ${output}\nsecret=none tmp=/tmp\n`);
+      // Success is marked for a Loom that outlives this one; the exited builder holds no lock.
+      await Deno.lstat(succeeded(output));
+      assert.equal(await builderHolds(lock), false);
+      await Deno.remove(succeeded(output));
+      await Deno.writeTextFile(builder, "#!/bin/sh\necho failing\nexit 3\n");
+      assert.equal(await buildDependencies.run(builder, output, log, lock, () => {}), false);
+      await assert.rejects(Deno.lstat(succeeded(output)));
+    } finally {
+      Deno.env.delete(secret);
+      await f.cleanup();
+    }
+  },
+);
 
 test("build failure classification", () => {
   assert.equal(
@@ -363,7 +373,10 @@ test("builds for different runtime homes leave each other's scratch output alone
   }
 });
 
-/** A builder that runs until `go` (succeeds) or `fail` (fails) appears beside it. */
+/**
+ * A builder that runs until `go` (succeeds) or `fail` (fails) appears beside it,
+ * recording its parent process in `parent`.
+ */
 const blockingBuilder = async (root: string) => {
   const sleep = new TextDecoder()
     .decode(
@@ -376,6 +389,7 @@ const blockingBuilder = async (root: string) => {
     [
       "#!/bin/sh",
       `echo start >>"${root}/starts"`,
+      `echo "$PPID" >"${root}/parent"`,
       'echo "building $1"',
       `while [ ! -e "${root}/go" ] && [ ! -e "${root}/fail" ]; do ${sleep} 0.05; done`,
       `[ -e "${root}/fail" ] && exit 1`,
@@ -451,42 +465,49 @@ const realBuilder = (f: Fixture): BuildDependencies => ({
   freeBytes: async () => undefined,
 });
 
-test("a build whose Loom died is waited for and finished, not started again", async () => {
-  const f = await fixture();
-  try {
-    const builder = await blockingBuilder(f.root);
-    const orphan = await crashMidBuild(f, builder);
-    // The builder outlived its Loom, and its lock says so whatever the locale or time zone.
-    assert.equal(await builderHolds(builderLock(f.home)), true);
-    const progress: string[] = [];
-    const next = ensureBuiltRuntime(
-      { ...build(), builder },
-      {
-        home: f.home,
-        temporary: f.temporary,
-        dependencies: realBuilder(f),
-        progressIntervalMs: 0,
-        onProgress: (message) => progress.push(message),
-      },
-    );
-    await until(async () => progress.some((m) => /building \//.test(m)));
-    assert.match(progress[0]!, /Waiting for the VM runtime build an earlier Loom process started/);
-    // Its scratch output is still the running build's.
-    await Deno.lstat(orphan.scratch);
-    await Deno.writeTextFile(join(f.root, "go"), "");
-    const artifact = await next;
-    assert.equal(await Deno.readTextFile(artifact), "built\n");
-    assert.equal(await Deno.realPath(builtRuntimePath(build(), f.home)), artifact);
-    assert.equal(await starts(f.root), 1);
-    await assert.rejects(Deno.lstat(orphan.scratch));
-    await assert.rejects(Deno.lstat(join(f.home, "built/.build")));
-  } finally {
-    await Deno.writeTextFile(join(f.root, "go"), "").catch(() => {});
-    await f.cleanup();
-  }
-});
+test(
+  "a build whose Loom died is waited for and finished, not started again",
+  withPerl,
+  async () => {
+    const f = await fixture();
+    try {
+      const builder = await blockingBuilder(f.root);
+      const orphan = await crashMidBuild(f, builder);
+      // The builder outlived its Loom, and its lock says so whatever the locale or time zone.
+      assert.equal(await builderHolds(builderLock(f.home)), true);
+      const progress: string[] = [];
+      const next = ensureBuiltRuntime(
+        { ...build(), builder },
+        {
+          home: f.home,
+          temporary: f.temporary,
+          dependencies: realBuilder(f),
+          progressIntervalMs: 0,
+          onProgress: (message) => progress.push(message),
+        },
+      );
+      await until(async () => progress.some((m) => /building \//.test(m)));
+      assert.match(
+        progress[0]!,
+        /Waiting for the VM runtime build an earlier Loom process started/,
+      );
+      // Its scratch output is still the running build's.
+      await Deno.lstat(orphan.scratch);
+      await Deno.writeTextFile(join(f.root, "go"), "");
+      const artifact = await next;
+      assert.equal(await Deno.readTextFile(artifact), "built\n");
+      assert.equal(await Deno.realPath(builtRuntimePath(build(), f.home)), artifact);
+      assert.equal(await starts(f.root), 1);
+      await assert.rejects(Deno.lstat(orphan.scratch));
+      await assert.rejects(Deno.lstat(join(f.home, "built/.build")));
+    } finally {
+      await Deno.writeTextFile(join(f.root, "go"), "").catch(() => {});
+      await f.cleanup();
+    }
+  },
+);
 
-test("a dead builder's leftovers go and the build starts again", async () => {
+test("a dead builder's leftovers go and the build starts again", withPerl, async () => {
   const f = await fixture();
   try {
     const builder = await blockingBuilder(f.root);
@@ -508,7 +529,7 @@ test("a dead builder's leftovers go and the build starts again", async () => {
   }
 });
 
-test("a Loom dying as it starts its builder leaves exactly one build", async () => {
+test("a Loom dying as it starts its builder leaves exactly one build", withPerl, async () => {
   const f = await fixture();
   try {
     const builder = await blockingBuilder(f.root);
@@ -520,7 +541,7 @@ test("a Loom dying as it starts its builder leaves exactly one build", async () 
       { home: f.home, temporary: f.temporary, dependencies: realBuilder(f) },
     );
     assert.equal(await Deno.readTextFile(artifact), "built\n");
-    // A supervisor its Loom never told to go never starts the builder, however late it runs.
+    // A holder its Loom never told to go never starts the builder, however late it runs.
     await new Promise((resolve) => setTimeout(resolve, 1_000));
     assert.equal(await starts(f.root), 1);
     assert.equal(await builderHolds(builderLock(f.home)), false);
@@ -529,27 +550,245 @@ test("a Loom dying as it starts its builder leaves exactly one build", async () 
   }
 });
 
-test("a builder starts only once it holds the lock, and only on Loom's word", async () => {
+test(
+  "a builder starts only once it holds the lock, and only on Loom's word",
+  withPerl,
+  async () => {
+    const f = await fixture();
+    try {
+      const builder = await blockingBuilder(f.root);
+      const lock = join(f.root, "builder.lock");
+      const output = join(f.root, "out");
+      const holder = new Deno.Command(perl!, {
+        args: holderCommand(builder, output, join(f.root, "log"), lock),
+        stdin: "piped",
+        stdout: "piped",
+        stderr: "null",
+      }).spawn();
+      const reader = holder.stdout.pipeThrough(new TextDecoderStream()).getReader();
+      assert.equal((await reader.read()).value, "locked\n");
+      await reader.cancel();
+      assert.equal(await builderHolds(lock), true);
+      // Its Loom dies before saying go: nothing builds, and the lock is free again.
+      await holder.stdin.close();
+      assert.equal((await holder.status).success, false);
+      assert.equal(await starts(f.root), 0);
+      assert.equal(await builderHolds(lock), false);
+    } finally {
+      await f.cleanup();
+    }
+  },
+);
+
+test("a cancelled start runs no builder, however late it is cancelled", withPerl, async () => {
   const f = await fixture();
   try {
     const builder = await blockingBuilder(f.root);
+    await Deno.writeTextFile(join(f.root, "go"), "");
+    const cancelled = AbortSignal.abort(new Error("stopped"));
+    await assert.rejects(
+      ensureBuiltRuntime(
+        { ...build(), builder },
+        { home: f.home, temporary: f.temporary, dependencies: realBuilder(f), signal: cancelled },
+      ),
+      /stopped/,
+    );
+    // Even `run` itself, handed a signal that aborted before it could listen.
+    const log = join(f.root, "log");
+    await Deno.writeTextFile(log, "");
     const lock = join(f.root, "builder.lock");
     const output = join(f.root, "out");
-    const supervisor = new Deno.Command(Deno.execPath(), {
-      args: supervisorCommand(builder, output, join(f.root, "log"), lock),
-      stdin: "piped",
+    assert.equal(
+      await buildDependencies.run(builder, output, log, lock, () => {}, cancelled),
+      false,
+    );
+    assert.equal(await starts(f.root), 0);
+    assert.equal(await builderHolds(lock), false);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+/** The pid of `pid`'s parent. */
+const parentOf = async (pid: number) =>
+  Number(
+    new TextDecoder()
+      .decode(
+        (await new Deno.Command("ps", { args: ["-o", "ppid=", "-p", String(pid)] }).output())
+          .stdout,
+      )
+      .trim(),
+  );
+
+test(
+  "a builder outlives its killed holder, keeps the lock and is not built twice",
+  withPerl,
+  async () => {
+    const f = await fixture();
+    try {
+      const builder = await blockingBuilder(f.root);
+      const orphan = await crashMidBuild(f, builder);
+      // The builder's parent marks its success; that one's parent is the process
+      // that took the lock, and goes too.
+      let marking = 0;
+      await until(async () => {
+        marking = Number(await Deno.readTextFile(join(f.root, "parent")).catch(() => ""));
+        return marking > 1;
+      });
+      const holder = await parentOf(marking);
+      assert.ok(holder > 1);
+      Deno.kill(holder, "SIGKILL");
+      await until(async () => (await parentOf(marking)) !== holder);
+      assert.equal(await builderHolds(builderLock(f.home)), true);
+      const progress: string[] = [];
+      const next = ensureBuiltRuntime(
+        { ...build(), builder },
+        {
+          home: f.home,
+          temporary: f.temporary,
+          dependencies: realBuilder(f),
+          progressIntervalMs: 0,
+          onProgress: (message) => progress.push(message),
+        },
+      );
+      await until(async () => progress.some((m) => /building \//.test(m)));
+      assert.match(
+        progress[0]!,
+        /Waiting for the VM runtime build an earlier Loom process started/,
+      );
+      await Deno.lstat(orphan.scratch);
+      assert.equal(await starts(f.root), 1);
+      await Deno.writeTextFile(join(f.root, "go"), "");
+      const artifact = await next;
+      assert.equal(await Deno.readTextFile(artifact), "built\n");
+      assert.equal(await starts(f.root), 1);
+    } finally {
+      await Deno.writeTextFile(join(f.root, "go"), "").catch(() => {});
+      await f.cleanup();
+    }
+  },
+);
+
+test("a failure following an earlier build stops waiting for it", withPerl, async () => {
+  const f = await fixture();
+  try {
+    const builder = await blockingBuilder(f.root);
+    await crashMidBuild(f, builder);
+    // A Loom whose progress reporting fails while it follows the running build
+    // must exit at once: nothing of that wait may keep polling the builder lock.
+    const script = join(f.root, "follower.ts");
+    const module = new URL("../runtime/src/packaged/build.ts", import.meta.url).href;
+    await Deno.writeTextFile(
+      script,
+      `import { buildDependencies, ensureBuiltRuntime } from ${JSON.stringify(module)};
+const [home, temporary, builder] = Deno.args;
+try {
+  await ensureBuiltRuntime(
+    { version: 1, identity: ${JSON.stringify(build().identity)}, builder },
+    {
+      home,
+      temporary,
+      progressIntervalMs: 0,
+      onProgress: (message) => {
+        if (message.startsWith("Building")) throw new Error("reporting failed");
+      },
+      dependencies: { ...buildDependencies, freeBytes: async () => undefined },
+    },
+  );
+} catch (error) {
+  console.log(String(error));
+}
+`,
+    );
+    const follower = new Deno.Command(Deno.execPath(), {
+      args: ["run", "-A", "--no-config", "--no-lock", script, f.home, f.temporary, builder],
+      stdin: "null",
       stdout: "piped",
       stderr: "null",
     }).spawn();
-    const reader = supervisor.stdout.pipeThrough(new TextDecoderStream()).getReader();
-    assert.equal((await reader.read()).value, "locked\n");
-    await reader.cancel();
-    assert.equal(await builderHolds(lock), true);
-    // Its Loom dies before saying go: nothing builds, and the lock is free again.
-    await supervisor.stdin.close();
-    assert.equal((await supervisor.status).success, false);
-    assert.equal(await starts(f.root), 0);
-    assert.equal(await builderHolds(lock), false);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const output = await Promise.race([
+      follower.output(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          follower.kill("SIGKILL");
+          reject(new Error("the failed wait kept running"));
+        }, 15_000);
+      }),
+    ]).finally(() => clearTimeout(timer));
+    assert.match(new TextDecoder().decode(output.stdout), /reporting failed/);
+    // The earlier builder is untouched.
+    assert.equal(await builderHolds(builderLock(f.home)), true);
+    assert.equal(await starts(f.root), 1);
+  } finally {
+    await Deno.writeTextFile(join(f.root, "go"), "").catch(() => {});
+    await until(async () => !(await builderHolds(builderLock(f.home)))).catch(() => {});
+    await f.cleanup();
+  }
+});
+
+test("a failure checking the builder lock afterwards leaves the build's own error", async () => {
+  const f = await fixture();
+  try {
+    await assert.rejects(
+      ensureBuiltRuntime(build(), {
+        home: f.home,
+        temporary: f.temporary,
+        dependencies: {
+          ...f.dependencies,
+          async run(_builder, _output, _log, lock, onLine) {
+            onLine("mkfs.erofs: bad option");
+            // The lock can no longer be opened.
+            await Deno.remove(lock).catch(() => {});
+            await Deno.mkdir(lock);
+            return false;
+          },
+        },
+      }),
+      /Building the VM runtime failed[^]*mkfs\.erofs: bad option/,
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("a build record of another version is waited on and its scratch output kept", async () => {
+  const f = await fixture();
+  try {
+    const directory = join(f.home, "built");
+    await Deno.mkdir(directory, { recursive: true });
+    const scratch = join(f.temporary, `${scratchPrefix(f.home)}newer`);
+    await Deno.mkdir(scratch);
+    await Deno.writeTextFile(
+      join(directory, ".build"),
+      JSON.stringify({ version: 2, identity: build().identity, scratch, since: Date.now() }),
+    );
+    const held = await Deno.open(builderLock(f.home), { create: true, read: true, write: true });
+    await held.lock(true);
+    const progress: string[] = [];
+    const next = ensureBuiltRuntime(build(), {
+      home: f.home,
+      temporary: f.temporary,
+      dependencies: f.dependencies,
+      onProgress: (message) => progress.push(message),
+    });
+    await until(async () => progress.length > 0);
+    assert.match(progress[0]!, /Waiting for the VM runtime build an earlier Loom process started/);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(f.calls.run, 0);
+    await Deno.lstat(scratch);
+    held.close();
+    await next;
+    assert.equal(f.calls.run, 1);
+    await Deno.lstat(scratch);
+    // A damaged record is no different.
+    await Deno.writeTextFile(join(directory, ".build"), '{"version":1,"identity":');
+    await ensureBuiltRuntime(build("c".repeat(32)), {
+      home: f.home,
+      temporary: f.temporary,
+      dependencies: f.dependencies,
+    });
+    await Deno.lstat(scratch);
   } finally {
     await f.cleanup();
   }
