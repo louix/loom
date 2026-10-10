@@ -276,7 +276,7 @@ try {
     assert(
       !failed.success &&
         failed.output.includes("deliberate-failure") &&
-        failed.output.includes("status 7"),
+        /status 7|exit 7/.test(failed.output),
     );
     assert.equal(await currentRepoBase(home, artifact), selected);
     await config("echo cancel-ready; sleep 60");

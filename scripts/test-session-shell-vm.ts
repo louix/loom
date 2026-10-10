@@ -1,5 +1,7 @@
 /** Credential-free terminal smoke: CLI handoff locally and a real shell in both VM layouts.
- * Run on Linux with util-linux script, passing SESSION_RUNTIME SMOLVM.
+ * Run on Linux with util-linux script, passing SESSION_RUNTIME SMOLVM. With
+ * LOOM_TEST_LAUNCHER=isolation the VM shell is an execution beside the worker, as
+ * the daemon opens it on that launcher.
  */
 import assert from "node:assert/strict";
 import { join } from "node:path";
@@ -10,10 +12,12 @@ import { LoomClient } from "@loom/client";
 import type { FakeProvider } from "@loom/connector-mock";
 import type { SessionSnapshot } from "@loom/core/wire";
 import { gitFixture } from "./lib/git-fixture.ts";
-import { launchSessionVm } from "../backend/daemon/src/daemon/session-vm-worker.ts";
+import { closeTestLaunchers, launchTestSessionVm } from "./lib/session-launch.ts";
+import { sessionVmDirectory } from "../backend/daemon/src/daemon/session-vm-state.ts";
+import type { SessionExecutions } from "../core/src/connector.ts";
 import { RemoteWorkerSession } from "../backend/daemon/src/daemon/worker-provider.ts";
 import { mockLaunchSpec } from "../backend/daemon/src/daemon/worker-launch.ts";
-import { vmShellCommand } from "../runtime/src/session-vm/shell.ts";
+import { guestShellArgv, vmShellCommand } from "../runtime/src/session-vm/shell.ts";
 
 const [artifact, smolvm] = Deno.args;
 const localOnly = Deno.args.includes("--local");
@@ -35,10 +39,12 @@ const terminal = async (
   cwd: string,
   env?: Record<string, string>,
   tui = false,
+  /** Only the given environment, as loom shell runs a VM transport. */
+  clean = false,
 ) => {
   const p = new Deno.Command(scriptPath, {
     args: ["-q", "-e", "-c", command.map(quote).join(" "), "/dev/null"],
-    ...(env ? { env } : {}),
+    ...(env ? { env, clearEnv: clean } : {}),
     stdin: "piped",
     stdout: "piped",
     stderr: "piped",
@@ -167,15 +173,19 @@ try {
 if (localOnly) Deno.exit(0);
 assert(artifact && smolvm);
 const f = await gitFixture();
+// Keep this run's VM inventory and session state out of the user's.
+Deno.env.set("XDG_STATE_HOME", join(f.root, "xdg-state"));
 try {
   for (const workspace of [f.repo, f.workspace]) {
-    const worker = await launchSessionVm({
+    let executions: SessionExecutions | undefined;
+    const worker = await launchTestSessionVm({
+      executions: (published) => (executions = published),
       artifact,
       smolvm,
       workspace,
       repoRoot: f.repo,
-      sessionDirectory: join(
-        f.root,
+      sessionDirectory: sessionVmDirectory(
+        f.repo,
         workspace === f.repo ? "in-place-profile" : "worktree-profile",
       ),
       auth: {},
@@ -201,8 +211,18 @@ try {
           },
         ],
       });
-      const vm = vmShellCommand(worker.binding);
-      await terminal([vm.executable, ...vm.args], workspace, vm.env);
+      const owner = new AbortController();
+      const leased = executions?.open({ argv: guestShellArgv, stdin: true, tty: true }, owner);
+      const vm = leased?.vm ?? vmShellCommand(worker.binding);
+      // A private XDG_STATE_HOME must not reach smolvm: it would look for another VM.
+      await terminal(
+        [vm.executable, ...vm.args],
+        workspace,
+        { ...vm.env, TERM: "xterm-256color" },
+        false,
+        true,
+      );
+      if (leased) executions!.close(leased.token, owner);
       await session.close();
       console.log("VM shell passed:", workspace === f.repo ? "in-place" : "worktree");
     } finally {
@@ -211,5 +231,6 @@ try {
     }
   }
 } finally {
+  await closeTestLaunchers();
   await f.close();
 }

@@ -1,4 +1,8 @@
-/** Ready VM recovery after both owners die; no credentials or API usage. */
+/**
+ * Ready VM recovery after both owners die; no credentials or API usage.
+ * LOOM_TEST_LAUNCHER=isolation runs the abandoned owner and the new one on the
+ * isolation launcher; the daemon's startup recovery is the same on both.
+ */
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,7 +15,7 @@ import {
 } from "../backend/daemon/src/daemon/session-vm-state.ts";
 import { lockSessionState, SessionVmBusyError } from "../runtime/src/session-vm/persistence.ts";
 import { readRecovery } from "../runtime/src/session-vm/recovery.ts";
-import { launchSessionVm } from "../backend/daemon/src/daemon/session-vm-worker.ts";
+import { closeTestLaunchers, launchTestSessionVm, testLauncher } from "./lib/session-launch.ts";
 import { RemoteWorkerSession } from "../backend/daemon/src/daemon/worker-provider.ts";
 import { mockLaunchSpec } from "../backend/daemon/src/daemon/worker-launch.ts";
 import { setLogLevel } from "@loom/core/logger";
@@ -27,6 +31,11 @@ await Deno.writeTextFile(
   `{
   "titles": {
     "enabled": false
+  },
+  "session": {
+    "isolation": {
+      "launcher": "${testLauncher}"
+    }
   }
 }`,
 );
@@ -44,6 +53,7 @@ try {
         smolvm,
         f.workspace,
         dir,
+        f.repo,
       ],
       stdin: "null",
       stdout: "piped",
@@ -90,10 +100,11 @@ try {
       await daemon.stop("recovery-test");
       daemon = undefined;
       // A new owner can use the preserved profile after recovery.
-      const worker = await launchSessionVm({
+      const worker = await launchTestSessionVm({
         artifact,
         smolvm,
         workspace: f.workspace,
+        repoRoot: f.repo,
         sessionDirectory: dir,
         auth: { ANTHROPIC_API_KEY: "disposable-test-key" },
       });
@@ -128,6 +139,7 @@ try {
   success = true;
 } finally {
   await daemon?.stop("recovery-test-finally");
+  await closeTestLaunchers();
   if (success) await f.close();
   else console.error(`Recovery fixture retained: ${f.root}`);
 }
