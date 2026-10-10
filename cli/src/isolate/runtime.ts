@@ -1,14 +1,50 @@
-/** VM runtime selection for loom-isolate. Read-only: nothing is fetched or built here. */
+/**
+ * VM runtime selection for loom-isolate. Read-only, except that a package
+ * without a Nix-built runtime (an unpinned Mac) builds its own before a run.
+ */
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { inspectArtifact, requireVmHost } from "../../../runtime/src/packaged/artifact.ts";
+import {
+  builtRuntimePath,
+  decodeRuntimeBuild,
+  inspectArtifact,
+  requireVmHost,
+  type RuntimeBuild,
+} from "../../../runtime/src/packaged/artifact.ts";
+import { ensureRuntimeArtifact } from "../../../runtime/src/packaged/build.ts";
 import { environmentRuntimeVersion } from "../../../runtime/src/session-vm/launch.ts";
 import { UsageError, type IsolateRuntime } from "./state.ts";
 
-/** Set by the Nix package to its bundled session runtime and smolvm. */
+/** Set by the Nix package to its bundled session runtime (or how to build it) and smolvm. */
 export const runtimeEnvironment = {
   artifact: "LOOM_ISOLATE_ARTIFACT",
+  build: "LOOM_ISOLATE_RUNTIME_BUILD",
   smolvm: "LOOM_ISOLATE_SMOLVM",
 } as const;
+
+const packageBuild = (): RuntimeBuild | undefined => {
+  const file = Deno.env.get(runtimeEnvironment.build);
+  return file ? decodeRuntimeBuild(JSON.parse(readFileSync(file, "utf8"))) : undefined;
+};
+const packageArtifact = () => {
+  const build = packageBuild();
+  return Deno.env.get(runtimeEnvironment.artifact) ?? (build && builtRuntimePath(build));
+};
+
+/** Build the package's own runtime first if `runtime` selects it and it is not built yet. */
+export const buildPackageRuntime = async (
+  runtime: IsolateRuntime,
+  onProgress: (message: string) => void,
+  signal?: AbortSignal,
+) => {
+  const build = packageBuild();
+  if (build && runtime.artifact === builtRuntimePath(build))
+    await ensureRuntimeArtifact(
+      runtime.artifact,
+      { onProgress, ...(signal ? { signal } : {}) },
+      build,
+    );
+};
 
 /**
  * Flags, then trusted configuration (a launch profile's artifact, then the user
@@ -19,11 +55,7 @@ export const selectRuntime = (
   prepared: IsolateRuntime | null,
   configured: { artifact?: string | undefined; smolvm?: string | undefined } = {},
 ): IsolateRuntime => {
-  const artifact =
-    flags.artifact ??
-    configured.artifact ??
-    Deno.env.get(runtimeEnvironment.artifact) ??
-    prepared?.artifact;
+  const artifact = flags.artifact ?? configured.artifact ?? packageArtifact() ?? prepared?.artifact;
   const smolvm =
     flags.smolvm ??
     configured.smolvm ??

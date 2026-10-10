@@ -30,7 +30,12 @@ import {
   userRuntime,
   type IsolateConfig,
 } from "./config.ts";
-import { selectRuntime, verifyRuntime, type RuntimeReport } from "./runtime.ts";
+import {
+  buildPackageRuntime,
+  selectRuntime,
+  verifyRuntime,
+  type RuntimeReport,
+} from "./runtime.ts";
 import {
   environmentId,
   environmentStatus,
@@ -262,9 +267,9 @@ const withEnvironment = async (
     const environment = await ownEnvironment(workspace, values.name, true);
     if (!environment) throw new Error("Could not create the environment");
     try {
-      const runtime = await (dependencies.verifyRuntime ?? verifyRuntime)(
-        selectRuntime(values, environment.record.runtime, configuredRuntime(config)),
-      );
+      const selected = selectRuntime(values, environment.record.runtime, configuredRuntime(config));
+      await buildPackageRuntime(selected, progress, cancelled.signal);
+      const runtime = await (dependencies.verifyRuntime ?? verifyRuntime)(selected);
       await recover(environment, progress, cancelled.signal);
       cancelled.signal.throwIfAborted();
       const coordinator = createVmEnvironmentCoordinator(

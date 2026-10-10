@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { basename, dirname, join } from "node:path";
 import { lockSessionState } from "../session-vm/persistence.ts";
 import { vmMaintenanceLock, retainedVmStates } from "./maintenance.ts";
+import { removeBuiltRuntimes } from "./build.ts";
 
 export interface CachePruneResult {
   generations: number;
@@ -24,6 +25,16 @@ export const pruneRuntimeCache = async (
     // Old launchers and crashed supervisors have no live lease but leave private state.
     if ((await retainedVmStates(temporary)).length) return { ...result, deferred: true };
     const protectedSet = new Set(protectedPaths);
+    try {
+      result.generations += await removeBuiltRuntimes(
+        home,
+        (link, artifact) =>
+          protectedSet.has(link) || (artifact !== undefined && protectedSet.has(artifact)),
+        dryRun,
+      );
+    } catch {
+      result.deferred = true;
+    }
     const retainedBackends = new Set<string>();
     const entries = async (path: string) => {
       try {

@@ -1,6 +1,10 @@
-/** Maintainer operation: build and pin Apple Silicon guest runtime artifacts. */
+/**
+ * Optional maintainer operation: build and pin the Apple Silicon guest runtime, so
+ * installing Loom builds it as a fixed-output derivation instead of on first use.
+ */
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
+import { builtRuntimePath } from "../runtime/src/packaged/artifact.ts";
 
 if (Deno.build.os !== "darwin" || Deno.build.arch !== "aarch64")
   throw new Error("Run runtime:hashes on an Apple Silicon Mac with Nix installed");
@@ -25,10 +29,11 @@ const currentSource = () => checked(["eval", "--raw", ".#lib.guestRuntimeSource"
 const source = await currentSource();
 const currentRecipe = () => checked(["eval", "--raw", ".#lib.guestRuntimeRecipe"]);
 const recipe = await currentRecipe();
+const identity = await checked(["eval", "--raw", ".#lib.guestRuntimeIdentity"]);
 const destination = join(root, "packaging/macos/runtime-hashes.json");
-const previous = JSON.parse(await Deno.readTextFile(destination));
+const previous = JSON.parse(await Deno.readTextFile(destination).catch(() => "{}"));
 const runtimes: Record<string, string> =
-  previous.source === source && previous.recipe === recipe && previous.runtimes["session-runtime"]
+  previous.source === source && previous.recipe === recipe && previous.runtimes?.["session-runtime"]
     ? { "session-runtime": previous.runtimes["session-runtime"] }
     : {};
 const publish = async () => {
@@ -62,6 +67,16 @@ for (const runtime of ["session-runtime"]) {
       console.error(`${runtime}: reusing the verified local artifact`);
       continue;
     }
+  }
+  // The runtime an unpinned Loom built on demand for this source is the same artifact.
+  const onDemand = await Deno.realPath(
+    builtRuntimePath({ version: 1, identity, builder: "" }),
+  ).catch(() => undefined);
+  if (onDemand?.endsWith("-lvm")) {
+    runtimes[runtime] = await checked(["hash", "path", onDemand]);
+    await publish();
+    console.error(`${runtime}: reusing the runtime Loom built on demand: ${runtimes[runtime]}`);
+    continue;
   }
   console.error(`Building ${runtime}; a fresh builder may take several minutes...`);
   const builder = await checked([

@@ -18,7 +18,8 @@ import {
 } from "../../runtime/src/session-vm/repo-base.ts";
 import { lockSessionState, SessionVmBusyError } from "../../runtime/src/session-vm/persistence.ts";
 import { ipcPermissions } from "../../core/src/network-permissions.ts";
-import { inspectArtifact } from "../../runtime/src/packaged/artifact.ts";
+import { inspectArtifact, runtimeBuildFor } from "../../runtime/src/packaged/artifact.ts";
+import { ensureRuntimeArtifact } from "../../runtime/src/packaged/build.ts";
 import { loomPaths } from "../../core/src/paths.ts";
 import { pruneRuntimeCaches } from "./maintenance.ts";
 import { pruneRepositorySessionDisks } from "../../backend/daemon/src/daemon/session-vm-state.ts";
@@ -151,6 +152,7 @@ export const prepareRuntimeEnvironment = async (
   config: LoomConfig,
   policy: { artifact: string; smolvm: string },
 ) => {
+  await ensureRuntimeArtifact(policy.artifact, { onProgress: (message) => console.error(message) });
   const smolvm = await resolveEnvironmentBackend(policy.smolvm);
   const home = repoBaseDirectory(repo);
   await Deno.mkdir(home, { recursive: true, mode: 0o700 });
@@ -371,6 +373,12 @@ export const pruneRepoEnvironment = async (repo: string, dryRun = false) => {
     ...Object.values(config.isolation.runtimes ?? {}),
   ]) {
     if (!policy) continue;
+    // A runtime Loom has not built yet has no prepared disks either.
+    if (
+      runtimeBuildFor(policy.artifact) &&
+      !(await Deno.realPath(policy.artifact).catch(() => undefined))
+    )
+      continue;
     bindings.push({
       artifact: await Deno.realPath(policy.artifact),
       smolvm: await resolveEnvironmentBackend(policy.smolvm),

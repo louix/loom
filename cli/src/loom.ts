@@ -32,7 +32,7 @@ commands:
   config                 lint the loaded config (exit 1 if there are warnings)
   config convert [FILE]  print environment settings in the loom-isolate format   [--out NEW]
   mcp prepare|status|update [name]  manage configured MCP servers
-  runtime prepare|status|update|prune [runtime]  manage optional packaged MCP runtimes
+  runtime prepare|status|update|prune [runtime]  manage packaged VM and MCP runtimes
   vm                     prepare, inspect and manage VM lifecycles
   relink-provider <old> <new>  repoint sessions stuck on a renamed/removed provider id
   ping                   round-trip latency to the daemon
@@ -92,7 +92,11 @@ loom mcp logout <name> [--json]
 
   Runtime references must produce Loom runtime artifacts.
   For ordinary Nix packages, configure mcp_servers and use loom mcp prepare <name>.
-  Updates retain previous generations for active sessions.`,
+  Updates retain previous generations for active sessions.
+
+  On Apple Silicon, a Loom package without a pinned guest runtime lists \`session\`:
+  prepare/update build it in a disposable VM (often 15–60 minutes, once per
+  guest source); the first session start builds it too and later ones reuse it.`,
   run: `loom run <prompt...>  — start a session
 
   --provider P                 provider id (see \`loom providers\`); default from config

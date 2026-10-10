@@ -15,6 +15,15 @@ import {
   runtimeKey,
   type RuntimeLock,
 } from "../../runtime/src/packaged/artifact.ts";
+import { ensureBuiltRuntime } from "../../runtime/src/packaged/build.ts";
+
+/**
+ * `session` names the agents' session runtime when this package builds it on
+ * demand (Apple Silicon without a matching pin); every agent shares it.
+ */
+const sessionRuntime = "session";
+const onDemandSource = (): string | undefined =>
+  ["claude", "codex", "aisdk"].find((source) => bundledRuntime(source)?.build);
 
 const recipe = (source: string): string => {
   if (!/^(github:|gitlab:|git\+https:\/\/|path:\/)/.test(source))
@@ -39,7 +48,13 @@ export const prepareRuntime = async (
   opts: { home?: string; smolvm?: string; update?: boolean } = {},
 ) => {
   requireVmHost();
-  if (await bundledRuntime(source)) {
+  const bundle = bundledRuntime(source);
+  if (bundle?.build) {
+    // Built once per guest source; an update with unchanged source reuses it.
+    await ensureBuiltRuntime(bundle.build, { onProgress: (message) => console.error(message) });
+    return await resolveRuntime(source);
+  }
+  if (bundle) {
     if (opts.update)
       throw new Error(
         `Runtime ${source} is bundled with Loom; update the Loom Nix package (nix profile upgrade loom) instead.`,
@@ -165,11 +180,16 @@ export const runtimeCommand = async (
       "Usage: loom runtime prepare|status|update [runtime] [--smolvm PATH] [--json]; loom runtime prune",
     );
   const config = loadConfig(repoRoot);
+  const session = onDemandSource();
   const sources = name
     ? [name]
-    : [...new Set(config.mcp.flatMap((m) => ("runtime" in m ? [m.runtime] : [])))];
+    : [
+        ...(session ? [sessionRuntime] : []),
+        ...new Set(config.mcp.flatMap((m) => ("runtime" in m ? [m.runtime] : []))),
+      ];
   const rows = [];
-  for (const source of sources) {
+  for (const label of sources) {
+    const source = label === sessionRuntime && session ? session : label;
     try {
       const prepared =
         action === "status"
@@ -179,7 +199,7 @@ export const runtimeCommand = async (
               update: action === "update",
             });
       rows.push({
-        runtime: source,
+        runtime: label,
         status: "ready",
         system: prepared.manifest.system,
         artifact: prepared.lock.artifact,
@@ -187,7 +207,7 @@ export const runtimeCommand = async (
       });
     } catch (error) {
       rows.push({
-        runtime: source,
+        runtime: label,
         status: "not ready",
         error: error instanceof Error ? error.message : String(error),
       });

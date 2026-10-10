@@ -105,6 +105,9 @@
           ++ map (file: ./. + "/${file}")
             (builtins.fromJSON (builtins.readFile ./packaging/macos/guest-source.json)).modules);
       };
+      # Names a guest runtime built on demand on a Mac: one per source and recipe.
+      guestRuntimeIdentity = builtins.substring 0 32 (builtins.hashString "sha256"
+        "loom-guest-runtime-1\n${builtins.unsafeDiscardStringContext (toString guestSource)}\n${self.lib.guestRuntimeRecipe}");
       # Short commit for `loom --version` when built from a checkout; a tag
       # would surface as the full ref. The flake sandbox has no `.git`, so the
       # daemon/CLI can't `git describe` at runtime — we stamp it here instead
@@ -113,6 +116,7 @@
     in
     {
       lib.guestRuntimeSource = guestSource;
+      lib.guestRuntimeIdentity = guestRuntimeIdentity;
       lib.guestRuntimeRecipe = builtins.hashFile "sha256" ./packaging/macos/runtime.nix;
       lib.mkRuntime = import ./packaging/runtimes/mk-runtime.nix;
       devShells = forAll (pkgs: {
@@ -148,23 +152,45 @@
             system = hostSystem;
             config.allowUnfreePredicate = pkg: pkgs.lib.getName pkg == "claude-code";
           }).claude-code;
-          runtimeHashes = builtins.fromJSON (builtins.readFile ./packaging/macos/runtime-hashes.json);
-          hostRuntimes = if hostSystem == "aarch64-darwin" then
-            if runtimeHashes.source != toString guestSource ||
-               (runtimeHashes.recipe or "") != self.lib.guestRuntimeRecipe then
-              throw "macOS guest runtime hashes are stale; run deno task runtime:hashes on Apple Silicon and commit the updated manifest"
-            else pkgs.lib.mapAttrs (runtime: hash: import ./packaging/macos/runtime.nix {
-              inherit pkgs runtime hash;
-              smolvm = hostSmolvm;
-              source = guestSource;
-            }) runtimeHashes.runtimes
-          else guestRuntimes.${guestSystem};
+          # Apple Silicon builds its Linux guest runtime inside a smolvm VM. A
+          # committed pin matching this source and recipe lets Nix build it as a
+          # fixed-output derivation during installation. Without one (the usual
+          # case after guest changes), Loom runs the same builder on first use
+          # and caches the result under this source's identity.
+          macosRecipe = hash: import ./packaging/macos/runtime.nix {
+            inherit pkgs hash;
+            runtime = "session-runtime";
+            smolvm = hostSmolvm;
+            source = guestSource;
+          };
+          macosPins =
+            let file = ./packaging/macos/runtime-hashes.json;
+            in if builtins.pathExists file then builtins.fromJSON (builtins.readFile file) else { };
+          macosPinned = (macosPins.source or null) == toString guestSource
+            && (macosPins.recipe or null) == self.lib.guestRuntimeRecipe
+            && macosPins ? runtimes.session-runtime;
+          # The guest runtime Nix provides, or null when Loom builds it on demand.
+          hostRuntime =
+            if hostSystem != "aarch64-darwin" then guestRuntimes.${guestSystem}.session-runtime
+            else if macosPinned then macosRecipe macosPins.runtimes.session-runtime
+            else null;
+          # Read by runtime/src/packaged/artifact.ts (decodeRuntimeBuild).
+          runtimeBuild = {
+            version = 1;
+            identity = guestRuntimeIdentity;
+            builder = "${(macosRecipe pkgs.lib.fakeHash).prepare}/bin/loom-build-runtime";
+          };
           # smolvm ships native binaries for Linux and Apple Silicon macOS.
           bundleSupported = pkgs.stdenv.hostPlatform.isLinux || hostSystem == "aarch64-darwin";
         in rec {
           default = loom;
           smolvm = hostSmolvm;
-          session-runtime = hostRuntimes.session-runtime;
+          session-runtime = if hostRuntime != null then hostRuntime else
+            pkgs.runCommand "session-runtime-on-demand" { } ''
+              echo "No pinned Apple Silicon guest runtime matches this source." >&2
+              echo "Loom builds it on first use; run: loom runtime update" >&2
+              exit 1
+            '';
 
           # The standalone isolation CLI, packaged apart from loom/loomd and their
           # application graph; it defaults to the same session runtime and smolvm.
@@ -172,7 +198,9 @@
             inherit pkgs denoDeps;
             src = ./.;
             version = revFor;
-            runtime = if bundleSupported then session-runtime else null;
+            runtime = if bundleSupported then hostRuntime else null;
+            runtimeBuild = if bundleSupported && hostRuntime == null
+              then pkgs.writeText "loom-runtime-build.json" (builtins.toJSON runtimeBuild) else null;
             smolvm = if bundleSupported then hostSmolvm else null;
           };
 
@@ -254,16 +282,17 @@
 
           loom = pkgs.lib.makeOverridable ({ withClaude ? true, withCodex ? true, withAisdk ? true }:
             let
-              entry = source: artifact: {
+              entry = source: {
                 version = 1;
-                inherit source artifact;
+                inherit source;
                 smolvm = "${hostSmolvm}/bin/smolvm";
-                preparedAt = "bundled";
-              };
+              } // (if hostRuntime != null
+                then { artifact = "${hostRuntime}"; preparedAt = "bundled"; }
+                else { build = runtimeBuild; preparedAt = "on-demand"; });
               bundledRuntimes = pkgs.writeText "loom-bundled-runtimes.json" (builtins.toJSON (
-                pkgs.lib.optionalAttrs withClaude { claude = entry "claude" "${session-runtime}"; }
-                // pkgs.lib.optionalAttrs withCodex { codex = entry "codex" "${session-runtime}"; }
-                // pkgs.lib.optionalAttrs withAisdk { aisdk = entry "aisdk" "${session-runtime}"; }
+                pkgs.lib.optionalAttrs withClaude { claude = entry "claude"; }
+                // pkgs.lib.optionalAttrs withCodex { codex = entry "codex"; }
+                // pkgs.lib.optionalAttrs withAisdk { aisdk = entry "aisdk"; }
               ));
             in
             pkgs.stdenvNoCC.mkDerivation (finalAttrs: {

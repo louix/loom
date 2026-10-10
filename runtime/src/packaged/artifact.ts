@@ -21,8 +21,37 @@ export interface RuntimeLock {
   artifact: string;
   smolvm: string;
   preparedAt: string;
+  /** Set when the package has no Nix-built runtime: `artifact` is where Loom builds it. */
+  build?: RuntimeBuild;
+}
+/**
+ * How an Apple Silicon package without a matching pinned runtime builds one on
+ * first use (flake.nix `runtimeBuild`): the same smolvm builder the pinned
+ * fixed-output derivation runs, named by its guest source and recipe.
+ */
+export interface RuntimeBuild {
+  version: 1;
+  identity: string;
+  builder: string;
 }
 export const runtimeHome = () => join(userDirectory("data"), "loom/runtimes");
+/** Built runtimes, one GC-rooted link to an immutable store path per identity. */
+export const builtRuntimeHome = (home = runtimeHome()) => join(home, "built");
+export const builtRuntimePath = (build: RuntimeBuild, home = runtimeHome()) =>
+  join(builtRuntimeHome(home), build.identity);
+export const decodeRuntimeBuild = (value: unknown): RuntimeBuild => {
+  const v = value as Partial<RuntimeBuild> | null;
+  if (
+    !v ||
+    v.version !== 1 ||
+    typeof v.identity !== "string" ||
+    !/^[a-f0-9]{32}$/.test(v.identity) ||
+    typeof v.builder !== "string" ||
+    !/^\/nix\/store\/[a-z0-9]{32}-[^/\s]+\/bin\/[^/\s]+$/.test(v.builder)
+  )
+    throw new Error("Invalid runtime build (expected version 1, identity and a store builder)");
+  return { version: 1, identity: v.identity, builder: v.builder };
+};
 export const runtimeKey = async (source: string) =>
   Array.from(
     new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(source))),
@@ -128,28 +157,46 @@ export const inspectArtifact = async (artifact: string): Promise<RuntimeManifest
   }
   return manifest;
 };
-/** A package-owned manifest takes precedence over mutable development pins. */
-export const bundledRuntime = (source: string): RuntimeLock | undefined => {
+const bundledRuntimes = (): Record<string, unknown> | undefined => {
   const file = Deno.env.get("LOOM_BUNDLED_RUNTIMES");
   if (!file) return undefined;
   const runtimes = JSON.parse(readFileSync(file, "utf8"));
   if (!runtimes || typeof runtimes !== "object" || Array.isArray(runtimes)) {
     throw new Error("Invalid bundled runtime manifest");
   }
-  if (!Object.hasOwn(runtimes, source)) return undefined;
-  const lock = runtimes[source];
+  return runtimes;
+};
+/** A package-owned manifest takes precedence over mutable development pins. */
+export const bundledRuntime = (source: string): RuntimeLock | undefined => {
+  const runtimes = bundledRuntimes();
+  if (!runtimes || !Object.hasOwn(runtimes, source)) return undefined;
+  const lock = runtimes[source] as RuntimeLock | null;
   if (!lock || typeof lock !== "object" || Array.isArray(lock)) {
     throw new Error(`Invalid bundled runtime entry for ${source}`);
   }
-  return lock as RuntimeLock;
+  if (lock.build === undefined) return lock;
+  const build = decodeRuntimeBuild(lock.build);
+  return { ...lock, build, artifact: builtRuntimePath(build) };
+};
+/** The package's on-demand session runtime build, if it has one. */
+export const bundledRuntimeBuild = (): RuntimeBuild | undefined => {
+  for (const source of Object.keys(bundledRuntimes() ?? {})) {
+    const build = bundledRuntime(source)?.build;
+    if (build) return build;
+  }
+  return undefined;
+};
+/** The package's on-demand build that publishes `artifact`, if it is one. */
+export const runtimeBuildFor = (artifact: string): RuntimeBuild | undefined => {
+  const build = bundledRuntimeBuild();
+  return build && builtRuntimePath(build) === artifact ? build : undefined;
 };
 export const resolveRuntime = async (source: string, home = runtimeHome()) => {
-  let bundled = false;
+  let bundle: RuntimeLock | undefined;
   try {
     const current = join(home, await runtimeKey(source), "current");
-    const bundle = await bundledRuntime(source);
-    bundled = bundle !== undefined;
-    const lock =
+    bundle = await bundledRuntime(source);
+    let lock =
       bundle ?? (JSON.parse(await Deno.readTextFile(join(current, "lock.json"))) as RuntimeLock);
     if (
       lock.version !== 1 ||
@@ -159,18 +206,26 @@ export const resolveRuntime = async (source: string, home = runtimeHome()) => {
     ) {
       throw new Error("Invalid runtime lock");
     }
+    if (lock.build) {
+      const built = await Deno.realPath(lock.artifact).catch((error) => {
+        if (error instanceof Deno.errors.NotFound)
+          throw new Error("it has not been built for this Loom version yet");
+        throw error;
+      });
+      lock = { ...lock, artifact: built };
+    }
     const manifest = await inspectArtifact(lock.artifact);
     if (!(await Deno.stat(lock.smolvm)).isFile) {
       throw new Error("Prepared smolvm is missing");
     }
     return { lock, manifest };
   } catch (cause) {
+    let remedy = "Run loom runtime prepare.";
+    if (bundle?.build)
+      remedy = "Run loom runtime update to build it; starting a session also builds it.";
+    else if (bundle) remedy = "Upgrade the Loom Nix package to repair its bundled runtime.";
     throw new Error(
-      `Runtime ${source} is not ready: ${cause instanceof Error ? cause.message : cause}. ${
-        bundled
-          ? "Upgrade the Loom Nix package to repair its bundled runtime."
-          : "Run loom runtime prepare."
-      }`,
+      `Runtime ${source} is not ready: ${cause instanceof Error ? cause.message : cause}. ${remedy}`,
       { cause },
     );
   }

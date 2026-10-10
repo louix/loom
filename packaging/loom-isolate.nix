@@ -1,6 +1,7 @@
 # loom-isolate alone: the standalone isolation CLI and only its module graph
 # (see copy-isolate-cli.ts), with the session runtime and smolvm it defaults to.
-{ pkgs, src, denoDeps, version, runtime ? null, smolvm ? null }:
+# Without a Nix-built runtime (an unpinned Mac), it builds one on first use.
+{ pkgs, src, denoDeps, version, runtime ? null, runtimeBuild ? null, smolvm ? null }:
 pkgs.stdenvNoCC.mkDerivation {
   pname = "loom-isolate";
   inherit src version;
@@ -28,8 +29,9 @@ pkgs.stdenvNoCC.mkDerivation {
       --set DENO_NO_UPDATE_CHECK 1 \
       --set LOOM_BUILD_VER ${version} \
       ${pkgs.lib.optionalString (runtime != null) "--set-default LOOM_ISOLATE_ARTIFACT ${runtime}"} \
+      ${pkgs.lib.optionalString (runtimeBuild != null) "--set-default LOOM_ISOLATE_RUNTIME_BUILD ${runtimeBuild}"} \
       ${pkgs.lib.optionalString (smolvm != null) "--set-default LOOM_ISOLATE_SMOLVM ${smolvm}/bin/smolvm"} \
-      --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.git pkgs.coreutils ]}
+      --prefix PATH : ${pkgs.lib.makeBinPath ([ pkgs.git pkgs.coreutils ] ++ pkgs.lib.optional (runtimeBuild != null) pkgs.nix)}
     runHook postInstall
   '';
   meta = {

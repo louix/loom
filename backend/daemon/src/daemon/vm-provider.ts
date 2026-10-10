@@ -4,6 +4,7 @@ import { refreshOnAuthFailure } from "./auth-failure-refresh.ts";
 import { withVmDiagnostics } from "./vm-diagnostics.ts";
 /** Session-only VM routing; discovery/title utilities retain their host worker. */
 import { workspaceMount } from "../../../../runtime/src/session-vm/workspace.ts";
+import { ensureRuntimeArtifact } from "../../../../runtime/src/packaged/build.ts";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import type { ConnectorContext, SessionExecutions } from "@loom/core/connector";
@@ -134,6 +135,12 @@ export const withVmSessions = async <T extends AgentProvider>(
   }
   const start = async (input: CreateSessionOptions | SessionRef, resume: boolean) =>
     startWorker(input, async (own) => {
+      // An unpinned Apple Silicon package builds its runtime on first use.
+      const starting = signalOf(input);
+      await ensureRuntimeArtifact(vm.artifact, {
+        onProgress: (message) => ctx.onStartupProgress?.(input.sessionId, message),
+        ...(starting ? { signal: starting } : {}),
+      });
       const sessionDirectory = sessionVmDirectory(vm.repoRoot, input.sessionId);
       await stoppedSessionVm(vm.repoRoot, input.sessionId);
       if (resume && kind !== "aisdk") {
