@@ -747,9 +747,6 @@ export class Daemon {
       await this.#providers.close().catch((error) => {
         this.#log.warn("provider shutdown failed", { error: String(error) });
       });
-      // Closed workers' groups (and hooks') still within their SIGTERM grace: the
-      // exit after `whenClosed()` would drop their SIGKILL. Bounded by the grace.
-      await settleProcessGroups();
       // Give in-flight auto-title jobs (one-shot titler sessions live outside
       // the SessionManager) a brief window to finish before the DB closes.
       if (this.#titleJobs.size > 0) {
@@ -766,6 +763,15 @@ export class Daemon {
         this.#log.warn("db close failed", { err: String(err) });
       }
     } finally {
+      // Last before exit: every phase above can end process groups (a session
+      // close outlasting the drain bound, a titler closed in the title window,
+      // a provider's utility worker), and the exit after `whenClosed()` would
+      // SIGKILL any group still within its SIGTERM grace, leaving a `git` in it
+      // no chance to drop its index.lock. Settling waits for escalations that
+      // start meanwhile too; each is bounded by its grace.
+      await settleProcessGroups().catch((error) => {
+        this.#log.warn("process group shutdown failed", { error: String(error) });
+      });
       if (this.#pidfile) releasePidfile(this.paths.pid);
       this.#log.info("daemon stopped", { reason });
       this.#resolveClosed();
