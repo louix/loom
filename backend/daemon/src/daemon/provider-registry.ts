@@ -39,6 +39,8 @@ import type { TranscriptStore } from "@loom/core/transcript";
 import { makeLogger } from "@loom/core/logger";
 import { withExternalMcp } from "./mcp-provider.ts";
 import { preflightTools } from "./tool-preflight.ts";
+import { runtimeBuildFor } from "../../../../runtime/src/packaged/artifact.ts";
+import { builtRuntime } from "../../../../runtime/src/packaged/build.ts";
 
 const MOCK = "@loom/connector-mock";
 const CLAUDE = "@loom/connector-claude";
@@ -156,6 +158,14 @@ export class ProviderRegistry {
   vmPolicy(id: string) {
     const kind = this.#vmKind(id);
     return this.#config.isolation.runtimes?.[kind] ?? this.#config.isolation[kind];
+  }
+
+  /** Whether a VM start of `id` first has to build the package's runtime (Apple Silicon). */
+  async runtimeBuildPending(id: string): Promise<boolean> {
+    const policy = this.vmPolicy(id);
+    const build = policy && runtimeBuildFor(policy.artifact);
+    if (!build) return false;
+    return (await builtRuntime(build).catch(() => undefined)) === undefined;
   }
 
   vmUnavailableReason(id: string): string | undefined {

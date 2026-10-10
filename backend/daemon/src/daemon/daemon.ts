@@ -1877,13 +1877,20 @@ export class Daemon {
 
     let wt: { path: string; branch: string; baseRef: string } | null = null;
     let clonePath: string | null = null;
+    // Building an Apple Silicon runtime on demand takes far longer than a client
+    // waits for this reply. Then the reply reports the session as starting once
+    // it exists; build progress and the outcome arrive as session events.
+    const detached =
+      isolation === "vm" && (await this.#providers.runtimeBuildPending(o.providerId));
+    let registered = () => {};
+    const created = new Promise<void>((resolve) => (registered = resolve));
     // The row and the adapter are created under one hold on the session queue.
     // Between them the session is in the registry but has no run attached, so a
     // `session.setMode` landing in that window would take the inactive path and
     // update the row only — leaving the adapter on its create-time mode with
     // nothing to reconcile it. Queued, such a command simply waits and then finds
     // a live session to apply itself to.
-    await this.#queue.run(id, async () => {
+    const starting = this.#queue.run(id, async () => {
       this.#registry.create({
         id,
         provider: o.providerId,
@@ -1918,6 +1925,7 @@ export class Daemon {
         text: o.prompt,
         injected: false,
       });
+      registered();
 
       try {
         const unavailable = this.#providers.unavailableReason(o.providerId);
@@ -2045,6 +2053,11 @@ export class Daemon {
         this.#startups.delete(id);
       }
     });
+    if (detached) {
+      // A failure is already on the session as its error and event.
+      starting.catch(() => {});
+      await Promise.race([created, starting]);
+    } else await starting;
 
     const snap = this.#registry.mustGet(id);
     this.#publishState(snap.id);
