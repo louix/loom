@@ -11,14 +11,15 @@ import {
 } from "../runtime/src/packaged/artifact.ts";
 import {
   buildDependencies,
+  builderLock,
   classifyBuildFailure,
   ensureBuiltRuntime,
   ensureRuntimeArtifact,
   builtRuntimeRetentionMs,
   removeBuiltRuntimes,
   succeeded,
+  supervisorCommand,
   type BuildDependencies,
-  type BuilderProcess,
 } from "../runtime/src/packaged/build.ts";
 
 const build = (identity = "a".repeat(32)): RuntimeBuild => ({
@@ -26,6 +27,18 @@ const build = (identity = "a".repeat(32)): RuntimeBuild => ({
   identity,
   builder: `/nix/store/${"b".repeat(32)}-loom-build-runtime/bin/loom-build-runtime`,
 });
+
+/** Whether a builder holds `lock`: the only liveness a later Loom relies on. */
+const builderHolds = async (lock: string) => {
+  const file = await Deno.open(lock, { create: true, read: true, write: true });
+  try {
+    if (!(await file.tryLock(true))) return true;
+    await file.unlock();
+    return false;
+  } finally {
+    file.close();
+  }
+};
 
 /** A builder writing a fake artifact, and a "store" that is a fixture directory. */
 const fixture = async () => {
@@ -39,7 +52,7 @@ const fixture = async () => {
   let release: () => void = () => {};
   const gate = { wait: Promise.resolve() };
   const dependencies: BuildDependencies = {
-    async run(_builder, output, _log, onLine) {
+    async run(_builder, output, _log, _lock, onLine) {
       calls.run++;
       onLine("copying path '/nix/store/x-glibc' from 'https://cache.nixos.org'...");
       await gate.wait;
@@ -56,7 +69,6 @@ const fixture = async () => {
     },
     inspect: async () => {},
     freeBytes: async () => undefined,
-    alive: async () => false,
   };
   return {
     root,
@@ -134,7 +146,7 @@ test("build failures are actionable and keep the log", async () => {
   try {
     const failing = (line: string): BuildDependencies => ({
       ...f.dependencies,
-      async run(_builder, _output, log, onLine) {
+      async run(_builder, _output, log, _lock, onLine) {
         await Deno.writeTextFile(log, line + "\n", { append: true });
         onLine(line);
         return false;
@@ -198,28 +210,19 @@ test("the builder writes to its log, not to Loom, and sees no inherited environm
     await Deno.writeTextFile(log, "");
     const seen: string[] = [];
     const output = join(f.root, "out");
-    let recorded: BuilderProcess | undefined;
+    const lock = join(f.root, "builder.lock");
     assert.equal(
-      await buildDependencies.run(
-        builder,
-        output,
-        log,
-        (line) => seen.push(line),
-        undefined,
-        async (process) => {
-          recorded = process;
-        },
-      ),
+      await buildDependencies.run(builder, output, log, lock, (line) => seen.push(line)),
       true,
     );
     assert.deepEqual(seen, [`start ${output}`, "secret=none tmp=/tmp"]);
     assert.equal(await Deno.readTextFile(log), `start ${output}\nsecret=none tmp=/tmp\n`);
-    // Success is marked for a Loom that outlives this one; the exited builder is not alive.
+    // Success is marked for a Loom that outlives this one; the exited builder holds no lock.
     await Deno.lstat(succeeded(output));
-    assert.equal(await buildDependencies.alive(recorded!), false);
+    assert.equal(await builderHolds(lock), false);
     await Deno.remove(succeeded(output));
     await Deno.writeTextFile(builder, "#!/bin/sh\necho failing\nexit 3\n");
-    assert.equal(await buildDependencies.run(builder, output, log, () => {}), false);
+    assert.equal(await buildDependencies.run(builder, output, log, lock, () => {}), false);
     await assert.rejects(Deno.lstat(succeeded(output)));
   } finally {
     Deno.env.delete(secret);
@@ -396,8 +399,12 @@ const until = async (check: () => Promise<boolean>) => {
   throw new Error("condition did not settle");
 };
 type Fixture = Awaited<ReturnType<typeof fixture>>;
-/** Start a build in another Loom process, and kill that with SIGKILL once its builder runs. */
-const crashMidBuild = async (f: Fixture, builder: string) => {
+/**
+ * Start a build in another Loom process, under another time zone and locale, and
+ * kill that with SIGKILL once its builder runs or, with `early`, as soon as it
+ * has recorded the build (before or after its builder starts).
+ */
+const crashMidBuild = async (f: Fixture, builder: string, early = false) => {
   const script = join(f.root, "loom.ts");
   const module = new URL("../runtime/src/packaged/build.ts", import.meta.url).href;
   await Deno.writeTextFile(
@@ -413,22 +420,28 @@ await ensureBuiltRuntime(
   const loom = new Deno.Command(Deno.execPath(), {
     args: ["run", "-A", "--no-config", "--no-lock", script, f.home, f.temporary, builder],
     cwd: f.root,
+    env: { TZ: "Pacific/Kiritimati", LC_ALL: "de_DE.UTF-8", LANG: "ja_JP.UTF-8" },
     stdin: "null",
     stdout: "null",
     stderr: "null",
   }).spawn();
   const record = join(f.home, "built/.build");
+  const recorded = () =>
+    Deno.lstat(record).then(
+      () => true,
+      () => false,
+    );
   await until(
-    async () =>
-      (await starts(f.root)) === 1 &&
-      (await Deno.lstat(record).then(
-        () => true,
-        () => false,
-      )),
+    early
+      ? recorded
+      : async () =>
+          (await starts(f.root)) === 1 &&
+          (await recorded()) &&
+          (await builderHolds(builderLock(f.home))),
   );
   loom.kill("SIGKILL");
   await loom.status;
-  return JSON.parse(await Deno.readTextFile(record)) as BuilderProcess & { scratch: string };
+  return JSON.parse(await Deno.readTextFile(record)) as { scratch: string };
 };
 /** Real builder processes; a fixture store stands in for Nix. */
 const realBuilder = (f: Fixture): BuildDependencies => ({
@@ -443,8 +456,8 @@ test("a build whose Loom died is waited for and finished, not started again", as
   try {
     const builder = await blockingBuilder(f.root);
     const orphan = await crashMidBuild(f, builder);
-    // The builder outlived its Loom.
-    assert.equal(await buildDependencies.alive(orphan), true);
+    // The builder outlived its Loom, and its lock says so whatever the locale or time zone.
+    assert.equal(await builderHolds(builderLock(f.home)), true);
     const progress: string[] = [];
     const next = ensureBuiltRuntime(
       { ...build(), builder },
@@ -479,7 +492,7 @@ test("a dead builder's leftovers go and the build starts again", async () => {
     const builder = await blockingBuilder(f.root);
     const orphan = await crashMidBuild(f, builder);
     await Deno.writeTextFile(join(f.root, "fail"), "");
-    await until(async () => !(await buildDependencies.alive(orphan)));
+    await until(async () => !(await builderHolds(builderLock(f.home))));
     await Deno.remove(join(f.root, "fail"));
     await Deno.writeTextFile(join(f.root, "go"), "");
     const artifact = await ensureBuiltRuntime(
@@ -495,6 +508,142 @@ test("a dead builder's leftovers go and the build starts again", async () => {
   }
 });
 
+test("a Loom dying as it starts its builder leaves exactly one build", async () => {
+  const f = await fixture();
+  try {
+    const builder = await blockingBuilder(f.root);
+    await Deno.writeTextFile(join(f.root, "go"), "");
+    // Killed between recording the build and its builder starting, or just after.
+    await crashMidBuild(f, builder, true);
+    const artifact = await ensureBuiltRuntime(
+      { ...build(), builder },
+      { home: f.home, temporary: f.temporary, dependencies: realBuilder(f) },
+    );
+    assert.equal(await Deno.readTextFile(artifact), "built\n");
+    // A supervisor its Loom never told to go never starts the builder, however late it runs.
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    assert.equal(await starts(f.root), 1);
+    assert.equal(await builderHolds(builderLock(f.home)), false);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("a builder starts only once it holds the lock, and only on Loom's word", async () => {
+  const f = await fixture();
+  try {
+    const builder = await blockingBuilder(f.root);
+    const lock = join(f.root, "builder.lock");
+    const output = join(f.root, "out");
+    const supervisor = new Deno.Command(Deno.execPath(), {
+      args: supervisorCommand(builder, output, join(f.root, "log"), lock),
+      stdin: "piped",
+      stdout: "piped",
+      stderr: "null",
+    }).spawn();
+    const reader = supervisor.stdout.pipeThrough(new TextDecoderStream()).getReader();
+    assert.equal((await reader.read()).value, "locked\n");
+    await reader.cancel();
+    assert.equal(await builderHolds(lock), true);
+    // Its Loom dies before saying go: nothing builds, and the lock is free again.
+    await supervisor.stdin.close();
+    assert.equal((await supervisor.status).success, false);
+    assert.equal(await starts(f.root), 0);
+    assert.equal(await builderHolds(lock), false);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("a recorded process that is not a builder is never waited for", async () => {
+  const f = await fixture();
+  try {
+    const directory = join(f.home, "built");
+    await Deno.mkdir(directory, { recursive: true });
+    const scratch = join(f.temporary, "loom-runtime-build-leftover");
+    // An earlier record naming a live pid (now some unrelated process) and a start
+    // time in another locale: neither says anything about a build.
+    await Deno.writeTextFile(
+      join(directory, ".build"),
+      JSON.stringify({
+        pid: Deno.pid,
+        started: "Sa 10 Okt 22:12:47 2026",
+        identity: build().identity,
+        scratch,
+        since: Date.now(),
+      }),
+    );
+    const done = ensureBuiltRuntime(build(), {
+      home: f.home,
+      temporary: f.temporary,
+      dependencies: f.dependencies,
+    });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error("waited for a builder")), 5_000);
+    });
+    try {
+      await Promise.race([done, timeout]);
+    } finally {
+      clearTimeout(timer);
+    }
+    assert.equal(f.calls.run, 1);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("a later Loom waits on the builder lock, and stops waiting when cancelled", async () => {
+  const f = await fixture();
+  try {
+    await Deno.mkdir(join(f.home, "built"), { recursive: true });
+    const held = await Deno.open(builderLock(f.home), { create: true, read: true, write: true });
+    await held.lock(true);
+    const cancel = new AbortController();
+    const progress: string[] = [];
+    const waiting = ensureBuiltRuntime(build(), {
+      home: f.home,
+      temporary: f.temporary,
+      dependencies: f.dependencies,
+      signal: cancel.signal,
+      onProgress: (message) => progress.push(message),
+    });
+    await until(async () => progress.length > 0);
+    assert.match(progress[0]!, /Waiting for the VM runtime build an earlier Loom process started/);
+    cancel.abort(new Error("stopped"));
+    await assert.rejects(waiting, /stopped/);
+    assert.equal(f.calls.run, 0);
+    // Once the builder lets go, the next start builds.
+    const next = ensureBuiltRuntime(build(), {
+      home: f.home,
+      temporary: f.temporary,
+      dependencies: f.dependencies,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(f.calls.run, 0);
+    held.close();
+    await next;
+    assert.equal(f.calls.run, 1);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("each use of a built runtime is recorded", async () => {
+  const f = await fixture();
+  try {
+    const options = { home: f.home, temporary: f.temporary, dependencies: f.dependencies };
+    await ensureBuiltRuntime(build(), options);
+    const marker = builtRuntimePath(build(), f.home) + ".used";
+    const long = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    await Deno.utime(marker, long, long);
+    const before = Date.now();
+    await ensureBuiltRuntime(build(), options);
+    assert.ok((await Deno.stat(marker)).mtime!.getTime() >= before - 2_000);
+  } finally {
+    await f.cleanup();
+  }
+});
 test("a package without a pinned runtime names where it builds one", async () => {
   const f = await fixture();
   const before = Deno.env.get("LOOM_BUNDLED_RUNTIMES");

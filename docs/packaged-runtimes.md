@@ -185,7 +185,11 @@ When that builder runs depends on `packaging/macos/runtime-hashes.json`:
   Concurrent starts wait for one build; cancelling a start leaves the build
   running for the next, while stopping Loom stops it and deletes the builder VM.
   If Loom dies instead, the builder carries on: the next start waits for it and
-  adds its result rather than starting a second build. Requests that start a
+  adds its result rather than starting a second build. A small supervisor
+  process takes `built/.builder.lock` before the builder starts (and starts it
+  only once the Loom that spawned it confirms) and holds it until the builder
+  exits, so a later Loom tells a running build from a dead one by trying that
+  lock, never by process ids or start times. Requests that start a
   session (create, send, resume, fork) reply at once with the session starting;
   a message sent meanwhile waits in the session's queue.
   Expect 15–60 minutes, about 20 GB free
