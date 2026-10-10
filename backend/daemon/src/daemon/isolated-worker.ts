@@ -1,6 +1,5 @@
 /**
- * Loom execution adapter for `session.isolation.launcher = "isolation"`. Each VM
- * session boots one environment through the isolation coordinator, then runs the
+ * Loom's session VM launcher. Each VM session boots one environment through the isolation coordinator, then runs the
  * existing guest worker inside it as a leased execution, adapted to WorkerProcess.
  * RemoteWorkerSession and the connector protocol run unchanged above it.
  *
@@ -125,9 +124,7 @@ export const environmentAnswers = async (binding: VmBinding): Promise<boolean> =
 export const guestWorkerArgv = async (artifact: string): Promise<string[]> => {
   const root = await Deno.realPath(artifact);
   if ((await environmentRuntimeVersion(root)) < 2)
-    throw new Error(
-      "The isolation launcher needs a rebuilt session runtime; run loom runtime update, or set session.isolation.launcher to legacy",
-    );
+    throw new Error("Session VMs need a rebuilt session runtime; run loom runtime update");
   const manifest = await inspectArtifact(root);
   const guest = manifest.args[0];
   if (manifest.args.length !== 1 || !guest?.endsWith("/runtime/src/session-vm/guest.ts"))
@@ -175,7 +172,7 @@ const withdraw = (generation: Generation) => {
   published?.();
 };
 
-/** Same contract as createSessionVmLauncher, over one coordinator per provider. */
+/** One coordinator per provider: launches its sessions' VMs and their workers. */
 export const createIsolatedWorkerLauncher = (
   repoRoot: string,
   overrides: Partial<IsolatedWorkerBackend> = {},

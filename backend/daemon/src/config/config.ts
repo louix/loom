@@ -221,6 +221,8 @@ interface HookFields {
 }
 
 export interface LoomConfig {
+  /** Removed settings the file still sets: ignored, and reported by removedConfigWarnings. */
+  removedKeys?: string[];
   autoNix: boolean;
   tui: { includeEventLogInEditor: boolean };
   providerAccess: { only?: string[]; disabled: string[] };
@@ -234,8 +236,6 @@ export interface LoomConfig {
     codex?: { artifact: string; smolvm: string };
     extraAllowedHosts: string[];
     idleTimeoutMinutes?: number;
-    /** Session VM launch path; absent means isolation. */
-    launcher?: "legacy" | "isolation";
     environment?: SessionEnvironment;
     /** How new VM sessions reach the repository. Absent means mount. */
     checkout?: { mode: "mount" | "clone"; visibleRefs: string[]; maxPushBytes: number };
@@ -563,6 +563,18 @@ export const resolveApiKey = (
   return "";
 };
 
+/** Why each removed setting is no longer read. */
+export const removedConfigKeys: Record<string, string> = {
+  "session.isolation.launcher": "session VMs always start through the isolation library",
+};
+
+/** One line per removed setting the config still sets; it parses and is ignored. */
+export const removedConfigWarnings = (cfg: LoomConfig): string[] =>
+  (cfg.removedKeys ?? []).map(
+    (key) =>
+      `${key} is no longer read (${removedConfigKeys[key] ?? "removed"}); remove it from the config`,
+  );
+
 /**
  * Human-readable warnings about the loaded config — misconfigured providers,
  * env vars that aren't set, models that will be auto-detected, a keyless search
@@ -728,6 +740,7 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
   const { mcp, httpMcp } = resolveToolSelection(settings);
 
   return {
+    ...(isolation.launcher !== undefined ? { removedKeys: ["session.isolation.launcher"] } : {}),
     autoNix: settings.session.auto_nix,
     tui: { includeEventLogInEditor: settings.tui.include_event_log_in_editor },
     baseBranch: settings.base_branch,
@@ -736,7 +749,6 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
     isolation: {
       enabled: vmEnabled,
       idleTimeoutMinutes: isolation.idle_timeout_minutes,
-      launcher: isolation.launcher,
       runtimes,
       extraAllowedHosts: [
         ...new Set([

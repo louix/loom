@@ -24,7 +24,7 @@ const until = async (check: () => boolean | Promise<boolean>, what: string) => {
   throw new Error("condition did not settle: " + what);
 };
 
-test("on the isolation launcher, shells, hooks and inspection use the environment's leases", async () => {
+test("session VM shells, hooks and inspection use the environment's leases", async () => {
   const state = await Deno.makeTempDir({ prefix: "loom-executions-" });
   const previous = Deno.env.get("XDG_STATE_HOME");
   Deno.env.set("XDG_STATE_HOME", state);
@@ -125,7 +125,6 @@ test("on the isolation launcher, shells, hooks and inspection use the environmen
         auto_rebase: { enabled: false },
         isolation: {
           enabled: true,
-          launcher: "isolation",
           claude: { artifact: "/test-runtime" },
           checkout: { mode: "clone" },
         },

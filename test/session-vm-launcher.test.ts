@@ -1,11 +1,9 @@
 import assert from "node:assert/strict";
 import {
-  selectSessionVmLauncher,
   withVmSessions,
   type SessionVmLauncher,
 } from "../backend/daemon/src/daemon/vm-provider.ts";
 import { startupSignal } from "../backend/daemon/src/daemon/startup.ts";
-import { normalizeConfig } from "../backend/daemon/src/config/config.ts";
 import type { SessionVmOptions } from "../runtime/src/session-vm/launch.ts";
 import { FakeProvider } from "../connectors/mock/src/fake.ts";
 import { makeLogger } from "../core/src/logger.ts";
@@ -24,7 +22,7 @@ import { CodexAuthOwner } from "../backend/daemon/src/daemon/codex-auth.ts";
 const root = fileURLToPath(new URL("../", import.meta.url));
 
 for (const kind of ["claude", "codex", "aisdk"] as const) {
-  Deno.test(`${kind} sessions on the isolation launcher keep their credentials, egress, MCP mapping and executions`, async () => {
+  Deno.test(`${kind} VM sessions keep their credentials, egress, MCP mapping and executions`, async () => {
     const state = await Deno.makeTempDir();
     const previous = Deno.env.get("XDG_STATE_HOME");
     Deno.env.set("XDG_STATE_HOME", state);
@@ -42,7 +40,6 @@ for (const kind of ["claude", "codex", "aisdk"] as const) {
             repoRoot: state,
             artifact: state,
             smolvm: Deno.execPath(),
-            launcher: "isolation",
           },
           configDir: state,
           codexCliPath: Deno.execPath(),
@@ -58,8 +55,8 @@ for (const kind of ["claude", "codex", "aisdk"] as const) {
         },
       },
       kind,
-      (vm) =>
-        createIsolatedWorkerLauncher(vm.repoRoot, {
+      (repoRoot) =>
+        createIsolatedWorkerLauncher(repoRoot, {
           // A ready environment; the scripted connector worker stands in for its guest worker.
           async launch(options) {
             const exited = Promise.withResolvers<void>();
@@ -164,68 +161,55 @@ for (const kind of ["claude", "codex", "aisdk"] as const) {
   });
 }
 
-Deno.test("the launcher switch defaults to the isolation adapter and keeps legacy on request", async () => {
-  assert.equal(normalizeConfig({}).isolation.launcher, "isolation");
-  assert.equal(
-    normalizeConfig({ session: { isolation: { launcher: "legacy" } } }).isolation.launcher,
-    "legacy",
-  );
-  assert.throws(() => normalizeConfig({ session: { isolation: { launcher: "remote" } } }));
-  const policy = { artifact: "/fake", smolvm: "/fake", repoRoot: "/fake" };
-  const legacy = selectSessionVmLauncher({ ...policy, launcher: "legacy" });
-  const isolated = selectSessionVmLauncher(policy);
-  assert(!("inspect" in legacy));
-  assert("inspect" in isolated);
-  await Promise.all([legacy.close(), isolated.close()]);
-  // Only the isolation adapter receives the startup signal; it owns the whole boot.
-  for (const launcher of ["legacy", "isolation"] as const) {
-    const state = await Deno.makeTempDir();
-    const previous = Deno.env.get("XDG_STATE_HOME");
-    Deno.env.set("XDG_STATE_HOME", state);
-    try {
-      const seen: Array<SessionVmOptions & { signal?: AbortSignal }> = [];
-      const fake = (): SessionVmLauncher => ({
-        async launch(options) {
-          seen.push(options);
-          throw new Error("fixture launch failure");
+Deno.test("VM sessions launch through the isolation adapter, which owns the whole boot", async () => {
+  const state = await Deno.makeTempDir();
+  const previous = Deno.env.get("XDG_STATE_HOME");
+  Deno.env.set("XDG_STATE_HOME", state);
+  try {
+    const seen: Array<SessionVmOptions & { signal?: AbortSignal }> = [];
+    const roots: string[] = [];
+    const provider = await withVmSessions(
+      new FakeProvider(),
+      {
+        id: "aisdk",
+        logger: makeLogger("session-vm-launcher-test"),
+        config: {
+          sessionVm: { artifact: "/fake", smolvm: Deno.execPath(), repoRoot: state },
+          baseUrl: "https://api.openai.com",
         },
-        async close() {},
-      });
-      const provider = await withVmSessions(
-        new FakeProvider(),
-        {
-          id: "aisdk",
-          logger: makeLogger("session-vm-launcher-test"),
-          config: {
-            sessionVm: { ...policy, repoRoot: state, smolvm: Deno.execPath(), launcher },
-            baseUrl: "https://api.openai.com",
+        transcript: { load: () => [], count: () => 0, replaceFrom: () => {} } as never,
+      },
+      "aisdk",
+      (repoRoot): SessionVmLauncher => {
+        roots.push(repoRoot);
+        return {
+          async launch(options) {
+            seen.push(options);
+            throw new Error("fixture launch failure");
           },
-          transcript: { load: () => [], count: () => 0, replaceFrom: () => {} } as never,
-        },
-        "aisdk",
-        (vm) => {
-          assert.equal(vm.launcher, launcher);
-          return fake();
-        },
-      );
-      const signal = new AbortController().signal;
-      await assert.rejects(
-        provider.createSession({
-          sessionId: "session",
-          cwd: state,
-          prompt: "",
-          mode: "default",
-          mcpServers: [],
-          [startupSignal]: signal,
-        } as CreateSessionOptions),
-        /fixture launch failure/,
-      );
-      assert.equal(seen[0]!.signal, launcher === "isolation" ? signal : undefined);
-      await (provider as AgentProvider).close?.();
-    } finally {
-      if (previous === undefined) Deno.env.delete("XDG_STATE_HOME");
-      else Deno.env.set("XDG_STATE_HOME", previous);
-      await Deno.remove(state, { recursive: true });
-    }
+          async close() {},
+        };
+      },
+    );
+    assert.deepEqual(roots, [state]);
+    // Startup cancellation reaches the launcher: it returns only once the environment is ready.
+    const signal = new AbortController().signal;
+    await assert.rejects(
+      provider.createSession({
+        sessionId: "session",
+        cwd: state,
+        prompt: "",
+        mode: "default",
+        mcpServers: [],
+        [startupSignal]: signal,
+      } as CreateSessionOptions),
+      /fixture launch failure/,
+    );
+    assert.equal(seen[0]!.signal, signal);
+    await (provider as AgentProvider).close?.();
+  } finally {
+    if (previous === undefined) Deno.env.delete("XDG_STATE_HOME");
+    else Deno.env.set("XDG_STATE_HOME", previous);
+    await Deno.remove(state, { recursive: true });
   }
 });

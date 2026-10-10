@@ -2,8 +2,8 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { gitFixture } from "./lib/git-fixture.ts";
-import { launchSessionVm } from "../backend/daemon/src/daemon/session-vm-worker.ts";
-// Preparation is not an agent session: it stays on the legacy path on either launcher.
+import { launchSessionVm } from "../runtime/src/session-vm/launch.ts";
+// Preparation is not an agent session: it launches its VM directly, as Loom does.
 import { launchTestSessionVm } from "./lib/session-launch.ts";
 import { sessionVmDirectory } from "../backend/daemon/src/daemon/session-vm-state.ts";
 import { RemoteWorkerSession } from "../backend/daemon/src/daemon/worker-provider.ts";

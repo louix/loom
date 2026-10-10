@@ -5,7 +5,7 @@
 import { join } from "node:path";
 import assert from "node:assert/strict";
 import { gitFixture } from "./lib/git-fixture.ts";
-import { launchSessionVm } from "../backend/daemon/src/daemon/session-vm-worker.ts";
+import { launchSessionVm } from "../runtime/src/session-vm/launch.ts";
 import { RemoteWorkerSession } from "../backend/daemon/src/daemon/worker-provider.ts";
 import { mockLaunchSpec } from "../backend/daemon/src/daemon/worker-launch.ts";
 import { vmEnvironment, sessionVmName } from "../runtime/src/packaged/vm.ts";

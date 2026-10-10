@@ -12,15 +12,14 @@ const worker = await launchTestSessionVm({
   ...(repoRoot ? { repoRoot } : {}),
   auth: { ANTHROPIC_API_KEY: "disposable-test-key" },
 });
-// pid is the VM's supervisor on either launcher; execPid is the worker execution
-// on the isolation launcher and the guest exec on the legacy one.
+// pid is the VM's supervisor; execPid is the worker execution.
 const supervisor = await worker.supervisor();
 console.log(
   JSON.stringify({
     kind: "starting",
     state: worker.binding.state,
     pid: supervisor,
-    ...(worker.launcher === "isolation" ? { execPid: worker.pid } : {}),
+    execPid: worker.pid,
   }),
 );
 await RemoteWorkerSession.connect(

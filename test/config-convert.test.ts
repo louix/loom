@@ -36,7 +36,7 @@ Deno.test("environment settings convert into host layers; Loom settings stay", (
       worktree: { enabled: true },
       isolation: {
         enabled: true,
-        launcher: "isolation",
+        launcher: "legacy",
         network_presets: ["javascript"],
         extra_allowed_hosts: ["Example.COM"],
         environment: { cpus: 2, memory_mib: 4096, timeout_seconds: 60 },
@@ -87,19 +87,21 @@ Deno.test("environment settings convert into host layers; Loom settings stay", (
     "tui",
     "providers",
     "session.auto_resume",
-    "session.isolation.launcher",
     "session.isolation.checkout.visible_refs",
     "session.isolation.claude",
     "hooks[1] (turn_end)",
     "hooks[4] (waiting)",
   ]);
+  // A removed setting is reported as such, not as a stranger.
   assert.deepEqual(paths(report.unsupported), [
+    "session.isolation.launcher",
     "surprise",
     "hooks[2] (workspace_start)",
     "hooks[3] (workspace_start)",
   ]);
-  assert.match(report.unsupported[1]!.reason, /async/);
-  assert.match(report.unsupported[2]!.reason, /project-scoped/);
+  assert.match(report.unsupported[0]!.reason, /no longer read/);
+  assert.match(report.unsupported[2]!.reason, /async/);
+  assert.match(report.unsupported[3]!.reason, /project-scoped/);
 });
 
 Deno.test("repo overrides become diffs; appended hooks are listed explicitly", () => {
@@ -167,7 +169,7 @@ Deno.test("repo overrides become diffs; appended hooks are listed explicitly", (
 });
 
 Deno.test("a file Loom rejects is not converted", () => {
-  assert.throws(() => convert({ session: { isolation: { launcher: "other" } } }), /launcher/);
+  assert.throws(() => convert({ session: { isolation: { checkout: { mode: "other" } } } }), /mode/);
   assert.throws(() => convert({ session: { environment: {} } }), /auto_nix/);
   assert.throws(() => convert({ repos: [{ path: "relative" }] }), /absolute/);
 });

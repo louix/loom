@@ -19,6 +19,7 @@ import {
   mergeRepoOverride,
   normalizeConfig,
   parseConfig,
+  removedConfigKeys,
 } from "@loom/daemon/config/config";
 import { createConfigSchema, parseSettings } from "../../backend/daemon/src/config/schema.ts";
 import { userConfigPath } from "../../backend/daemon/src/config-path.ts";
@@ -69,7 +70,6 @@ const STAYS: Record<string, string> = {
   "session.isolation.claude": "an agent provider's runtime; launch profiles run plain entrypoints",
   "session.isolation.aisdk": "an agent provider's runtime; launch profiles run plain entrypoints",
   "session.isolation.codex": "an agent provider's runtime; launch profiles run plain entrypoints",
-  "session.isolation.launcher": "how Loom's daemon starts session VMs",
   "session.isolation.checkout.visible_refs": "private-clone publication policy",
   "session.isolation.checkout.max_push_bytes": "private-clone publication policy",
 };
@@ -184,6 +184,11 @@ export const convertLoomConfig = (raw: Raw, source: string): ConversionReport =>
         if (name === "hooks") continue;
         if (CONVERTED[name]) report.converted.push({ from: at, to: target + CONVERTED[name] });
         else if (STAYS[name]) report.staysInLoomConfig.push({ path: at, reason: STAYS[name] });
+        else if (removedConfigKeys[name])
+          report.unsupported.push({
+            path: at,
+            reason: "no longer read: " + removedConfigKeys[name],
+          });
         else if (SECTIONS.has(name)) walk(record(child), name);
         else report.unsupported.push({ path: at, reason: "not a Loom setting; Loom ignores it" });
       }

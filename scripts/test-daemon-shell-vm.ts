@@ -2,7 +2,7 @@
  * Interactive `loom shell` into a VM session of a real in-process daemon, driven
  * through a real PTY (script(1)): prompt and TTY, window resize, Ctrl-C at
  * the shell, exit status, and the shell's lease ending without disturbing the
- * worker. LOOM_TEST_LAUNCHER selects the daemon's session.isolation.launcher.
+ * worker.
  *
  * The session is an AISDK VM session whose endpoint never resolves: its one
  * turn fails without credentials or provider traffic, and the worker stays up. All daemon, VM and worktree state stays under a disposable root.
@@ -22,7 +22,6 @@ import { CONNECTORS } from "../cli/src/connectors.ts";
 import { listVms } from "../runtime/src/session-vm/inventory.ts";
 import { gitFixture } from "./lib/git-fixture.ts";
 import { hostProcesses, ptyCommand, resizeTerminal } from "./lib/host-processes.ts";
-import { testLauncher } from "./lib/session-launch.ts";
 
 const [runtime, backend] = Deno.args;
 assert(runtime && backend, "Pass a rebuilt session runtime and smolvm");
@@ -47,7 +46,7 @@ await Deno.writeTextFile(
     session: {
       titles: { enabled: false },
       auto_resume: { enabled: false },
-      isolation: { enabled: true, launcher: testLauncher, aisdk: { artifact, smolvm } },
+      isolation: { enabled: true, aisdk: { artifact, smolvm } },
     },
     providers: {
       openai_compatible: {
@@ -207,7 +206,7 @@ try {
     await delay(100);
   }
   assert(await running(), "the session VM still runs");
-  // On the isolation launcher this needs the worker's live executions.
+  // This needs the worker's live executions.
   const again = await client.request<SessionShell>("session.openShell", { id: s.id });
   assert.equal(again.isolation, "vm");
   await client.request("session.closeShell", { token: again.token });
@@ -224,4 +223,4 @@ try {
   else console.error("Retained fixture: " + f.root);
   if (live.length) Deno.exitCode = 1;
 }
-console.log(`Passed: loom shell in a real PTY on the ${testLauncher} launcher`);
+console.log("Passed: loom shell in a real PTY");

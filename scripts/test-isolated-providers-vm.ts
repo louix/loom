@@ -1,6 +1,6 @@
 /**
- * Live acceptance for Claude and Codex sessions on the isolation launcher, before
- * session.isolation.launcher defaults to "isolation". Provider parity on top of
+ * Live acceptance for Claude and Codex VM sessions on the isolation launcher.
+ * Provider parity on top of
  * scripts/test-isolated-worker-vm.ts, which covers lifecycle with a synthetic AISDK
  * endpoint.
  *
@@ -102,7 +102,7 @@ const accept = async (kind: "claude" | "codex") => {
       ...(kind === "claude"
         ? { configDir: claudeProfile ?? join(f.root, "no-claude-profile") }
         : { sdk: "chatgpt" as const, configDir: codexProfile!, codexCliPath: codexCli! }),
-      sessionVm: { artifact, smolvm, repoRoot: f.repo, launcher: "isolation" },
+      sessionVm: { artifact, smolvm, repoRoot: f.repo },
     },
     vmLifecycle: {
       stop: async () => {},

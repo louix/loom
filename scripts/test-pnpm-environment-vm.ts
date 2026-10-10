@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { decodeTextStream } from "../core/src/text-stream.ts";
 import { gitFixture } from "./lib/git-fixture.ts";
-import { launchSessionVm } from "../backend/daemon/src/daemon/session-vm-worker.ts";
+import { launchSessionVm } from "../runtime/src/session-vm/launch.ts";
 import { normalizeSessionEnvironment } from "../core/src/session-environment.ts";
 import { expandNetworkPresets } from "../runtime/src/session-vm/network-policy.ts";
 

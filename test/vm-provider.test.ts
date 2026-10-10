@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
-import { withVmSessions } from "../backend/daemon/src/daemon/vm-provider.ts";
 import {
-  type createSessionVmLauncher,
-  type SessionVmOptions,
-} from "../backend/daemon/src/daemon/session-vm-worker.ts";
+  withVmSessions,
+  type SessionVmLauncher,
+} from "../backend/daemon/src/daemon/vm-provider.ts";
+import type { SessionVmOptions } from "../runtime/src/session-vm/launch.ts";
 import { sessionVmDirectory } from "../backend/daemon/src/daemon/session-vm-state.ts";
 import { launchLocalWorker, mockLaunchSpec } from "../backend/daemon/src/daemon/worker-launch.ts";
 import { FakeProvider } from "../connectors/mock/src/fake.ts";
@@ -27,10 +27,8 @@ for (const kind of ["claude", "codex", "aisdk"] as const) {
     const requests: string[] = [];
     const stopReasons: string[] = [];
     let cleaned = 0;
-    const workers: Array<
-      Awaited<ReturnType<ReturnType<typeof createSessionVmLauncher>["launch"]>>
-    > = [];
-    const createLauncher: typeof createSessionVmLauncher = () => ({
+    const workers: Array<Awaited<ReturnType<SessionVmLauncher["launch"]>>> = [];
+    const createLauncher = (): SessionVmLauncher => ({
       async launch(options) {
         launches.push(options);
         options.onProgress?.("booting fixture");

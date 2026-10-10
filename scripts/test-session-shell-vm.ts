@@ -1,7 +1,6 @@
 /** Credential-free terminal smoke: CLI handoff locally and a real shell in both VM layouts.
- * Run with script(1) (util-linux on Linux), passing SESSION_RUNTIME SMOLVM. With
- * LOOM_TEST_LAUNCHER=isolation the VM shell is an execution beside the worker, as
- * the daemon opens it on that launcher.
+ * Run with script(1) (util-linux on Linux), passing SESSION_RUNTIME SMOLVM. The VM
+ * shell is an execution beside the worker, as the daemon opens it.
  */
 import assert from "node:assert/strict";
 import { join } from "node:path";
@@ -18,7 +17,7 @@ import { sessionVmDirectory } from "../backend/daemon/src/daemon/session-vm-stat
 import type { SessionExecutions } from "../core/src/connector.ts";
 import { RemoteWorkerSession } from "../backend/daemon/src/daemon/worker-provider.ts";
 import { mockLaunchSpec } from "../backend/daemon/src/daemon/worker-launch.ts";
-import { guestShellArgv, vmShellCommand } from "../runtime/src/session-vm/shell.ts";
+import { guestShellArgv } from "../runtime/src/session-vm/shell.ts";
 
 const [artifact, smolvm] = Deno.args;
 const localOnly = Deno.args.includes("--local");
@@ -203,8 +202,11 @@ try {
         ],
       });
       const owner = new AbortController();
-      const leased = executions?.open({ argv: guestShellArgv, stdin: true, tty: true }, owner);
-      const vm = leased?.vm ?? vmShellCommand(worker.binding);
+      assert(executions, "the running worker publishes its executions");
+      const { vm, token } = executions.open(
+        { argv: guestShellArgv, stdin: true, tty: true },
+        owner,
+      );
       // A private XDG_STATE_HOME must not reach smolvm: it would look for another VM.
       await terminal(
         [vm.executable, ...vm.args],
@@ -213,7 +215,7 @@ try {
         false,
         true,
       );
-      if (leased) executions!.close(leased.token, owner);
+      executions.close(token, owner);
       await session.close();
       console.log("VM shell passed:", workspace === f.repo ? "in-place" : "worktree");
     } finally {

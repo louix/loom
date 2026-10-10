@@ -11,6 +11,7 @@ import {
   loadConfig,
   normalizeConfig,
   parseConfig,
+  removedConfigWarnings,
   resolveApiKey,
   slugifyProfile,
 } from "@loom/daemon/config/config";
@@ -1606,5 +1607,22 @@ test("Claude and Codex labels use tag, then profile name, then provider name", (
       [family + ":custom", "My account"],
       [family + ":blank", ""],
     ]);
+  }
+});
+test("a removed session.isolation.launcher still parses, is ignored and is reported", () => {
+  assert.deepEqual(removedConfigWarnings(normalizeConfig({})), []);
+  for (const launcher of ["legacy", "isolation", "remote", 3]) {
+    const cfg = normalizeConfig({ session: { isolation: { enabled: true, launcher } } });
+    assert.equal(cfg.isolation.enabled, true);
+    assert(!("launcher" in cfg.isolation));
+    assert.deepEqual(cfg.removedKeys, ["session.isolation.launcher"]);
+    const [warning, ...rest] = removedConfigWarnings(cfg);
+    assert.match(
+      warning!,
+      /^session\.isolation\.launcher is no longer read \(.*isolation library\)/,
+    );
+    assert.deepEqual(rest, []);
+    // Reported on its own, once per daemon, not among the per-load lint warnings.
+    assert(!lintConfig(cfg).some((line) => line.includes("launcher")));
   }
 });

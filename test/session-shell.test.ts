@@ -75,79 +75,53 @@ test("shell leases select the workspace, protect it, and release on exit or disc
   }
 });
 
-// The legacy launcher finds a running VM through its recovery record. The isolation
-// launcher only uses the executions its live worker publishes (session-executions.test.ts),
-// so the same record never makes a shell target there.
-for (const launcher of ["legacy", "isolation"] as const)
-  test(`VM shell targets use the existing VM for both checkout layouts and never fall back to host (${launcher})`, async () => {
-    const stateRoot = await Deno.makeTempDir({ dir: "/tmp", prefix: "loom-shell-test-" });
-    const previous = Deno.env.get("XDG_STATE_HOME");
-    Deno.env.set("XDG_STATE_HOME", stateRoot);
-    const h = await makeHarness({
-      config: JSON.stringify({ session: { isolation: { launcher } } }),
-    });
-    const c = await LoomClient.connect({
-      repoRoot: h.repoRoot,
-      sockPath: h.sockPath,
-      autospawn: false,
-    });
-    try {
-      for (const worktree of [false, true]) {
-        const s = await c.request<SessionSnapshot>("session.create", {
-          provider: "fake",
-          prompt: "vm",
-          worktree,
-        });
-        ((await h.daemon.providers.get("fake")) as FakeProvider).session(s.id)!.finishTurn();
-        for (let n = 0; n < 100 && h.daemon.registry.get(s.id)?.status.kind === "starting"; n++)
-          await delay(10);
-        h.daemon.db.prepare("UPDATE sessions SET isolation = ? WHERE id = ?").run("vm", s.id);
-        await assert.rejects(c.request("session.openShell", { id: s.id }), /VM is not running/);
-        const dir = sessionVmDirectory(h.repoRoot, s.id);
-        await Deno.mkdir(dir, { recursive: true });
-        const record = {
-          version: 1,
-          token: crypto.randomUUID(),
-          sessionDirectory: dir,
-          state: "/tmp/loom-session-vm-test",
-          smolvm: "/nix/store/00000000000000000000000000000000-smolvm/bin/smolvm",
-          workspace: await Deno.realPath(s.worktree ?? h.repoRoot),
-          recovery: { version: 3, ready: true, reaped: false },
-        };
-        await Deno.writeTextFile(join(dir, "active.json"), JSON.stringify(record));
-        if (launcher === "isolation") {
-          await assert.rejects(c.request("session.openShell", { id: s.id }), /VM is not running/);
-          await Deno.remove(join(dir, "active.json"));
-          continue;
-        }
-        const target = await c.request<SessionShell>("session.openShell", { id: s.id });
-        assert.equal(target.isolation, "vm");
-        assert.equal(target.vm?.executable, record.smolvm);
-        assert.deepEqual(target.vm?.args.slice(0, 8), [
-          "machine",
-          "exec",
-          "--name",
-          "loom-session",
-          "-i",
-          "-t",
-          "-w",
-          record.workspace,
-        ]);
-        assert.equal(target.vm?.env.HOME, join(record.state, "home"));
-        await c.request("session.closeShell", { token: target.token });
-        record.workspace = "/wrong-workspace";
-        await Deno.writeTextFile(join(dir, "active.json"), JSON.stringify(record));
-        await assert.rejects(c.request("session.openShell", { id: s.id }), /different workspace/);
-        await Deno.remove(join(dir, "active.json"));
-      }
-    } finally {
-      await c.close();
-      await h.cleanup();
-      if (previous === undefined) Deno.env.delete("XDG_STATE_HOME");
-      else Deno.env.set("XDG_STATE_HOME", previous);
-      await Deno.remove(stateRoot, { recursive: true });
-    }
+// A VM shell only uses the executions a live worker publishes (session-executions.test.ts):
+// a VM recovery record never makes a shell target.
+test("VM shells never fall back to the host or to a recovery record, for both checkout layouts", async () => {
+  const stateRoot = await Deno.makeTempDir({ dir: "/tmp", prefix: "loom-shell-test-" });
+  const previous = Deno.env.get("XDG_STATE_HOME");
+  Deno.env.set("XDG_STATE_HOME", stateRoot);
+  const h = await makeHarness();
+  const c = await LoomClient.connect({
+    repoRoot: h.repoRoot,
+    sockPath: h.sockPath,
+    autospawn: false,
   });
+  try {
+    for (const worktree of [false, true]) {
+      const s = await c.request<SessionSnapshot>("session.create", {
+        provider: "fake",
+        prompt: "vm",
+        worktree,
+      });
+      ((await h.daemon.providers.get("fake")) as FakeProvider).session(s.id)!.finishTurn();
+      for (let n = 0; n < 100 && h.daemon.registry.get(s.id)?.status.kind === "starting"; n++)
+        await delay(10);
+      h.daemon.db.prepare("UPDATE sessions SET isolation = ? WHERE id = ?").run("vm", s.id);
+      await assert.rejects(c.request("session.openShell", { id: s.id }), /VM is not running/);
+      const dir = sessionVmDirectory(h.repoRoot, s.id);
+      await Deno.mkdir(dir, { recursive: true });
+      const record = {
+        version: 1,
+        token: crypto.randomUUID(),
+        sessionDirectory: dir,
+        state: "/tmp/loom-session-vm-test",
+        smolvm: "/nix/store/00000000000000000000000000000000-smolvm/bin/smolvm",
+        workspace: await Deno.realPath(s.worktree ?? h.repoRoot),
+        recovery: { version: 3, ready: true, reaped: false },
+      };
+      await Deno.writeTextFile(join(dir, "active.json"), JSON.stringify(record));
+      await assert.rejects(c.request("session.openShell", { id: s.id }), /VM is not running/);
+      await Deno.remove(join(dir, "active.json"));
+    }
+  } finally {
+    await c.close();
+    await h.cleanup();
+    if (previous === undefined) Deno.env.delete("XDG_STATE_HOME");
+    else Deno.env.set("XDG_STATE_HOME", previous);
+    await Deno.remove(stateRoot, { recursive: true });
+  }
+});
 
 test("guest shell environment round-trips shell metacharacters without executing them", async () => {
   const dir = await Deno.makeTempDir();

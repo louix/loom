@@ -91,8 +91,6 @@ export interface ConnectorConfig extends ConnectorWireConfig {
     repoRoot: string;
     extraAllowedHosts?: string[];
     environment?: SessionEnvironment;
-    /** Absent means isolation: launch through the isolation library. legacy keeps the session VM worker. */
-    launcher?: "legacy" | "isolation";
   };
 }
 
@@ -133,8 +131,8 @@ export interface ConnectorContext {
         }
       | undefined;
     /**
-     * Isolation launcher only: publish a live environment's executions for the
-     * session's shells, hooks and inspection. Returns the withdrawal.
+     * Publish a live session VM environment's executions for the session's shells,
+     * hooks and inspection. Returns the withdrawal.
      */
     executions?(sessionId: string, executions: SessionExecutions): () => void;
   };

@@ -3,7 +3,6 @@ import { runSessionCommand } from "./session-command.ts";
 import { changesCommand, leasedVmUsage, vmMonitorText } from "./session-inspection.ts";
 import { executeShellHook } from "../../../../core/src/shell-hook.ts";
 import { CloneGit, type CloneFacts } from "./clone-git.ts";
-import { vmCommand } from "../../../../runtime/src/session-vm/command.ts";
 import type { HookAttempt } from "../../../../core/src/shell-hook.ts";
 import { pruneVmInventory } from "../../../../runtime/src/session-vm/inventory.ts";
 import { startupSignal } from "./startup.ts";
@@ -52,6 +51,7 @@ import { preflightTools } from "./tool-preflight.ts";
 import {
   claudeProfileId,
   lintConfig,
+  removedConfigWarnings,
   loadConfig,
   resolveApiKey,
   resolveAgainstRepo,
@@ -278,12 +278,10 @@ export class Daemon {
   #hygiene: HygieneReport | null = null;
   readonly #vmGenerations = new Map<string, string>();
   readonly #shells = new SessionShells();
-  /** Live isolation-launcher environments, published while their workers run. */
+  /** Removed settings already reported: each is logged once per daemon. */
+  readonly #removedWarned = new Set<string>();
+  /** Live session VM environments, published while their workers run. */
   readonly #vmExecutions = new Map<string, SessionExecutions>();
-  /** Fixed for the daemon's life: changing the launcher needs a restart. */
-  get #isolatedVms(): boolean {
-    return this.config.isolation.launcher !== "legacy";
-  }
   #environmentPoll: NodeJS.Timeout | undefined;
   #checkingEnvironment = false;
   #onConfigChange = (): void => this.#reloadConfig();
@@ -313,17 +311,11 @@ export class Daemon {
       (async (session, command, timeoutMs, signal, env) => {
         const workspace = session.inPlace ? opts.repoRoot : session.worktree;
         const stop = AbortSignal.any([signal, this.#guestStop.signal]);
-        // On the isolation launcher, a command holds its own lease on the environment.
-        if (this.#isolatedVms) {
-          const executions = this.#vmExecutions.get(session.id);
-          if (!executions || executions.workspace !== workspace)
-            throw new Error("The session VM is not running. Resume it first.");
-          return executions.command(command, timeoutMs, stop, env);
-        }
-        const binding = await readRecovery(sessionVmDirectory(opts.repoRoot, session.id));
-        if (!binding?.recovery.ready || binding.recovery.reaped || binding.workspace !== workspace)
+        // A command holds its own lease on the session's environment.
+        const executions = this.#vmExecutions.get(session.id);
+        if (!executions || executions.workspace !== workspace)
           throw new Error("The session VM is not running. Resume it first.");
-        return vmCommand(binding, command, timeoutMs, stop, env);
+        return executions.command(command, timeoutMs, stop, env);
       });
     opts = { ...opts, repoRoot: tryFindRepoRoot(opts.repoRoot) ?? opts.repoRoot };
     this.repoRoot = opts.repoRoot;
@@ -661,6 +653,7 @@ export class Daemon {
     // Lint after detection so an auto-detect provider that resolved fine isn't
     // flagged — only a genuine failure (endpoint unreachable / no `/models`) is.
     for (const warning of lintConfig(this.config)) this.#log.warn("config", { warning });
+    this.#warnRemovedSettings();
     for (const warning of this.#orphanedProviderWarnings()) this.#log.warn("config", { warning });
 
     if (this.#stopping) return; // a signal landed mid-probe; stop() has the wheel
@@ -3063,6 +3056,7 @@ export class Daemon {
     }
 
     for (const warning of lintConfig(this.config)) this.#log.warn("config", { warning });
+    this.#warnRemovedSettings();
     for (const warning of this.#orphanedProviderWarnings()) this.#log.warn("config", { warning });
 
     const needsRestart =
@@ -3219,7 +3213,11 @@ export class Daemon {
     }));
 
     d.register("config.check", () => ({
-      warnings: [...lintConfig(this.config), ...this.#orphanedProviderWarnings()],
+      warnings: [
+        ...lintConfig(this.config),
+        ...removedConfigWarnings(this.config),
+        ...this.#orphanedProviderWarnings(),
+      ],
     }));
 
     d.register("daemon.relinkProvider", (params) => {
@@ -3245,7 +3243,7 @@ export class Daemon {
           session,
           conn,
           (cwd) => this.#providers.shellEnvironment(session.id, cwd, conn.signal),
-          this.#isolatedVms ? (id) => this.#vmExecutions.get(id) : undefined,
+          (id) => this.#vmExecutions.get(id),
         );
       }),
     );
@@ -3264,7 +3262,7 @@ export class Daemon {
             s.id,
             conn.signal,
             undefined,
-            this.#isolatedVms ? leasedVmUsage(this.#vmExecutions.get(s.id)) : undefined,
+            leasedVmUsage(this.#vmExecutions.get(s.id)),
           ),
           sampledAt: Date.now(),
         };
@@ -4423,6 +4421,15 @@ export class Daemon {
    * Claude ids with zero/ambiguous matches — so it stays visible instead of
    * `#autoResumeInterrupted` silently skipping the session.
    */
+  /** A removed setting still parses; say so once, not on every reload. */
+  #warnRemovedSettings(): void {
+    for (const warning of removedConfigWarnings(this.config)) {
+      if (this.#removedWarned.has(warning)) continue;
+      this.#removedWarned.add(warning);
+      this.#log.warn("config", { warning });
+    }
+  }
+
   #orphanedProviderWarnings(): string[] {
     const ids = new Set(this.#registry.list().map((s) => s.provider));
     const w: string[] = [];
@@ -4512,7 +4519,11 @@ export class Daemon {
         enabled: s.backend !== "none" && searchKey !== "",
         note: searchNoteOf(s.backend, searchKey),
       },
-      configWarnings: [...lintConfig(this.config), ...this.#orphanedProviderWarnings()],
+      configWarnings: [
+        ...lintConfig(this.config),
+        ...removedConfigWarnings(this.config),
+        ...this.#orphanedProviderWarnings(),
+      ],
     };
   }
 }

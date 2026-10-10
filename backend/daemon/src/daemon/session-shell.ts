@@ -3,9 +3,7 @@ import type { SessionSnapshot } from "@loom/core/wire";
 import type { SessionExecutions } from "@loom/core/connector";
 import { IsolationError } from "@loom/isolation/errors";
 import type { SessionShell } from "../../../../core/src/shell.ts";
-import { readRecovery } from "../../../../runtime/src/session-vm/recovery.ts";
-import { guestShellArgv, vmShellCommand } from "../../../../runtime/src/session-vm/shell.ts";
-import { sessionVmDirectory } from "./session-vm-state.ts";
+import { guestShellArgv } from "../../../../runtime/src/session-vm/shell.ts";
 import { RpcError } from "./rpc.ts";
 import type { Connection } from "./connection.ts";
 
@@ -27,15 +25,15 @@ export class SessionShells {
   }
 
   /**
-   * `executions` is set when the isolation launcher owns VM sessions: a VM shell is
-   * then an execution beside the worker, under its own lease on the environment.
+   * A VM shell is an execution beside the session's worker, under its own lease on
+   * the environment that `executions` publishes while the worker runs.
    */
   async open(
     repo: string,
     session: SessionSnapshot,
     connection: Connection,
     environment?: (cwd: string) => Promise<SessionShell["environment"]>,
-    executions?: (id: string) => SessionExecutions | undefined,
+    executions: (id: string) => SessionExecutions | undefined = () => undefined,
   ): Promise<SessionShell> {
     const cwd = session.inPlace ? repo : session.worktree;
     if (!cwd) {
@@ -49,19 +47,12 @@ export class SessionShells {
     }
     let vm: SessionShell["vm"];
     let leased: SessionExecutions | undefined;
-    if (session.isolation === "vm" && executions) {
+    if (session.isolation === "vm") {
       leased = executions(session.id);
       if (!leased) throw notRunning();
       if (leased.workspace !== (await Deno.realPath(cwd))) {
         throw new RpcError("bad_request", "The running VM belongs to a different workspace.");
       }
-    } else if (session.isolation === "vm") {
-      const binding = await readRecovery(sessionVmDirectory(repo, session.id));
-      if (!binding?.recovery.ready || binding.recovery.reaped) throw notRunning();
-      if (binding.workspace !== (await Deno.realPath(cwd))) {
-        throw new RpcError("bad_request", "The running VM belongs to a different workspace.");
-      }
-      vm = vmShellCommand(binding);
     }
     const localEnvironment = session.isolation !== "vm" ? await environment?.(cwd) : undefined;
     if (connection.signal.aborted) {

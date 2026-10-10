@@ -24,8 +24,8 @@ git -c core.quotePath=true --no-pager diff --no-ext-diff --no-textconv --no-colo
 `;
 
 /**
- * The isolation launcher's sampler: an agent VM's guest counters run as a command
- * under the environment's own lease, never beside it. Host counters are unchanged.
+ * An agent VM's guest counters run as a command under the environment's own lease,
+ * never beside it. Host counters are unchanged.
  */
 export const leasedVmUsage =
   (executions: SessionExecutions | undefined) => (vm: VmRecord, signal: AbortSignal) =>

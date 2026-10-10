@@ -10,7 +10,7 @@ import {
 import { isClaudeId } from "../../core/src/provider-id.ts";
 import { environmentEnabled } from "../../core/src/session-environment.ts";
 import { detectNixActivation } from "../../core/src/nix-activation.ts";
-import { launchSessionVm } from "../../backend/daemon/src/daemon/session-vm-worker.ts";
+import { launchSessionVm } from "../../runtime/src/session-vm/launch.ts";
 import {
   pruneRepoBases,
   publishRepoBase,

@@ -8,7 +8,7 @@ import {
   startupMessage,
 } from "../runtime/src/session-vm/progress.ts";
 import { discardSessionDisks } from "../runtime/src/session-vm/disks.ts";
-import { launchSessionVm } from "../backend/daemon/src/daemon/session-vm-worker.ts";
+import { launchSessionVm } from "../runtime/src/session-vm/launch.ts";
 import { normalizeSessionEnvironment } from "../core/src/session-environment.ts";
 import { repoBaseDirectory } from "../runtime/src/session-vm/repo-base.ts";
 import { environmentPreparationRuntimes, environmentProviders } from "../cli/src/environment.ts";

@@ -406,10 +406,8 @@
               "maximum": 1440
             },
             "launcher": {
-              "default": "isolation",
-              "description": "How the daemon starts session VMs. isolation boots the VM through the isolation library and runs the agent worker inside it as a leased execution; it needs a session runtime built from this Loom version. legacy runs the worker as the VM's own workload. Sessions keep their VM state across a change, which applies after a daemon restart.",
-              "type": "string",
-              "enum": ["legacy", "isolation"]
+              "deprecated": true,
+              "description": "No longer read. Session VMs always start through the isolation library; remove this setting."
             },
             "checkout": {
               "type": "object",
@@ -1792,10 +1790,8 @@
                     "maximum": 1440
                   },
                   "launcher": {
-                    "default": "isolation",
-                    "description": "How the daemon starts session VMs. isolation boots the VM through the isolation library and runs the agent worker inside it as a leased execution; it needs a session runtime built from this Loom version. legacy runs the worker as the VM's own workload. Sessions keep their VM state across a change, which applies after a daemon restart.",
-                    "type": "string",
-                    "enum": ["legacy", "isolation"]
+                    "deprecated": true,
+                    "description": "No longer read. Session VMs always start through the isolation library; remove this setting."
                   },
                   "checkout": {
                     "type": "object",

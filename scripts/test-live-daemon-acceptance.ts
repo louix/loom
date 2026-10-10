@@ -85,7 +85,6 @@ const writeConfig = async (opts: { vm?: boolean; idleMinutes?: number; codexCli?
           commit_reminder: { enabled: false },
           isolation: {
             enabled: opts.vm ?? false,
-            launcher: "isolation",
             idle_timeout_minutes: opts.idleMinutes ?? 0,
             ...(runtime ? { claude: runtime, codex: runtime } : {}),
           },

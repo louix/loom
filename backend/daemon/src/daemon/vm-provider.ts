@@ -16,9 +16,11 @@ import type {
 } from "@loom/core/types";
 import { CodexAuthOwner } from "./codex-auth.ts";
 import type { ConnectorConfig } from "@loom/core/connector";
-import type { SessionVmOptions } from "./session-vm-worker.ts";
 import { ClaudeAuthOwner } from "./claude-auth.ts";
-import { createSessionVmLauncher, sessionVmGeneration } from "./session-vm-worker.ts";
+import {
+  sessionVmGeneration,
+  type SessionVmOptions,
+} from "../../../../runtime/src/session-vm/launch.ts";
 import { sessionVmDirectory, stoppedSessionVm } from "./session-vm-state.ts";
 import { RemoteWorkerSession } from "./worker-provider.ts";
 import { mockLaunchSpec, type WorkerProcess } from "./worker-launch.ts";
@@ -38,24 +40,20 @@ const executable = async (name: string) => {
     }
   throw new Error(`Executable not found: ${name}`);
 };
-/** A provider's VM launches: the isolation adapter, or the legacy session-vm-worker path. */
+/** A provider's VM launches: one isolation coordinator, injected by tests. */
 export type SessionVmLauncher = {
   launch(options: IsolatedLaunchOptions): Promise<WorkerProcess & { binding: { state: string } }>;
   close(): Promise<void>;
 };
-type SessionVmPolicy = NonNullable<ConnectorContext["config"]["sessionVm"]>;
-export const selectSessionVmLauncher = (vm: SessionVmPolicy): SessionVmLauncher =>
-  vm.launcher === "legacy" ? createSessionVmLauncher() : createIsolatedWorkerLauncher(vm.repoRoot);
 
 export const withVmSessions = async <T extends AgentProvider>(
   base: T,
   ctx: ConnectorContext,
   kind: "claude" | "codex" | "aisdk",
-  createLauncher: (vm: SessionVmPolicy) => SessionVmLauncher = selectSessionVmLauncher,
+  createLauncher: (repoRoot: string) => SessionVmLauncher = createIsolatedWorkerLauncher,
 ): Promise<T> => {
   const vm = ctx.config.sessionVm!;
-  const launches = createLauncher(vm);
-  const isolated = vm.launcher !== "legacy";
+  const launches = createLauncher(vm.repoRoot);
   const smolvm = await executable(vm.smolvm);
   let owner: ClaudeAuthOwner | CodexAuthOwner | undefined;
   let auth: SessionVmOptions["auth"] = {};
@@ -194,10 +192,10 @@ export const withVmSessions = async <T extends AgentProvider>(
       signal?.throwIfAborted();
       const worker = own(
         await launches.launch({
-          // The isolation adapter returns only after the environment is ready.
-          ...(isolated && signal ? { signal } : {}),
-          // Its shells, hooks and inspection share the environment's leases.
-          ...(isolated && ctx.vmLifecycle?.executions
+          // The launcher returns only after the environment is ready.
+          ...(signal ? { signal } : {}),
+          // Shells, hooks and inspection share the environment's leases.
+          ...(ctx.vmLifecycle?.executions
             ? {
                 executions: (executions: SessionExecutions) =>
                   ctx.vmLifecycle!.executions!(input.sessionId, executions),

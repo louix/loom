@@ -1,7 +1,5 @@
 /**
  * Ready VM recovery after both owners die; no credentials or API usage.
- * LOOM_TEST_LAUNCHER=isolation runs the abandoned owner and the new one on the
- * isolation launcher; the daemon's startup recovery is the same on both.
  */
 import assert from "node:assert/strict";
 import { join } from "node:path";
@@ -15,7 +13,7 @@ import {
 } from "../backend/daemon/src/daemon/session-vm-state.ts";
 import { lockSessionState, SessionVmBusyError } from "../runtime/src/session-vm/persistence.ts";
 import { readRecovery } from "../runtime/src/session-vm/recovery.ts";
-import { closeTestLaunchers, launchTestSessionVm, testLauncher } from "./lib/session-launch.ts";
+import { closeTestLaunchers, launchTestSessionVm } from "./lib/session-launch.ts";
 import { RemoteWorkerSession } from "../backend/daemon/src/daemon/worker-provider.ts";
 import { mockLaunchSpec } from "../backend/daemon/src/daemon/worker-launch.ts";
 import { setLogLevel } from "@loom/core/logger";
@@ -31,11 +29,6 @@ await Deno.writeTextFile(
   `{
   "titles": {
     "enabled": false
-  },
-  "session": {
-    "isolation": {
-      "launcher": "${testLauncher}"
-    }
   }
 }`,
 );

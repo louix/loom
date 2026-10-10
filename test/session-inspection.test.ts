@@ -334,7 +334,7 @@ esac
   }
 });
 
-test("on the isolation launcher, agent VM counters run under the environment's lease", async () => {
+test("agent VM counters run under the environment's lease", async () => {
   const { vmUsageCommand } = await import("../runtime/src/session-vm/usage.ts");
   const home = await Deno.makeTempDir();
   try {

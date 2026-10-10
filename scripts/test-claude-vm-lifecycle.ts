@@ -1,7 +1,6 @@
 /**
  * Real VM lifecycle acceptance; mock connector, no provider credentials or API calls.
- * LOOM_TEST_LAUNCHER=isolation runs it on the isolation launcher, where the worker is
- * an execution beside the environment's own guest: "worker exec SIGKILL" then kills
+ * The worker is an execution beside the environment's own guest: "worker exec SIGKILL" then kills
  * the worker alone, and "guest exec SIGKILL" kills the environment under it.
  * "VM process SIGKILL" kills the VMM itself: its executions end before its supervisor
  * notices, and the session must still get the VM's diagnosis.
@@ -14,7 +13,7 @@ import { mockLaunchSpec } from "../backend/daemon/src/daemon/worker-launch.ts";
 import { readFrames } from "../runtime/src/worker/transport.ts";
 import { gitFixture } from "./lib/git-fixture.ts";
 import { hostProcesses } from "./lib/host-processes.ts";
-import { launchTestSessionVm, testLauncher, type TestSessionWorker } from "./lib/session-launch.ts";
+import { launchTestSessionVm, type TestSessionWorker } from "./lib/session-launch.ts";
 import { sessionVmDirectory } from "../backend/daemon/src/daemon/session-vm-state.ts";
 import { VmTerminationError } from "../core/src/vm-termination.ts";
 const artifact = Deno.args[0] ?? "/tmp/loom-claude-session-artifact";
@@ -74,13 +73,13 @@ const modes = [
   "supervisor SIGKILL",
   "guest exec SIGKILL",
   "VM process SIGKILL",
+  "worker exec SIGKILL",
 ];
 /** smolvm's VMM process for this VM, found through its runtime state path. */
 const vmmPid = async (state: string) =>
   (await hostProcesses()).find(
     (process) => process.text.includes("_boot-vm") && process.text.includes(state),
   )?.pid;
-if (testLauncher === "isolation") modes.push("worker exec SIGKILL");
 try {
   for (const mode of modes) {
     console.error(`Testing ${mode}`);
@@ -110,31 +109,10 @@ try {
           120_000,
         ));
         const ready = await worker.status();
-        if (mode === "close" && testLauncher === "isolation") {
-          // The adapter refuses a second generation while one is live.
+        if (mode === "close") {
+          // The launcher refuses a second generation while one is live.
           await assert.rejects(launch(), /already running|still running/);
           assert.equal((await worker.status()).phase, "running");
-        } else if (mode === "close") {
-          const duplicate = await launch();
-          try {
-            await assert.rejects(
-              RemoteWorkerSession.connect(
-                "duplicate",
-                "mock",
-                mockLaunchSpec(f.workspace),
-                () => duplicate,
-                120_000,
-              ),
-            );
-            const active = JSON.parse(
-              await Deno.readTextFile(join(sessionDirectory, "active.json")),
-            );
-            assert.equal(active.token, worker.binding.token);
-            assert.equal((await worker.status()).phase, "running");
-          } finally {
-            duplicate.terminate();
-            await duplicate.cleanup?.();
-          }
         }
         if (ready.execPid) pids.push(ready.execPid);
         if (mode === "supervisor SIGKILL") Deno.kill(supervisor, "SIGKILL");

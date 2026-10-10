@@ -1,8 +1,9 @@
 /**
- * Old-session continuity across session.isolation.launcher. A VM session created and
- * suspended under one launcher resumes under the other, across a provider shutdown
- * (as at a daemon restart): the same environment ID, the same state directory, its
- * saved provider history, and any interrupted cleanup the previous owner left.
+ * Old-session continuity after the legacy session VM launcher's removal. A VM session
+ * created and suspended by that launcher (or the isolation launcher, its successor)
+ * resumes on the isolation launcher across a provider shutdown, as at a daemon
+ * restart: the same environment ID, the same state directory, its saved provider
+ * history, and any interrupted cleanup the previous owner left.
  */
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
@@ -66,14 +67,13 @@ interface Launch {
 }
 
 /**
- * The legacy launcher's contract, as createSessionVmLauncher keeps it: the VM is the
- * worker. A real one would boot a supervisor; the scripted worker stands in for it.
+ * The removed legacy launcher's contract, as older Loom versions kept it: the VM is
+ * the worker. It booted a supervisor; the scripted worker stands in for it.
  */
 const legacyLauncher = (launches: Launch[]): SessionVmLauncher => {
   const live = new Set<ReturnType<typeof launchLocalWorker>>();
   return {
     async launch(options) {
-      assert.equal(options.signal, undefined, "the legacy path owns no startup signal");
       const frames: Launch["frames"] = [];
       launches.push({ launcher: "legacy", options, frames });
       await Deno.mkdir(options.sessionDirectory!, { recursive: true });
@@ -188,7 +188,7 @@ const exists = async (path: string) => {
 for (const kind of ["claude", "codex", "aisdk"] as const)
   for (const [from, to] of [
     ["legacy", "isolation"],
-    ["isolation", "legacy"],
+    ["isolation", "isolation"],
   ] as const)
     Deno.test(`a ${kind} VM session suspended on the ${from} launcher resumes on the ${to} launcher`, async () => {
       const state = await Deno.realPath(await Deno.makeTempDir({ prefix: "loom-continuity-" }));
@@ -198,7 +198,7 @@ for (const kind of ["claude", "codex", "aisdk"] as const)
       await Deno.mkdir(workspace);
       const launches: Launch[] = [];
       const adapters: Array<ReturnType<typeof createIsolatedWorkerLauncher>> = [];
-      /** One provider per daemon lifetime; the launcher is fixed for its life. */
+      /** One provider per daemon lifetime. "legacy" stands in for an older Loom. */
       const open = (launcher: Launcher) =>
         withVmSessions(
           new FakeProvider(),
@@ -206,7 +206,7 @@ for (const kind of ["claude", "codex", "aisdk"] as const)
             id: kind,
             logger: makeLogger("launcher-continuity-test"),
             config: {
-              sessionVm: { repoRoot: state, artifact: state, smolvm: Deno.execPath(), launcher },
+              sessionVm: { repoRoot: state, artifact: state, smolvm: Deno.execPath() },
               configDir: state,
               codexCliPath: Deno.execPath(),
             },
@@ -214,12 +214,10 @@ for (const kind of ["claude", "codex", "aisdk"] as const)
             vmLifecycle: { stop: async () => {}, activity: () => "running" },
           },
           kind,
-          (vm) => {
-            assert.equal(vm.launcher, launcher);
-            return vm.launcher === "legacy"
+          (repoRoot) =>
+            launcher === "legacy"
               ? legacyLauncher(launches)
-              : isolationLauncher(vm.repoRoot, workspace, launches, adapters);
-          },
+              : isolationLauncher(repoRoot, workspace, launches, adapters),
         );
       const options: CreateSessionOptions = {
         sessionId: "session",
