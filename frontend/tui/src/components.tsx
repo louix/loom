@@ -36,7 +36,6 @@ import { foldInteraction, type SessionInteraction } from "@loom/core/interaction
 import { layout, layoutWrapped, type Buffer } from "./editor.ts";
 import { diffSegColor } from "./transcript.ts";
 import type { ClientState } from "@loom/client";
-import { pending, type Outbox, type Outboxes } from "./composer.ts";
 import type { ModeChoices } from "./mode-control.ts";
 import type { FleetPaneView, HeaderView, LogView } from "./views.ts";
 import {
@@ -46,7 +45,6 @@ import {
   providerInfo,
   providerAccountOf,
   providerColorOf,
-  queueFor,
   type CacheStatus,
   type Connection,
   type FleetChild,
@@ -504,7 +502,6 @@ export const detailLayout = (
     width = 80,
     account = "",
     engineColor = "",
-    queued = [],
     mode = null,
     compacting = s?.compacting ?? null,
     archiving = false,
@@ -512,7 +509,6 @@ export const detailLayout = (
     width?: number;
     account?: string;
     engineColor?: string;
-    queued?: readonly string[];
     mode?: SessionMode | null;
     compacting?: { startedAt: number; before: number } | null;
     archiving?: boolean;
@@ -660,11 +656,16 @@ export const detailLayout = (
           {truncate(s.comment.replace(/\s+/g, " ").trim(), w - DETAIL_GUTTER)}
         </Field>,
       );
-    if (queued.length)
-      addLine(
-        `▸ ${queued.length} queued — “${truncate((queued[0] ?? "").replace(/\s+/g, " ").trim(), w - 16)}”`,
-        "accentDim",
-      );
+    // The session's queue, off its snapshot: how many wait, whether they are
+    // held, and the next to go.
+    const queued = s.queue?.entries ?? [];
+    if (queued.length || s.queue?.hold) {
+      const head = (queued[0]?.preview ?? "").replace(/\s+/g, " ").trim();
+      const count = s.queue?.hold
+        ? `▸ ${queued.length} held · q review`
+        : `▸ ${queued.length} queued`;
+      addLine(head ? `${count} — “${truncate(head, w - count.length - 6)}”` : count, "accentDim");
+    }
     if (s.resumable === false)
       for (const line of wrapText(
         `Read-only: ${s.resumeBlockedReason ?? "Session cannot resume. Fork to continue."}`,
@@ -708,21 +709,18 @@ export const Detail = memo(
   ({
     session,
     fleet,
-    box,
     mode,
     width,
     now,
   }: {
     session: SessionSnapshot | null;
     fleet: ClientState;
-    box: Outbox;
     mode: SessionMode | null;
     width: number;
     now: number;
   }): ReactNode =>
     detailLayout(session, {
       width,
-      queued: pending(box),
       mode,
       account: session ? providerAccountOf({ fleet }, session.provider) : "",
       engineColor: session ? providerColorOf({ fleet }, session.provider) : "",
@@ -947,21 +945,24 @@ export const promptBar = (
 ): BarItem[] => {
   const pending = pendingPromptHint(p);
   if (pending) return [{ keys: "", label: pending }];
+  // Editing a queued message saves it back into the queue.
+  const editing = p.t === "session" && p.edit !== undefined;
   const items: BarItem[] = [
-    { keys: "enter", label: MODE_HINT[promptKind(p) as Exclude<PromptKind, "new">] },
+    {
+      keys: "enter",
+      label: editing ? "save" : MODE_HINT[promptKind(p) as Exclude<PromptKind, "new">],
+    },
     { keys: "⌥⏎", label: "newline" },
     { keys: "⌥e", label: "editor" },
     { keys: "⌥o", label: "log" },
   ];
-  if (p.t === "session" && p.kind === "send") {
+  if (p.t === "session" && p.kind === "send" && !editing) {
     const sess = fleetSessions(ctx).find((x) => x.id === p.sessionId);
     for (const item of composerBar(ctx, p.sessionId)) {
       if (item.command?.id === "mode") {
         const pending = pendingMode(modes, sess?.id) ?? sess?.pendingMode;
         items.push({ ...item, label: `mode:${modeText(sess?.mode, pending)}` });
-      } else if (item.command?.id === "clearqueue")
-        items.push({ ...item, label: `clear ${queueFor(ctx, p.sessionId).length} queued` });
-      else items.push(item);
+      } else items.push(item);
     }
     items.push({ keys: "↑↓", label: "history" });
   }
@@ -1015,7 +1016,6 @@ const PromptFeedback = ({ p, width }: { p: Prompt; width: number }): ReactNode =
 export const FooterArea = ({
   state,
   width,
-  outbox = {},
   modes = {},
   bar,
   hover = null,
@@ -1023,7 +1023,6 @@ export const FooterArea = ({
   state: TuiState;
   width: number;
   modes?: ModeChoices;
-  outbox?: Outboxes;
   /** The bar the frame's click targets were measured from (see `FleetView`);
    *  computed here when the caller has none. */
   bar?: readonly BarItem[];
@@ -1033,7 +1032,7 @@ export const FooterArea = ({
   const palette = useTheme();
   const p = openPrompt(state.overlay);
   if (p?.t === "new") return <Box height={2} />;
-  const items = bar ?? footerBar({ ...state, outbox }, modes);
+  const items = bar ?? footerBar(state, modes);
   const hovered = items.findIndex((item) => item.command && `bar:${item.command.id}` === hover);
   if (p) {
     // A reply to a session — the input lives on that session's EVENTS pane

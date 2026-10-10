@@ -14,6 +14,7 @@ import { markdownText, plainText } from "./markdown.ts";
 import type { TextDocument, TextSpan } from "./text-layout.ts";
 import { absurd } from "@loom/core/absurd";
 import type { HarnessEvent } from "@loom/core/events";
+import { describeDequeue, type QueueEntryView } from "@loom/core/message-queue";
 import { sessionStateLabel } from "@loom/core/session-state";
 import type { HistoryCursor, HistoryPage, PushFrame, TranscriptId } from "@loom/core/wire";
 import {
@@ -79,7 +80,7 @@ export interface LogLine {
    * its history pages both carry, so the two merge by identity rather than by
    * guessing from timestamps. `null` for a locally synthesised line, which has
    * no durable counterpart: a queued-message marker, which is derived per
-   * render from the outbox rather than held anywhere.
+   * render from the session's queue on its snapshot rather than held anywhere.
    */
   id: TranscriptId | null;
   sessionId: string;
@@ -599,21 +600,27 @@ export const pageLines = (page: HistoryPage): LogLine[] => {
 /**
  * The one-line marker a follow-up gets while it waits for the current turn.
  *
- * Synthesised per render from the outbox, not stored: there is no durable row
- * behind it, so it has no id, no place in the id order and nothing to
- * reconcile against. It sits after every durable line, which is where the
- * message it stands for is going.
+ * Synthesised per render from the session's queue on the snapshot, not
+ * stored: there is no durable row behind it, so it has no id, no place in the
+ * id order and nothing to reconcile against. It sits after every durable line,
+ * which is where the message it stands for is going — `⧗ next boundary ·
+ * <preview> · <when>`, in the daemon's words for when.
  */
-export const queuedLine = (sessionId: string, text: string): LogLine => ({
-  id: null,
-  sessionId,
-  kind: "echo",
-  glyph: "▸",
-  text: `queued: ${text.replace(/\s+/g, " ").trim()}`,
-  full: `queued: ${text}`,
-  tone: "dim",
-  ts: 0,
-});
+export const queuedLine = (sessionId: string, entry: QueueEntryView): LogLine => {
+  const where = entry.delivery === "next_boundary" ? "next boundary" : "after it finishes";
+  const when = entry.uncertain ? "may have reached the agent" : describeDequeue(entry.dequeue);
+  const preview = entry.preview.replace(/\s+/g, " ").trim();
+  return {
+    id: null,
+    sessionId,
+    kind: "echo",
+    glyph: "⧗",
+    text: `${where} · ${preview} · ${when}`,
+    full: `${where} · ${when}\n\n${entry.preview}`,
+    tone: entry.uncertain ? "warn" : "dim",
+    ts: 0,
+  };
+};
 
 // ---------------------------------------------------------------------------
 // the resource

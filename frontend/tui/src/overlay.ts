@@ -44,9 +44,22 @@ export type SessionPromptKind = "send" | "title" | "comment" | "compact";
 /** Prompts that resolve one outstanding request, addressed by its id. */
 export type RequestPromptKind = "answer" | "deny";
 
+/** A queued message being edited from the queue view: the entry, at the
+ *  revision the text was read at — a stale one is the daemon's `conflict`. */
+export interface QueueEdit {
+  entryId: string;
+  revision: number;
+}
+
 export type Prompt =
   | (PromptEditor & { t: "new"; settings: NewSessionSettings })
-  | (PromptEditor & { t: "session"; kind: SessionPromptKind; sessionId: string })
+  | (PromptEditor & {
+      t: "session";
+      kind: SessionPromptKind;
+      sessionId: string;
+      /** A `send` prompt editing a queued message saves it, not sends one. */
+      edit?: QueueEdit;
+    })
   | (PromptEditor & { t: "request"; kind: RequestPromptKind; sessionId: string; requestId: string })
   /** A note back about an open plan review, carrying the review itself: `Esc`
    *  puts it back exactly as it was, cycled mode and staged retarget included. */
@@ -77,7 +90,7 @@ export const sessionPrompt = (
   sessionId: string,
   label: string,
   text = "",
-): Prompt => ({ t: "session", kind, sessionId, ...ed(label, text) });
+): Extract<Prompt, { t: "session" }> => ({ t: "session", kind, sessionId, ...ed(label, text) });
 
 export const requestPrompt = (
   kind: RequestPromptKind,
@@ -164,6 +177,11 @@ export type Confirm = {
 } & (
   | { action: "restart" | "quitAll" | "gc" }
   | { action: "archiveSession"; sessionId: string }
+  /** Clear exactly these queued messages — the ones on screen when asked; one
+   *  arriving after is never swept. `back`: return to the queue view. */
+  | { action: "clearQueue"; sessionId: string; entryIds: readonly string[]; back: boolean }
+  /** Send an uncertain message again, knowing it may duplicate. */
+  | { action: "queueSendNow"; sessionId: string; entryId: string; revision: number }
   | { action: "forkSession"; fork: ForkPlan }
   | {
       action: "deleteSession";
@@ -328,9 +346,29 @@ export type Overlay =
    * intact and `a` resumes where you left off.
    */
   | { t: "questions"; sessionId: string; requestId: string }
-  | { t: "picker"; picker: Picker };
+  | { t: "picker"; picker: Picker }
+  /**
+   * One session's message queue (`q`). The entries are the snapshot's; this
+   * holds only the viewer's selection, by id so it survives arrivals, and the
+   * full text of the selected entry once fetched.
+   */
+  | { t: "queue"; sessionId: string; selected: string | null; full: QueueText | null };
+
+/** A queue entry's full text as `session.queueEntry` returned it. */
+export interface QueueText {
+  id: string;
+  revision: number;
+  text: string;
+}
 
 export const browse: Overlay = { t: "browse" };
+
+export const queueView = (sessionId: string, selected: string | null = null): Overlay => ({
+  t: "queue",
+  sessionId,
+  selected,
+  full: null,
+});
 
 /** The prompt on screen, if the overlay is one. */
 export const openPrompt = (o: Overlay): Prompt | null => (o.t === "prompt" ? o.prompt : null);
@@ -367,6 +405,9 @@ const closeTo = (d: PickerDest): Overlay => {
  *  back to whatever it was opened over, or to the fleet. */
 export const unwind = (o: Overlay): Overlay => {
   if (o.t === "prompt" && o.prompt.t === "discuss") return { t: "plan", plan: o.prompt.plan };
+  // An edit opened from the queue view goes back to it, on the same entry.
+  if (o.t === "prompt" && o.prompt.t === "session" && o.prompt.edit)
+    return queueView(o.prompt.sessionId, o.prompt.edit.entryId);
   if (o.t === "picker") return closeTo(o.picker.dest);
   return browse;
 };
@@ -387,6 +428,8 @@ export const overlayTarget = (
       return { sessionId: o.plan.sessionId, requestId: o.plan.requestId };
     case "questions":
       return { sessionId: o.sessionId, requestId: o.requestId };
+    case "queue":
+      return { sessionId: o.sessionId, requestId: null };
     case "picker":
       switch (o.picker.dest.t) {
         case "planImpl":

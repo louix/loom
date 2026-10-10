@@ -29,7 +29,7 @@ import {
   fleetRowBudget,
 } from "./model.ts";
 
-import { outboxOf } from "./composer.ts";
+import { QueueView } from "./queue-view.tsx";
 import { headerView, fleetPaneView, logView } from "./views.ts";
 import { PALETTES, spinnerFrame } from "./theme.ts";
 import {
@@ -154,7 +154,7 @@ const Layout = ({ view, handle }: Omit<PaneProps, "width">): ReactNode => {
             ? showConnectionError(state.fleet.error)
             : "Connecting to daemon…"}
         </Text>
-        <Text>q quit</Text>
+        <Text>⌃c quit</Text>
       </Box>
     );
 
@@ -167,6 +167,23 @@ const Layout = ({ view, handle }: Omit<PaneProps, "width">): ReactNode => {
         </Box>
       );
       break;
+    case "queue": {
+      const sessionId = view.body.sessionId;
+      const o = state.overlay.t === "queue" ? state.overlay : null;
+      body = (
+        <Box paddingX={1} paddingTop={1} height={bodyH} overflow="hidden">
+          <QueueView
+            queue={fleetSessions(state).find((s) => s.id === sessionId)?.queue}
+            selected={o?.selected ?? null}
+            full={o?.full ?? null}
+            clientId={handle.clientId}
+            width={cols - 2}
+            height={bodyH - 1}
+          />
+        </Box>
+      );
+      break;
+    }
     case "plan": {
       const plan = view.body.plan;
       const ps = fleetSessions(state).find((s) => s.id === plan.sessionId);
@@ -344,8 +361,9 @@ const Working = ({ handle, starting }: { handle: FleetHandle; starting: boolean 
 
 const LogArea = ({ view, handle, width }: PaneProps): ReactNode => {
   const tr = useSyncExternalStore(handle.transcript.subscribe, handle.transcript.get);
-  const boxes = useSyncExternalStore(handle.composer.subscribe, handle.composer.get);
-  const box = outboxOf(boxes, view.sel?.id ?? null);
+  // The session's queue rides its snapshot: drawn after the log, every client
+  // the same.
+  const queue = view.sel?.queue?.entries;
   const { selectedChild, logFilter } = view.ui;
   const hoverTab = SESSION_TABS.find(({ tab }) => view.hover === `sessionTab:${tab}`)?.tab ?? null;
   const child = useMemo(
@@ -359,8 +377,18 @@ const LogArea = ({ view, handle, width }: PaneProps): ReactNode => {
       ["running", "starting", "working_background"].includes(view.sel.status.kind));
   const pane = useMemo(
     () =>
-      logView(tr.transcript, box, id, logFilter, child, spinning, width, view.splitLogH, tr.scroll),
-    [tr, box, id, logFilter, child, spinning, width, view.splitLogH],
+      logView(
+        tr.transcript,
+        queue ?? [],
+        id,
+        logFilter,
+        child,
+        spinning,
+        width,
+        view.splitLogH,
+        tr.scroll,
+      ),
+    [tr, queue, id, logFilter, child, spinning, width, view.splitLogH],
   );
   const starting = !child && view.sel?.status.kind === "starting";
   const spinner = useMemo(
@@ -399,18 +427,10 @@ const InputArea = ({
   width,
   pane = false,
 }: PaneProps & { pane?: boolean }): ReactNode => {
-  const outbox = useSyncExternalStore(handle.composer.subscribe, handle.composer.get);
   const modes = useSyncExternalStore(handle.modes.subscribe, handle.modes.get);
   return pane ? (
     <PromptPane state={view.ui} width={width} modes={modes} hover={view.hover === "promptMode"} />
   ) : (
-    <FooterArea
-      state={view.ui}
-      width={width}
-      modes={modes}
-      outbox={outbox}
-      bar={view.bar}
-      hover={view.hover}
-    />
+    <FooterArea state={view.ui} width={width} modes={modes} bar={view.bar} hover={view.hover} />
   );
 };

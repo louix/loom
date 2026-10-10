@@ -1,6 +1,6 @@
 /** Pure projections for the header, fleet rows and visible transcript window. */
 import type { ClientState } from "@loom/client";
-import { waiting, type Outbox } from "./composer.ts";
+import type { QueueEntryView } from "@loom/core/message-queue";
 import type { Find } from "./fleet-search.ts";
 import { fleetFilterStatus, searchStale } from "./fleet-search.ts";
 import {
@@ -148,7 +148,8 @@ export interface LogView {
 
 export const logView = (
   transcript: Transcript,
-  box: Outbox,
+  /** The session's queue, off its snapshot: drawn after the log. */
+  queue: readonly QueueEntryView[],
   sessionId: string | null,
   filter: LogFilter,
   child: FleetChild | null,
@@ -160,7 +161,7 @@ export const logView = (
   const capacity = Math.max(1, height - 4);
   const lines = [
     ...transcriptLines(transcript),
-    ...waiting(box).map((text) => queuedLine(sessionId ?? "", text)),
+    ...queue.map((entry) => queuedLine(sessionId ?? "", entry)),
   ];
   const ctx = logContext(filterLog(lines, filter, child?.id ?? null), width);
   const total = totalRows(ctx);

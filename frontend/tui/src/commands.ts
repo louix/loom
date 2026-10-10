@@ -18,8 +18,8 @@
 import stringWidth from "string-width";
 import { absurd } from "@loom/core/absurd";
 import type { SessionSnapshot } from "@loom/core/wire";
+import type { QueueEntryView } from "@loom/core/message-queue";
 import type { KeyLike } from "./editor.ts";
-import type { Outboxes } from "./composer.ts";
 import { liveQNav, questionsOf } from "./interactions.ts";
 import { nextThemeMode } from "./theme.ts";
 import { startingForkOf } from "./fork-flow.ts";
@@ -42,13 +42,16 @@ export type CommandScope = "session" | "view" | "app";
 
 interface CommandSpec {
   readonly scope: CommandScope;
-  /** The shortcut as shown and as dispatched; "" for palette-only commands. */
-  readonly keys: string;
+  /** The shortcut as shown and as dispatched; "" for palette-only commands.
+   *  Absent: not offered on the fleet at all (nor in the palette). */
+  readonly keys?: string;
   /** Further keys that dispatch it (shown nowhere). */
   readonly aliases?: readonly string[];
   /** Its key while a send composer is open on the target. Absent: the command
    *  is not reachable from the composer, whose plain keys type text. */
   readonly composer?: string;
+  /** Its key in the target's queue view; absent: not offered there. */
+  readonly queue?: string;
   readonly label: string;
   readonly description: string;
 }
@@ -96,7 +99,67 @@ const COMMANDS = {
     scope: "session",
     keys: "⏎",
     label: "send",
-    description: "Message the session. A stopped session is revived first.",
+    description:
+      "Message the session. Mid-turn it waits in the queue for the next tool boundary; a stopped session is revived first.",
+  },
+  enqueueEndOfTurn: {
+    scope: "session",
+    composer: "⌥q",
+    label: "after it finishes",
+    description: "Queue the message for when the agent has finished, background work included.",
+  },
+  queue: {
+    scope: "session",
+    keys: "q",
+    label: "queue",
+    description:
+      "Review the session's queued messages: edit, reorder, switch, send now or remove them.",
+  },
+  queueEdit: {
+    scope: "session",
+    queue: "e",
+    label: "edit",
+    description: "Edit the selected message in the composer; ⏎ saves it.",
+  },
+  queueRemove: {
+    scope: "session",
+    queue: "x",
+    label: "remove",
+    description: "Remove the selected message from the queue.",
+  },
+  queueMoveUp: {
+    scope: "session",
+    queue: "⇧↑",
+    aliases: ["K"],
+    label: "move up",
+    description: "Move the selected message up within its group.",
+  },
+  queueMoveDown: {
+    scope: "session",
+    queue: "⇧↓",
+    aliases: ["J"],
+    label: "move down",
+    description: "Move the selected message down within its group.",
+  },
+  queueToggleDelivery: {
+    scope: "session",
+    queue: "t",
+    label: "switch",
+    description: "Switch the selected message between the next tool boundary and turn end.",
+  },
+  queueSendNow: {
+    scope: "session",
+    queue: "s",
+    label: "send now",
+    description:
+      "Hand the selected message over now: at the head of the next boundary, or as a turn of its own when idle or held.",
+  },
+  queueRelease: {
+    scope: "session",
+    keys: "",
+    queue: "r",
+    label: "release the queue",
+    description: "Let a held queue go on by its ordinary rules; uncertain messages stay.",
   },
   compact: {
     scope: "session",
@@ -192,8 +255,9 @@ const COMMANDS = {
     scope: "session",
     keys: "⌥x",
     composer: "⌥x",
+    queue: "c",
     label: "clear the queued messages",
-    description: "Drop the messages waiting to be sent to the session.",
+    description: "Drop the messages waiting in the session's queue, after a confirm.",
   },
   delete: {
     scope: "session",
@@ -260,7 +324,7 @@ const COMMANDS = {
   },
   quit: {
     scope: "app",
-    keys: "q",
+    keys: "⌃c",
     label: "quit",
     description: "Quit the UI; the daemon and its sessions keep running.",
   },
@@ -309,9 +373,9 @@ const COMMANDS = {
   },
   quitall: {
     scope: "app",
-    keys: "Q",
-    label: "quit the UI and stop the daemon",
-    description: "Quit and stop the daemon, interrupting live sessions.",
+    keys: "",
+    label: "Quit and stop the daemon",
+    description: "Quit the UI and stop the daemon, interrupting live sessions, after a confirm.",
   },
 } as const satisfies Record<string, CommandSpec>;
 
@@ -326,10 +390,9 @@ export interface CommandFeatures {
   readonly switchRepository: boolean;
 }
 
-/** Everything availability reads: the UI state, the composer's outboxes and
- *  what this client can do. */
+/** Everything availability reads: the UI state and what this client can do.
+ *  A session's queue comes off its snapshot. */
 export type CommandContext = TuiState & {
-  readonly outbox?: Outboxes;
   readonly features?: Partial<CommandFeatures>;
 };
 
@@ -349,8 +412,27 @@ export interface CommandAction {
   readonly bar: boolean;
 }
 
-/** Where the actions are offered: the fleet, or an open send composer. */
-export type CommandSurface = "browse" | "composer";
+/** Where the actions are offered: the fleet, an open send composer, or the
+ *  target's queue view. */
+export type CommandSurface = "browse" | "composer" | "queue";
+
+/** The queue entry the queue view has selected for `sessionId` — the one its
+ *  entry commands act on — or null when none is (or the view is not open). */
+export const queueSelection = (
+  ctx: Pick<TuiState, "fleet" | "overlay">,
+  sessionId: string,
+): QueueEntryView | null => {
+  if (ctx.overlay.t !== "queue" || ctx.overlay.sessionId !== sessionId) return null;
+  const entries = queueFor(ctx, sessionId);
+  const selected = ctx.overlay.selected;
+  return entries.find((e) => e.id === selected) ?? entries[0] ?? null;
+};
+
+/** Entries a clear can take: still in Loom, or handed over with their fate unknown. */
+export const clearable = (entries: readonly QueueEntryView[]): QueueEntryView[] =>
+  entries.filter((e) => e.state === "queued" || e.uncertain);
+
+const ALREADY_HANDED = "Already handed to the agent.";
 
 /** Per-command availability: `null` hides the command. */
 type Availability = {
@@ -465,6 +547,7 @@ const sessionAvailability = (
   const child = ctx.selectedChild != null && s.id === ctx.selectedId;
   const onChild = (what: string): string | undefined =>
     child ? `Select the session row (←) to ${what}.` : undefined;
+  const queue = queueFor(ctx, s.id);
   switch (id) {
     case "approve":
       return {
@@ -495,7 +578,14 @@ const sessionAvailability = (
       };
     }
     case "send":
+    case "enqueueEndOfTurn": {
+      // Mid-turn a message waits in the queue for the next tool boundary;
+      // ⌥q waits for the agent to finish (a plain send on an idle target).
+      const busy = kind === "running" || kind === "starting" || kind === "awaiting_input";
+      let label = "after it finishes";
+      if (id === "send") label = busy ? "queue · next tool boundary" : "send";
       return {
+        label,
         disabled: first(
           onChild("talk to the session"),
           settled,
@@ -503,6 +593,74 @@ const sessionAvailability = (
           readOnly,
         ),
         bar: true,
+      };
+    }
+    case "queue": {
+      const n = queue.length;
+      const held = s.queue?.hold != null;
+      let label = "queue";
+      if (held) label = `${n} held`;
+      else if (n > 0) label = `queue ${n}`;
+      return {
+        label,
+        disabled: first(
+          onChild("review the session's queue"),
+          n === 0 && !held && "No queued messages.",
+        ),
+        bar: n > 0 || held,
+      };
+    }
+    case "queueEdit":
+    case "queueRemove":
+    case "queueMoveUp":
+    case "queueMoveDown":
+    case "queueToggleDelivery":
+    case "queueSendNow": {
+      const e = queueSelection(ctx, s.id);
+      if (!e) return { disabled: first(onChild("edit the queue"), "No message selected.") };
+      const handed = e.state !== "queued" && !e.uncertain && ALREADY_HANDED;
+      const queued = e.state !== "queued" && ALREADY_HANDED;
+      const group = queue.filter((x) => x.delivery === e.delivery);
+      const at = group.findIndex((x) => x.id === e.id);
+      switch (id) {
+        case "queueEdit":
+          return { disabled: first(onChild("edit the queue"), queued), bar: true };
+        case "queueRemove":
+          return { disabled: first(onChild("edit the queue"), handed), bar: true };
+        case "queueMoveUp":
+          return {
+            disabled: first(onChild("edit the queue"), queued, at <= 0 && "First in its group."),
+            bar: true,
+          };
+        case "queueMoveDown":
+          return {
+            disabled: first(
+              onChild("edit the queue"),
+              queued,
+              at >= group.length - 1 && "Last in its group.",
+            ),
+            bar: true,
+          };
+        case "queueToggleDelivery":
+          return {
+            label: e.delivery === "next_boundary" ? "after it finishes" : "next boundary",
+            disabled: first(onChild("edit the queue"), queued),
+            bar: true,
+          };
+        default:
+          return {
+            label: e.uncertain ? "send again" : "send now",
+            disabled: first(onChild("edit the queue"), request, handed),
+            bar: true,
+          };
+      }
+    }
+    case "queueRelease":
+      return {
+        disabled: first(
+          onChild("release the session's queue"),
+          s.queue?.hold == null && "The queue is not held.",
+        ),
       };
     case "compact": {
       // Legal on any live session; the bar suggests it once the meter passes
@@ -638,13 +796,13 @@ const sessionAvailability = (
       return {
         disabled: first(settled, !s.branch && !s.worktree && "This session has no branch."),
       };
-    case "clearqueue":
+    case "clearqueue": {
+      const n = clearable(queue).length;
       return {
-        disabled: first(
-          onChild("clear the session's queue"),
-          !queueFor(ctx, s.id).length && "No queued messages.",
-        ),
+        ...(n > 0 ? { label: `clear ${n} queued` } : {}),
+        disabled: first(onChild("clear the session's queue"), n === 0 && "No queued messages."),
       };
+    }
     default:
       return {};
   }
@@ -728,7 +886,7 @@ export const describeCommands = (
   const out: CommandAction[] = [];
   for (const id of ORDER) {
     const spec: CommandSpec = COMMANDS[id];
-    const keys = surface === "composer" ? spec.composer : spec.keys;
+    const keys = { browse: spec.keys, composer: spec.composer, queue: spec.queue }[surface];
     if (keys === undefined) continue;
     let a: Availability;
     if (spec.scope !== "session") a = otherAvailability(ctx, id, target);
@@ -767,6 +925,8 @@ export const allowedActs = (ctx: CommandContext): Set<ActName> =>
 export const pressedKey = (input: string, key: KeyLike): string => {
   if (key.return) return "⏎";
   if (key.tab) return key.shift ? "⇧⇥" : "⇥";
+  if (key.shift && key.upArrow) return "⇧↑";
+  if (key.shift && key.downArrow) return "⇧↓";
   if (key.meta) return `⌥${input}`;
   return input === " " ? "␣" : input;
 };
@@ -881,6 +1041,16 @@ export const composerBar = (ctx: CommandContext, target: string): BarItem[] =>
     .filter((a) => !a.disabled)
     .map(chip);
 
+/** The queue view's bar: its own selection keys, then the queue commands it
+ *  binds for `target` that can run on the selected entry. */
+export const queueBar = (ctx: CommandContext, target: string): BarItem[] => [
+  { keys: "↑↓", label: "select" },
+  ...describeCommands(ctx, { target, surface: "queue" })
+    .filter((a) => !a.disabled)
+    .map(chip),
+  { keys: "esc", label: "back" },
+];
+
 /** The Space palette's rows for `target`: every relevant command but the
  *  palette itself, enabled ones first so a filter lands on something runnable. */
 export const paletteActions = (ctx: CommandContext, target: string | null): CommandAction[] => {
@@ -954,6 +1124,8 @@ export const footerHints = (ctx: CommandContext): BarItem[] => {
     }
     case "doctor":
       return [{ keys: "esc", label: "close" }];
+    case "queue":
+      return queueBar(ctx, ctx.overlay.sessionId);
     case "browse":
       return browseBar(ctx);
     default:

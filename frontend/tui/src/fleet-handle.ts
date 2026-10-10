@@ -3,11 +3,13 @@ import { repositoryPicker } from "./repositories.ts";
 import { SESSION_TABS } from "./session-tabs.tsx";
 import {
   barHits,
+  clearable,
   describeCommand,
   describeCommands,
   keyAction,
   modelRefresh,
   paletteActions,
+  queueSelection,
   refreshProvider,
   type ActName,
   type BarHit,
@@ -61,7 +63,9 @@ import {
 } from "./components.tsx";
 import { mkStore } from "./store.ts";
 import { AGE_MS, mkClock, mkDeadline, type Beat } from "./clock.ts";
-import { mkComposer, outboxOf, pending, release } from "./composer.ts";
+import { mkComposer, outboxOf, release, type SendReply } from "./composer.ts";
+import type { QueueDelivery } from "@loom/core/message-queue";
+import { queueRows } from "./queue-view.tsx";
 import { mkModeControl, pendingMode } from "./mode-control.ts";
 import { mkSearchControl, searchStale, searchMatches, type Find } from "./fleet-search.ts";
 import { cycleLogFilter, mkTranscript, transcriptText } from "./transcript.ts";
@@ -72,7 +76,6 @@ import {
   defaultProviderId,
   escapePicker,
   fleetHits,
-  compactingFor,
   initialState,
   newSettings,
   NOTICE_TTL_MS,
@@ -97,6 +100,7 @@ import {
   providerAccountOf,
   providerColorOf,
   cacheStatus,
+  queueFor,
 } from "./model.ts";
 import {
   browse,
@@ -109,8 +113,10 @@ import {
   makePicker,
   promptKind,
   promptOnPane,
+  queueView,
   requestPrompt,
   sessionPrompt,
+  type QueueText,
   type Confirm,
   type Overlay,
   type PickItem,
@@ -239,6 +245,7 @@ export const hitAt = (hits: readonly ViewHit[], point: { x: number; y: number })
  *  is the `session` view at any width, and `split` the wide `overview`. */
 export type BodyKind =
   | { t: "doctor" }
+  | { t: "queue"; sessionId: string }
   | { t: "plan"; plan: PlanReview }
   | { t: "questions"; sessionId: string; requestId: string }
   | { t: "split" }
@@ -289,6 +296,8 @@ export interface FleetView {
 export interface FleetHandle {
   readonly subscribe: (onChange: () => void) => () => void;
   readonly getView: () => FleetView;
+  /** This client's id — how a queued message's author reads as "you". */
+  readonly clientId: string;
   readonly composer: ReturnType<typeof mkComposer>;
   readonly modes: ReturnType<typeof mkModeControl>;
   readonly searches: ReturnType<typeof mkSearchControl>;
@@ -349,7 +358,6 @@ export interface MkFleetHandleInput {
 const deriveView = (
   state: TuiState,
   find: Find | null,
-  queued: readonly string[],
   mode: SessionMode | null,
   planScroll: number,
   layoutView: LayoutView,
@@ -398,6 +406,7 @@ const deriveView = (
     const o = state.overlay;
     // Reading views own the body; composers and selectors float above it.
     if (o.t === "doctor" || o.t === "plan" || o.t === "questions") return o;
+    if (o.t === "queue") return { t: "queue", sessionId: o.sessionId };
     if (layoutView === "session") return { t: "sessionPane" };
     return narrow ? { t: "fleetOnly" } : { t: "split" }; // wide `overview`
   };
@@ -432,7 +441,6 @@ const deriveView = (
     account: account,
     compacting: sel?.compacting ?? null,
     archiving: state.archiving.includes(sel?.id ?? ""),
-    queued,
   });
   // The `session` view gives Detail + events the whole terminal; the wide
   // `overview` split confines them to the right column.
@@ -656,11 +664,17 @@ export const mkFleetHandle = ({
     connected,
   });
 
+  // Every message goes into the session's daemon-side queue; the composer only
+  // remembers a send whose reply never came, so it is not queued twice.
   const composer = mkComposer({
-    recover: (text) => dispatch({ t: "recoverDraft", text }),
-    send: (sessionId, text) => client.request("session.send", { id: sessionId, text }).then(),
-    fleet: () => fleetSessions(state),
-    note: (text) => note(text, "bad"),
+    send: (sessionId, { text, entryId, delivery }) =>
+      client.request<SendReply>("session.send", {
+        id: sessionId,
+        text,
+        entryId,
+        delivery,
+        by: client.clientId,
+      }),
   });
   // Rows per page. The first pull matches the daemon's own default so a session
   // that fits in one page arrives whole; scroll-back adds more.
@@ -687,7 +701,7 @@ export const mkFleetHandle = ({
       return page;
     },
     connected,
-    shown: (transcript) => shownLog({ ...state, transcript, outbox: composer.get() }),
+    shown: (transcript) => shownLog({ ...state, transcript }),
     // Width the log pane renders at for the current body (see app.tsx): the
     // zoomed and session views give it the whole terminal, the overview split
     // its right column.
@@ -770,11 +784,10 @@ export const mkFleetHandle = ({
       inspectionOffsets[state.sessionTab] = Math.max(0, Math.min(max, inspectionOffset() + by));
     publish();
   };
-  /** What command availability reads: the state, the outboxes and the
-   *  capabilities this client was started with. */
+  /** What command availability reads: the state and the capabilities this
+   *  client was started with. */
   const commandCtx = (s: TuiState = state): CommandContext => ({
     ...s,
-    outbox: composer.get(),
     features: {
       logs: logs !== undefined,
       shell: openShell !== undefined,
@@ -789,7 +802,6 @@ export const mkFleetHandle = ({
     ...deriveView(
       state,
       searches.get(),
-      pending(outboxOf(composer.get(), state.selectedId)),
       pendingMode(modes.get(), state.selectedId),
       planScroll,
       layoutView,
@@ -1068,9 +1080,7 @@ export const mkFleetHandle = ({
 
   /** `o` / `⌥o` dump: the selected session's whole log as a readable transcript. */
   const logText = (): string =>
-    transcriptText(
-      sessionLog({ ...state, transcript: transcripts.get().transcript, outbox: composer.get() }),
-    );
+    transcriptText(sessionLog({ ...state, transcript: transcripts.get().transcript }));
 
   /**
    * Hand the terminal to `$EDITOR` and hand it back. `suspendTerminal` (Ink 7.1)
@@ -1385,8 +1395,40 @@ export const mkFleetHandle = ({
       }
       case "copyid":
         return copyToClipboard(s.id, s.id);
-      case "clearqueue":
-        return void composer.clear(s.id);
+      case "clearqueue": {
+        // Over exactly the messages there now: one arriving while the confirm
+        // is up is not swept with them.
+        const entryIds = clearable(queueFor(state, s.id)).map((e) => e.id);
+        const n = entryIds.length;
+        return void show({
+          t: "confirm",
+          confirm: {
+            title: `Clear ${n} queued message${n === 1 ? "" : "s"}?`,
+            body: "They never reached the agent, or may not have; this cannot be undone.",
+            danger: true,
+            action: "clearQueue",
+            sessionId: s.id,
+            entryIds,
+            back: state.overlay.t === "queue",
+          },
+        });
+      }
+      case "queue":
+        show(queueView(s.id));
+        return loadQueueText();
+      case "queueRelease":
+        return void queueRpc(s.id, "session.queueRelease", {}, "queue released");
+      case "enqueueEndOfTurn":
+        // Only the composer binds it: submit the draft for turn end.
+        promptSubmittedAt = Date.now();
+        return void submitPrompt("end_of_turn");
+      case "queueEdit":
+      case "queueRemove":
+      case "queueMoveUp":
+      case "queueMoveDown":
+      case "queueToggleDelivery":
+      case "queueSendNow":
+        return void runQueueEntry(name, s.id);
       case "fork": {
         // While a fork of this session is still starting, the command cancels
         // it; the daemon then removes whatever the fork had created.
@@ -1834,7 +1876,13 @@ export const mkFleetHandle = ({
   };
 
   const forkingSessions = new Set<string>();
-  const submitPrompt = (): void => {
+  /**
+   * Submit the open prompt. A `send` goes into the session's queue, for the
+   * next tool boundary — or, from ⌥q, for when the agent has finished; a
+   * compaction or a stop in progress no longer refuses it, the daemon queues
+   * it. A send prompt editing a queued message saves the edit instead.
+   */
+  const submitPrompt = (delivery: QueueDelivery = "next_boundary"): void => {
     const p = openPrompt(state.overlay);
     if (!p) return;
     const text = p.buffer.text.trim();
@@ -1845,16 +1893,8 @@ export const mkFleetHandle = ({
     // Every other prompt needs text.
     if (kind !== "deny" && kind !== "compact" && kind !== "comment" && !text) return;
 
-    // A send typed while the target session is compacting: the daemon holds the
-    // op gate for the whole (multi-minute) summarise and would reject with
-    // `code:"busy"`. Reuse the outgoing queue instead — `drainQueues` releases
-    // it on the first update after the snapshot stops reporting a compaction.
-    // (`code:"busy"` is still caught below for a race.)
-    const sendTo = p.t === "session" && p.kind === "send" ? p.sessionId : null;
-    if (sendTo !== null && text && compactingFor(state, sendTo)) {
-      queueSend(sendTo, text, "queued until compaction finishes");
-      return;
-    }
+    const edit = p.t === "session" ? p.edit : undefined;
+    const sendTo = p.t === "session" && p.kind === "send" && !edit ? p.sessionId : null;
 
     const pendingPrompt: Prompt = {
       ...p,
@@ -1881,23 +1921,28 @@ export const mkFleetHandle = ({
     const runSession = async (k: SessionPromptKind, sessionId: string): Promise<string> => {
       switch (k) {
         case "send": {
-          if (outboxOf(composer.get(), sessionId).t === "held") {
-            await composer.retry(sessionId, text);
-            return "";
+          if (edit) {
+            await client.request("session.queueEdit", {
+              id: sessionId,
+              entryId: edit.entryId,
+              revision: edit.revision,
+              text,
+              by,
+            });
+            return "queued message saved";
           }
-          // No local echo — the daemon emits a `user_message` event that every
-          // client (this one included) renders. The RPC tells us whether it
-          // actually landed mid-turn.
-          const r = await client.request<{ injected?: boolean }>("session.send", {
-            id: sessionId,
-            text,
-          });
-          // Quote a preview: mid-turn sends are easy to fire twice in a row,
-          // and "injected" alone says neither which message landed nor that
-          // it's queued behind the running tool call rather than lost.
-          return r.injected
-            ? `injected “${truncate(text.replace(/\s+/g, " ").trim(), 40)}” — lands after the current tool call`
-            : "sent";
+          // No local echo — the message enters the session's queue, and the
+          // daemon emits its `user_message` once the agent has taken it. A
+          // held send of the same text goes again under its own id, so one
+          // that did arrive is answered rather than queued twice.
+          const r = await composer.send(sessionId, text, delivery);
+          // Quote a preview: queued sends are easy to fire twice in a row, and
+          // "queued" alone does not say which message waits.
+          const quoted = `“${truncate(text.replace(/\s+/g, " ").trim(), 40)}”`;
+          if (r.state !== "queued") return "sent";
+          return delivery === "end_of_turn"
+            ? `queued ${quoted} — goes when the agent finishes`
+            : `queued ${quoted} — goes at the next tool boundary`;
         }
         case "title":
           await client.request("session.setTitle", { id: sessionId, title: text, by });
@@ -1971,18 +2016,10 @@ export const mkFleetHandle = ({
         if (m) note(m, "good");
       })
       .catch((e: unknown) => {
-        // Lost the race with a compaction that started between the pre-check
-        // above and the RPC — queue rather than error.
-        if (sendTo !== null && text && (e as { code?: unknown })?.code === "busy") {
-          if (stillOpen()) queueSend(sendTo, text, "queued until compaction finishes");
-          else {
-            composer.enqueue(sendTo, text);
-            note("queued until compaction finishes", "dim");
-          }
-          return;
-        }
-        // The daemon saved the message and error on this session. Report where
-        // to inspect it without taking focus from whatever the user is doing.
+        // The daemon saved the error on this session (a failed send's text is
+        // held by the composer: opening `send` there hands it back). Report
+        // where to inspect it without taking focus from whatever the user is
+        // doing.
         const failedSession = (e as { data?: { sessionId?: unknown } })?.data?.sessionId;
         if ((p.t === "new" || sendTo !== null) && typeof failedSession === "string") {
           note(
@@ -2010,17 +2047,109 @@ export const mkFleetHandle = ({
       });
   };
 
-  // ⌥q on a `send` prompt targeting a running/starting session: queue for
-  // turn end instead of the normal bare-⏎ "send now" path. Also reused when a
-  // send is typed during a compaction (`why` overrides the status line).
-  const queueSend = (sessionId: string, text: string, why = "queued for turn end"): void => {
-    dispatch({ t: "closePrompt" });
-    composer.enqueue(sessionId, text);
-    dispatch({ t: "pushHistory", text });
-    // No marker to add: the event pane derives one per queued message straight
-    // from the outbox, so it appears with this dispatch and disappears when the
-    // message goes on the wire.
-    note(why, "dim");
+  /** A queue RPC on session `id`; a failure — a stale revision included — is
+   *  said, and the snapshot shows what changed. */
+  const queueRpc = (
+    id: string,
+    method: string,
+    params: Record<string, unknown>,
+    done: string,
+  ): Promise<void> =>
+    client
+      .request(method, { id, by: client.clientId, ...params })
+      .then(() => note(done, "good"))
+      .catch((e: unknown) => note(e instanceof Error ? e.message : String(e), "bad"));
+
+  /**
+   * A queue-view command on its selected entry, re-read from the snapshot now:
+   * the revision quoted is the one on screen, so a change made elsewhere since
+   * is the daemon's `conflict`, never silently overwritten.
+   */
+  const runQueueEntry = (
+    name:
+      | "queueEdit"
+      | "queueRemove"
+      | "queueMoveUp"
+      | "queueMoveDown"
+      | "queueToggleDelivery"
+      | "queueSendNow",
+    sessionId: string,
+  ): void => {
+    const e = queueSelection(state, sessionId);
+    if (!e) return;
+    const target = { entryId: e.id, revision: e.revision };
+    switch (name) {
+      case "queueEdit": {
+        const full = state.overlay.t === "queue" ? state.overlay.full : null;
+        const open = (text: string): void =>
+          void show({
+            t: "prompt",
+            prompt: {
+              ...sessionPrompt("send", sessionId, "edit queued message", text),
+              edit: target,
+            },
+          });
+        if (full?.id === e.id && full.revision === e.revision) return open(full.text);
+        void client
+          .request<QueueText>("session.queueEntry", { id: sessionId, entryId: e.id })
+          .then((entry) => open(entry.text))
+          .catch((err: unknown) => note(err instanceof Error ? err.message : String(err), "bad"));
+        return;
+      }
+      case "queueRemove":
+        return void queueRpc(sessionId, "session.queueRemove", { entries: [target] }, "removed");
+      case "queueMoveUp":
+      case "queueMoveDown":
+        return void queueRpc(
+          sessionId,
+          "session.queueMove",
+          { ...target, direction: name === "queueMoveUp" ? "up" : "down" },
+          "moved",
+        );
+      case "queueToggleDelivery": {
+        const delivery = e.delivery === "next_boundary" ? "end_of_turn" : "next_boundary";
+        return void queueRpc(
+          sessionId,
+          "session.queueSetDelivery",
+          { ...target, delivery },
+          delivery === "end_of_turn" ? "goes when the agent finishes" : "goes at the next boundary",
+        );
+      }
+      case "queueSendNow":
+        // One that may already have arrived could arrive twice: ask first.
+        if (e.uncertain)
+          return void show({
+            t: "confirm",
+            confirm: {
+              title: "Send it again?",
+              body: "It may already have reached the agent and could arrive twice.",
+              danger: true,
+              action: "queueSendNow",
+              sessionId,
+              ...target,
+            },
+          });
+        return void queueRpc(sessionId, "session.queueSendNow", target, "sending now");
+      default:
+        return absurd(name);
+    }
+  };
+
+  /** Keep the queue view's full text in step with its selection. */
+  const loadQueueText = (): void => {
+    const o = state.overlay;
+    if (o.t !== "queue") return;
+    const e = queueSelection(state, o.sessionId);
+    if (!e || (o.full?.id === e.id && o.full.revision === e.revision)) return;
+    const sessionId = o.sessionId;
+    void client
+      .request<QueueText>("session.queueEntry", { id: sessionId, entryId: e.id })
+      .then((full) => {
+        const now = state.overlay;
+        if (now.t === "queue" && now.sessionId === sessionId)
+          show({ ...now, full: { id: full.id, revision: full.revision, text: full.text } });
+      })
+      .catch(() => {});
   };
 
   /** Resolve `pl` with `params` (an `action` plus any payload). */
@@ -2123,6 +2252,31 @@ export const mkFleetHandle = ({
     if (overlayActed === c) return;
     overlayActed = c;
     show(browse);
+    if (c.action === "clearQueue") {
+      if (c.back) show(queueView(c.sessionId));
+      return void client
+        .request<{ cleared: string[] }>("session.queueClear", {
+          id: c.sessionId,
+          entryIds: c.entryIds,
+          by: client.clientId,
+        })
+        .then((r) =>
+          note(
+            `cleared ${r.cleared.length} queued message${r.cleared.length === 1 ? "" : "s"}`,
+            "good",
+          ),
+        )
+        .catch((e: unknown) => note(e instanceof Error ? e.message : String(e), "bad"));
+    }
+    if (c.action === "queueSendNow") {
+      show(queueView(c.sessionId, c.entryId));
+      return void queueRpc(
+        c.sessionId,
+        "session.queueSendNow",
+        { entryId: c.entryId, revision: c.revision, confirm: true },
+        "sending again",
+      );
+    }
     if (c.action === "forkSession") {
       const f = c.fork;
       const s = sessionOf(f.sessionId);
@@ -2420,24 +2574,11 @@ export const mkFleetHandle = ({
         if (p.t === "new") return void pickProviderModel(p.settings, p.buffer.text);
         return;
       }
-      // ⌥q: queue for turn end while the target is still working; on an idle
-      // target it is just a send. Bare ⏎ (applyKey's "submit") always sends
-      // now — mid-turn that lands after the current tool call — and ⌥⏎ is
-      // always a newline, never a send: the one portable newline chord must
-      // not depend on what the target happens to be doing at that instant.
-      if (key.meta && input === "q" && sendTo) {
-        const target = fleetSessions(state).find((x) => x.id === sendTo);
-        const busy =
-          target !== undefined &&
-          (target.status.kind === "running" ||
-            target.status.kind === "starting" ||
-            target.status.kind === "working_background");
-        const text = p.buffer.text.trim();
-        if (!text) return;
-        if (busy) return void queueSend(sendTo, text);
-        promptSubmittedAt = Date.now();
-        return void submitPrompt();
-      }
+      // ⌥q (the composer's `enqueueEndOfTurn`, above) queues for turn end —
+      // on an idle target that is just a send. Bare ⏎ (applyKey's "submit")
+      // queues for the next tool boundary, and ⌥⏎ is always a newline, never
+      // a send: the one portable newline chord must not depend on what the
+      // target happens to be doing at that instant.
       const res = applyKey(p.buffer, input, key);
       switch (res.kind) {
         case "cancel":
@@ -2536,8 +2677,36 @@ export const mkFleetHandle = ({
       ) {
         return void dispatch({ t: "toggleConfirmBranch" });
       }
-      if (key.escape || input === "q" || input === "n") return void show(browse);
+      if (key.escape || input === "q" || input === "n") {
+        // A confirm raised from the queue view backs out to it.
+        if ((confirm.action === "clearQueue" && confirm.back) || confirm.action === "queueSendNow")
+          return void show(queueView(confirm.sessionId));
+        return void show(browse);
+      }
       return;
+    }
+
+    if (state.overlay.t === "queue") {
+      const o = state.overlay;
+      if (key.escape) return void show(browse);
+      // ↑↓ walk the rows by id, so an arrival never moves the selection.
+      if ((key.upArrow || key.downArrow) && !key.shift) {
+        const rows = queueRows(sessionOf(o.sessionId)?.queue);
+        const at = Math.max(
+          0,
+          rows.findIndex((e) => e.id === (queueSelection(state, o.sessionId)?.id ?? null)),
+        );
+        const next = rows[Math.max(0, Math.min(rows.length - 1, at + (key.upArrow ? -1 : 1)))];
+        if (next && next.id !== o.selected) show({ ...o, selected: next.id });
+        return void loadQueueText();
+      }
+      const a = keyAction(
+        describeCommands(commandCtx(), { target: o.sessionId, surface: "queue" }),
+        input,
+        key,
+      );
+      if (!a) return;
+      return void (a.disabled ? note(a.disabled, "dim") : runAct(a.id, o.sessionId));
     }
 
     if (state.overlay.t === "doctor") {
@@ -2734,7 +2903,8 @@ export const mkFleetHandle = ({
         if (connected()) {
           interactions.settle();
           modes.settle();
-          composer.advance();
+          // The queue view keeps its selected entry's full text current.
+          loadQueueText();
         }
       }),
       client.on("reconnect", () => {
@@ -2871,6 +3041,7 @@ export const mkFleetHandle = ({
     },
     subscribe: store.subscribe,
     getView: store.get,
+    clientId: client.clientId,
     handleKey,
     effectStart,
   };

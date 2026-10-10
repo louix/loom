@@ -6,9 +6,31 @@ import {
 } from "@loom/core/session-state";
 import type { DaemonInfo, ProviderInfo, SessionSnapshot } from "@loom/core/wire";
 import { loadableLoaded } from "@loom/core/loadable";
+import type { QueueEntryView, SessionQueue } from "@loom/core/message-queue";
 import type { Action } from "@loom/tui/model";
 
 let clock = 1_000;
+
+/** One queue entry as a snapshot carries it: queued for the next boundary,
+ *  written by `client-a`, unless `over` says otherwise. */
+export const queueEntry = (id: string, over: Partial<QueueEntryView> = {}): QueueEntryView => ({
+  id,
+  author: "client-a",
+  delivery: "next_boundary",
+  state: "queued",
+  uncertain: false,
+  revision: 0,
+  preview: `text ${id}`,
+  bytes: 6,
+  dequeue: { t: "next_tool_or_turn_end" },
+  ...over,
+});
+
+/** A session's queue for `snap({ queue })`. */
+export const queueOf = (
+  entries: readonly QueueEntryView[],
+  hold: SessionQueue["hold"] = null,
+): SessionQueue => ({ hold, entries: [...entries] });
 
 /** Build a `SessionState` from a bare kind (+ an await reason), for fixtures. */
 const toState = (

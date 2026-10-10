@@ -237,14 +237,24 @@ test("human messages and queued input retain literal lines while questions use M
       source,
     );
   }
-  const queued = queuedLine("s", source);
+  const queued = queuedLine("s", {
+    id: "e1",
+    author: "c",
+    delivery: "next_boundary",
+    state: "queued",
+    uncertain: false,
+    revision: 0,
+    preview: source,
+    bytes: source.length,
+    dequeue: { t: "tool_boundary", tool: "Bash" },
+  });
   const ctx = logContext([queued], 100);
   assert.ok(windowRows(ctx, 0, totalRows(ctx)).every((r) => r.tone === "dim" && !r.spans));
   assert.equal(
     windowRows(ctx, 0, totalRows(ctx))
       .map((r) => r.seg)
       .join("\n"),
-    "queued: " + source,
+    "next boundary · lands when Bash finishes\n\n" + source,
   );
   const question: LogLine = {
     id: null,

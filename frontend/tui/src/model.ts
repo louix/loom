@@ -40,16 +40,8 @@ import {
 } from "./overlay.ts";
 import { nextMode } from "./mode-control.ts";
 import type { QNav } from "./interactions.ts";
-import {
-  noDrafts,
-  outboxOf,
-  waiting,
-  pending,
-  recalled,
-  recorded,
-  type Drafts,
-  type Outboxes,
-} from "./composer.ts";
+import { noDrafts, recalled, recorded, type Drafts } from "./composer.ts";
+import type { QueueEntryView } from "@loom/core/message-queue";
 import { queryOf, searchMatches, type Find } from "./fleet-search.ts";
 import {
   filterLog,
@@ -674,11 +666,12 @@ export const compactingFor = (
   if (!id) return null;
   return fleetSessions(s).find((x) => x.id === id)?.compacting ?? null;
 };
-/** What the selected session still owes the daemon, oldest first. */
+/** A session's queued messages as the daemon reports them, in dispatch order. */
 export const queueFor = (
-  s: TuiState & { outbox?: Outboxes },
+  s: Pick<TuiState, "fleet">,
   id: string | null,
-): readonly string[] => pending(outboxOf(s.outbox ?? {}, id));
+): readonly QueueEntryView[] =>
+  (id ? fleetSessions(s).find((x) => x.id === id)?.queue?.entries : undefined) ?? [];
 
 export interface CacheStatus {
   /**
@@ -755,19 +748,17 @@ export const cacheHeat = (cs: CacheStatus): "fresh" | "fading" | "expiring" | nu
 };
 
 /** The selected session's log lines, oldest first: the durable entries the
- *  transcript holds, then a marker per follow-up still waiting to go out.
- *  Those markers are derived, not stored — the outbox is where a queued
- *  message lives, so one disappears exactly when its message goes on the wire
- *  and the daemon's own `user_message` takes its place. */
-export const sessionLog = (
-  s: TuiState & { outbox?: Outboxes; transcript?: Transcript },
-): LogLine[] => {
+ *  transcript holds, then a marker per message still in its queue. Those
+ *  markers are derived from the snapshot, not stored — the daemon's queue is
+ *  where a queued message lives, so one disappears exactly when the agent
+ *  takes it and the daemon's own `user_message` takes its place. */
+export const sessionLog = (s: TuiState & { transcript?: Transcript }): LogLine[] => {
   const lines = transcriptLines(s.transcript ?? noTranscript);
   const id = s.selectedId;
   if (id === null) return [...lines];
-  const queued = waiting(outboxOf(s.outbox ?? {}, id));
+  const queued = queueFor(s, id);
   if (queued.length === 0) return [...lines];
-  return [...lines, ...queued.map((text) => queuedLine(id, text))];
+  return [...lines, ...queued.map((entry) => queuedLine(id, entry))];
 };
 
 /**
@@ -776,14 +767,14 @@ export const sessionLog = (
  * {@link filterLog}.
  */
 export const visibleLog = (
-  s: TuiState & { outbox?: Outboxes; transcript?: Transcript },
+  s: TuiState & { transcript?: Transcript },
   child: FleetChild | null = null,
 ): LogLine[] => filterLog(sessionLog(s), s.logFilter, child?.id ?? null);
 
 /** The lines the event pane is actually drawing right now — the selected
  *  session's log under the current filter and child focus. What the scrollback
  *  offset is measured against. */
-export const shownLog = (s: TuiState & { outbox?: Outboxes; transcript?: Transcript }): LogLine[] =>
+export const shownLog = (s: TuiState & { transcript?: Transcript }): LogLine[] =>
   visibleLog(s, focusedChildOf(s));
 
 // ---------------------------------------------------------------------------

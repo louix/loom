@@ -1,6 +1,6 @@
-import { fleet, snap } from "./tui-fixtures.ts";
+import { fleet, queueEntry, queueOf, snap } from "./tui-fixtures.ts";
 import assert from "node:assert/strict";
-import { outboxOf, pending } from "@loom/tui/composer";
+import { outboxOf } from "@loom/tui/composer";
 import { describe, test } from "node:test";
 import { EventEmitter } from "node:events";
 import { execFileSync } from "node:child_process";
@@ -925,7 +925,7 @@ describe("tui-render", { concurrency: 4 }, () => {
     }
   });
 
-  test("a running session's send prompt asks asap vs turn-end; queue drains on idle", async () => {
+  test("a running session queues for the next boundary or, with ⌥q, turn end; the queue drains on idle", async () => {
     const { h, connect, cleanup } = await harness();
     const client = await connect();
     const snap = await client.request<SessionSnapshot>("session.create", {
@@ -970,7 +970,7 @@ describe("tui-render", { concurrency: 4 }, () => {
     }
   });
 
-  test("a queue on a session that never returns to idle is reported, not silently dropped", async () => {
+  test("a queue on a session whose turn fails is held, not dropped", async () => {
     const { h, connect, cleanup } = await harness();
     const client = await connect();
     const snap = await client.request<SessionSnapshot>("session.create", {
@@ -992,9 +992,9 @@ describe("tui-render", { concurrency: 4 }, () => {
       assert.match(stdout.last, /▸ 1 queued/);
 
       fs?.fail("upstream exploded"); // -> error, never goes idle
-      await delay(250);
-      assert.match(stdout.last, /queued message.*not sent/i, "the stranded queue is surfaced");
-      assert.doesNotMatch(stdout.last, /▸ \d+ queued/, "and cleared");
+      // The daemon holds what was waiting; every client says so, and q reviews it.
+      await waitFor(stdout, (text) => /▸ 1 held · q review/.test(text));
+      assert.deepEqual(fs?.sends, [], "nothing goes to a failed turn by itself");
     } finally {
       app.unmount();
       await client.close();
@@ -2163,7 +2163,6 @@ describe("tui-render", { concurrency: 4 }, () => {
           createElement(Detail, {
             session,
             fleet: loadableIdle,
-            box: outboxOf({}, session.id),
             mode: null,
             width: 80,
             now: T0 + 40 * 60_000,
@@ -2510,18 +2509,21 @@ describe("tui fleet-handle effects", () => {
       assert.equal(overlay.t, "prompt");
       if (overlay.t !== "prompt") return;
       assert.equal(overlay.prompt.buffer.text, "a\nb", "⌥⏎ inserted a newline, nothing was sent");
-      assert.deepEqual(pending(outboxOf(handle.composer.get(), "a")), []);
       assert.equal(fake.of("session.send").length, 0);
 
       handle.handleKey("q", { meta: true } as Key);
       assert.equal(handle.getView().ui.overlay.t, "browse", "⌥q closed the prompt");
-      assert.deepEqual(pending(outboxOf(handle.composer.get(), "a")), ["a\nb"]);
-      assert.equal(fake.of("session.send").length, 0, "queued, not sent, while running");
+      // The daemon queues it; nothing is held in this client.
+      const sent = fake.of("session.send");
+      assert.equal(sent.length, 1);
+      assert.equal(sent[0]?.params["text"], "a\nb");
+      assert.equal(sent[0]?.params["delivery"], "end_of_turn", "for when the agent finishes");
+      assert.equal(typeof sent[0]?.params["entryId"], "string", "under an id this client chose");
     } finally {
       teardown();
     }
   });
-  test("⌥q on an idle target is a plain send", () => {
+  test("⏎ queues for the next tool boundary; ⌥q on an idle target goes the same way", async () => {
     const fake = mkFakeClient();
     const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
     const teardown = handle.effectStart();
@@ -2529,9 +2531,15 @@ describe("tui fleet-handle effects", () => {
       fake.deliver(fleetOf(testSession({ id: "a", status: stateIdle })));
       handle.handleKey("", { return: true } as Key);
       for (const ch of "go") handle.handleKey(ch, {} as Key);
+      handle.handleKey("", { return: true } as Key);
+      assert.equal(fake.of("session.send")[0]?.params["delivery"], "next_boundary");
+      await delay(110); // A new keypress, past the batched double-Enter guard.
+      handle.handleKey("", { return: true } as Key);
+      for (const ch of "later") handle.handleKey(ch, {} as Key);
       handle.handleKey("q", { meta: true } as Key);
-      assert.equal(fake.of("session.send").length, 1, "sent on the wire immediately");
-      assert.deepEqual(pending(outboxOf(handle.composer.get(), "a")), []);
+      // The daemon's rule 5 makes an end-of-turn message on an idle session a
+      // plain send: one RPC, on the wire immediately.
+      assert.equal(fake.of("session.send").length, 2, "sent on the wire immediately");
     } finally {
       teardown();
     }
@@ -2565,38 +2573,32 @@ describe("tui fleet-handle effects", () => {
     const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
     const teardown = handle.effectStart();
     try {
-      fake.deliver(fleetOf(testSession({ id: "a" })));
+      const queue = queueOf([queueEntry("e1", { preview: "follow up" })]);
+      fake.deliver(fleetOf(testSession({ id: "a", queue })));
       assert.equal(handle.getView().ui.selectedId, "a");
       assert.equal(fake.heads().length, 1, "the selected session fetched its head");
 
-      queueFollowUp(handle, "follow up");
-      assert.deepEqual(pending(outboxOf(handle.composer.get(), "a")), ["follow up"]);
-
       const before = fake.calls.length;
       // The connection drops. The fleet is unknown, not empty — nothing about
-      // it justifies stranding the queue or asking a dead socket for history.
+      // it justifies asking a dead socket for history.
       fake.deliver(loadablePending);
 
       assert.equal(fake.calls.length, before, "no RPC is issued while the fleet is unknown");
       const s = handle.getView().ui;
-      assert.deepEqual(
-        pending(outboxOf(handle.composer.get(), "a")),
-        ["follow up"],
-        "the queued follow-up survives",
-      );
       assert.equal(s.selectedId, "a", "the selection survives");
-      assert.doesNotMatch(
-        s.notice?.text ?? "",
-        /not sent/,
-        "and nothing about a merely unknown fleet strands it",
-      );
 
-      // Back to data: exactly one replacement head fetch, and the queue is
-      // still governed by the ordinary turn-end rules (this session is running).
-      fake.deliver(fleetOf(testSession({ id: "a" })));
+      // Back to data: exactly one replacement head fetch; the queue is the
+      // daemon's, so this client re-sends nothing.
+      fake.deliver(fleetOf(testSession({ id: "a", queue })));
       assert.equal(fake.heads().length, 2, "one replacement head fetch");
-      assert.equal(fake.of("session.send").length, 0, "a running session is not drained");
-      assert.deepEqual(pending(outboxOf(handle.composer.get(), "a")), ["follow up"]);
+      assert.equal(fake.of("session.send").length, 0, "nothing is re-sent");
+      assert.deepEqual(
+        sessionLog(handle.getView().ui)
+          .map((l) => l.text)
+          .at(-1),
+        "next boundary · follow up · at the next tool boundary",
+        "the queued message still shows, off the snapshot",
+      );
     } finally {
       teardown();
     }
@@ -2746,32 +2748,6 @@ describe("tui fleet-handle effects", () => {
     }
   });
 
-  test("a queued session proven gone is reported once, with its queue cleared first", () => {
-    const fake = mkFakeClient();
-    const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
-    const teardown = handle.effectStart();
-    try {
-      fake.deliver(fleetOf(testSession({ id: "a" })));
-      queueFollowUp(handle, "follow up");
-      assert.deepEqual(pending(outboxOf(handle.composer.get(), "a")), ["follow up"]);
-
-      // Another client removed the session, and this snapshot proves it. Clear
-      // the queue before saying so, or the notice's own dispatch re-enters the
-      // drain and finds the same stranded queue again, forever.
-      fake.deliver(fleetOf(testSession({ id: "b", status: stateIdle })));
-      const s = handle.getView().ui;
-      assert.equal(s.drafts.last, "follow up", "the stranded text is recoverable as a new draft");
-      assert.deepEqual(
-        pending(outboxOf(handle.composer.get(), "a")),
-        [],
-        "the stranded queue is cleared",
-      );
-      assert.match(s.notice?.text ?? "", /not sent/);
-    } finally {
-      teardown();
-    }
-  });
-
   test("a send whose reply never came back is held for review, not sent again", async () => {
     const fake = mkFakeClient();
     const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
@@ -2779,30 +2755,125 @@ describe("tui fleet-handle effects", () => {
     try {
       fake.deliver(fleetOf(testSession({ id: "a" })));
       queueFollowUp(handle, "follow up");
-
-      // The turn ends, so the queue drains.
-      fake.deliver(fleetOf(testSession({ id: "a", status: stateIdle, turns: 1 })));
       const send = fake.of("session.send");
-      assert.equal(send.length, 1, "the queue drained once");
+      assert.equal(send.length, 1, "queued with the daemon at once");
 
-      // The connection dropped before the daemon replied — it may well have run.
+      // The connection dropped before the daemon replied — it may well be queued.
       send[0]?.reject(Object.assign(new Error("connection dropped"), { code: "disconnected" }));
       await delay(0);
 
       // No later snapshot may put it back on the wire.
       fake.deliver(fleetOf(testSession({ id: "a", status: stateIdle, turns: 2 })));
       assert.equal(fake.of("session.send").length, 1, "no automatic second send");
-      const s = handle.getView().ui;
-      assert.deepEqual(
-        pending(outboxOf(handle.composer.get(), "a")),
-        [],
-        "the ambiguous head left the drain queue",
-      );
-      assert.match(s.notice?.text ?? "", /may already have been sent/);
+      assert.equal(outboxOf(handle.composer.get(), "a").t, "held");
+      assert.match(handle.getView().ui.notice?.text ?? "", /No confirmation/);
 
-      // The text is not lost: opening `send` on that session brings it back.
+      // The text is not lost: opening `send` on that session brings it back,
+      // and sending it unchanged quotes the same entry id — a retry the daemon
+      // answers rather than queues twice.
+      await delay(110); // A new keypress, past the batched double-Enter guard.
       handle.handleKey("", { return: true } as Key);
       assert.equal(openPrompt(handle.getView().ui.overlay)?.buffer.text, "follow up");
+      handle.handleKey("", { return: true } as Key);
+      const again = fake.of("session.send");
+      assert.equal(again.length, 2);
+      assert.equal(again[1]?.params["entryId"], again[0]?.params["entryId"]);
+    } finally {
+      teardown();
+    }
+  });
+
+  test("q opens the selected session's queue; ↑↓ select by id; its keys act on the entry", () => {
+    const fake = mkFakeClient();
+    const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+    const teardown = handle.effectStart();
+    try {
+      const entries = [
+        queueEntry("e1", { preview: "first", revision: 2 }),
+        queueEntry("e2", { preview: "second", revision: 5 }),
+      ];
+      fake.deliver(fleetOf(testSession({ id: "a", queue: queueOf(entries) })));
+      handle.handleKey("q", {} as Key);
+      const view = handle.getView();
+      assert.equal(view.ui.overlay.t, "queue", "q no longer quits: it opens the queue");
+      assert.equal(view.body.t, "queue");
+      handle.handleKey("", { downArrow: true } as Key);
+      const o = handle.getView().ui.overlay;
+      assert.equal(o.t === "queue" && o.selected, "e2");
+      // An arrival above it does not move the selection.
+      fake.deliver(
+        fleetOf(testSession({ id: "a", queue: queueOf([queueEntry("e0"), ...entries]) })),
+      );
+      const after = handle.getView().ui.overlay;
+      assert.equal(after.t === "queue" && after.selected, "e2");
+      // x removes the selected entry at the revision on screen.
+      handle.handleKey("x", {} as Key);
+      const removed = fake.of("session.queueRemove");
+      assert.deepEqual(removed[0]?.params["entries"], [{ entryId: "e2", revision: 5 }]);
+      // K moves it up within its group.
+      handle.handleKey("K", {} as Key);
+      assert.equal(fake.of("session.queueMove")[0]?.params["direction"], "up");
+      // c asks first, over the ids on screen only.
+      handle.handleKey("c", {} as Key);
+      const confirm = handle.getView().ui.overlay;
+      assert.equal(confirm.t === "confirm" && confirm.confirm.action, "clearQueue");
+      assert.deepEqual(
+        confirm.t === "confirm" && confirm.confirm.action === "clearQueue"
+          ? confirm.confirm.entryIds
+          : null,
+        ["e0", "e1", "e2"],
+      );
+      // A message arriving while the confirm is up is not swept with them.
+      fake.deliver(
+        fleetOf(
+          testSession({
+            id: "a",
+            queue: queueOf([queueEntry("e0"), ...entries, queueEntry("late")]),
+          }),
+        ),
+      );
+      handle.handleKey("", { return: true } as Key);
+      assert.deepEqual(fake.of("session.queueClear")[0]?.params["entryIds"], ["e0", "e1", "e2"]);
+      assert.equal(handle.getView().ui.overlay.t, "queue", "and it returns to the queue");
+      handle.handleKey("", { escape: true } as Key);
+      assert.equal(handle.getView().ui.overlay.t, "browse");
+    } finally {
+      teardown();
+    }
+  });
+
+  test("e edits a queued message in the composer; a conflict keeps the text and says why", async () => {
+    const fake = mkFakeClient();
+    const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+    const teardown = handle.effectStart();
+    try {
+      const entry = queueEntry("e1", { preview: "draft", revision: 3 });
+      fake.deliver(fleetOf(testSession({ id: "a", queue: queueOf([entry]) })));
+      handle.handleKey("q", {} as Key);
+      fake
+        .of("session.queueEntry")
+        .at(-1)
+        ?.resolve({ ...entry, text: "draft in full", createdAt: 0 });
+      await delay(0);
+      handle.handleKey("e", {} as Key);
+      const p = openPrompt(handle.getView().ui.overlay);
+      assert.equal(p?.buffer.text, "draft in full", "the full text, not the preview");
+      assert.deepEqual(p?.t === "session" ? p.edit : null, { entryId: "e1", revision: 3 });
+      for (const ch of " now") handle.handleKey(ch, {} as Key);
+      handle.handleKey("", { return: true } as Key);
+      const edit = fake.of("session.queueEdit");
+      assert.equal(edit[0]?.params["text"], "draft in full now");
+      assert.equal(edit[0]?.params["revision"], 3);
+      assert.equal(fake.of("session.send").length, 0, "an edit sends nothing");
+      edit[0]?.reject(
+        Object.assign(new Error("The message changed since you looked; review it and retry."), {
+          code: "conflict",
+        }),
+      );
+      await delay(0);
+      const reopened = openPrompt(handle.getView().ui.overlay);
+      assert.equal(reopened?.buffer.text, "draft in full now", "the losing edit is kept");
+      assert.match(reopened?.feedback?.text ?? "", /changed since you looked/);
     } finally {
       teardown();
     }
@@ -3292,7 +3363,6 @@ test("isolation-incompatible Claude session is read-only with a visible reason a
       createElement(Detail, {
         session,
         fleet: fleetOf(session),
-        box: outboxOf({}, "a"),
         mode: null,
         width: 70,
         now: Date.now(),
@@ -3448,7 +3518,6 @@ test("Detail keeps ChatGPT model limits visible on separate rows", async () => {
       createElement(Detail, {
         session,
         fleet: loadableIdle,
-        box: outboxOf({}, session.id),
         mode: null,
         width: 50,
         now: 1_999_999_000_000,
@@ -4230,7 +4299,14 @@ test("the key bar projects the command model, and its chips run their commands",
   try {
     fake.deliver(fleetOf(testSession({ id: "a", status: stateRunning })));
     // The browse bar is the enabled bar commands, in the model's order.
-    assert.deepEqual(chips(), ["interrupt", "send", "new", "find", "quit", "more"]);
+    assert.deepEqual(chips(), [
+      "interrupt",
+      "queue · next tool boundary",
+      "new",
+      "find",
+      "quit",
+      "more",
+    ]);
     const hits = handle.getView().hits.filter((h) => h.kind === "bar");
     assert.ok(
       hits.every((h) => h.y === 40),
@@ -4713,7 +4789,6 @@ test("failed cancellation explains retry and restores messaging after a successf
       createElement(Detail, {
         session,
         fleet: fleetOf(session),
-        box: outboxOf({}, "a"),
         mode: null,
         width: 90,
         now: Date.now(),

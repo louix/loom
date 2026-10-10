@@ -93,7 +93,7 @@ import {
 } from "@loom/tui/overlay";
 import { activeRequest, liveQNav, mkInteractions, requestsFor } from "@loom/tui/interactions";
 import { qnav } from "@loom/tui/question-sheet";
-import { enqueue, outboxOf } from "@loom/tui/composer";
+import { queueEntry, queueOf } from "./tui-fixtures.ts";
 import { mkClock, mkDeadline, SPIN_MS, type Beat } from "@loom/tui/clock";
 import { openFind } from "@loom/tui/fleet-search";
 
@@ -1657,7 +1657,9 @@ test("the palette lists every relevant command, the unavailable ones with their 
 
   // clearqueue is enabled only when the session actually has a queue
   assert.equal(rows.find((c) => c.id === "clearqueue")?.disabled, "No queued messages.");
-  const withQueue = { ...base, outbox: { s1: enqueue(outboxOf({}, "s1"), "note") } };
+  const withQueue = ctxFor(
+    snap({ id: "s1", status: "idle", turns: 3, model: "m1", queue: queueOf([queueEntry("e1")]) }),
+  );
   assert.equal(
     paletteActions(withQueue, "s1").find((c) => c.id === "clearqueue")?.disabled,
     undefined,
@@ -1707,15 +1709,25 @@ test("the send composer offers the session's commands with the fleet's availabil
     snap({ id: "a", status: "awaiting_input", awaitReason: "permission", model: "m1" }),
     snap({ id: "a", status: "idle", provider: "other" }),
   ]) {
-    for (const outbox of [{}, { a: enqueue(outboxOf({}, "a"), "later") }]) {
-      const ctx = { ...ctxFor(s), outbox };
+    for (const queue of [undefined, queueOf([queueEntry("later")])]) {
+      const ctx = ctxFor(queue ? { ...s, queue } : s);
       const fleetSide = describeCommands(ctx, { target: "a" });
       const composer = describeCommands(ctx, { target: "a", surface: "composer" });
       assert.deepEqual(
         composer.map((a) => a.id).sort(),
-        ["clearqueue", "effort", "interrupt", "mode", "model", "provider"].sort(),
+        [
+          "clearqueue",
+          "effort",
+          "enqueueEndOfTurn",
+          "interrupt",
+          "mode",
+          "model",
+          "provider",
+        ].sort(),
       );
       for (const a of composer) {
+        // ⌥q is the composer's own: ⏎ is the fleet's send.
+        if (a.id === "enqueueEndOfTurn") continue;
         const same = fleetSide.find((b) => b.id === a.id);
         assert.equal(a.disabled, same?.disabled, `${a.id} for ${s.status.kind}`);
         assert.equal(a.label, same?.label);
@@ -2323,15 +2335,22 @@ test("↓ at the live buffer never clobbers it with the stashed draft", () => {
   assert.equal(promptOf(s)?.buffer.text, "typed", "↓ is a no-op at the live buffer");
 });
 
-test("queued follow-ups render after the durable transcript, derived from the outbox", () => {
-  const a = snap({ id: "a", status: "running" });
+test("queued messages render after the durable transcript, from the snapshot's queue", () => {
+  const queue = queueOf([
+    queueEntry("e1", { preview: "hi", dequeue: { t: "tool_boundary", tool: "Bash" } }),
+    queueEntry("e2", {
+      preview: "there",
+      delivery: "end_of_turn",
+      dequeue: { t: "turn_end", ahead: 0 },
+    }),
+  ]);
+  const a = snap({ id: "a", status: "running", queue });
   let s = opened(reduce(reduce(initialState(), fleet([a])), { t: "select", id: "a" }), "a");
   s = headPage(s, historyPage([]), "a");
   s = pushed(
     s,
     push(5, { ...ev({ type: "assistant_text", text: "from the daemon" }), sessionId: "a" }),
   );
-  let outbox = { a: enqueue(enqueue(outboxOf({}, "a"), "hi"), "there") };
 
   assert.deepEqual(
     win(s).lines.map((l) => l.text),
@@ -2339,17 +2358,24 @@ test("queued follow-ups render after the durable transcript, derived from the ou
     "a marker never enters the durable list, so it cannot be deduplicated or paged",
   );
   assert.deepEqual(
-    sessionLog({ ...s, outbox }).map((l) => l.text),
-    ["from the daemon", "queued: hi", "queued: there"],
-    "a queued send belongs at the bottom — it is about to happen, not part of the record",
+    sessionLog(s).map((l) => l.text),
+    [
+      "from the daemon",
+      "next boundary · hi · lands when Bash finishes",
+      "after it finishes · there · when the agent finishes",
+    ],
+    "a queued message belongs at the bottom — it is about to happen, not part of the record",
   );
 
-  // The message goes on the wire: its marker disappears in the same breath,
-  // because the daemon's own `user_message` is what takes its place.
-  outbox = { a: { t: "sending", operation: Symbol(), text: "hi", rest: ["there"], barrier: 0 } };
+  // The agent takes the first: the daemon drops it from the queue and its own
+  // `user_message` takes its place, in the same snapshot-and-event breath.
+  const later = {
+    ...reduce(s, fleet([{ ...a, queue: queueOf([queue.entries[1]!]) }])),
+    transcript: s.transcript,
+  };
   assert.deepEqual(
-    sessionLog({ ...s, outbox }).map((l) => l.text),
-    ["from the daemon", "queued: there"],
+    sessionLog(later).map((l) => l.text),
+    ["from the daemon", "after it finishes · there · when the agent finishes"],
   );
 });
 
@@ -3262,6 +3288,8 @@ const CHILD_WITHHELD = [
   "title",
   "comment",
   "clearqueue",
+  "queue",
+  "queueRelease",
   "delete",
 ] as const;
 
@@ -3275,10 +3303,10 @@ test("a focused child row withholds the session verbs that would act on its pare
     contextLimit: 1000,
     backgroundTasks: [{ id: "task1", kind: "shell", title: "npm test --watch" }],
     cache: { ...snap().cache, ttlMinutes: 5 },
+    queue: queueOf([queueEntry("later")], "interrupt"),
   });
-  const outbox = { kid: enqueue(outboxOf({}, "kid"), "later") };
-  const parent = { ...ctxFor(idle), outbox };
-  const drilled = { ...reduce(parent, { t: "childEnter" }), outbox };
+  const parent = ctxFor(idle);
+  const drilled = reduce(parent, { t: "childEnter" });
   assert.equal(drilled.selectedChild, "bg:task1");
   const before = describeCommands(parent);
   const after = describeCommands(drilled);
@@ -3334,4 +3362,107 @@ test("a focused child keeps send and interrupt off the bars and their keys idle"
   assert.ok(back.includes("send") && back.includes("interrupt"), back.join(" "));
   assert.equal(keyCommand(describeCommands(s), "i", {}), "interrupt");
   assert.equal(keyCommand(describeCommands(s), "", { return: true }), "send");
+});
+// --- the message queue's commands (docs/message-queue.md) ------------------
+
+/** A session with a queue, its queue view open on `selected`. */
+const queueCtx = (
+  entries: Parameters<typeof queueOf>[0],
+  hold: Parameters<typeof queueOf>[1] = null,
+  selected: string | null = null,
+  status: "running" | "awaiting_input" = "running",
+): TuiState => ({
+  ...ctxFor(snap({ id: "a", status, queue: queueOf(entries, hold) })),
+  overlay: { t: "queue", sessionId: "a", selected, full: null },
+});
+
+const queueSurface = (ctx: TuiState) =>
+  new Map(describeCommands(ctx, { target: "a", surface: "queue" }).map((a) => [a.id, a] as const));
+
+test("the queue view's commands act on the selected entry and say why they cannot", () => {
+  const entries = [
+    queueEntry("b1"),
+    queueEntry("b2", { state: "delivering" }),
+    queueEntry("e1", { delivery: "end_of_turn" }),
+    queueEntry("u1", { state: "delivering", uncertain: true }),
+  ];
+  // A queued entry first in its group: everything but "up".
+  let q = queueSurface(queueCtx(entries, null, "b1"));
+  assert.deepEqual([...q.keys()].sort(), [
+    "clearqueue",
+    "queueEdit",
+    "queueMoveDown",
+    "queueMoveUp",
+    "queueRelease",
+    "queueRemove",
+    "queueSendNow",
+    "queueToggleDelivery",
+  ]);
+  assert.equal(q.get("queueMoveUp")?.disabled, "First in its group.");
+  assert.equal(q.get("queueEdit")?.disabled, undefined);
+  assert.equal(q.get("queueEdit")?.keys, "e");
+  assert.equal(q.get("queueMoveUp")?.keys, "⇧↑");
+  assert.equal(q.get("queueRelease")?.disabled, "The queue is not held.");
+  assert.equal(q.get("clearqueue")?.label, "clear 3 queued", "the uncertain one counts");
+  assert.equal(q.get("queueToggleDelivery")?.label, "after it finishes");
+  // Handed over: read-only.
+  q = queueSurface(queueCtx(entries, null, "b2"));
+  for (const id of ["queueEdit", "queueRemove", "queueToggleDelivery", "queueSendNow"] as const)
+    assert.equal(q.get(id)?.disabled, "Already handed to the agent.", id);
+  // Last of its group, and switched the other way.
+  q = queueSurface(queueCtx(entries, null, "e1"));
+  assert.equal(q.get("queueMoveDown")?.disabled, "Last in its group.");
+  assert.equal(q.get("queueToggleDelivery")?.label, "next boundary");
+  // Uncertain: removable and resendable (after a confirm), not editable.
+  q = queueSurface(queueCtx(entries, "rejected", "u1"));
+  assert.equal(q.get("queueRemove")?.disabled, undefined);
+  assert.equal(q.get("queueSendNow")?.label, "send again");
+  assert.equal(q.get("queueEdit")?.disabled, "Already handed to the agent.");
+  assert.equal(q.get("queueRelease")?.disabled, undefined);
+  // A pending request comes first for send now.
+  q = queueSurface(queueCtx(entries, null, "b1", "awaiting_input"));
+  assert.equal(q.get("queueSendNow")?.disabled, "Approve or deny the pending request first.");
+  // K / J reach the moves; the bar is the enabled ones.
+  const actions = describeCommands(queueCtx(entries, null, "e1"), {
+    target: "a",
+    surface: "queue",
+  });
+  assert.equal(keyAction(actions, "K", {})?.id, "queueMoveUp");
+  assert.equal(keyAction(actions, "", { shift: true, downArrow: true })?.id, "queueMoveDown");
+  const bar = footerHints(queueCtx(entries, null, "b1")).map((b) => b.command?.id ?? b.keys);
+  assert.ok(bar.includes("queueEdit") && !bar.includes("queueMoveUp"), bar.join(" "));
+  assert.equal(bar[0], "↑↓");
+  assert.equal(bar.at(-1), "esc");
+});
+
+test("q opens the queue, ⌃c quits, Q is unbound and Quit and stop the daemon is in the palette", () => {
+  const busy = ctxFor(snap({ id: "a", status: "running", queue: queueOf([queueEntry("e1")]) }));
+  const actions = describeCommands(busy);
+  assert.equal(keyCommand(actions, "q", {}), "queue");
+  assert.equal(keyAction(actions, "Q", {}), null, "Q no longer quits anything");
+  assert.equal(actions.find((a) => a.id === "quit")?.keys, "⌃c");
+  const quitall = paletteActions(busy, "a").find((a) => a.id === "quitall");
+  assert.equal(quitall?.label, "Quit and stop the daemon");
+  assert.equal(quitall?.keys, "");
+  // The bar says how many wait, and whether they are held.
+  assert.ok(browseBar(busy).some((b) => b.label === "queue 1"));
+  const held = ctxFor(
+    snap({ id: "a", status: "interrupted", queue: queueOf([queueEntry("e1")], "interrupt") }),
+  );
+  assert.ok(browseBar(held).some((b) => b.label === "1 held"));
+  assert.equal(
+    paletteActions(held, "a").find((a) => a.id === "queueRelease")?.disabled,
+    undefined,
+    "release is in the palette",
+  );
+  // Nothing queued: q says so.
+  const empty = describeCommands(ctxFor(snap({ id: "a", status: "running" })));
+  assert.equal(keyAction(empty, "q", {})?.disabled, "No queued messages.");
+  // Mid-turn ⏎ says where the message goes; ⌥q is the composer's turn end.
+  assert.equal(
+    describeCommands(busy).find((a) => a.id === "send")?.label,
+    "queue · next tool boundary",
+  );
+  const composer = describeCommands(busy, { target: "a", surface: "composer" });
+  assert.equal(composer.find((a) => a.id === "enqueueEndOfTurn")?.keys, "⌥q");
 });

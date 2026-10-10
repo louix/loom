@@ -1,146 +1,75 @@
 /**
- * Text on its way to a session: what the user typed at a session that was still
- * working, what is on the wire right now, and what came back uncertain.
+ * Text on its way into a session's queue: the `session.send` on the wire, and
+ * one whose reply never came back.
  *
- * One union per session says all three. It replaces four containers that had to
- * agree with each other — a queue, a held-text map, a set of sessions with a
- * send in flight, and a map of the turn each last released at — where every
- * combination but a handful was unrepresentable in intent and perfectly
- * representable in types. Here the message belongs to the variant that owns it,
- * so a message cannot be queued and in flight at once, and a session cannot be
- * draining with nothing to drain.
+ * The queue itself is the daemon's (`docs/message-queue.md`): every message
+ * enters it, every client reads it off the session snapshot, and the daemon
+ * decides when the agent gets each one. What is left here is only what the
+ * RPC is doing — so a send whose fate is unknown is not lost, and is not
+ * queued twice when the user sends it again.
  */
 import { mkStore, type Store } from "./store.ts";
-import type { SessionSnapshot } from "@loom/core/wire";
+import type { QueueDelivery } from "@loom/core/message-queue";
 import { isAmbiguousFailure } from "@loom/client";
 
 /**
- * A session's outgoing messages, oldest first, and how far the last one got.
+ * One session's send in progress, if any.
  *
- * `barrier` is the `turns` value the last release happened at: a queued message
- * waits for a turn strictly newer than that, so one idle snapshot cannot drain
- * two messages and a session that has not started the previous one yet cannot
- * be handed the next. It outlives an empty queue — `idle` is exactly "nothing
- * to send, but this is where the last one went".
+ * `entryId` is the queue entry's id, chosen here: the daemon answers a
+ * re-sent id with the entry it already has rather than queueing it again.
  */
 export type Outbox =
-  | { t: "idle"; barrier: number }
-  /** Waiting for the session to reach a turn past `barrier`. */
-  | { t: "queued"; text: string; rest: readonly string[]; barrier: number }
+  | { t: "idle" }
   /** `session.send` is on the wire with `text`. */
-  | { t: "sending"; operation: symbol; text: string; rest: readonly string[]; barrier: number }
+  | { t: "sending"; operation: symbol; entryId: string; text: string }
   /**
-   * The reply to `text`'s send never came — dropped connection or timeout — so
-   * whether the daemon ran it is unknowable from here. It is not re-sent: it
-   * waits for the user to open that session's `send` prompt, which hands it
-   * back as editable text. `rest` waits with it rather than overtaking a
-   * message still under review.
+   * The send failed. `uncertain`: the reply never came (dropped connection,
+   * timeout) and the daemon may have queued it; `rejected`: it said no. Never
+   * re-sent by itself: opening that session's `send` prompt hands the text
+   * back, and sending it unchanged reuses `entryId`.
    */
-  | {
-      t: "held";
-      failure: "uncertain" | "rejected";
-      text: string;
-      rest: readonly string[];
-      barrier: number;
-    };
+  | { t: "held"; failure: "uncertain" | "rejected"; entryId: string; text: string };
 
 export type Outboxes = Record<string, Outbox>;
 
-const EMPTY: Outbox = { t: "idle", barrier: -1 };
+const EMPTY: Outbox = { t: "idle" };
 
 export const outboxOf = (boxes: Outboxes, id: string | null): Outbox =>
   (id ? boxes[id] : undefined) ?? EMPTY;
 
-/** Still waiting to go out, oldest first. A held message is not in here — it has
- *  left the drain path and waits for the user, not for a turn. */
-export const pending = (b: Outbox): readonly string[] => {
-  if (b.t === "idle") return [];
-  return b.t === "held" ? [...b.rest] : [b.text, ...b.rest];
-};
+/** Opening the editor hands a held message back as editable text. */
+export const release = (b: Outbox): { text: string; entryId: string } | null =>
+  b.t === "held" ? { text: b.text, entryId: b.entryId } : null;
 
-/**
- * The messages a reader can still see waiting, oldest first — what the
- * transcript marks as queued.
- *
- * Not the same set as {@link pending}: the message on the wire is left out,
- * because the daemon is about to emit its own `user_message` for it and two
- * lines for one message is worse than none. A held message is out for the same
- * reason as in `pending` — it waits for the user, not for a turn — but the
- * ones stacked behind it are still queued.
- */
-export const waiting = (b: Outbox): readonly string[] => {
-  switch (b.t) {
-    case "idle":
-      return [];
-    case "queued":
-      return [b.text, ...b.rest];
-    case "sending":
-    case "held":
-      return [...b.rest];
-  }
-};
-
-/** Add `text` behind whatever is already outgoing. Blank text is not a message. */
-export const enqueue = (b: Outbox, raw: string): Outbox => {
-  const text = raw.trim();
-  if (!text) return b;
-  return b.t === "idle"
-    ? { t: "queued", text, rest: [], barrier: b.barrier }
-    : { ...b, rest: [...b.rest, text] };
-};
-
-/** Drop everything still waiting to go out (`⌥x`), keeping the barrier. A held
- *  message is not dropped: it is text the user has not seen the fate of yet, and
- *  only opening the `send` prompt disposes of it. */
-export const cleared = (b: Outbox): Outbox =>
-  b.t === "held" || b.t === "sending" ? { ...b, rest: [] } : { t: "idle", barrier: b.barrier };
-
-/** The head is done with: promote the tail, and gate it behind `turns`. */
-const advance = (b: Outbox, turns: number): Outbox => {
-  const [next, ...rest] = b.t === "idle" ? [] : b.rest;
-  return next === undefined
-    ? { t: "idle", barrier: turns }
-    : { t: "queued", text: next, rest, barrier: turns };
-};
-
-/**
- * The text to send now, or null. A session that is compacting is skipped
- * outright: the daemon holds its op gate for the whole (multi-minute)
- * summarise and would reject the send with `code:"busy"`.
- */
-export const due = (b: Outbox, s: SessionSnapshot): string | null =>
-  b.t === "queued" && s.status.kind === "idle" && s.compacting === undefined && s.turns > b.barrier
-    ? b.text
-    : null;
-
-/** Nothing can ever be sent to a session in this state. */
-export const stranded = (s: SessionSnapshot | undefined): boolean =>
-  s === undefined || s.resumable === false || s.status.kind === "done" || s.status.kind === "error";
-
-/** Opening the editor does not release the held message's tail. */
-export const release = (b: Outbox): { text: string; box: Outbox } | null =>
-  b.t === "held" ? { text: b.text, box: b } : null;
+/** The id a send of `text` goes under: a held message's own when the text is
+ *  unchanged (it may already be queued), else a fresh one. */
+export const entryIdFor = (b: Outbox, text: string): string =>
+  b.t === "held" && b.text === text ? b.entryId : crypto.randomUUID();
 
 // ---- the handle ------------------------------------------------------------
 
+/** What the daemon says about a queued message. */
+export interface SendReply {
+  readonly entryId: string;
+  /** `queued`, `delivering` or `consumed` — how far it got before the reply. */
+  readonly state: string;
+}
+
 export interface ComposerDeps {
-  send: (sessionId: string, text: string) => Promise<void>;
-  /** The newest snapshots. */
-  fleet: () => readonly SessionSnapshot[];
-  recover: (text: string) => void;
-  /** Every notice the composer raises is bad news; nothing else needs saying. */
-  note: (text: string) => void;
+  send: (
+    sessionId: string,
+    params: { text: string; entryId: string; delivery: QueueDelivery },
+  ) => Promise<SendReply>;
 }
 
 export interface Composer extends Pick<Store<Outboxes>, "get" | "subscribe"> {
-  enqueue: (id: string, text: string) => void;
-  clear: (id: string) => void;
-  advance: () => void;
-  retry: (id: string, text: string) => Promise<void>;
+  /** Queue `text` on session `id`; settles as the RPC did. A failure leaves
+   *  the message held. */
+  send: (id: string, text: string, delivery: QueueDelivery) => Promise<SendReply>;
   dispose: () => void;
 }
 
-export const mkComposer = ({ send, fleet, recover, note }: ComposerDeps): Composer => {
+export const mkComposer = ({ send }: ComposerDeps): Composer => {
   const store = mkStore<Outboxes>({});
   const boxes = store.get;
   const commit = (id: string, box: Outbox | null): void => {
@@ -148,82 +77,38 @@ export const mkComposer = ({ send, fleet, recover, note }: ComposerDeps): Compos
     store.set(box === null ? rest : { ...rest, [id]: box });
   };
   let disposed = false;
-  const deliver = async (id: string, text: string, b: Outbox): Promise<void> => {
-    if (disposed || b.t === "idle" || b.t === "sending") return;
-    const operation = Symbol();
-    commit(id, { t: "sending", operation, text, rest: b.rest, barrier: b.barrier });
-    const current = (): Extract<Outbox, { t: "sending" }> | null => {
-      const box = boxes()[id];
-      return !disposed && box?.t === "sending" && box.operation === operation ? box : null;
-    };
-    const turns = (): number => fleet().find((s) => s.id === id)?.turns ?? b.barrier;
-    try {
-      await send(id, text);
-      const box = current();
-      if (box) commit(id, advance(box, turns()));
-    } catch (e) {
-      const box = current();
-      if (!box) return;
-      const uncertain = isAmbiguousFailure(e);
-      commit(id, {
-        t: "held",
-        failure: uncertain ? "uncertain" : "rejected",
-        text,
-        rest: box.rest,
-        barrier: turns(),
-      });
-      note(
-        uncertain
-          ? "queued message may already have been sent — ⏎ to review it"
-          : "send failed: " + (e instanceof Error ? e.message : String(e)) + " — ⏎ to review it",
-      );
-    }
-  };
-  const settle = (): void => {
-    if (disposed) return;
-    for (const id of Object.keys(boxes())) {
-      const b = boxes()[id];
-      if (!b) continue;
-      const s = fleet().find((x) => x.id === id);
-      if (stranded(s)) {
-        commit(id, null);
-        if (b.t !== "idle") {
-          recover([b.text, ...b.rest].join("\n\n"));
-          const uncertain = b.t === "sending" || (b.t === "held" && b.failure === "uncertain");
-          const outcome = uncertain ? "send may have arrived" : "queued messages not sent";
-          note(
-            "session " +
-              (s?.status.kind ?? "gone") +
-              " — " +
-              outcome +
-              "; saved as a draft — n to review",
-          );
-        }
-      } else if (s && due(b, s) !== null) {
-        void deliver(id, b.t === "idle" ? "" : b.text, b);
-      }
-    }
-  };
   return {
     get: store.get,
     subscribe: store.subscribe,
-    advance: settle,
-    enqueue: (id, text) => {
-      if (disposed) return;
-      commit(id, enqueue(outboxOf(boxes(), id), text));
-      settle();
-    },
-    clear: (id) => commit(id, cleared(outboxOf(boxes(), id))),
-    retry: async (id, text) => {
-      const b = boxes()[id];
-      if (b?.t === "held") await deliver(id, text, b);
+    send: async (id, text, delivery) => {
+      const entryId = entryIdFor(outboxOf(boxes(), id), text);
+      const operation = Symbol();
+      commit(id, { t: "sending", operation, entryId, text });
+      // A later send on the same session owns the box from here on.
+      const current = (): boolean => {
+        const box = boxes()[id];
+        return !disposed && box?.t === "sending" && box.operation === operation;
+      };
+      try {
+        const reply = await send(id, { text, entryId, delivery });
+        if (current()) commit(id, null);
+        return reply;
+      } catch (e) {
+        if (current())
+          commit(id, {
+            t: "held",
+            failure: isAmbiguousFailure(e) ? "uncertain" : "rejected",
+            entryId,
+            text,
+          });
+        throw e;
+      }
     },
     dispose: () => {
       disposed = true;
     },
   };
 };
-
 // ---- drafts ----------------------------------------------------------------
 
 /**

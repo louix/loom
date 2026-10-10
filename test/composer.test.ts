@@ -1,88 +1,74 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { SessionSnapshot } from "@loom/core/wire";
-import { mkComposer, release, enqueue, outboxOf, pending, cleared } from "@loom/tui/composer";
+import { entryIdFor, mkComposer, outboxOf, release, type SendReply } from "@loom/tui/composer";
 
 const flush = async () => {
   for (let i = 0; i < 8; i++) await Promise.resolve();
 };
+
+/** A composer whose `session.send` calls park until the test settles them. */
 const fixture = () => {
-  const session = { id: "a", status: { kind: "idle" }, turns: 1 } as SessionSnapshot;
-  const sessions = [session];
-  const calls: Array<{ resolve: () => void; reject: (e: Error) => void }> = [];
-  const notes: string[] = [];
-  const recovered: string[] = [];
+  const calls: Array<{
+    params: { text: string; entryId: string; delivery: string };
+    resolve: (r: SendReply) => void;
+    reject: (e: Error) => void;
+  }> = [];
   const composer = mkComposer({
-    recover: (text) => recovered.push(text),
-    fleet: () => sessions,
-    note: (text) => notes.push(text),
-    send: () => new Promise<void>((resolve, reject) => calls.push({ resolve, reject })),
+    send: (_id, params) =>
+      new Promise<SendReply>((resolve, reject) => calls.push({ params, resolve, reject })),
   });
-  return { composer, calls, notes, session, sessions, recovered };
+  return { composer, calls };
 };
 
-test("a rejected send stays held until explicit retry, including while reviewed", async () => {
+const dropped = () => Object.assign(new Error("connection dropped"), { code: "disconnected" });
+
+test("a send is only on the wire until the daemon answers; the queue is the daemon's", async () => {
   const f = fixture();
-  f.composer.enqueue("a", "same");
-  f.calls[0]!.reject(new Error("busy"));
-  await flush();
-  assert.equal(f.calls.length, 1);
-  assert.equal(f.composer.get().a?.t, "held");
-  f.composer.enqueue("a", "later");
-  f.session.turns++;
-  assert.equal(release(f.composer.get().a!)!.text, "same");
-  f.composer.advance();
-  assert.equal(f.calls.length, 1);
-  void f.composer.retry("a", "edited");
-  assert.equal(f.calls.length, 2);
-  f.calls[1]!.resolve();
-  await flush();
-  assert.equal(f.composer.get().a?.t, "queued");
-  assert.equal(f.calls.length, 2);
-  f.composer.dispose();
+  const sent = f.composer.send("a", "hello", "end_of_turn");
+  assert.equal(f.composer.get().a?.t, "sending");
+  assert.equal(f.calls[0]?.params.delivery, "end_of_turn");
+  f.calls[0]!.resolve({ entryId: f.calls[0]!.params.entryId, state: "queued" });
+  assert.equal((await sent).state, "queued");
+  assert.equal(outboxOf(f.composer.get(), "a").t, "idle", "nothing is kept locally");
 });
 
-test("clearing preserves an in-flight send and obsolete completions cannot consume a replacement", async () => {
+test("a send whose reply never came is held, and re-sending it unchanged reuses its id", async () => {
   const f = fixture();
-  f.composer.enqueue("a", "same");
-  f.composer.clear("a");
-  f.composer.enqueue("a", "same");
-  f.composer.advance();
-  assert.equal(f.calls.length, 1);
-  f.calls[0]!.resolve();
-  await flush();
-  assert.deepEqual(
-    pending(f.composer.get().a!),
-    ["same"],
-    "clearing did not consume the next message",
+  await assert.rejects(
+    (async () => {
+      const p = f.composer.send("a", "same", "next_boundary");
+      f.calls[0]!.reject(dropped());
+      await p;
+    })(),
   );
-  assert.equal(f.calls.length, 1, "the next message waits for a new turn");
-  f.session.turns++;
-  f.composer.advance();
-  // Removal/replacement: even identical text is a different operation.
-  f.sessions.length = 0;
-  f.composer.advance();
-  assert.deepEqual(f.recovered, ["same"], "the outgoing head remains recoverable after removal");
-  f.sessions.push(f.session);
-  f.composer.enqueue("a", "same");
-  f.notes.length = 0;
-  const second = f.composer.get().a;
-  f.calls[1]!.resolve();
-  await flush();
-  assert.equal(f.composer.get().a, second);
-  f.composer.dispose();
-  f.calls[2]!.reject(new Error("late"));
-  await flush();
-  assert.equal(f.composer.get().a, second);
-  assert.deepEqual(f.notes, []);
+  const held = f.composer.get().a;
+  assert.equal(held?.t, "held");
+  assert.equal(held?.t === "held" && held.failure, "uncertain");
+  assert.equal(f.calls.length, 1, "never re-sent by itself");
+  // Opening the prompt hands it back.
+  assert.equal(release(held!)?.text, "same");
+  // Sent again unchanged: the same entry id, so the daemon answers rather
+  // than queueing it twice; edited, a fresh one.
+  void f.composer.send("a", "same", "next_boundary").catch(() => {});
+  assert.equal(f.calls[1]?.params.entryId, f.calls[0]?.params.entryId);
+  assert.notEqual(entryIdFor(f.composer.get().a!, "edited"), f.calls[0]?.params.entryId);
 });
 
-test("enqueue trims messages, keeps order, ignores blanks and clears queued text", () => {
-  let box = outboxOf({}, "a");
-  box = enqueue(box, "  first  ");
-  box = enqueue(box, "second");
-  box = enqueue(box, "   "); // blank is not a message
-  assert.equal(box.t, "queued");
-  assert.deepEqual(pending(box), ["first", "second"]);
-  assert.deepEqual(pending(cleared(box)), []);
+test("a refused send is held as rejected; a later send owns the box", async () => {
+  const f = fixture();
+  const first = f.composer.send("a", "one", "next_boundary").catch(() => {});
+  const second = f.composer.send("a", "two", "next_boundary");
+  // The first fails after the second went out: it must not clobber it.
+  f.calls[0]!.reject(new Error("queue full"));
+  await first;
+  await flush();
+  assert.equal(f.composer.get().a?.t, "sending");
+  f.calls[1]!.resolve({ entryId: f.calls[1]!.params.entryId, state: "consumed" });
+  await second;
+  assert.equal(outboxOf(f.composer.get(), "a").t, "idle");
+  const third = f.composer.send("a", "three", "next_boundary").catch(() => {});
+  f.calls[2]!.reject(new Error("queue full"));
+  await third;
+  const box = f.composer.get().a;
+  assert.equal(box?.t === "held" && box.failure, "rejected");
 });
