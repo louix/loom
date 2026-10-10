@@ -19,6 +19,12 @@
  * own lease beside the worker's. They neither keep the environment alive nor stop
  * it; as with the session VM, they end when the worker's environment stops, and the
  * daemon keeps idle suspension away from open shells and running hooks.
+ *
+ * A worker that ends by itself is diagnosed by asking its VM whether it still runs a
+ * command: a failing VM ends its executions before its supervisor's exit is observed
+ * (about half a second later on Linux, unbounded under load), so a timer cannot tell
+ * the two apart. A VM that answers did not take the worker down; one that does not
+ * has failed, and is given time to report its own diagnosis before it is stopped.
  */
 import { dirname, join } from "node:path";
 import type { StopReason } from "@loom/isolation/environment";
@@ -32,6 +38,11 @@ import {
 import type { WorkerFailure } from "../../../../core/src/worker-failure.ts";
 import { relayDiagnosticMessage } from "../../../../core/src/relay-diagnostic.ts";
 import { inspectArtifact } from "../../../../runtime/src/packaged/artifact.ts";
+import {
+  sessionVmName,
+  vmEnvironment,
+  type VmBinding,
+} from "../../../../runtime/src/packaged/vm.ts";
 import { vmCommand } from "../../../../runtime/src/session-vm/command.ts";
 import { createVmEnvironmentCoordinator } from "../../../../runtime/src/session-vm/coordinator.ts";
 import { launchEnvironmentVm } from "../../../../runtime/src/session-vm/environment-launch.ts";
@@ -75,7 +86,40 @@ export interface IsolatedWorkerBackend {
   spawn(target: ExecutionTarget["vm"]): ExecutionChild;
   /** Guest argv that starts the worker inside an initialized environment. */
   workerArgv(artifact: string): Promise<string[]>;
+  /** Whether the environment's VM still runs a command; false once it has failed. */
+  answers(binding: VmBinding): Promise<boolean>;
 }
+
+/** How long a VM that stopped answering gets to report its own exit before it is stopped. */
+export const failedVmReportMs = 10_000;
+const answerTimeoutMs = 5_000;
+
+/**
+ * A bare exec in the guest. Against a stopped or failed VM, smolvm fails at once
+ * ("machine is not running"); a wedged one is caught by the timeout.
+ */
+export const environmentAnswers = async (binding: VmBinding): Promise<boolean> => {
+  const child = new Deno.Command(binding.smolvm, {
+    args: ["machine", "exec", "--name", sessionVmName, "--", "/bin/true"],
+    env: vmEnvironment(binding.state),
+    clearEnv: true,
+    stdin: "null",
+    stdout: "null",
+    stderr: "null",
+  }).spawn();
+  const timer = setTimeout(() => {
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      /* exited */
+    }
+  }, answerTimeoutMs);
+  try {
+    return (await child.status).success;
+  } finally {
+    clearTimeout(timer);
+  }
+};
 
 /** The session runtime's own wrapper, running guest-worker.ts beside its guest.ts. */
 export const guestWorkerArgv = async (artifact: string): Promise<string[]> => {
@@ -141,6 +185,7 @@ export const createIsolatedWorkerLauncher = (
     command: vmCommand,
     spawn: spawnExecution,
     workerArgv: guestWorkerArgv,
+    answers: environmentAnswers,
     ...overrides,
   };
   // Preserve each session's VM state location and its stopped-state lock.
@@ -275,12 +320,24 @@ export const createIsolatedWorkerLauncher = (
       await exited.catch(() => {});
       await diagnostics;
       if (terminated) return;
-      // The worker ended by itself. A failing VM ends its executions too, sometimes
-      // before its own exit is observed: let it report first so the diagnosis names it.
+      // The worker ended by itself. Its VM may have ended it: a failing VM ends its
+      // executions before its own exit is observed. Ask the VM instead of waiting.
+      const vmExited = environment.exited.then(
+        () => false,
+        () => false,
+      );
+      const answered = await Promise.race([
+        vmExited,
+        backend.answers(environment.binding).catch(() => false),
+      ]);
+      if (answered) return;
+      // The VM failed, whether or not its exit has been observed yet. Let it report
+      // first so the diagnosis is its own; stop a wedged one only after that.
+      environmentFailed ||= !generation.stopping;
       let timer: ReturnType<typeof setTimeout> | undefined;
       await Promise.race([
-        environment.exited.catch(() => {}),
-        new Promise((resolve) => (timer = setTimeout(resolve, 1000))),
+        vmExited,
+        new Promise((resolve) => (timer = setTimeout(resolve, failedVmReportMs))),
       ]);
       clearTimeout(timer);
     })();

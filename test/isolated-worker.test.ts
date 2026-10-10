@@ -137,6 +137,8 @@ const harness = async (
   options: {
     ready?: boolean;
     command?: IsolatedWorkerBackend["command"];
+    /** Whether the VM still runs a command once its worker has ended by itself. */
+    answers?: IsolatedWorkerBackend["answers"];
     /** Stands in for the runtime's own launch-time work, such as credential delivery. */
     launched?: (environment: FakeEnvironment) => Promise<void>;
   } = {},
@@ -165,6 +167,7 @@ const harness = async (
       return child.child;
     },
     workerArgv: async () => argv,
+    answers: options.answers ?? (async () => true),
   };
   const launcher = createIsolatedWorkerLauncher(join(state, "repo"), backend);
   const progress: string[] = [];
@@ -274,6 +277,57 @@ Deno.test("a crashed worker stops its VM, and the diagnosis names the worker exe
   // Only fixed progress frames cross; raw guest stderr does not.
   assert(h.progress.includes("Starting the agent…"));
   assert(!h.progress.some((message) => message.includes("secret")));
+});
+
+Deno.test("a worker that ends before its failing VM's exit is observed gets the VM's diagnosis", async () => {
+  // The VM's exit is observed well after the worker's, beyond any fixed grace: on
+  // Linux a killed VMM ends its executions about half a second before its supervisor.
+  const asked: string[] = [];
+  let environment: FakeEnvironment | undefined;
+  await using h = await harness({
+    answers: async (binding) => {
+      asked.push(binding.state);
+      setTimeout(() => environment!.crash(), 1200);
+      return false;
+    },
+  });
+  const worker = await h.launch();
+  environment = h.environments[0]!;
+  h.children[0]!.exit(1);
+  const failure = await worker.failure?.();
+  assert.deepEqual(asked, [environment.binding.state]);
+  // The VM's own record, not one the adapter built for its execution.
+  assert(failure instanceof VmTerminationError);
+  assert.equal(failure.termination.reason, "signal");
+  assert.equal(failure.termination.guestExit, undefined);
+  assert.equal(h.launcher.inspect("session").phase, "stopped");
+  assert.equal(h.launcher.leases.has("session"), false);
+});
+
+Deno.test("a worker that ends by itself beside a VM that still answers is diagnosed at once", async () => {
+  const asked: string[] = [];
+  await using h = await harness({
+    answers: async (binding) => {
+      asked.push(binding.state);
+      return true;
+    },
+  });
+  const worker = await h.launch();
+  const started = performance.now();
+  h.children[0]!.exit(3);
+  await worker.settled;
+  // No timer stands between the worker's exit and its diagnosis.
+  assert(performance.now() - started < 500, "settled without waiting on the VM");
+  const failure = await worker.failure?.();
+  assert(failure instanceof VmTerminationError);
+  assert.equal(failure.termination.reason, "guest_exit");
+  assert.deepEqual(failure.termination.guestExit, { code: 3, signal: null });
+  assert.equal(asked.length, 1);
+  // A worker the host asked to stop is never probed.
+  const second = await h.launch("other");
+  second.terminate("session_close");
+  await second.cleanup!();
+  assert.equal(asked.length, 1);
 });
 
 Deno.test("failed VM cleanup is retried, and a stale callback never stops its replacement", async () => {
@@ -411,6 +465,7 @@ Deno.test("the unchanged worker protocol runs over the adapter: create, send, id
       return environment;
     },
     spawn,
+    answers: async () => true,
     workerArgv: async () => argv,
   });
   try {
