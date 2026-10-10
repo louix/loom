@@ -27,6 +27,9 @@ await Deno.mkdir(dirname(nested), { recursive: true });
 await f.git("-C", f.repo, "worktree", "move", f.workspace, nested);
 f.workspace = nested;
 const sessionDirectory = sessionVmDirectory(f.repo, "environment");
+// Loom's own dev shell includes the patched host smolvm, whose libkrun Nix builds
+// from source (cargo vendoring via static.crates.io); no binary cache holds it.
+const allowedHosts = [...expandNetworkPresets(["nix", "javascript"]), "static.crates.io"];
 await Deno.mkdir(sessionDirectory, { recursive: true });
 try {
   // Copy current source, including new files, without the host's Git metadata,
@@ -81,7 +84,7 @@ try {
     auth: {},
     environment,
     providerHosts: [],
-    extraAllowedHosts: expandNetworkPresets(["nix", "javascript"]),
+    extraAllowedHosts: allowedHosts,
   });
   try {
     await Promise.all([
@@ -106,7 +109,7 @@ try {
       auth: {},
       environment,
       providerHosts: [],
-      extraAllowedHosts: expandNetworkPresets(["nix", "javascript"]),
+      extraAllowedHosts: allowedHosts,
     });
     try {
       const { session } = await RemoteWorkerSession.connect(
