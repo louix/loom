@@ -28,6 +28,7 @@ import {
 import { listVms, stopVm } from "../runtime/src/session-vm/inventory.ts";
 import { WorkerTranscript } from "../runtime/src/worker/transcript.ts";
 import { VmTerminationError } from "../core/src/vm-termination.ts";
+import { processesUsing, supervisorPid } from "./lib/host-processes.ts";
 import type { SessionRef } from "../core/src/types.ts";
 import { gitFixture } from "./lib/git-fixture.ts";
 
@@ -159,20 +160,6 @@ const turn = async (session: RemoteWorkerSession) => {
   }
   throw new Error("missing result");
 };
-/** Own processes still referencing a path in argv, environment or working directory. */
-const processesUsing = async (paths: string[]) => {
-  const found: string[] = [];
-  for await (const entry of Deno.readDir("/proc")) {
-    if (!/^\d+$/.test(entry.name) || Number(entry.name) === Deno.pid) continue;
-    for (const file of ["cmdline", "environ"]) {
-      const text = await Deno.readTextFile(join("/proc", entry.name, file)).catch(() => "");
-      if (paths.some((path) => text.includes(path))) found.push(entry.name + " " + file);
-    }
-    const cwd = await Deno.readLink(join("/proc", entry.name, "cwd")).catch(() => "");
-    if (paths.includes(cwd)) found.push(entry.name + " cwd");
-  }
-  return found;
-};
 const eventually = async (check: () => Promise<boolean>, what: string) => {
   const deadline = Date.now() + 40_000;
   while (!(await check())) {
@@ -194,7 +181,10 @@ const assertCleaned = async (id: string, state: string) => {
   assert.equal(launcher.inspect(id).phase, "stopped");
   await eventually(() => gone(state), "VM runtime state reaped");
   await eventually(() => gone(join(sessionVmDirectory(f.repo, id), "active.json")), "no active VM");
-  await eventually(async () => !(await processesUsing([state])).length, "no VM processes");
+  await eventually(
+    async () => !(await processesUsing([state], { cwd: true })).length,
+    "no VM processes",
+  );
   const { vms, errors } = await listVms(await Deno.realPath(f.repo));
   assert.deepEqual(errors, []);
   for (const vm of vms.filter((vm) => vm.sessionId === id)) {
@@ -465,14 +455,7 @@ try {
       args: [{ ...options(id), prompt: "", mcpServers: [] }],
     });
     const state = worker.binding.state;
-    let supervisor: number | undefined;
-    for await (const entry of Deno.readDir("/proc")) {
-      if (!/^\d+$/.test(entry.name)) continue;
-      const cmdline = await Deno.readTextFile(join("/proc", entry.name, "cmdline")).catch(() => "");
-      const cwd = await Deno.readLink(join("/proc", entry.name, "cwd")).catch(() => "");
-      if (cmdline.includes("session-vm/supervisor.ts") && cwd === state)
-        supervisor = Number(entry.name);
-    }
+    const supervisor = await supervisorPid(state);
     assert(supervisor, "found the environment supervisor");
     Deno.kill(supervisor, "SIGKILL");
     const error = await (async () => {

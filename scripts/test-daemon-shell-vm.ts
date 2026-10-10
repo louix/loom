@@ -1,6 +1,6 @@
 /**
  * Interactive `loom shell` into a VM session of a real in-process daemon, driven
- * through a real PTY (util-linux script): prompt and TTY, window resize, Ctrl-C at
+ * through a real PTY (script(1)): prompt and TTY, window resize, Ctrl-C at
  * the shell, exit status, and the shell's lease ending without disturbing the
  * worker. LOOM_TEST_LAUNCHER selects the daemon's session.isolation.launcher.
  *
@@ -21,23 +21,13 @@ import { Daemon } from "../backend/daemon/src/daemon/daemon.ts";
 import { CONNECTORS } from "../cli/src/connectors.ts";
 import { listVms } from "../runtime/src/session-vm/inventory.ts";
 import { gitFixture } from "./lib/git-fixture.ts";
+import { hostProcesses, ptyCommand, resizeTerminal } from "./lib/host-processes.ts";
 import { testLauncher } from "./lib/session-launch.ts";
 
 const [runtime, backend] = Deno.args;
 assert(runtime && backend, "Pass a rebuilt session runtime and smolvm");
 const artifact = await Deno.realPath(runtime);
 const smolvm = await Deno.realPath(backend);
-const scriptPath = (Deno.env.get("PATH") ?? "")
-  .split(":")
-  .map((dir) => join(dir, "script"))
-  .find((path) => {
-    try {
-      return Deno.statSync(path).isFile;
-    } catch {
-      return false;
-    }
-  });
-assert(scriptPath, "util-linux script is required");
 setLogLevel("error");
 const f = await gitFixture();
 // The daemon's state, config, worktrees, socket and VM inventory: all private.
@@ -76,29 +66,18 @@ await Deno.writeTextFile(
 
 const quote = (s: string) => "'" + s.replaceAll("'", "'\\''") + "'";
 /** `smolvm machine exec -t` processes that loom shell started in this workspace. */
-const terminalExecs = async (workspace: string) => {
-  const found: number[] = [];
-  for await (const entry of Deno.readDir("/proc")) {
-    if (!/^\d+$/.test(entry.name)) continue;
-    const argv = (await Deno.readTextFile(`/proc/${entry.name}/cmdline`).catch(() => "")).split(
-      "\0",
-    );
-    const cwd = await Deno.readLink(`/proc/${entry.name}/cwd`).catch(() => "");
-    if (argv.includes("exec") && argv.includes("-t") && cwd === workspace)
-      found.push(Number(entry.name));
-  }
-  return found;
-};
+const terminalExecs = async (workspace: string) =>
+  (await hostProcesses({ cwd: true }))
+    .filter(({ argv, cwd }) => argv.includes("exec") && argv.includes("-t") && cwd === workspace)
+    .map(({ pid }) => pid);
 /** The terminal device `loom shell` runs on inside script's PTY. */
-const loomTerminal = async (repo: string) => {
-  for await (const entry of Deno.readDir("/proc")) {
-    if (!/^\d+$/.test(entry.name)) continue;
-    const cmdline = await Deno.readTextFile(`/proc/${entry.name}/cmdline`).catch(() => "");
-    if (!cmdline.includes("cli/src/loom.ts") || !cmdline.includes(repo)) continue;
-    const tty = await Deno.readLink(`/proc/${entry.name}/fd/0`).catch(() => "");
-    if (tty.startsWith("/dev/pts/")) return tty;
-  }
-};
+const loomTerminal = async (repo: string) =>
+  (await hostProcesses({ tty: true })).find(
+    ({ text, tty }) =>
+      text.includes("cli/src/loom.ts") &&
+      text.includes(repo) &&
+      /^\/dev\/(?:pts\/|ttys)\d+$/.test(tty ?? ""),
+  )?.tty;
 
 let daemon: Daemon | undefined;
 let client: LoomClient | undefined;
@@ -129,25 +108,22 @@ try {
   const workspace = await Deno.realPath(s.worktree!);
   const before = await terminalExecs(workspace);
 
-  const p = new Deno.Command(scriptPath, {
-    args: [
-      "-q",
-      "-e",
-      "-c",
-      [
-        Deno.execPath(),
-        "run",
-        "-A",
-        fileURLToPath(new URL("../cli/src/loom.ts", import.meta.url)),
-        "--repo",
-        f.repo,
-        "shell",
-        s.id.slice(0, 8),
-      ]
-        .map(quote)
-        .join(" "),
-      "/dev/null",
-    ],
+  const pty = ptyCommand(
+    [
+      Deno.execPath(),
+      "run",
+      "-A",
+      fileURLToPath(new URL("../cli/src/loom.ts", import.meta.url)),
+      "--repo",
+      f.repo,
+      "shell",
+      s.id.slice(0, 8),
+    ]
+      .map(quote)
+      .join(" "),
+  );
+  const p = new Deno.Command(pty.command, {
+    args: pty.args,
     env: { TERM: "xterm-256color" },
     stdin: "piped",
     stdout: "piped",
@@ -188,9 +164,7 @@ try {
       [41, 133],
       [17, 61],
     ]) {
-      const stty = await new Deno.Command("stty", {
-        args: ["-F", tty, "rows", String(rows), "cols", String(cols)],
-      }).output();
+      const stty = await resizeTerminal(tty, rows!, cols!);
       assert(stty.success, new TextDecoder().decode(stty.stderr));
       await delay(300);
       await send("printf 'LOOM_SIZE %s\\n' \"$(stty size)\"\n");

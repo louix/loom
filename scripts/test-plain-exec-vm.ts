@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { ExecutionLeases } from "@loom/isolation/execution-leases";
 import { plainExec } from "../runtime/src/session-vm/plain-exec.ts";
 import { listVms } from "../runtime/src/session-vm/inventory.ts";
+import { processesUsing } from "./lib/host-processes.ts";
 
 const [artifact, smolvm] = Deno.args;
 assert(artifact && smolvm, "Pass a rebuilt session runtime and smolvm");
@@ -20,18 +21,6 @@ const vmStates = async () => {
   for await (const entry of Deno.readDir("/tmp"))
     if (/^loom-(?:session-vm|svm)-/.test(entry.name)) states.add(join("/tmp", entry.name));
   return states;
-};
-/** Own processes still referencing a path in argv or environment. */
-const processesUsing = async (paths: string[]) => {
-  const found: string[] = [];
-  for await (const entry of Deno.readDir("/proc")) {
-    if (!/^\d+$/.test(entry.name) || Number(entry.name) === Deno.pid) continue;
-    for (const file of ["cmdline", "environ"]) {
-      const text = await Deno.readTextFile(join("/proc", entry.name, file)).catch(() => "");
-      if (paths.some((path) => text.includes(path))) found.push(entry.name + " " + file);
-    }
-  }
-  return found;
 };
 const assertCleaned = async (environment: string, leases: ExecutionLeases, before: Set<string>) => {
   assert(leases.lastActivity(environment) > 0, "the command held an execution lease");

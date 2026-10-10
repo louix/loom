@@ -1,5 +1,5 @@
 /** Credential-free terminal smoke: CLI handoff locally and a real shell in both VM layouts.
- * Run on Linux with util-linux script, passing SESSION_RUNTIME SMOLVM. With
+ * Run with script(1) (util-linux on Linux), passing SESSION_RUNTIME SMOLVM. With
  * LOOM_TEST_LAUNCHER=isolation the VM shell is an execution beside the worker, as
  * the daemon opens it on that launcher.
  */
@@ -12,6 +12,7 @@ import { LoomClient } from "@loom/client";
 import type { FakeProvider } from "@loom/connector-mock";
 import type { SessionSnapshot } from "@loom/core/wire";
 import { gitFixture } from "./lib/git-fixture.ts";
+import { ptyCommand } from "./lib/host-processes.ts";
 import { closeTestLaunchers, launchTestSessionVm } from "./lib/session-launch.ts";
 import { sessionVmDirectory } from "../backend/daemon/src/daemon/session-vm-state.ts";
 import type { SessionExecutions } from "../core/src/connector.ts";
@@ -23,17 +24,6 @@ const [artifact, smolvm] = Deno.args;
 const localOnly = Deno.args.includes("--local");
 assert(localOnly || (artifact && smolvm), "Pass SESSION_RUNTIME SMOLVM (or --local)");
 const quote = (s: string) => "'" + s.replaceAll("'", "'\\''") + "'";
-const scriptPath = (Deno.env.get("PATH") ?? "")
-  .split(":")
-  .map((dir) => join(dir, "script"))
-  .find((path) => {
-    try {
-      return Deno.statSync(path).isFile;
-    } catch {
-      return false;
-    }
-  });
-assert(scriptPath, "util-linux script is required");
 const terminal = async (
   command: string[],
   cwd: string,
@@ -42,8 +32,9 @@ const terminal = async (
   /** Only the given environment, as loom shell runs a VM transport. */
   clean = false,
 ) => {
-  const p = new Deno.Command(scriptPath, {
-    args: ["-q", "-e", "-c", command.map(quote).join(" "), "/dev/null"],
+  const pty = ptyCommand(command.map(quote).join(" "));
+  const p = new Deno.Command(pty.command, {
+    args: pty.args,
     ...(env ? { env, clearEnv: clean } : {}),
     stdin: "piped",
     stdout: "piped",

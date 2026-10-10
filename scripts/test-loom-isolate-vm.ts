@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { copyIsolateCli } from "../packaging/copy-isolate-cli.ts";
 import { listVms } from "../runtime/src/session-vm/inventory.ts";
+import { processesUsing, ptyCommand, resizeTerminal } from "./lib/host-processes.ts";
 
 const [artifact, smolvm, installed] = Deno.args;
 assert(artifact && smolvm, "Pass a rebuilt session runtime and smolvm");
@@ -129,18 +130,6 @@ const vmStates = async () => {
   for await (const entry of Deno.readDir("/tmp"))
     if (/^loom-(?:session-vm|svm)-/.test(entry.name)) states.add(join("/tmp", entry.name));
   return states;
-};
-/** Own processes still referencing a path in argv or environment. */
-const processesUsing = async (paths: string[]) => {
-  const found: string[] = [];
-  for await (const entry of Deno.readDir("/proc")) {
-    if (!/^\d+$/.test(entry.name) || Number(entry.name) === Deno.pid) continue;
-    for (const file of ["cmdline", "environ"]) {
-      const text = await Deno.readTextFile(join("/proc", entry.name, file)).catch(() => "");
-      if (paths.some((path) => text.includes(path))) found.push(entry.name + " " + file);
-    }
-  }
-  return found;
 };
 let seen = 0;
 /** This run's VMs are all stopped and reaped; the environment is free; nothing lingers. */
@@ -265,14 +254,13 @@ try {
         'echo size=$(stty size); trap "echo resized=\\$(stty size)" WINCH; ' +
           'trap "echo got-INT; exit 9" INT; echo started; while :; do sleep 0.2; done',
       );
-    const cli = start(["script", "-qefc", inner, "/dev/null"]);
-    const tty = (await cli.waitFor(/TTY=(\/dev\/pts\/\d+)/))[1]!;
+    const pty = ptyCommand(inner);
+    const cli = start([pty.command, ...pty.args]);
+    const tty = (await cli.waitFor(/TTY=(\/dev\/(?:pts\/\d+|ttys\d+))/))[1]!;
     await cli.waitFor(/started/);
     assert.match(cli.output().stdout, /size=24 80/);
-    const resized = await new Deno.Command("stty", {
-      args: ["-F", tty, "rows", "33", "cols", "77"],
-    }).output();
-    assert(resized.success);
+    const resized = await resizeTerminal(tty, 33, 77);
+    assert(resized.success, new TextDecoder().decode(resized.stderr));
     await cli.waitFor(/resized=33 77/, 20_000);
     cli.child.stdin!.write(new Uint8Array([3]));
     assert.equal(await cli.exited, 9, cli.output().stdout);

@@ -19,6 +19,7 @@ import {
   type SessionVmStatus,
 } from "../../backend/daemon/src/daemon/session-vm-worker.ts";
 import type { SessionExecutions } from "../../core/src/connector.ts";
+import { supervisorPid } from "./host-processes.ts";
 
 export type TestLauncher = "legacy" | "isolation";
 const configured = Deno.env.get("LOOM_TEST_LAUNCHER") ?? "legacy";
@@ -41,16 +42,6 @@ export type TestSessionWorker = Pick<
   /** The VM's supervisor; on the isolation launcher, `pid` is the worker execution. */
   supervisor(): Promise<number | undefined>;
   launcher: TestLauncher;
-};
-
-/** The supervisor runs in its VM's runtime state directory, on either launcher. */
-export const supervisorPid = async (state: string) => {
-  for await (const entry of Deno.readDir("/proc")) {
-    if (!/^\d+$/.test(entry.name)) continue;
-    const cmdline = await Deno.readTextFile(join("/proc", entry.name, "cmdline")).catch(() => "");
-    const cwd = await Deno.readLink(join("/proc", entry.name, "cwd")).catch(() => "");
-    if (cmdline.includes("session-vm/supervisor.ts") && cwd === state) return Number(entry.name);
-  }
 };
 
 const launchers = new Map<string, ReturnType<typeof createIsolatedWorkerLauncher>>();

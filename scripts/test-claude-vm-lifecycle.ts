@@ -13,6 +13,7 @@ import { RemoteWorkerSession } from "../backend/daemon/src/daemon/worker-provide
 import { mockLaunchSpec } from "../backend/daemon/src/daemon/worker-launch.ts";
 import { readFrames } from "../runtime/src/worker/transport.ts";
 import { gitFixture } from "./lib/git-fixture.ts";
+import { hostProcesses } from "./lib/host-processes.ts";
 import { launchTestSessionVm, testLauncher, type TestSessionWorker } from "./lib/session-launch.ts";
 import { sessionVmDirectory } from "../backend/daemon/src/daemon/session-vm-state.ts";
 import { VmTerminationError } from "../core/src/vm-termination.ts";
@@ -75,13 +76,10 @@ const modes = [
   "VM process SIGKILL",
 ];
 /** smolvm's VMM process for this VM, found through its runtime state path. */
-const vmmPid = async (state: string) => {
-  for await (const entry of Deno.readDir("/proc")) {
-    if (!/^\d+$/.test(entry.name)) continue;
-    const cmdline = await Deno.readTextFile(join("/proc", entry.name, "cmdline")).catch(() => "");
-    if (cmdline.includes("_boot-vm") && cmdline.includes(state)) return Number(entry.name);
-  }
-};
+const vmmPid = async (state: string) =>
+  (await hostProcesses()).find(
+    (process) => process.text.includes("_boot-vm") && process.text.includes(state),
+  )?.pid;
 if (testLauncher === "isolation") modes.push("worker exec SIGKILL");
 try {
   for (const mode of modes) {
