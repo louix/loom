@@ -10,6 +10,7 @@ import {
   type RuntimeBuild,
 } from "../runtime/src/packaged/artifact.ts";
 import {
+  buildDependencies,
   classifyBuildFailure,
   ensureBuiltRuntime,
   ensureRuntimeArtifact,
@@ -35,7 +36,7 @@ const fixture = async () => {
   let release: () => void = () => {};
   const gate = { wait: Promise.resolve() };
   const dependencies: BuildDependencies = {
-    async run(_builder, output, onLine) {
+    async run(_builder, output, _log, onLine) {
       calls.run++;
       onLine("copying path '/nix/store/x-glibc' from 'https://cache.nixos.org'...");
       await gate.wait;
@@ -129,7 +130,8 @@ test("build failures are actionable and keep the log", async () => {
   try {
     const failing = (line: string): BuildDependencies => ({
       ...f.dependencies,
-      async run(_builder, _output, onLine) {
+      async run(_builder, _output, log, onLine) {
+        await Deno.writeTextFile(log, line + "\n", { append: true });
         onLine(line);
         return false;
       },
@@ -172,6 +174,36 @@ test("build failures are actionable and keep the log", async () => {
     assert.equal(f.calls.run, 0);
     await assert.rejects(Deno.lstat(builtRuntimePath(build(), f.home)));
   } finally {
+    await f.cleanup();
+  }
+});
+
+test("the builder writes to its log, not to Loom, and sees no inherited environment", async () => {
+  const f = await fixture();
+  const secret = "LOOM_BUILD_TEST_SECRET";
+  Deno.env.set(secret, "leaked");
+  try {
+    const builder = join(f.root, "builder");
+    // Builtins only: the builder gets no PATH from Loom.
+    await Deno.writeTextFile(
+      builder,
+      `#!/bin/sh\necho "start $1"\necho "secret=\${${secret}:-none} tmp=$TMPDIR" >&2\n: > "$1"\nexit "\${FAIL:-0}"\n`,
+      { mode: 0o755 },
+    );
+    const log = join(f.root, "build.log");
+    await Deno.writeTextFile(log, "");
+    const seen: string[] = [];
+    const output = join(f.root, "out");
+    assert.equal(
+      await buildDependencies.run(builder, output, log, (line) => seen.push(line)),
+      true,
+    );
+    assert.deepEqual(seen, [`start ${output}`, "secret=none tmp=/tmp"]);
+    assert.equal(await Deno.readTextFile(log), `start ${output}\nsecret=none tmp=/tmp\n`);
+    await Deno.writeTextFile(builder, "#!/bin/sh\necho failing\nexit 3\n");
+    assert.equal(await buildDependencies.run(builder, output, log, () => {}), false);
+  } finally {
+    Deno.env.delete(secret);
     await f.cleanup();
   }
 });

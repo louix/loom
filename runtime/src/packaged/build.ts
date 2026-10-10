@@ -17,7 +17,6 @@ import {
   type RuntimeBuild,
 } from "./artifact.ts";
 import { retainedVmStates, vmMaintenanceLock } from "./maintenance.ts";
-import { decodeTextStream } from "../../../core/src/text-stream.ts";
 
 export type BuildFailure = "network" | "space" | "builder";
 /** Rough peak use: the builder VM's disk and output under /tmp, the result in /nix. */
@@ -32,7 +31,7 @@ export const classifyBuildFailure = (log: string): BuildFailure => {
   if (/no space left on device|ENOSPC|disk quota exceeded|not enough (?:free )?space/i.test(log))
     return "space";
   if (
-    /could(?:n't| not) resolve host|unable to download|network is unreachable|temporary failure in name resolution|connection (?:refused|reset|timed out)|failed to connect|operation timed out|TLS handshake|SSL connect error|no route to host/i.test(
+    /could(?:n't| not) resolve host|unable to download|network is unreachable|temporary failure in name resolution|connection (?:refused|reset|timed out)|failed to connect|operation timed out|TLS handshake|SSL connect error|no route to host|timeout was reached/i.test(
       log,
     )
   )
@@ -41,10 +40,14 @@ export const classifyBuildFailure = (log: string): BuildFailure => {
 };
 
 export interface BuildDependencies {
-  /** Run the builder into `output`, reporting each output line; resolves with success. */
+  /**
+   * Run the builder into `output`, writing its output to `log` and reporting each
+   * line; resolves with success.
+   */
   run(
     builder: string,
     output: string,
+    log: string,
     onLine: (line: string) => void,
     signal?: AbortSignal,
   ): Promise<boolean>;
@@ -72,43 +75,75 @@ const command = async (name: string, args: string[]) => {
   return decode(result.stdout);
 };
 
-const lines = async (stream: ReadableStream<Uint8Array>, onLine: (line: string) => void) => {
+/** Report each line appended to `path` until `exited` settles and the file is drained. */
+const follow = async (path: string, onLine: (line: string) => void, exited: Promise<unknown>) => {
+  let done = false;
+  void exited.finally(() => (done = true));
+  const file = await Deno.open(path, { read: true });
+  const decoder = new TextDecoder();
+  const buffer = new Uint8Array(64 * 1024);
   let rest = "";
-  for await (const chunk of decodeTextStream(stream)) {
-    const parts = (rest + chunk).split(/\r?\n|\r/);
-    rest = parts.pop()!;
-    for (const part of parts) onLine(part);
+  let drained = false;
+  try {
+    for (;;) {
+      const read = await file.read(buffer);
+      if (read) {
+        const parts = (rest + decoder.decode(buffer.subarray(0, read), { stream: true })).split(
+          /\r?\n|\r/,
+        );
+        rest = parts.pop()!;
+        for (const part of parts) onLine(part);
+        continue;
+      }
+      // One more read after exit picks up whatever was written just before it.
+      if (done && drained) break;
+      drained = done;
+      if (!done) await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    rest += decoder.decode();
+    if (rest) onLine(rest);
+  } finally {
+    file.close();
   }
-  if (rest) onLine(rest);
 };
 
 export const buildDependencies: BuildDependencies = {
-  async run(builder, output, onLine, signal) {
+  async run(builder, output, log, onLine, signal) {
     // Only a temporary directory crosses: the builder sets its own private HOME/XDG
     // paths, and nothing from Loom's environment (credentials included) reaches it.
     // Darwin's Unix socket limit needs the builder's VM state under a short path.
-    const child = new Deno.Command(builder, {
-      args: [output],
+    // Output goes straight to the log, never through a pipe Loom's exit would close.
+    const child = new Deno.Command("/bin/sh", {
+      args: ["-c", 'exec "$0" "$1" >>"$2" 2>&1', builder, output, log],
       clearEnv: true,
       env: { TMPDIR: "/tmp" },
       stdin: "null",
-      stdout: "piped",
-      stderr: "piped",
+      stdout: "null",
+      stderr: "null",
     }).spawn();
+    // Stopping the builder's foreground VM command lets its trap run at once: the
+    // trap stops and deletes the VM. Loom exiting mid-build stops it the same way.
     const stop = () => {
       try {
-        // The builder's trap stops and deletes its VM.
+        new Deno.Command("pkill", {
+          args: ["-TERM", "-P", String(child.pid)],
+          stdin: "null",
+          stdout: "null",
+          stderr: "null",
+        }).spawn();
         child.kill("SIGTERM");
       } catch {
         /* exited */
       }
     };
     signal?.addEventListener("abort", stop, { once: true });
+    globalThis.addEventListener("unload", stop);
     try {
-      await Promise.all([lines(child.stdout, onLine), lines(child.stderr, onLine)]);
+      await follow(log, onLine, child.status);
       return (await child.status).success;
     } finally {
       signal?.removeEventListener("abort", stop);
+      globalThis.removeEventListener("unload", stop);
     }
   },
   async register(directory, link) {
@@ -273,12 +308,7 @@ export const ensureBuiltRuntime = async (
     }
     const link = builtRuntimePath(build, home);
     const logPath = `${link}.log`;
-    const log = await Deno.open(logPath, {
-      create: true,
-      write: true,
-      truncate: true,
-      mode: 0o600,
-    });
+    await Deno.writeTextFile(logPath, "", { mode: 0o600 });
     // Holding the lock, any other scratch output is an interrupted build's.
     for await (const entry of Deno.readDir(temporary)) {
       if (!entry.name.startsWith(scratchPrefix) || !entry.isDirectory) continue;
@@ -301,17 +331,12 @@ export const ensureBuiltRuntime = async (
       onProgress(
         "Building the VM runtime for this Loom version. The first start after installing or upgrading Loom can take 15–60 minutes; later starts reuse it.",
       );
-      const encoder = new TextEncoder();
       const output = join(scratch, "lvm");
       const success = await dependencies.run(
         build.builder,
         output,
+        logPath,
         (line) => {
-          try {
-            log.writeSync(encoder.encode(line + "\n"));
-          } catch {
-            /* The log is diagnostic only. */
-          }
           const text = line.trim();
           if (!text) return;
           tail.push(text);
@@ -356,7 +381,6 @@ export const ensureBuiltRuntime = async (
       return artifact;
     } finally {
       clearInterval(ticker);
-      log.close();
       await writable(scratch).catch(() => {});
       await Deno.remove(scratch, { recursive: true }).catch(() => {});
     }
