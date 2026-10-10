@@ -63,7 +63,7 @@ type EntryState = "queued" | "delivering" | "consumed" | "cancelled";
 interface QueueEntry {
   id: string; // client UUID: idempotency key, also the Claude message uuid
   text: string;
-  author: string; // client id | "loom:hook" | "loom:rebase" | "loom:commit"
+  author: string; // the submitting client's id; Loom's own messages never queue
   delivery: Delivery;
   state: EntryState;
   uncertain: boolean; // handed over; whether the provider took it is unknown
@@ -86,9 +86,9 @@ type QueueHold = "interrupt" | "restart" | "crash" | "rejected" | null;
   appends to the other group. A mid-turn message is never delayed by an earlier
   end-of-turn one.
 - Hold: a session-level flag; while set nothing is dispatched automatically.
-- Any client may act on any entry (single user). Loom-authored entries can be
-  deleted, moved or sent now, not edited. Authors render as you, other client or
-  loom.
+- Any client may act on any entry (single user). Authors render as you or
+  another client. Loom's own messages (hook feedback, nudges) bypass the queue
+  ([decision 3](#decisions)).
 - Limits (main-new's): 100 live entries, 1 MiB per entry, 8 MiB per session;
   past them enqueue fails with `queue_full`. Consumed/cancelled rows are kept,
   pruned to the newest 200, so re-enqueueing a known `id` with the same text
@@ -131,7 +131,7 @@ transport outcome (worker frame timeout, disconnect) marks it `uncertain` and
 sets hold `rejected`; handovers are never retried automatically.
 
 A3: `run.userTurn` is armed when a user entry is handed over, fresh or folded,
-as `send` does today; Loom entries are `automated`. `#lastSend` (checkpoint and
+as `send` does today; Loom's direct sends stay `automated`. `#lastSend` (checkpoint and
 auto-title seed) is set only when a user entry starts a fresh turn.
 
 A7: on a resumed Claude query `afterReady` gates `#inbox` until the cost
@@ -148,16 +148,19 @@ consumption time, so the log shows the message where the agent saw it. A new
 `providerCapabilitiesSchema` flag, `inputReceipts`, says whether an adapter
 emits it.
 
-- **Claude** (signal owned by the concurrent investigation). Candidates:
-  `SDKAssistantMessage.user_message_uuid`, stamped on a turn's first assistant
-  frame and after folds into meta turns but **not** after a fold into a turn
-  started by a typed prompt; `SDKUserMessageReplay` (`isReplay`, `uuid`), where
-  it is unknown whether it fires on enqueue or on fold; the CLI transcript's
-  `queue-operation` and `queued_command` records, also usable to reconcile after
-  resume. Until one is proven, `inputReceipts: false`.
-- **Codex.** A `turn/steer` / `turn/start` reply is an acknowledgement only. The
-  expected evidence is a `userMessage` thread item (`item/started` or
-  `item/completed`) carrying the text; prove it with a recorded fixture first.
+- **Claude.** The adapter stamps each input with the entry id as its uuid. A
+  live probe (CLI 2.1.280, no extra flags) shows the CLI emitting
+  `command_lifecycle {command_uuid, state}` frames: `queued` on receipt,
+  `started` when it takes the command up — at turn start, or right after the
+  tool result it folds into — and `completed` / `cancelled`. `started` is the
+  receipt. `user_message_uuids` on assistant and `result` frames (which do list
+  folds into typed-prompt turns on the `result`) back it up.
+  `--replay-user-messages` is not needed.
+- **Codex.** `turn/start` and `turn/steer` take `clientUserMessageId`, and the
+  `userMessage` thread item echoes it as `clientId` (protocol schema of codex
+  0.156.1). A started turn consumed its input at the `turn/start` reply; a
+  steer is consumed when its `userMessage` item arrives, and, as a fallback
+  for servers that do not echo it, at that turn's `turn/completed`.
 - **AISDK.** Exact, in-process: at turn start, and when `prepareStep` /
   `#flushInjections` drains an injection. The worker forwards it as an event.
 - **No receipts.** The entry is consumed at handover and `user_message` is
@@ -171,12 +174,16 @@ The keys (`i`, ⌥i) and `session.interrupt` are unchanged. In
 
 1. Before calling the adapter, set hold `interrupt` if any entry is queued or
    delivering, so dispatch cannot race the stop.
-2. `interrupt()` resolves with `{ cancelledInputs }` (plumbing owned by the
-   concurrent agent): Claude reports drained `#inbox` IDs plus the receipt's
-   `cancelled`; AISDK the injections it dropped; Codex nothing.
+2. The adapter reports what the stop discarded as an `input_discarded` event
+   (`2930534f`), which may land just before or after `interrupt()` settles:
+   Claude reports drained `#inbox` IDs plus the receipt's `cancelled`; AISDK
+   the injections it dropped; Codex nothing.
 3. Cancelled delivering entries return to `queued` with their `seq`, so order
-   survives. Delivering entries neither cancelled nor consumed become
-   `uncertain`.
+   survives, whichever way round the event and the settled interrupt arrive.
+   Delivering entries neither cancelled nor consumed when the interrupt settles
+   become `uncertain`; a later discard of one still returns it to `queued`. A
+   discarded item that is no queue entry — a Loom message sent directly — is
+   dropped ([decision 3](#decisions)).
 4. A notice says "Interrupted · 3 messages held · q to review". Nothing is
    removed from the log, because unconsumed entries never entered it.
 
@@ -184,8 +191,11 @@ A failed interrupt leaves entries and the hold in place; a retry repeats 2–3.
 
 `session.queueRelease` clears the hold and rules 4–5 resume; uncertain entries
 are not released with it and each needs send now or delete. Send now on one
-entry delivers it and leaves the rest held. A new message typed while held goes
-ahead of the held entries (open question 2).
+entry delivers it and leaves the rest held. A new message typed while held is
+sent first and alone — a new turn, or a hand-over to a live one — not queued
+behind the held entries, and sending it releases the hold as `r` would: the
+held entries then follow the ordinary rules relative to the turn it started,
+so a held `end_of_turn` entry goes at that turn's end ([decision 2](#decisions)).
 
 - **Daemon restart:** queued entries persist; delivering ones become `uncertain`
   with hold `restart`. Auto-resume (`#autoResumeInterrupted`) bypasses the queue
@@ -201,8 +211,8 @@ ahead of the held entries (open question 2).
 
 | Concern              | Rule                                                                                                                                       |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| Hook feedback        | Enqueued `next_boundary`, `loom:hook`, behind user entries; replaces the direct send at `daemon.ts:457`.                                   |
-| Rebase/commit nudges | Enqueued `end_of_turn` (`loom:rebase`, `loom:commit`); revalidated at dispatch (a commit nudge for a now-clean tree is cancelled).         |
+| Hook feedback        | Bypasses the queue: the direct `automated` send at `daemon.ts:457`, echoed at once, as today. A Stop that discards it drops it.            |
+| Rebase/commit nudges | Bypass the queue, as hook feedback; a discarded nudge is dropped, never surfaced as a user entry ([decision 3](#decisions)).               |
 | Auto-resume          | Bypasses the queue.                                                                                                                        |
 | Keep-warm            | Bypasses the queue; never sent while an entry is dispatchable; allowed while held.                                                         |
 | Requests, plans      | Answers bypass the queue; nothing dispatches during `awaiting_input`. Claude's "plan is approved" send (`adapter.ts:1096`) stays internal. |
@@ -252,8 +262,8 @@ client saw; a stale one gets `conflict` and changes nothing.
 
 Worker protocol (`core/src/worker.ts:82`, `runtime/src/worker/serve.ts`,
 `backend/daemon/src/daemon/worker-provider.ts:232`): `send` takes
-`[text, {inputId, midTurn}]`; `interrupt` returns `{cancelledInputs}`;
-`input_consumed` is an ordinary event frame. `opts` stays optional for the echo
+`[text, {inputId, midTurn}]`; `interrupt` is unchanged (discards travel as the
+`input_discarded` event); `input_consumed` is an ordinary event frame. `opts` stays optional for the echo
 connector.
 
 Events: `userMessageEventSchema` (`core/src/events.ts:355`) gains
@@ -306,8 +316,8 @@ running, like every A2 target. Session commands stay hidden on child rows.
 | `queueSendNow`                  |         |          | `s`         | "Answer the pending request first." An uncertain entry confirms "may duplicate". |
 | `queueRelease`                  | palette |          | `r`         | "The queue is not held."                                                         |
 | `clearqueue`                    | `⌥x`    | `⌥x`     | `c`         | Confirms "Clear N?" over the IDs shown. "No queued messages."                    |
-| `quit`                          | `⌃c`    |          |             | `q` no longer quits.                                                             |
-| `quitall`                       | `Q`     |          |             | See open question 1.                                                             |
+| `quit`                          | `⌃c`    |          |             | `q` no longer quits; also in the palette.                                        |
+| `quitall`                       | palette |          |             | "Quit and stop the daemon", behind its confirm; `Q` is unbound (decision 1).     |
 
 Queue view (`frontend/tui/src/queue-view.tsx`, adapted from
 `ConversationQueue`): two groups, "Next tool boundary" and "When the agent
@@ -333,10 +343,9 @@ overlay section) and the outbox paragraph of `docs/tui-state.md`.
 (1) Migration 31 and store; (2) pure dispatch policy; (3) adapter contract:
 `send` options, `input_consumed`, `inputReceipts`, worker frames, AISDK
 receipts; (4) daemon wiring: enqueueing `session.send`, `user_message` on
-consumption, interrupt hold, restart recovery, Loom messages via the queue,
-queue RPCs; (5) TUI: snapshot-driven queued lines, outbox reduction, A2
-commands, queue view; (6) Claude and Codex receipts once proven, behind
-`inputReceipts`; (7) docs and CLI. Each lands with its tests.
+consumption, interrupt hold, restart recovery, queue RPCs; (5) TUI:
+snapshot-driven queued lines, outbox reduction, A2 commands, queue view; (6)
+Claude and Codex receipts, behind `inputReceipts`; (7) docs and CLI. Each lands with its tests.
 
 ## Tests and acceptance
 
@@ -353,9 +362,10 @@ commands, queue view; (6) Claude and Codex receipts once proven, behind
   interrupt requeues cancelled entries in order, marks the rest uncertain and
   holds; release resumes; send now on a held queue leaves the rest held; a
   rejected steer requeues; an uncertain handover holds; restart recovery marks
-  delivering entries uncertain while auto-resume bypasses; hook feedback and
-  nudges queue, and a clean-tree commit nudge is cancelled; only user entries
-  arm `userTurn`.
+  delivering entries uncertain while auto-resume bypasses; Loom's direct sends
+  bypass the queue and a discarded one is dropped; a new message on a held
+  queue goes first and releases it; one `end_of_turn` entry per `idle`; only
+  user entries arm `userTurn`.
 - Adapters: Claude reports `cancelled` and drained `#inbox` IDs, including in
   the A7 seeding window (`test/claude-adapter.test.ts`); AISDK injection
   receipts; a Codex steer rejection maps to requeue, with a recorded
@@ -374,26 +384,35 @@ nothing enters the log before the agent has it, except through the documented
 receipt-less fallback; after an interrupt nothing queued reaches the agent until
 the user releases or sends it; order survives interrupts and daemon restarts.
 
-## Open questions
+## Decisions
 
-1. **Quit keys.** `Q` already means "quit and stop the daemon" (with a confirm),
-   so it cannot just become quit. Recommended: `⌃c` quits the UI as today; `Q`
-   opens one confirm where ⏎ quits the UI and `s` also stops the daemon; both
-   stay in the palette.
-2. **Does a new message release a held queue?** Recommended: no. It goes ahead,
-   the held entries wait for `r` or `s`, and the footer keeps "N held".
-3. **Loom's nudges on interrupt: hold or drop?** Recommended: hold them like
-   user entries — visible, deletable, never silently lost.
-4. **Does `end_of_turn` wait for background work?** Recommended: yes, wait for
-   `idle` as ⌥q does today; send now covers the impatient case.
+The open questions, as the user answered them:
+
+1. **Quit keys.** `⌃c` quits the UI, as today. `q` opens the selected session's
+   queue view. `Q` is unbound; "Quit and stop the daemon" is a Space palette
+   command (behind the existing confirm), and plain quit stays on `⌃c` and in
+   the palette.
+2. **A new message on a held queue.** It is sent first, alone — as a new turn,
+   or handed to the live one — not queued behind the held entries, and sending
+   it releases the hold as usual. The held entries then follow the ordinary
+   rules: one held `end_of_turn` entry is delivered at the end of the turn the
+   new message started. Uncertain entries still need send now or delete.
+3. **Loom's own messages.** Hook feedback and the rebase / commit nudges do not
+   go through the user queue: they keep today's direct, `automated` send. If a
+   Stop cancels one it is dropped — not re-sent and not surfaced as an entry.
+4. **`end_of_turn` timing.** Today's ⌥q semantics: an entry goes when the
+   session is `idle` (background work included), one per idle. No new waiting
+   rules.
 
 ## Risks
 
-- Claude has no proven mid-turn consumption signal yet. Until the investigation
-  lands, Claude uses the echo-at-handover fallback, and the headline promise
-  ("appears only when seen") holds first for AISDK.
+- Claude's `command_lifecycle` frames are not in the SDK's typings; an older CLI
+  without them still lists folds in the `result`'s `user_message_uuids`, so a
+  fold then reaches the log at turn end.
 - Boundary detection depends on tracking root tool calls. A missed `tool_result`
-  makes handover late, never early; the fallback is turn end.
+  makes handover late, never early; the fallback is turn end. Codex reported a
+  command only once it completed; it now reports the call at `item/started` so
+  the window can open.
 - Codex drops steered input on interrupt without a receipt; those entries become
   uncertain and need a user decision.
 - Protocol v5 forces the TUI and daemon to upgrade together (already the rule).
