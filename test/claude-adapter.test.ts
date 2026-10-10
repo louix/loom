@@ -624,6 +624,71 @@ test("a task completing while its stop request fails is already cancelled", asyn
   await stopped;
 });
 
+// The frames CLI 2.1.280 sends when an async `Agent` finishes and `SendMessage`
+// later resumes it: the same task id comes back, level first, then a
+// `task_started` naming the `SendMessage` call.
+test("a finished background sub-agent resumed by SendMessage is background work again", async (t) => {
+  const stopped: string[] = [];
+  const { s, q, seen } = await setupLive(t, (q) => {
+    Object.assign(q, {
+      stopTask: async (id: string) => {
+        stopped.push(id);
+      },
+    });
+  });
+  const level = (...ids: string[]) => ({
+    type: "system",
+    subtype: "background_tasks_changed",
+    tasks: ids.map((task_id) => ({ task_id, task_type: "local_agent", description: "sleeper" })),
+  });
+  const started = (tool_use_id: string) => ({
+    type: "system",
+    subtype: "task_started",
+    task_id: "a1",
+    tool_use_id,
+    is_backgrounded: true,
+    task_type: "local_agent",
+    description: "sleeper",
+  });
+  const settled = (tool_use_id: string) => ({
+    type: "system",
+    subtype: "task_notification",
+    task_id: "a1",
+    tool_use_id,
+    status: "completed",
+    summary: "done",
+  });
+  /** The background set last published, by id. */
+  const published = () =>
+    seen
+      .filter((e) => e.type === "background_tasks")
+      .at(-1)
+      ?.tasks.map((task) => task.id);
+
+  q.push(level("a1"));
+  q.push(started("toolu_spawn"));
+  await delay(20);
+  assert.deepEqual(published(), ["a1"]);
+  q.push(level());
+  q.push(settled("toolu_spawn"));
+  await delay(20);
+  assert.deepEqual(published(), []);
+
+  // A level that lags its task's notification is still not believed…
+  q.push(level("a1"));
+  await delay(20);
+  assert.deepEqual(published(), []);
+  // …until the CLI registers the task again.
+  q.push(started("toolu_send"));
+  await delay(20);
+  assert.deepEqual(published(), ["a1"]);
+
+  // A Stop now reaches the resumed agent.
+  await s.interrupt();
+  assert.deepEqual(stopped, ["a1"]);
+  assert.deepEqual(published(), []);
+});
+
 test("compact() holds until the compact_boundary lands, beating compact_progress meanwhile", async (t) => {
   const { s, q, seen, reader } = await setupLive(t);
   // Establish a context estimate so the beats carry a real `before`.

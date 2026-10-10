@@ -763,6 +763,70 @@ test("a run_in_background Agent's frames are retagged to its async task id too",
   assert.equal(byType(frame, "assistant_text")[0]?.agentId, "a87d9408cd587b37e");
 });
 
+test("a sub-agent resumed by SendMessage is listed again and keeps its row's id", () => {
+  // CLI 2.1.280: the agent finishes, then `SendMessage` resumes it under the
+  // same task id. Its frames still name the original spawn as their parent.
+  const m = new ClaudeEventMapper(SID);
+  const level = (...ids: string[]) =>
+    m.map({
+      type: "system",
+      subtype: "background_tasks_changed",
+      tasks: ids.map((task_id) => ({ task_id, task_type: "local_agent", description: "dig" })),
+    });
+  m.map({
+    type: "assistant",
+    parent_tool_use_id: null,
+    message: {
+      content: [
+        {
+          type: "tool_use",
+          id: "tu-spawn",
+          name: "Agent",
+          input: { description: "dig", run_in_background: true },
+        },
+      ],
+    },
+  });
+  assert.deepEqual(
+    byType(level("a1"), "background_tasks")[0]?.tasks.map((t) => [t.id, t.kind]),
+    [["a1", "subagent"]],
+  );
+  m.map({
+    type: "user",
+    parent_tool_use_id: null,
+    message: {
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: "tu-spawn",
+          content: [{ type: "text", text: "Async agent launched successfully.\nagentId: a1" }],
+        },
+      ],
+    },
+  });
+  assert.deepEqual(byType(level(), "background_tasks")[0]?.tasks, []);
+
+  // SendMessage resumes it: the level lists it again…
+  m.map({
+    type: "assistant",
+    parent_tool_use_id: null,
+    message: {
+      content: [{ type: "tool_use", id: "tu-send", name: "SendMessage", input: { to: "a1" } }],
+    },
+  });
+  assert.deepEqual(
+    byType(level("a1"), "background_tasks")[0]?.tasks.map((t) => t.id),
+    ["a1"],
+  );
+  // …and its frames reach the same child row.
+  const frame = m.map({
+    type: "assistant",
+    parent_tool_use_id: "tu-spawn",
+    message: { content: [{ type: "text", text: "digging again" }] },
+  });
+  assert.equal(byType(frame, "assistant_text")[0]?.agentId, "a1");
+});
+
 // --- observed prompt-cache TTL --------------------------------------------
 
 /** A main-loop assistant frame that wrote `n` tokens into the given TTL bucket. */

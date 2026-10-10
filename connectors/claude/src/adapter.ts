@@ -23,7 +23,12 @@ import type {
   SDKMessage,
   SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
-import type { DiscardedInput, HarnessEvent, ProviderTotal } from "@loom/core/events";
+import type {
+  BackgroundTaskInfo,
+  DiscardedInput,
+  HarnessEvent,
+  ProviderTotal,
+} from "@loom/core/events";
 import { stateRunning } from "@loom/core/session-state";
 import { makeLogger, type Logger } from "@loom/core/logger";
 import { AsyncChannel } from "@loom/core/channel";
@@ -432,10 +437,19 @@ class ClaudeSession implements AgentSession {
   #interruptEpoch = 0;
   #contextPollEpoch = 0;
   #taskIds = new Set<string>();
+  /**
+   * Tasks that settled (a `task_notification`, or a stop Loom confirmed). A
+   * level that still lists one lags behind the bookend and is not believed —
+   * until a `task_started` registers the id again: `SendMessage` resumes a
+   * finished sub-agent under its old task id.
+   */
   #finishedTaskIds = new Set<string>();
   #backgroundTaskIds = new Set<string>();
   #taskToolIds = new Map<string, string>();
-  #backgroundTasks: Extract<HarnessEvent, { type: "background_tasks" }>["tasks"] = [];
+  /** The CLI's last `background_tasks_changed` set, ambient entries dropped. */
+  #levelTasks: BackgroundTaskInfo[] = [];
+  /** What was last published: {@link #levelTasks} minus finished tasks. */
+  #backgroundTasks: BackgroundTaskInfo[] = [];
   #taskStops = new Map<string, Promise<void>>();
   #interruptOperation: Promise<void> | null = null;
   #interruptFailed = false;
@@ -510,6 +524,7 @@ class ClaudeSession implements AgentSession {
     this.#finishedTaskIds.clear();
     this.#backgroundTaskIds.clear();
     this.#taskToolIds.clear();
+    this.#levelTasks = [];
     this.#backgroundTasks = [];
     this.#startOpts = opts;
     this.#startExtra = extra;
@@ -850,7 +865,8 @@ class ClaudeSession implements AgentSession {
         const events = this.#mapper.map(msg);
         for (const event of events) {
           if (event.type === "background_tasks") {
-            event.tasks = event.tasks.filter((task) => !this.#finishedTaskIds.has(task.id));
+            this.#levelTasks = event.tasks;
+            event.tasks = this.#liveBackgroundTasks();
             this.#backgroundTasks = event.tasks;
           }
         }
@@ -1394,10 +1410,17 @@ class ClaudeSession implements AgentSession {
     if (msg.type !== "system") return;
     const added: string[] = [];
     if (msg.subtype === "task_started") {
-      if (msg.ambient || msg.skip_transcript || this.#finishedTaskIds.has(msg.task_id)) return;
+      if (msg.ambient || msg.skip_transcript) return;
       this.#taskIds.add(msg.task_id);
       if (msg.tool_use_id) this.#taskToolIds.set(msg.task_id, msg.tool_use_id);
       added.push(msg.task_id);
+      // A finished sub-agent resumed by `SendMessage` starts again under its
+      // old id. The level listing it came first and was not believed then.
+      if (this.#finishedTaskIds.delete(msg.task_id)) {
+        if (this.#levelTasks.some((task) => task.id === msg.task_id))
+          this.#backgroundTaskIds.add(msg.task_id);
+        this.#publishBackgroundTasks();
+      }
     } else if (msg.subtype === "task_notification") {
       this.#retireTask(msg.task_id);
     } else if (msg.subtype === "background_tasks_changed") {
@@ -1442,16 +1465,25 @@ class ClaudeSession implements AgentSession {
         ts: Date.now(),
         subagentId: toolId,
       });
-    const remaining = this.#backgroundTasks.filter((task) => task.id !== id);
-    if (remaining.length !== this.#backgroundTasks.length) {
-      this.#backgroundTasks = remaining;
-      this.#outbox.push({
-        type: "background_tasks",
-        sessionId: this.id,
-        ts: Date.now(),
-        tasks: remaining,
-      });
-    }
+    this.#publishBackgroundTasks();
+  }
+
+  /** The live background set: the CLI's level, less tasks known to have settled. */
+  #liveBackgroundTasks(): BackgroundTaskInfo[] {
+    return this.#levelTasks.filter((task) => !this.#finishedTaskIds.has(task.id));
+  }
+
+  /** Publish the live set when a bookend changed its membership between levels. */
+  #publishBackgroundTasks(): void {
+    const tasks = this.#liveBackgroundTasks();
+    const ids = (list: BackgroundTaskInfo[]): string =>
+      list
+        .map((task) => task.id)
+        .sort()
+        .join(",");
+    if (ids(tasks) === ids(this.#backgroundTasks)) return;
+    this.#backgroundTasks = tasks;
+    this.#outbox.push({ type: "background_tasks", sessionId: this.id, ts: Date.now(), tasks });
   }
 
   /**
