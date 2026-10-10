@@ -3,7 +3,11 @@ import assert from "node:assert/strict";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { gitFixture } from "./lib/git-fixture.ts";
-import { launchSessionVm } from "../runtime/src/session-vm/launch.ts";
+import {
+  closeTestLaunchers,
+  launchTestSessionVm,
+  type TestSessionWorker,
+} from "./lib/session-launch.ts";
 import { RemoteWorkerSession } from "../backend/daemon/src/daemon/worker-provider.ts";
 import { mockLaunchSpec } from "../backend/daemon/src/daemon/worker-launch.ts";
 import { sessionVmName, vmEnvironment } from "../runtime/src/packaged/vm.ts";
@@ -19,11 +23,13 @@ assert(
   "Need a valid host access token",
 );
 const f = await gitFixture();
-let worker: Awaited<ReturnType<typeof launchSessionVm>> | undefined;
+// Keep this run's VM inventory and session state out of the user's.
+Deno.env.set("XDG_STATE_HOME", join(f.root, "xdg-state"));
+let worker: TestSessionWorker | undefined;
 let session: RemoteWorkerSession | undefined;
 let timer: ReturnType<typeof setTimeout> | undefined;
 try {
-  worker = await launchSessionVm({ artifact, smolvm, workspace: f.workspace, auth: {} });
+  worker = await launchTestSessionVm({ artifact, smolvm, workspace: f.workspace, auth: {} });
   const { state } = worker.binding;
   const deadline = Date.now() + 120_000;
   for (;;) {
@@ -177,6 +183,7 @@ try {
   } finally {
     worker?.terminate();
     await worker?.cleanup?.();
+    await closeTestLaunchers();
     await f.close();
   }
 }

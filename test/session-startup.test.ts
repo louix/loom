@@ -108,6 +108,7 @@ test("missing or incompatible Nix caches do not block session startup", async ()
     repoRoot: root,
     sessionDirectory: join(root, "session"),
     environment: normalizeSessionEnvironment(undefined, true),
+    environmentOnly: true,
     onProgress: (message: string) => progress.push(message),
     authOwner: {
       current: () => {
@@ -135,12 +136,12 @@ test("missing or incompatible Nix caches do not block session startup", async ()
     await assert.rejects(Deno.stat(options.sessionDirectory), Deno.errors.NotFound);
     await assert.rejects(Deno.stat(join(root, ".loom")), Deno.errors.NotFound);
 
-    // Ordinary sessions and explicit preparation may still use the generic runtime.
+    // Session environments and explicit preparation may still use the generic runtime.
     await assert.rejects(
       launchSessionVm({ ...options, environment: normalizeSessionEnvironment(undefined) }),
       /credentials requested/,
     );
-    const { authOwner: _authOwner, ...preparation } = options;
+    const { authOwner: _authOwner, environmentOnly: _environment, ...preparation } = options;
     await assert.rejects(
       launchSessionVm({ ...preparation, preparationOnly: true, workspace: join(root, "absent") }),
       Deno.errors.NotFound,

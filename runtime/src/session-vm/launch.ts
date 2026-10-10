@@ -12,7 +12,7 @@ import {
 } from "../../../core/src/vm-termination.ts";
 import { relayDiagnosticMessage } from "../../../core/src/relay-diagnostic.ts";
 import { normalizeExtraHosts } from "./network-policy.ts";
-/** Supervised VM launch and persistent resource ownership, for session workers and environments. */
+/** Supervised VM launch and persistent resource ownership, for environments and preparation. */
 import { spawn } from "node:child_process";
 import { Readable, Writable } from "node:stream";
 import { join } from "node:path";
@@ -123,6 +123,9 @@ const launchSessionVmOwned = async (
     throw new Error("Choose static auth or a credential owner");
   if (options.preparationOnly && options.environmentOnly)
     throw new Error("Choose repo preparation or an environment, not both");
+  // Agent workers run as executions inside an environment (see isolated-worker.ts).
+  if (!options.preparationOnly && !options.environmentOnly)
+    throw new Error("Session VMs launch an environment or repo preparation");
   const artifact = await Deno.realPath(options.artifact);
   const smolvm = await Deno.realPath(options.smolvm);
   const auth = sessionAuth(

@@ -11,10 +11,9 @@ import {
   environmentEnabled,
   type SessionEnvironment,
 } from "../../../core/src/session-environment.ts";
-import { runWorker } from "../worker/main.ts";
 import { WorkerDiagnostic } from "../../../core/src/worker.ts";
 import { guestGitPort, guestGitSocket, prepareCheckout } from "./checkout.ts";
-import { publishAfterTurn, readGuestCheckout } from "./guest-publish.ts";
+import { readGuestCheckout } from "./guest-publish.ts";
 import { startGuestRelay } from "./guest-relay.ts";
 import { reportStartup, classifyStartupFailure } from "./progress.ts";
 import { serveEnvironment } from "./environment-protocol.ts";
@@ -165,7 +164,7 @@ const prepare = async (output?: "inherit") => {
   // nix develop removes its build-temporary directory when activation exits.
   if (!before.TMPDIR) Deno.env.delete("TMPDIR");
 };
-// Activate the current checkout; shared by connector workers and environments.
+// Activate the current checkout for the environment and its executions.
 const initializeSession = async () => {
   // The clone comes first: environment activation reads the project's files.
   if (checkout) {
@@ -223,9 +222,11 @@ if (preparationOnly) {
     console.error(error instanceof Error ? error.message : String(error));
     Deno.exit(1);
   }
-} else if (environmentOnly) {
-  // No connector worker: readiness is the only stdout, and commands use smolvm exec.
+} else {
+  // No connector worker here: it runs as an execution (guest-worker.ts). Readiness is
+  // the only stdout, and commands use smolvm exec.
   try {
+    if (!environmentOnly) throw new Error("Session guests serve environments or preparation");
     await serveEnvironment(initializeSession, Deno.stdin.readable, Deno.stdout.writable);
     Deno.exit(0);
   } catch (error) {
@@ -233,12 +234,4 @@ if (preparationOnly) {
     console.error(JSON.stringify({ loomStartupFailure: classifyStartupFailure(error) }));
     Deno.exit(1);
   }
-} else
-  await runWorker(
-    async () => {
-      await initializeSession();
-      reportStartup("provider");
-    },
-    "session-vm",
-    publishAfterTurn(checkout),
-  );
+}

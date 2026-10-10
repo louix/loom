@@ -5,7 +5,11 @@
 import { join } from "node:path";
 import assert from "node:assert/strict";
 import { gitFixture } from "./lib/git-fixture.ts";
-import { launchSessionVm } from "../runtime/src/session-vm/launch.ts";
+import {
+  closeTestLaunchers,
+  launchTestSessionVm,
+  type TestSessionWorker,
+} from "./lib/session-launch.ts";
 import { RemoteWorkerSession } from "../backend/daemon/src/daemon/worker-provider.ts";
 import { mockLaunchSpec } from "../backend/daemon/src/daemon/worker-launch.ts";
 import { vmEnvironment, sessionVmName } from "../runtime/src/packaged/vm.ts";
@@ -23,13 +27,15 @@ const existingPids = new Set<string>();
 for await (const entry of Deno.readDir("/proc")) existingPids.add(entry.name);
 
 const f = await gitFixture();
-let worker: Awaited<ReturnType<typeof launchSessionVm>> | undefined;
+// Keep this run's VM inventory and session state out of the user's.
+Deno.env.set("XDG_STATE_HOME", join(f.root, "xdg-state"));
+let worker: TestSessionWorker | undefined;
 let session: RemoteWorkerSession | undefined;
 try {
   const files = join(f.workspace, "files");
   await Deno.mkdir(files);
   for (let i = 0; i < count; i++) Deno.writeTextFileSync(join(files, String(i)), "");
-  worker = await launchSessionVm({
+  worker = await launchTestSessionVm({
     workspace: f.workspace,
     artifact,
     smolvm,
@@ -155,6 +161,7 @@ try {
     worker?.terminate();
     try {
       await worker?.cleanup?.();
+      await closeTestLaunchers();
     } finally {
       await f.close();
     }

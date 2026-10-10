@@ -94,9 +94,11 @@ nix develop --command deno run -A scripts/test-claude-vm-egress.ts ~/dev/loom
 VM routing is opt-in. Without the configuration below, Claude uses the host
 worker. The Claude artifact is not pulled into the default Loom package.
 
-`launchSessionVm` now returns the existing `WorkerProcess` contract. The live test
-uses this launcher rather than owning the VM itself. A detached host supervisor
-owns the CONNECT proxy and VM. Parent EOF is observed during startup
+A session VM is an environment booted through the isolation coordinator
+(`backend/daemon/src/daemon/isolated-worker.ts`); the guest worker runs inside it
+as a leased execution, adapted to the existing `WorkerProcess` contract. The live
+test uses this launcher rather than owning the VM itself. A detached host
+supervisor owns the CONNECT proxy and VM. Parent EOF is observed during startup
 and execution; guest-exec failure also stops the session. Normal
 termination requests cleanup, with a bounded grace period before forced termination.
 If the supervisor is killed, the surviving parent stops its process group and reaps
@@ -127,12 +129,12 @@ socket; networked provider, catalog and title work runs in children.
 
 ## Renewable authentication
 
-`launchSessionVm` accepts a shared `ClaudeAuthOwner` instead of static `auth`.
+A session VM launch accepts a shared `ClaudeAuthOwner` instead of static `auth`.
 This keeps refresh tokens in the host profile, renews before expiry, and
 distributes access-only snapshots to active sessions.
 The follow-up implementation is `ClaudeAuthOwner` in the daemon package. Callers
-share one owner per provider profile and pass it as `authOwner` to
-`launchSessionVm`. Close the owner when its provider shuts down. The VM launcher
+share one owner per provider profile and pass it as `authOwner` to the
+launcher. Close the owner when its provider shuts down. The VM launcher
 unsubscribes on exit and waits for an in-flight publication before fallback cleanup;
 publication cannot recreate a removed session directory.
 

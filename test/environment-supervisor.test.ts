@@ -209,3 +209,14 @@ Deno.test("environment launches cannot also be repo preparation", async () => {
     /preparation or an environment/,
   );
 });
+Deno.test("session VMs never run an agent worker as their own workload", async () => {
+  // Agent workers are executions inside an environment; see isolated-worker.ts.
+  await assert.rejects(
+    launchSessionVm({
+      workspace: "/nonexistent",
+      artifact: "/nonexistent",
+      smolvm: "/nonexistent",
+    }),
+    /environment or repo preparation/,
+  );
+});
