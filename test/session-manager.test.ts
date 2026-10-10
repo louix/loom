@@ -1002,6 +1002,64 @@ describe("session-manager", { concurrency: 4 }, () => {
     await c.close();
   });
 
+  test("a background sub-agent at work keeps its settled session in working_background", async () => {
+    const c = await client();
+    const { id, fs } = await createFake(c);
+    const get = () => c.request<SessionSnapshot>("session.get", { id });
+    fs.emit({ type: "background_tasks", tasks: [{ id: "a1", kind: "subagent", title: "audit" }] });
+    fs.finishTurn();
+    await waitFor(async () => (await statusOf(c, id)) === "working_background");
+    const boundary = (await get()).turnCompletedAt;
+    assert.ok(boundary !== undefined);
+
+    // The sub-agent streams: its row stays, the session is not running.
+    fs.emit({ type: "assistant_text", text: "auditing", agentId: "a1" });
+    fs.emit({ type: "tool_call", id: "t1", name: "Bash", input: {}, agentId: "a1" });
+    await delay(30);
+    assert.equal(await statusOf(c, id), "working_background");
+    assert.deepEqual(
+      (await get()).backgroundTasks.map((t) => t.id),
+      ["a1"],
+    );
+
+    // It asks: the session waits on the user, then goes back to background.
+    fs.emit({ type: "permission_request", id: "p1", tool: "Bash", input: {}, agentId: "a1" });
+    await waitFor(async () => (await statusOf(c, id)) === "awaiting_input");
+    await c.request("session.respondPermission", { id, requestId: "p1", decision: "allow" });
+    assert.equal(await statusOf(c, id), "working_background");
+
+    // It finishes and the CLI wakes the main loop: running, then settled. The
+    // wake-up turn is not the user's, so the fleet's turn boundary stays put.
+    fs.emit({ type: "background_tasks", tasks: [] });
+    await waitFor(async () => (await statusOf(c, id)) === "idle");
+    fs.emit({ type: "assistant_text", text: "the audit is back" });
+    await waitFor(async () => (await statusOf(c, id)) === "running");
+    fs.emit({ type: "result", kind: "ok" });
+    await waitFor(async () => (await statusOf(c, id)) === "idle");
+    assert.equal((await get()).turnCompletedAt, boundary);
+    await c.close();
+  });
+
+  test("a main-loop request raised in background still resumes and arms the turn", async () => {
+    const c = await client();
+    const { id, fs } = await createFake(c);
+    fs.emit({ type: "background_tasks", tasks: [{ id: "a1", kind: "subagent", title: "audit" }] });
+    fs.finishTurn();
+    await waitFor(async () => (await statusOf(c, id)) === "working_background");
+    const boundary = (await c.request<SessionSnapshot>("session.get", { id })).turnCompletedAt!;
+    await delay(2);
+    // No `agentId`: the main loop itself woke up and asked first.
+    fs.emit({ type: "permission_request", id: "p1", tool: "Bash", input: {} });
+    await waitFor(async () => (await statusOf(c, id)) === "awaiting_input");
+    await c.request("session.respondPermission", { id, requestId: "p1", decision: "allow" });
+    assert.equal(await statusOf(c, id), "running");
+    fs.emit({ type: "result", kind: "ok" });
+    await waitFor(async () => (await statusOf(c, id)) === "working_background");
+    const after = (await c.request<SessionSnapshot>("session.get", { id })).turnCompletedAt!;
+    assert.ok(after > boundary, "the answered turn's outcome is the user's");
+    await c.close();
+  });
+
   test("rate_limit events surface on the session snapshot, keyed by window", async () => {
     const c = await client();
     const { id, fs } = await createFake(c);

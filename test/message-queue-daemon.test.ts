@@ -255,6 +255,28 @@ describe("message queue", { concurrency: 4 }, () => {
     assert.deepEqual(fs.sends, ["b1", "e1", "e2"]);
   });
 
+  test("a background sub-agent streaming does not reopen the turn for the queue", async (env) => {
+    const { c } = env;
+    const { id, fs } = await idleSession(env);
+    fs.emit({ type: "background_tasks", tasks: [{ id: "a1", kind: "subagent", title: "audit" }] });
+    await waitFor(async () => (await status(c, id)) === "working_background");
+    fs.emit({ type: "assistant_text", text: "auditing", agentId: "a1" });
+    fs.emit({ type: "tool_call", id: "t1", name: "Bash", input: {}, agentId: "a1" });
+    await send(c, id, "e1", "end_of_turn");
+    // The main loop is settled: a message goes now, as a fresh turn of its
+    // own; one for the end of the turn waits for the sub-agent too.
+    await send(c, id, "b1");
+    await waitFor(() => fs.sends.length === 1);
+    assert.deepEqual(fs.sends, ["b1"]);
+    fs.finishTurn();
+    await waitFor(async () => (await status(c, id)) === "working_background");
+    await delay(30);
+    assert.deepEqual(fs.sends, ["b1"], "the sub-agent is still working");
+    fs.emit({ type: "background_tasks", tasks: [] });
+    await waitFor(() => fs.sends.length === 2);
+    assert.deepEqual(fs.sends, ["b1", "e1"]);
+  });
+
   test("send now on a held queue delivers that one alone and leaves the rest held", async (env) => {
     const { c } = env;
     const { id, fs } = await runningSession(env);

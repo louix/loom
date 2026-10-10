@@ -1477,6 +1477,50 @@ test("[auto_resume] off: a restart leaves mid-run sessions interrupted", async (
   }
 });
 
+test("[auto_resume]: background sub-agents lost to a restart leave no phantom rows", async () => {
+  const hh = await makeHarness();
+  const c = await LoomClient.connect({
+    repoRoot: hh.repoRoot,
+    sockPath: hh.sockPath,
+    autospawn: false,
+  });
+  try {
+    const snap = await c.request<SessionSnapshot>("session.create", {
+      prompt: "fan out",
+      provider: "fake",
+    });
+    const fs = ((await hh.daemon.providers.get("fake")) as FakeProvider).session(snap.id)!;
+    fs.emit({ type: "background_tasks", tasks: [{ id: "a1", kind: "subagent", title: "audit" }] });
+    fs.finishTurn();
+    await waitFor(async () => {
+      const s = await c.request<SessionSnapshot>("session.get", { id: snap.id });
+      return s.status.kind === "working_background" && s.backgroundTasks.length === 1;
+    });
+
+    await hh.restart();
+
+    // The sub-agent died with the old process: the revived session lists no
+    // background work, and the agent is told to check what it had running.
+    const c2 = await LoomClient.connect({
+      repoRoot: hh.repoRoot,
+      sockPath: hh.sockPath,
+      autospawn: false,
+    });
+    await waitFor(async () => {
+      const s = await c2.request<SessionSnapshot>("session.get", { id: snap.id });
+      return s.status.kind === "running";
+    }, 2000);
+    const after = await c2.request<SessionSnapshot>("session.get", { id: snap.id });
+    assert.deepEqual(after.backgroundTasks, []);
+    const resumed = ((await hh.daemon.providers.get("fake")) as FakeProvider).session(snap.id)!;
+    assert.match(resumed.sends[0] ?? "", /background tasks died with the old process/);
+    await c2.close();
+  } finally {
+    await c.close();
+    await hh.cleanup();
+  }
+});
+
 test("[auto_resume]: a session interrupted before the restart is left alone", async () => {
   const hh = await makeHarness();
   const c = await LoomClient.connect({

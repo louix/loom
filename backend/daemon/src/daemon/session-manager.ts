@@ -21,6 +21,7 @@ import {
   stateInterrupted,
   stateRunning,
   stateStarting,
+  stateWorkingBackground,
 } from "@loom/core/session-state";
 import type { Logger } from "@loom/core/logger";
 import type { UsageDelta } from "../store/sessions.ts";
@@ -137,6 +138,12 @@ interface Running {
   subagents: Map<string, { name: string; startedAt: number; active: boolean }>;
   /** Live, non-ambient background tasks — last `background_tasks` event's set. */
   backgroundTasks: BackgroundTaskInfo[];
+  /**
+   * Every outstanding request is a background child's, raised while the main
+   * loop sat settled in `working_background`: answering lets the child go on,
+   * not the turn — it neither runs the session nor starts a user turn.
+   */
+  blockedInBackground: boolean;
   ended: boolean;
   /**
    * The provider ref last handed to `onProviderRef`. Compared, not latched: a
@@ -326,6 +333,7 @@ export class SessionManager {
       pending: new Map(),
       subagents: new Map(),
       backgroundTasks: [],
+      blockedInBackground: false,
       ended: false,
       reportedRef: null,
       pump: Promise.resolve(),
@@ -554,6 +562,12 @@ export class SessionManager {
     if (run.cancellation !== "none") return false;
     const request = interactionFor(ev);
     if (request) {
+      // Every outstanding request a child's, the first raised in background.
+      run.blockedInBackground =
+        ev.agentId !== undefined &&
+        (run.pending.size === 0
+          ? run.state.kind === "working_background"
+          : run.blockedInBackground);
       run.pending.set(request.id, request);
       return true;
     }
@@ -1299,7 +1313,11 @@ export class SessionManager {
     // Only a still-blocked turn resumes: an answer can also end the turn (a
     // Codex plan handoff settles it), and its result may already be drained.
     if (run.cancellation === "none" && run.state.kind === "awaiting_input") {
-      if (this.#transition(id, run, this.#interactionState(run, stateRunning))) return;
+      let next = this.#interactionState(run, stateRunning);
+      // A background child's request: the main loop is still settled.
+      if (next.kind === "running" && run.blockedInBackground && run.backgroundTasks.length > 0)
+        next = stateWorkingBackground;
+      if (this.#transition(id, run, next)) return;
     }
     this.#hooks.onOverlay(id);
   }
@@ -1341,8 +1359,10 @@ export class SessionManager {
       return { ok: false, alreadyResolved: true };
     // The user's answer drives the turn on (an approved plan can even start a
     // new SDK turn), so its outcome is theirs. Armed before the adapter call,
-    // as in `send`; the same holds for questions and plan decisions.
-    run.userTurn = true;
+    // as in `send`; the same holds for questions and plan decisions. Not for
+    // a background child's request: the turn its answer lets go on is not
+    // the user's, and the main loop's next outcome is a CLI-driven wake-up.
+    if (!run.blockedInBackground) run.userTurn = true;
     await run.session.respondToPermission(requestId, decision);
     // Optimistic: the approved tool call will confirm `running` on its own.
     this.#resumeAfterAnswer(id, run);
@@ -1354,7 +1374,7 @@ export class SessionManager {
     if (run.ended) return { ok: false, alreadyResolved: true };
     if (!this.#claimPending(run, questionId, ["question"], "answer"))
       return { ok: false, alreadyResolved: true };
-    run.userTurn = true;
+    if (!run.blockedInBackground) run.userTurn = true;
     await run.session.answerQuestion(questionId, text);
     // The `answer` event the adapter emits will also carry status back to
     // running; set it now so a client sees the change without waiting.
@@ -1371,7 +1391,7 @@ export class SessionManager {
     if (run.ended) return { ok: false, alreadyResolved: true };
     if (!this.#claimPending(run, requestId, ["plan_review"], "review"))
       return { ok: false, alreadyResolved: true };
-    run.userTurn = true;
+    if (!run.blockedInBackground) run.userTurn = true;
     await run.session.respondToPlan(requestId, decision);
     // Every branch of respondToPlan either leaves plan mode or (for `discuss`)
     // stays in it deliberately; either way, push whatever the adapter landed

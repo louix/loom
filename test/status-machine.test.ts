@@ -229,6 +229,22 @@ test("fresh model output heals working_background → running (the re-drive)", (
   unchanged(stateWorkingBackground, ev({ type: "tool_result", id: "1", ok: true, output: null }));
 });
 
+test("a child's own output never moves a settled session — only the main loop's does", () => {
+  for (const e of [
+    ev({ type: "assistant_text", text: "sub-agent at work", agentId: "a1" }),
+    ev({ type: "thinking", text: "…", agentId: "a1" }),
+    ev({ type: "tool_call", id: "1", name: "Bash", input: {}, agentId: "a1" }),
+  ]) {
+    // A background sub-agent streams long after the turn settled.
+    unchanged(stateWorkingBackground, e);
+    unchanged(stateIdle, e);
+    // A foreground one streams inside a live turn, which it leaves alone…
+    unchanged(stateRunning, e);
+    // …and it still counts as the first sign of life.
+    assert.deepEqual(deriveStatus(stateStarting, e), stateRunning);
+  }
+});
+
 test("a background subagent's permission prompt still surfaces from working_background", () => {
   assert.deepEqual(
     deriveStatus(

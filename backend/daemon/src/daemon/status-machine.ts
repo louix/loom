@@ -4,14 +4,17 @@
  * through this pure, total function and de-dupes unchanged transitions.
  *
  *   starting ─▶ running                   (first model output)
- *   idle ─▶ running                       (model output after an interim `result`)
+ *   idle ─▶ running                       (main-loop output after an interim `result`)
  *   running ─▶ awaiting_input             (permission_request / question / plan_review)
- *   awaiting_input ─▶ running             (the daemon's answer/approve path, NOT this fn)
+ *   awaiting_input ─▶ running             (the daemon's answer/approve path, NOT this fn;
+ *                                          back to working_background if the request
+ *                                          came from a background child)
  *   running ─▶ interrupted                (user stop / stream ended — set by the manager)
  *   running ─▶ idle                       (clean `result`, no background work)
  *   running ─▶ working_background         (clean `result` while ≥1 background task runs)
  *   idle ⇄ working_background             (background set becomes non-empty / drains)
- *   working_background ─▶ running         (a background task re-drives the turn)
+ *   working_background ─▶ running         (a background task re-drives the main loop;
+ *                                          a child's own output does not)
  *   running ─▶ error                      (fatal error, or a failed `result`)
  *
  * `interrupted` / `error` don't unwind on their own turn's trailing output or
@@ -79,9 +82,13 @@ export const deriveStatus = (
       // `permission_request` (some OpenAI-compatible endpoints do) would
       // otherwise clear the blocked state and hide the approval prompt.
       // `interrupted` / `error` stay put until the user acts.
-      return current.kind === "starting" ||
-        current.kind === "idle" ||
-        current.kind === "working_background"
+      //
+      // A child's output (`agentId` set) is not the turn: a background
+      // sub-agent streams long after the main loop settled, and only the main
+      // loop's own output means the turn is running again.
+      if (current.kind === "starting") return stateRunning;
+      if (ev.agentId !== undefined) return current;
+      return current.kind === "idle" || current.kind === "working_background"
         ? stateRunning
         : current;
 
