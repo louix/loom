@@ -184,12 +184,17 @@ When that builder runs depends on `packaging/macos/runtime-hashes.json`:
   and reuses it for every later start until an upgrade changes the guest source.
   Concurrent starts wait for one build; cancelling a start leaves the build
   running for the next, while stopping Loom stops it and deletes the builder VM.
+  If Loom dies instead, the builder carries on: the next start waits for it and
+  adds its result rather than starting a second build. Requests that start a
+  session (create, send, resume, fork) reply at once with the session starting;
+  a message sent meanwhile waits in the session's queue.
   Expect 15–60 minutes, about 20 GB free
   under `/tmp` while building and 4 GB in `/nix` for the result; Loom checks
   space before starting a builder VM. Network and disk failures name their
-  cause; the build log stays beside the link. Runtimes of earlier identities
-  are released after a build once no VM may still use them (or by
-  `loom runtime prune`); Nix frees them at its next garbage collection.
+  cause; the build log stays beside the link. After a build, runtimes that no
+  installed Loom has used for two weeks are released once no VM may still use
+  them; `loom runtime prune` keeps only the most recently used. Nix frees them
+  at its next garbage collection.
 - **A matching pin.** Nix builds the same runtime as a fixed-output derivation
   during installation and bundles it, so the first session start does not wait.
 
