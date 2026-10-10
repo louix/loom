@@ -89,15 +89,21 @@
         };
       });
 
-      # Exclude output hashes to avoid a source/hash cycle. Tests, docs and
-      # maintainer scripts are not part of the executable guest closure.
+      # What an Apple Silicon guest build sees, and so what decides its runtime
+      # identity: the modules the guest loads (guest.ts, guest-worker.ts and their
+      # import graph, listed by `deno task runtime:guest-source` and checked by
+      # test/guest-source.test.ts), the workspace manifests and lockfile Deno
+      # resolves them with, and the recipes that package them. Host-only code,
+      # tests, docs and the output hashes stay out, so changing them neither
+      # forms a source/hash cycle nor asks Macs to rebuild their runtime.
       guestSource = nixpkgs.lib.fileset.toSource {
         root = ./.;
-        fileset = nixpkgs.lib.fileset.unions [
-          ./aisdk ./backend ./cli ./client ./connectors ./core ./frontend
-          ./harness ./runtime ./isolation ./environment-config ./packaging/runtimes
-          ./deno.json ./deno.lock ./flake.nix ./flake.lock
-        ];
+        fileset = nixpkgs.lib.fileset.unions (
+          [ ./deno.json ./deno.lock ./flake.nix ./flake.lock ./packaging/runtimes ]
+          ++ map (member: ./. + "/${member}/deno.json")
+            (builtins.fromJSON (builtins.readFile ./deno.json)).workspace
+          ++ map (file: ./. + "/${file}")
+            (builtins.fromJSON (builtins.readFile ./packaging/macos/guest-source.json)).modules);
       };
       # Short commit for `loom --version` when built from a checkout; a tag
       # would surface as the full ref. The flake sandbox has no `.git`, so the

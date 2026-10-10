@@ -53,6 +53,7 @@
   "tasks": {
     "config:schema": "deno run -A scripts/config-schema.ts && deno run -A npm:oxfmt@0.70.0 backend/daemon/config.schema.json environment-config/*.schema.json",
     "runtime:hashes": "deno run -A scripts/update-runtime-hashes.ts",
+    "runtime:guest-source": "deno run -A scripts/guest-source.ts",
     "runtime:update": "deno run -A cli/src/loom.ts runtime update",
     "loom": "deno run -A --deny-net cli/src/loom.ts",
     "daemon": "deno run -A --deny-net cli/src/loomd.ts",
