@@ -19,6 +19,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { READ_ONLY_GIT_OPTIONS } from "@loom/core/git-read";
 import type { Logger } from "@loom/core/logger";
 import type { GitFacts } from "@loom/core/wire";
 
@@ -154,7 +155,7 @@ export class WorktreeManager {
     const sharedConfig = join(commonDir, "config");
     const mainConfig = join(commonDir, "config.worktree");
     const alreadyEnabled =
-      this.#gitOut(["config", "--bool", "extensions.worktreeConfig"]) === "true";
+      this.#gitRead(["config", "--bool", "extensions.worktreeConfig"]) === "true";
     const checked = (args: string[]): void => {
       const result = this.#git(args);
       if (!result.ok)
@@ -167,7 +168,7 @@ export class WorktreeManager {
       if (!value.ok) throw new Error(`git config ${key} failed: ${value.stderr.trim()}`);
       if (
         key === "core.bare" &&
-        this.#gitOut(["config", "--file", sharedConfig, "--bool", "core.bare"]) === "false"
+        this.#gitRead(["config", "--file", sharedConfig, "--bool", "core.bare"]) === "false"
       )
         continue;
       // Write the main-worktree copy before enabling the extension or removing
@@ -216,7 +217,7 @@ export class WorktreeManager {
     // hooks: `/dev/null` (the idiom for "disable all hooks", common in sandboxes
     // and CI), a stale path, or unset. Fall back to the git common dir so the
     // delegating wrappers still chain to `<repo>/.git/hooks`.
-    const custom = abs(this.#gitOut(["config", "--get", "core.hooksPath"]));
+    const custom = abs(this.#gitRead(["config", "--get", "core.hooksPath"]));
     const customDir = custom && isDir(custom) ? custom : "";
     const origHooksDir = customDir || join(commonDir, "hooks");
     if (origHooksDir !== this.#hooksDir) {
@@ -236,7 +237,7 @@ export class WorktreeManager {
 
   /** Whether the manager's repository has no checkout for in-place sessions. */
   isBareRepository(): boolean {
-    return this.#gitOut(["rev-parse", "--is-bare-repository"]) === "true";
+    return this.#gitRead(["rev-parse", "--is-bare-repository"]) === "true";
   }
 
   /**
@@ -348,7 +349,7 @@ export class WorktreeManager {
    */
   clearLegacyIdentity(path: string): void {
     // The main worktree's `--worktree` config is the user's own; only linked trees qualify.
-    const dirs = this.#gitOut(
+    const dirs = this.#gitRead(
       ["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"],
       path,
     );
@@ -445,7 +446,7 @@ export class WorktreeManager {
   /** The worktree's current `git HEAD` (full SHA), or null if it can't be read. */
   headSha(path: string): string | null {
     if (!path || !existsSync(path)) return null;
-    const sha = this.#gitOut(["rev-parse", "HEAD"], path);
+    const sha = this.#gitRead(["rev-parse", "HEAD"], path);
     return /^[0-9a-f]{40}$/.test(sha) ? sha : null;
   }
 
@@ -472,7 +473,7 @@ export class WorktreeManager {
       return r.stdout;
     };
     if (
-      run(["ls-files", "--stage"])
+      run([...READ_ONLY_GIT_OPTIONS, "ls-files", "--stage"])
         .split("\n")
         .some((line) => line.startsWith("160000 "))
     )
@@ -481,6 +482,7 @@ export class WorktreeManager {
     // Never invoke external diff drivers, hooks, or mutate the parent's index.
     for (const cached of [true, false]) {
       const patch = run([
+        ...READ_ONLY_GIT_OPTIONS,
         "diff",
         "--binary",
         "--no-ext-diff",
@@ -495,7 +497,13 @@ export class WorktreeManager {
           patch,
         );
     }
-    for (const name of run(["ls-files", "--others", "--exclude-standard", "-z"])
+    for (const name of run([
+      ...READ_ONLY_GIT_OPTIONS,
+      "ls-files",
+      "--others",
+      "--exclude-standard",
+      "-z",
+    ])
       .split("\0")
       .filter(Boolean)) {
       // In-place parents contain Loom's own database, sockets and worktrees.
@@ -535,7 +543,7 @@ export class WorktreeManager {
   /** Whether the worktree has uncommitted (tracked or untracked) changes. */
   isDirty(path: string): boolean {
     if (!path || !existsSync(path)) return false;
-    return this.#gitOut(["status", "--porcelain"], path).length > 0;
+    return this.#gitRead(["status", "--porcelain"], path).length > 0;
   }
 
   /** The name of a git operation in progress in the worktree at `path`
@@ -562,7 +570,7 @@ export class WorktreeManager {
   /** Subjects of commits in `from..to` (oldest first), capped. For a drift notice. */
   commitsBetween(path: string, from: string, to: string, limit = 20): string[] {
     if (!from || !to || from === to) return [];
-    const out = this.#gitOut(
+    const out = this.#gitRead(
       ["log", "--reverse", "--format=%h %s", `${from}..${to}`, `--max-count=${limit}`],
       path,
     );
@@ -615,16 +623,16 @@ export class WorktreeManager {
     const cached = this.#factsCache.get(path);
     if (cached && Date.now() - cached.at < FACTS_TTL_MS) return cached.facts;
 
-    const branch = this.#gitOut(["symbolic-ref", "--short", "-q", "HEAD"], path) || null;
-    const dirty = this.#gitOut(["status", "--porcelain"], path).length > 0;
-    const lastCommitSubject = this.#gitOut(["log", "-1", "--format=%s"], path) || null;
-    const commits = numOr0(this.#gitOut(["rev-list", "--count", "HEAD"], path));
+    const branch = this.#gitRead(["symbolic-ref", "--short", "-q", "HEAD"], path) || null;
+    const dirty = this.#gitRead(["status", "--porcelain"], path).length > 0;
+    const lastCommitSubject = this.#gitRead(["log", "-1", "--format=%s"], path) || null;
+    const commits = numOr0(this.#gitRead(["rev-list", "--count", "HEAD"], path));
 
     let aheadOfBase = 0;
     let behindBase = 0;
     const base = baseBranch ?? this.#baseBranch;
     if (base && this.#git(["rev-parse", "--verify", "--quiet", base], path).ok) {
-      const lr = this.#gitOut(["rev-list", "--left-right", "--count", `${base}...HEAD`], path);
+      const lr = this.#gitRead(["rev-list", "--left-right", "--count", `${base}...HEAD`], path);
       const [behind, ahead] = lr.split(/\s+/);
       behindBase = numOr0(behind);
       aheadOfBase = numOr0(ahead);
@@ -647,7 +655,7 @@ export class WorktreeManager {
       throw new Error(`base ref "${opts.baseRef}" does not resolve`);
     let baseRef = opts.baseRef ?? this.#resolveBase();
     // The relay exposes the base by name, so a clone session needs a branch, not HEAD.
-    if (baseRef === "HEAD") baseRef = this.#gitOut(["symbolic-ref", "--short", "-q", "HEAD"]);
+    if (baseRef === "HEAD") baseRef = this.#gitRead(["symbolic-ref", "--short", "-q", "HEAD"]);
     if (!baseRef) throw new Error("clone sessions need a base branch; HEAD is detached");
     const branch = this.#uniqueBranch(id);
     const res = this.#git(["branch", branch, baseRef]);
@@ -657,7 +665,7 @@ export class WorktreeManager {
 
   /** The published tip of a branch, read from the host repository. */
   branchHead(branch: string): string | null {
-    return this.#gitOut(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]) || null;
+    return this.#gitRead(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]) || null;
   }
 
   /**
@@ -670,13 +678,13 @@ export class WorktreeManager {
     if (cached && Date.now() - cached.at < FACTS_TTL_MS) return cached.facts;
     const ref = `refs/heads/${branch}`;
     if (!this.#git(["rev-parse", "--verify", "--quiet", ref]).ok) return null;
-    const lastCommitSubject = this.#gitOut(["log", "-1", "--format=%s", ref]) || null;
-    const commits = numOr0(this.#gitOut(["rev-list", "--count", ref]));
+    const lastCommitSubject = this.#gitRead(["log", "-1", "--format=%s", ref]) || null;
+    const commits = numOr0(this.#gitRead(["rev-list", "--count", ref]));
     let aheadOfBase = 0;
     let behindBase = 0;
     const base = baseBranch ?? this.#baseBranch;
     if (base && this.#git(["rev-parse", "--verify", "--quiet", base]).ok) {
-      const lr = this.#gitOut(["rev-list", "--left-right", "--count", `${base}...${ref}`]);
+      const lr = this.#gitRead(["rev-list", "--left-right", "--count", `${base}...${ref}`]);
       const [behind, ahead] = lr.split(/\s+/);
       behindBase = numOr0(behind);
       aheadOfBase = numOr0(ahead);
@@ -704,7 +712,7 @@ export class WorktreeManager {
       new Promise((resolve) => {
         execFile(
           "git",
-          ["-C", path, ...args],
+          [...READ_ONLY_GIT_OPTIONS, "-C", path, ...args],
           { timeout: 15_000, maxBuffer: GIT_MAX_BUFFER, encoding: "utf8" },
           (error, stdout) => resolve(error ? "" : stdout.trim()),
         );
@@ -787,8 +795,8 @@ export class WorktreeManager {
     if (!base || !this.#git(["rev-parse", "--verify", "--quiet", base], path).ok) {
       return { outcome: "no-base" };
     }
-    const baseHead = this.#gitOut(["rev-parse", "--short", base], path);
-    const behind = numOr0(this.#gitOut(["rev-list", "--count", `HEAD..${base}`], path));
+    const baseHead = this.#gitRead(["rev-parse", "--short", base], path);
+    const behind = numOr0(this.#gitRead(["rev-list", "--count", `HEAD..${base}`], path));
     const info = { base, baseHead, behind };
 
     // The agent may be part-way through its own `git rebase` / `git merge` /
@@ -802,19 +810,17 @@ export class WorktreeManager {
 
     if (behind === 0) return { outcome: "current", ...info };
 
-    if (this.#gitOut(["status", "--porcelain"], path).length > 0) {
+    if (this.#gitRead(["status", "--porcelain"], path).length > 0) {
       return { outcome: "dirty", ...info };
     }
 
-    const run = this.#git(
-      [mode, ...(mode === "merge" ? ["--no-edit"] : []), base],
-      path,
-      90_000,
-      identity,
-    );
+    const run = this.#git([mode, ...(mode === "merge" ? ["--no-edit"] : []), base], path, {
+      timeoutMs: 90_000,
+      env: identity,
+    });
     if (run.ok) {
       this.invalidateFacts(path);
-      const head = this.#gitOut(["rev-parse", "--short", "HEAD"], path);
+      const head = this.#gitRead(["rev-parse", "--short", "HEAD"], path);
       this.#log.info("branch synced onto base", { path, base, mode, behind, head });
       return { outcome: "updated", head, ...info };
     }
@@ -822,7 +828,7 @@ export class WorktreeManager {
     // Classify before the abort clears the unmerged state: a real conflict
     // leaves unmerged paths in the index. Exit-code / index driven, not a
     // locale-dependent grep of git's stdout.
-    const conflict = this.#gitOut(["diff", "--name-only", "--diff-filter=U"], path).length > 0;
+    const conflict = this.#gitRead(["diff", "--name-only", "--diff-filter=U"], path).length > 0;
     // Undo whatever half-applied state git left behind, whichever way it failed.
     const abort = this.#git([mode, "--abort"], path);
     this.invalidateFacts(path);
@@ -850,7 +856,7 @@ export class WorktreeManager {
       "CHERRY_PICK_HEAD",
       "REVERT_HEAD",
     ]) {
-      const rel = this.#gitOut(["rev-parse", "--git-path", marker], path);
+      const rel = this.#gitRead(["rev-parse", "--git-path", marker], path);
       if (rel && existsSync(rel.startsWith("/") ? rel : join(path, rel))) return marker;
     }
     return null;
@@ -894,12 +900,18 @@ export class WorktreeManager {
     }
   }
 
-  #git(args: string[], cwd?: string, timeout = 15_000, env?: Record<string, string>): GitResult {
-    const res = spawnSync("git", ["-C", this.#hostOnly(cwd ?? this.#repoRoot), ...args], {
+  #git(
+    args: string[],
+    cwd?: string,
+    opts: { timeoutMs?: number; env?: Record<string, string>; readOnly?: boolean } = {},
+  ): GitResult {
+    const global = opts.readOnly ? READ_ONLY_GIT_OPTIONS : [];
+    const at = this.#hostOnly(cwd ?? this.#repoRoot);
+    const res = spawnSync("git", [...global, "-C", at, ...args], {
       encoding: "utf8",
-      timeout,
+      timeout: opts.timeoutMs ?? 15_000,
       maxBuffer: GIT_MAX_BUFFER,
-      ...(env ? { env: { ...Deno.env.toObject(), ...env } } : {}),
+      ...(opts.env ? { env: { ...Deno.env.toObject(), ...opts.env } } : {}),
     });
     const error = res.error ? (res.error.message ?? String(res.error)) : "";
     if (error) this.#log.warn("git spawn error", { args: args.slice(0, 2), error });
@@ -914,8 +926,9 @@ export class WorktreeManager {
     };
   }
 
-  #gitOut(args: string[], cwd?: string): string {
-    return this.#git(args, cwd).stdout.trim();
+  /** Stdout of a command that only reads; never takes Git's optional index lock. */
+  #gitRead(args: string[], cwd?: string): string {
+    return this.#git(args, cwd, { readOnly: true }).stdout.trim();
   }
 }
 

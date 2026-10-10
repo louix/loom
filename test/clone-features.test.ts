@@ -7,6 +7,7 @@ import { LoomClient } from "@loom/client";
 import { FakeProvider } from "@loom/connector-mock";
 import type { ConnectorManifest } from "@loom/core/connector";
 import type { SessionSnapshot } from "@loom/core/wire";
+import { READ_ONLY_GIT_SH } from "@loom/core/git-read";
 import { setTimeout as delay } from "node:timers/promises";
 
 const git = (cwd: string, ...args: string[]) =>
@@ -149,7 +150,7 @@ test("clone daemon routes auto/manual rebase, dirty reminders and checks through
     await until(() => messages.some((m) => m.includes("This turn ended with uncommitted changes")));
     const dirty = await c.request<SessionSnapshot>("session.get", { id: s.id });
     assert.equal(dirty.git?.dirty, true);
-    assert(calls.some((c) => c.command.includes("git status --porcelain")));
+    assert(calls.some((c) => c.command.includes(`${READ_ONLY_GIT_SH} status --porcelain`)));
     // A check runs with guest paths and no forwarded host environment.
     await Deno.writeTextFile(join(cwd, "a.ts"), "export {}");
     session.emit({

@@ -1,14 +1,15 @@
 import { listVms, type VmRecord } from "../../../../runtime/src/session-vm/inventory.ts";
 import { sampleVmUsage, type VmUsage } from "../../../../runtime/src/session-vm/usage.ts";
+import { READ_ONLY_GIT_SH } from "@loom/core/git-read";
 import { shellQuote } from "./clone-git.ts";
 import type { SessionExecutions } from "@loom/core/connector";
 
 /** Includes committed session work plus staged/unstaged changes; untracked names are listed separately. */
 export const changesCommand = (base: string | null, patch: boolean): string => `
 set -eu
-export GIT_OPTIONAL_LOCKS=0 LC_ALL=C
+export LC_ALL=C
 printf 'WORKING TREE\\n'
-status=$(git -c core.quotePath=true status --porcelain=v1)
+status=$(${READ_ONLY_GIT_SH} -c core.quotePath=true status --porcelain=v1)
 if [ -n "$status" ]; then printf '%s\\n' "$status"; else printf 'Working tree clean\\n'; fi
 printf '\\n'
 base=${shellQuote(base ?? "")}
@@ -20,7 +21,7 @@ else
   start=$(git hash-object -t tree /dev/null)
   printf 'SESSION DIFF · initial checkout\\n'
 fi
-git -c core.quotePath=true --no-pager diff --no-ext-diff --no-textconv --no-color ${patch ? "--patch" : "--numstat --shortstat"} "$start" --
+${READ_ONLY_GIT_SH} -c core.quotePath=true --no-pager diff --no-ext-diff --no-textconv --no-color ${patch ? "--patch" : "--numstat --shortstat"} "$start" --
 `;
 
 /**

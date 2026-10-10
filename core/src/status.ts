@@ -10,6 +10,7 @@
  * natively — no reformatting), and a compact diffstat.
  */
 import { spawnSync } from "node:child_process";
+import { READ_ONLY_GIT_OPTIONS } from "./git-read.ts";
 
 export interface StatusResult {
   ok: boolean;
@@ -80,6 +81,9 @@ const clampPatch = (s: string): string => {
 };
 
 const git = (cwd: string, args: string[]): { ok: boolean; out: string; err: string } => {
-  const r = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8", timeout: 15_000 });
+  const r = spawnSync("git", [...READ_ONLY_GIT_OPTIONS, "-C", cwd, ...args], {
+    encoding: "utf8",
+    timeout: 15_000,
+  });
   return { ok: r.status === 0, out: r.stdout ?? "", err: (r.stderr ?? "").trim() };
 };

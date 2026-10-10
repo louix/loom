@@ -1,4 +1,5 @@
 /** Git runs in the session VM; the host only interprets its bounded output. */
+import { READ_ONLY_GIT_SH } from "@loom/core/git-read";
 import type { GitFacts } from "@loom/core/wire";
 import type { RebaseOutcome } from "./worktrees.ts";
 import type { HookAttempt } from "../../../../core/src/shell-hook.ts";
@@ -34,7 +35,7 @@ head=$(git rev-parse HEAD)
 branch=$(git symbolic-ref --quiet --short HEAD || true)
 commits=$(git rev-list --count HEAD)
 subject=$(git log -1 --format=%s)
-status=$(git status --porcelain)
+status=$(${READ_ONLY_GIT_SH} status --porcelain)
 dirty=false
 if [ -n "$status" ]; then dirty=true; fi
 ahead=0
@@ -92,7 +93,7 @@ base=${shellQuote(ref)}
 baseHead=$(git rev-parse --short "$base")
 behind=$(git rev-list --count "HEAD..$base")
 ${pendingOperation}
-status=$(git status --porcelain)
+status=$(${READ_ONLY_GIT_SH} status --porcelain)
 active=$(git symbolic-ref --quiet --short HEAD || true)
 recorded=$(git config --local --get loom.sessionBranch || true)
 outcome=current
@@ -107,7 +108,7 @@ elif [ "$behind" -gt 0 ]; then
     outcome=updated
     head=$(git rev-parse --short HEAD)
   else
-    conflict=$(git diff --name-only --diff-filter=U)
+    conflict=$(${READ_ONLY_GIT_SH} diff --name-only --diff-filter=U)
     outcome=error
     if [ -n "$conflict" ]; then outcome=conflict; fi
     git ${mode} --abort >/dev/null 2>&1 || exit 1
