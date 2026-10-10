@@ -4406,6 +4406,40 @@ test("the wheel over the answer sheet scrolls the sheet, not the hidden transcri
   }
 });
 
+test("with a child row focused, ⏎ and i do not reach the parent session", () => {
+  const fake = mkFakeClient();
+  fake.deliver(
+    fleetOf(
+      snap({
+        id: "a",
+        status: "running",
+        subagents: [{ id: "child", name: "Scout", active: true }],
+      }),
+    ),
+  );
+  const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+  const stop = handle.effectStart();
+  const press = (input: string, key = {}) => handle.handleKey(input, key as Key);
+  const chips = () => handle.getView().bar.map((i) => i.command?.id);
+  try {
+    press("", { rightArrow: true });
+    assert.equal(handle.getView().ui.selectedChild, "sub:child");
+    assert.ok(!chips().includes("send") && !chips().includes("interrupt"));
+    press("i");
+    assert.equal(fake.of("session.interrupt").length, 0, "i stops nothing");
+    assert.match(handle.getView().ui.notice?.text ?? "", /session row.*interrupt/);
+    press("", { return: true });
+    assert.equal(openPrompt(handle.getView().ui.overlay), null, "⏎ opens no composer");
+    assert.match(handle.getView().ui.notice?.text ?? "", /session row.*talk to/);
+    press("", { leftArrow: true });
+    assert.ok(chips().includes("send") && chips().includes("interrupt"));
+    press("i");
+    assert.equal(fake.of("session.interrupt")[0]?.params["id"], "a");
+  } finally {
+    stop();
+  }
+});
+
 test("number tabs preserve navigation, isolate scroll, and leave text editing alone", async () => {
   const fake = mkFakeClient();
   fake.deliver(

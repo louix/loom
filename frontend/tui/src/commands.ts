@@ -456,6 +456,15 @@ const sessionAvailability = (
       ? (s.resumeBlockedReason ?? "This session is read-only; fork to continue.")
       : undefined;
   const settled = first(stopping, request);
+  // Drilled into one of the target's child rows, the verbs that read as acting
+  // on that child — talking, stopping, steering, renaming, removing — are
+  // withheld: children carry no actions of their own, and these would quietly
+  // act on the parent instead. The session's pending request (drawn for the
+  // whole session, and often a sub-agent's own ask) and the workspace / branch
+  // / id verbs, which name the session outright, stay.
+  const child = ctx.selectedChild != null && s.id === ctx.selectedId;
+  const onChild = (what: string): string | undefined =>
+    child ? `Select the session row (←) to ${what}.` : undefined;
   switch (id) {
     case "approve":
       return {
@@ -479,11 +488,20 @@ const sessionAvailability = (
       if (s.stopping) label = "stopping…";
       else if (s.stopFailed) label = "retry interrupt";
       const live = s.stopping || s.stopFailed || BUSY.has(kind) || on !== null;
-      return { label, disabled: live ? undefined : "Nothing is running.", bar: true };
+      return {
+        label,
+        disabled: first(onChild("interrupt the session"), !live && "Nothing is running."),
+        bar: true,
+      };
     }
     case "send":
       return {
-        disabled: first(settled, kind === "starting" && "The session is still starting.", readOnly),
+        disabled: first(
+          onChild("talk to the session"),
+          settled,
+          kind === "starting" && "The session is still starting.",
+          readOnly,
+        ),
         bar: true,
       };
     case "compact": {
@@ -492,6 +510,7 @@ const sessionAvailability = (
       const half = s.contextLimit > 0 && s.contextUsed / s.contextLimit > 0.5;
       return {
         disabled: first(
+          onChild("compact the session"),
           settled,
           readOnly,
           !["running", "idle", "working_background"].includes(kind) &&
@@ -504,6 +523,7 @@ const sessionAvailability = (
       return {
         label: s.keepWarm ? "stop keeping cache warm" : "keep cache warm",
         disabled: first(
+          onChild("change the session's cache"),
           settled,
           readOnly,
           kind !== "running" && kind !== "idle" && "Keep-warm needs a running or idle session.",
@@ -513,6 +533,7 @@ const sessionAvailability = (
     case "done":
       return {
         disabled: first(
+          onChild("archive the session"),
           settled,
           kind === "done" && "Already archived.",
           !["idle", "error", "interrupted", "done"].includes(kind) &&
@@ -533,6 +554,7 @@ const sessionAvailability = (
     case "mode":
       return {
         disabled: first(
+          onChild("change the session's mode"),
           settled,
           readOnly,
           // The provider's own modes (`SessionSnapshot.modes`) are what ⇧⇥ walks.
@@ -542,10 +564,13 @@ const sessionAvailability = (
         ),
       };
     case "model":
-      return { disabled: first(settled, readOnly, noModels(ctx, s)) };
+      return {
+        disabled: first(onChild("switch the session's model"), settled, readOnly, noModels(ctx, s)),
+      };
     case "effort":
       return {
         disabled: first(
+          onChild("change the session's effort"),
           settled,
           readOnly,
           (!s.model || !modelSupportsEffort(ctx, s.provider, s.model)) &&
@@ -555,6 +580,7 @@ const sessionAvailability = (
     case "provider":
       return {
         disabled: first(
+          onChild("switch the session's provider"),
           settled,
           readOnly,
           BUSY.has(kind) && "Interrupt the turn before switching provider.",
@@ -565,6 +591,7 @@ const sessionAvailability = (
     case "undo":
       return {
         disabled: first(
+          onChild("undo a turn"),
           settled,
           readOnly,
           !s.canRewind && "This provider cannot rewind.",
@@ -574,9 +601,11 @@ const sessionAvailability = (
       };
     case "fork":
       // A fork of this session still starting: the command cancels it.
-      if (startingForkOf(ctx, s)) return { label: "cancel fork" };
+      if (startingForkOf(ctx, s))
+        return { label: "cancel fork", disabled: onChild("cancel the fork") };
       return {
         disabled: first(
+          onChild("fork the session"),
           settled,
           s.inPlace && s.resumable !== false && "An in-place session cannot be forked.",
           !["idle", "interrupted", "done", "error"].includes(kind) &&
@@ -595,17 +624,27 @@ const sessionAvailability = (
       };
     }
     case "title":
-    case "copyid":
+      return { disabled: first(onChild("rename the session"), settled) };
     case "delete":
+      return { disabled: first(onChild("delete the session"), settled) };
+    case "copyid":
       return { disabled: settled };
     case "comment":
-      return { label: s.comment ? "edit comment" : "add comment", disabled: settled };
+      return {
+        label: s.comment ? "edit comment" : "add comment",
+        disabled: first(onChild("comment on the session"), settled),
+      };
     case "copybranch":
       return {
         disabled: first(settled, !s.branch && !s.worktree && "This session has no branch."),
       };
     case "clearqueue":
-      return { disabled: queueFor(ctx, s.id).length ? undefined : "No queued messages." };
+      return {
+        disabled: first(
+          onChild("clear the session's queue"),
+          !queueFor(ctx, s.id).length && "No queued messages.",
+        ),
+      };
     default:
       return {};
   }

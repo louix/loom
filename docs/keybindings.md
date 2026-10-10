@@ -80,6 +80,14 @@ session pane; `Esc` snaps back. `→` / `←` are unchanged — they still only 
 into a session's children. Replying to a session jumps to the session pane so
 you can see what you type.
 
+Children have no verbs of their own. While one is selected, the session verbs
+that would look like they act on the child — compose (`⏎`), interrupt (`i`),
+compact, mode / model / effort / provider, undo, fork, rename, comment, clear
+queue, archive, delete — are off the key bar and do nothing on their keys; the
+palette lists them as unavailable until you step back to the session row with
+`←`. Approving or answering the session's pending request, opening a shell and
+copying its branch or id still work.
+
 ### Acting on the selected session (footer verbs)
 
 | key | action                                                                                                                                                                                                                   |

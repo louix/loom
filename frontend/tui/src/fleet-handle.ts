@@ -2633,9 +2633,12 @@ export const mkFleetHandle = ({
     // Fleet drill-down: → enters the selected session's child rows (its live
     // background tasks + sub-agents — the tree already rendered under the row);
     // ↑/↓ then pick among them and the event pane follows the focused child.
-    // ← / esc steps back out to the fleet. Other keys keep acting on the
-    // session — children carry no actions of their own. The fleet toggle is on
-    // ⇥ (below), not the arrows, so this is unchanged at every width.
+    // ← / esc steps back out to the fleet. Children carry no actions of their
+    // own, and the session verbs that would read as acting on the child (send,
+    // interrupt, …) are disabled while one is focused (see `commands.ts`);
+    // request decisions and the workspace verbs still reach the session. The
+    // fleet toggle is on ⇥ (below), not the arrows, so this is unchanged at
+    // every width.
     if (key.rightArrow || input === "l") {
       if (sel) dispatch({ t: "childEnter" });
       return;

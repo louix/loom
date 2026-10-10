@@ -12,10 +12,13 @@ import type { ProviderInfo, SessionSnapshot } from "@loom/core/wire";
 import { loadableFailed, loadableLoaded, loadablePending } from "@loom/core/loadable";
 import type { PushFrame, EventPush, HistoryCursor, HistoryPage } from "@loom/core/wire";
 import {
+  browseBar,
   composerBar,
+  describeCommand,
   describeCommands,
   footerHints,
   keyAction,
+  keyCommand,
   paletteActions,
 } from "@loom/tui/commands";
 import {
@@ -3239,4 +3242,96 @@ test("shell access follows workspace availability and stays available while an a
   }
   assert(!allowedActs(snap({ status: "done", isolation: "vm", inPlace: true })).has("shell"));
   assert(!allowedActs(snap({ status: "idle", inPlace: false, worktree: null })).has("shell"));
+});
+
+// With a child row focused, the verbs that would read as acting on that child
+// are withheld (they would act on the parent); request decisions and the
+// verbs that name the session's workspace / branch / id stay.
+const CHILD_WITHHELD = [
+  "interrupt",
+  "send",
+  "compact",
+  "keepwarm",
+  "done",
+  "mode",
+  "model",
+  "effort",
+  "provider",
+  "undo",
+  "fork",
+  "title",
+  "comment",
+  "clearqueue",
+  "delete",
+] as const;
+
+test("a focused child row withholds the session verbs that would act on its parent", () => {
+  const idle = snap({
+    id: "kid",
+    status: "idle",
+    turns: 2,
+    model: "m1",
+    contextUsed: 900,
+    contextLimit: 1000,
+    backgroundTasks: [{ id: "task1", kind: "shell", title: "npm test --watch" }],
+    cache: { ...snap().cache, ttlMinutes: 5 },
+  });
+  const outbox = { kid: enqueue(outboxOf({}, "kid"), "later") };
+  const parent = { ...ctxFor(idle), outbox };
+  const drilled = { ...reduce(parent, { t: "childEnter" }), outbox };
+  assert.equal(drilled.selectedChild, "bg:task1");
+  const before = describeCommands(parent);
+  const after = describeCommands(drilled);
+  for (const id of CHILD_WITHHELD) {
+    const a = after.find((x) => x.id === id);
+    assert.ok(a, `${id} is still described, so the palette can say why`);
+    assert.match(a.disabled ?? "", /^Select the session row \(←\) to /, id);
+  }
+  // On the parent row the same session takes them (bar the ones its own state
+  // rules out, which say something else).
+  for (const id of CHILD_WITHHELD) {
+    const a = before.find((x) => x.id === id);
+    assert.doesNotMatch(a?.disabled ?? "", /session row/, id);
+  }
+  for (const id of ["send", "compact", "title", "undo", "model"] as const)
+    assert.equal(before.find((x) => x.id === id)?.disabled, undefined, id);
+  // The workspace / branch / id verbs and the view stay usable from the child.
+  for (const id of ["shell", "copybranch", "copyid", "rebase", "childExit", "viewlog"] as const)
+    assert.doesNotMatch(after.find((x) => x.id === id)?.disabled ?? "", /session row/, id);
+});
+
+test("a focused child keeps send and interrupt off the bars and their keys idle", () => {
+  let s = reduce(ctxFor(fanout), { t: "childEnter" });
+  assert.equal(s.selectedChild, "bg:task1");
+  const bar = browseBar(s).map((b) => b.command?.id);
+  assert.ok(!bar.includes("send") && !bar.includes("interrupt"), bar.join(" "));
+  assert.equal(bar[0], "childExit", "← leads the bar while drilled in");
+  const actions = describeCommands(s);
+  assert.equal(keyCommand(actions, "", { return: true }), null, "⏎ composes nothing");
+  assert.equal(keyCommand(actions, "i", {}), null, "i interrupts nothing");
+  assert.match(keyAction(actions, "i", {})?.disabled ?? "", /interrupt the session/);
+  assert.match(keyAction(actions, "", { return: true })?.disabled ?? "", /talk to the session/);
+  // The composer surface describes the same target the same way.
+  const composer = composerBar(s, "fan").map((b) => b.command?.id);
+  for (const id of ["interrupt", "mode", "model", "clearqueue"] as const)
+    assert.ok(!composer.includes(id), id);
+  // The palette lists them disabled, after everything runnable.
+  const rows = paletteActions(s, "fan");
+  const firstDisabled = rows.findIndex((r) => r.disabled);
+  for (const id of ["send", "interrupt"] as const) {
+    const at = rows.findIndex((r) => r.id === id);
+    assert.ok(at >= firstDisabled, `${id} sorts with the unavailable rows`);
+    assert.match(rows[at]!.disabled ?? "", /session row/);
+  }
+  // Another session's palette is unaffected by this one's drill-down.
+  const other = snap({ id: "other", status: "running" });
+  s = reduce(s, fleet([fanout, other], [ACTIONS_PROVIDER]));
+  assert.equal(s.selectedChild, "bg:task1");
+  assert.equal(describeCommand(s, "interrupt", "other")?.disabled, undefined);
+  // Stepping back to the parent row restores them.
+  s = reduce(s, { t: "childExit" });
+  const back = browseBar(s).map((b) => b.command?.id);
+  assert.ok(back.includes("send") && back.includes("interrupt"), back.join(" "));
+  assert.equal(keyCommand(describeCommands(s), "i", {}), "interrupt");
+  assert.equal(keyCommand(describeCommands(s), "", { return: true }), "send");
 });
