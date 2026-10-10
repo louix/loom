@@ -346,18 +346,39 @@ export const providerChangedEventSchema = harnessEventBaseSchema.extend({
 export type ProviderChangedEvent = z.infer<typeof providerChangedEventSchema>;
 
 /**
- * A user message the daemon delivered while a turn was already in flight.
- * `injected: true` means it reached the model mid-turn (aisdk: after the
- * current tool result, before the next step); on Claude it is queued by the
- * SDK for the next turn boundary. Emitted so every client sees it land, since
- * the composing client's local echo doesn't reach the others.
+ * A user message the agent has consumed — the point the log shows it at. A
+ * queued message (`queueEntryId`) is emitted when the provider reports taking
+ * it up (`input_consumed`), or at hand-over for a provider without receipts;
+ * Loom's own messages, the opening prompt and a fork's seed when sent.
+ * `injected: true` means it went into a turn already in flight (folded in at a
+ * tool boundary) rather than starting one. Emitted so every client sees it
+ * land; no client echoes a send locally.
  */
 export const userMessageEventSchema = harnessEventBaseSchema.extend({
   type: z.literal("user_message"),
   text: z.string(),
   injected: z.boolean(),
+  /** The queue entry this message was (`docs/message-queue.md`). */
+  queueEntryId: z.string().optional(),
+  /** The client that queued it. */
+  author: z.string().optional(),
 });
 export type UserMessageEvent = z.infer<typeof userMessageEventSchema>;
+
+/**
+ * The agent took up input handed to it with an `inputId` (`send`'s options):
+ * a turn started on it, or it was folded into the live turn (`midTurn`). Only
+ * an adapter whose capabilities say `inputReceipts` emits it.
+ *
+ * Consumed by the session manager; not transcript, not persisted — the
+ * manager emits the `user_message` in its place.
+ */
+export const inputConsumedEventSchema = harnessEventBaseSchema.extend({
+  type: z.literal("input_consumed"),
+  inputId: z.string(),
+  midTurn: z.boolean(),
+});
+export type InputConsumedEvent = z.infer<typeof inputConsumedEventSchema>;
 
 /**
  * One queued input a Stop cancelled before the agent ever saw it.
@@ -439,6 +460,7 @@ export const harnessEventSchema = z.discriminatedUnion("type", [
   providerChangedEventSchema,
   userMessageEventSchema,
   inputDiscardedEventSchema,
+  inputConsumedEventSchema,
   rateLimitEventSchema,
 ]);
 export type HarnessEvent = z.infer<typeof harnessEventSchema>;

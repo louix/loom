@@ -11,6 +11,7 @@ const effortLevelSchema = z.string();
  */
 import { providerTotalSchema, tokenUsageSchema, type HarnessEvent } from "./events.ts";
 import { sessionStateSchema } from "./session-state.ts";
+import type { SendOptions } from "./message-queue.ts";
 
 export const sessionModeSchema = z.enum(["default", "plan", "acceptEdits", "auto"]);
 export type SessionMode = z.infer<typeof sessionModeSchema>;
@@ -56,6 +57,10 @@ export const providerCapabilitiesSchema = z.object({
   ownsTranscript: z.boolean(),
   /** Can run a cheap, tool-free single-turn call (used for auto-titling). */
   oneShot: z.boolean(),
+  /** Emits `input_consumed` for input sent with an `inputId`: a queued message
+   *  reaches the chat log when the agent takes it up rather than when it is
+   *  handed over. Absent counts as false. */
+  inputReceipts: z.boolean().optional(),
   /** Emits token counts before the final result (partial usage). */
   partialTokens: z.boolean(),
   permissionModes: z.array(sessionModeSchema),
@@ -290,8 +295,12 @@ export interface AgentSession {
   readonly providerRef: string | null;
   /** The normalized event stream. Ends when the run's process exits. */
   events(): AsyncIterable<HarnessEvent>;
-  /** Send a follow-up turn / answer. */
-  send(input: UserInput): Promise<void>;
+  /**
+   * Send a follow-up turn / answer. A queued message carries `opts`: its
+   * `inputId` names it to the provider and to `input_consumed`, and `midTurn`
+   * says it goes into the live turn. Loom's own sends carry none.
+   */
+  send(input: UserInput, opts?: SendOptions): Promise<void>;
   /**
    * Compact the session's context window. Optional `instructions` steer what the
    * summary keeps. Providers that drive this through their harness (Claude's

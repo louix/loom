@@ -112,6 +112,7 @@ export const NON_TRANSCRIPT: ReadonlySet<string> = new Set([
   "background_tasks",
   "rate_limit",
   "input_discarded",
+  "input_consumed",
 ]);
 
 // ---------------------------------------------------------------------------
@@ -382,6 +383,9 @@ export const formatEvent = (ev: HarnessEvent, toolName?: string): EventFormat =>
         full: ev.injected ? `${body(ev.text)}\n\n(sent mid-turn)` : body(ev.text),
         tone: "accent",
       };
+    case "input_consumed":
+      // Like `input_discarded`: the manager keeps it; here for exhaustiveness.
+      return { glyph: "·", text: "input taken up", tone: "dim" };
     case "input_discarded":
       // Never reaches the log (the daemon does not forward it); here for
       // exhaustiveness.
@@ -1071,6 +1075,7 @@ const transcriptHeader = (l: LogLine): string | null => {
     case "rate_limit":
     case "background_tasks":
     case "input_discarded":
+    case "input_consumed":
       return null;
     default:
       return absurd(l.kind);

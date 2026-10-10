@@ -100,6 +100,7 @@ export class AisdkProvider implements AgentProvider {
       compactionInstructions: true, // the summarizer prompt takes a custom instructions steer
       ownsTranscript: true, // Loom owns the ModelMessage[] in `provider_messages`
       oneShot: true,
+      inputReceipts: true,
       partialTokens: true,
       permissionModes: ["default", "plan", "acceptEdits", "auto"],
       models: opts.models,

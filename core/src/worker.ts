@@ -3,6 +3,7 @@ import { transcriptMessageSchema } from "./transcript.ts";
 import { harnessEventSchema } from "./events.ts";
 import { connectorWireConfigSchema } from "./connector.ts";
 import { decode } from "./schema.ts";
+import { sendOptionsSchema } from "./message-queue.ts";
 import { environmentDiagnostics } from "./environment-diagnostic.ts";
 import {
   adapterSnapshotSchema,
@@ -16,7 +17,8 @@ import {
   mcpServerHandleSchema,
 } from "./types.ts";
 
-export const WORKER_VERSION = 3;
+// v4: `send` takes the queued input's `{ inputId, midTurn }`.
+export const WORKER_VERSION = 4;
 export const MAX_FRAME_BYTES = 1024 * 1024;
 export const MAX_PENDING = 128;
 
@@ -79,7 +81,7 @@ export const workerCommandSchema = z.discriminatedUnion("method", [
   command("seedTranscript", z.tuple([z.array(transcriptMessageSchema)])),
   command("create", z.tuple([create])),
   command("resume", z.tuple([resume])),
-  command("send", z.tuple([z.string()])),
+  command("send", z.tuple([z.string(), sendOptionsSchema.optional()])),
   command("setModel", z.tuple([z.string()])),
   command("setEffort", z.tuple([z.string()])),
   command("setMode", z.tuple([sessionModeSchema])),

@@ -62,3 +62,16 @@ test("validation diagnostics never include opaque values", () => {
     },
   );
 });
+test("a worker send carries a queued message's input id, and input_consumed crosses as an event", () => {
+  const plain = { kind: "request", id: 1, method: "send", args: ["hi"] };
+  assert.deepEqual(decodeWorkerRequest(plain), plain);
+  const queued = { ...plain, args: ["hi", { inputId: "e1", midTurn: true }] };
+  assert.deepEqual(decodeWorkerRequest(queued), queued);
+  assert.throws(() => decodeWorkerRequest({ ...plain, args: ["hi", { inputId: 3 }] }));
+  const event = { type: "input_consumed", sessionId: "s", ts: 1, inputId: "e1", midTurn: false };
+  assert.deepEqual(decodeWorkerFrame({ kind: "event", seq: 1, event }), {
+    kind: "event",
+    seq: 1,
+    event,
+  });
+});

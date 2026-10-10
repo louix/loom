@@ -116,17 +116,14 @@ export class DeliveryUncertainError extends Error {
 }
 
 /** Options for `AgentSession.send`. Both optional: Loom's own sends carry none. */
-export interface SendOptions {
+export const sendOptionsSchema = z.object({
   /** The queue entry's id — the provider-side input id (Claude's uuid, Codex's
    *  `clientUserMessageId`) and the `inputId` of its `input_consumed`. */
-  inputId?: string;
-  /** Handed into a live turn rather than starting one. */
-  midTurn?: boolean;
-}
-export const sendOptionsSchema = z.object({
   inputId: z.string().optional(),
+  /** Handed into a live turn rather than starting one. */
   midTurn: z.boolean().optional(),
 });
+export type SendOptions = z.infer<typeof sendOptionsSchema>;
 
 const ordinal = (n: number): string => {
   const tens = n % 100;

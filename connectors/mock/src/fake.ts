@@ -9,6 +9,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type { HarnessEvent, TokenUsage } from "@loom/core/events";
+import type { SendOptions } from "@loom/core/message-queue";
 import { stateError, stateIdle, stateRunning, stateStarting } from "@loom/core/session-state";
 import { AsyncChannel } from "@loom/core/channel";
 import type {
@@ -187,9 +188,25 @@ export class FakeSession implements AgentSession {
     return this.#channel;
   }
 
-  async send(input: UserInput): Promise<void> {
+  /** The options each `send` carried, parallel to {@link sends}. */
+  readonly sendOptions: Array<SendOptions | undefined> = [];
+  /** Make the next `send` throw this instead of taking the input. */
+  failNextSend: Error | null = null;
+
+  async send(input: UserInput, opts?: SendOptions): Promise<void> {
+    const failure = this.failNextSend;
+    if (failure) {
+      this.failNextSend = null;
+      throw failure;
+    }
     this.sends.push(input);
+    this.sendOptions.push(opts);
     this.#snap.status = stateRunning;
+  }
+
+  /** Report a queued input taken up (a provider with `inputReceipts`). */
+  consume(inputId: string, midTurn = false): void {
+    this.emit({ type: "input_consumed", inputId, midTurn });
   }
 
   async compact(instructions?: string): Promise<void> {

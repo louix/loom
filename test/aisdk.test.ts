@@ -2086,3 +2086,109 @@ test("async init lets AI SDK answer immediately and reports completion on a late
     await Deno.remove(cwd, { recursive: true });
   }
 });
+// --- message queue receipts (docs/message-queue.md) ------------------------
+
+/** A text-only model whose every reply streams slowly enough to be overtaken. */
+const slowTextModel = (delayMs: number) => {
+  let roundTrips = 0;
+  return new MockLanguageModelV3({
+    doStream: async () => {
+      roundTrips += 1;
+      return {
+        stream: simulateReadableStream({
+          initialDelayInMs: 0,
+          chunkDelayInMs: delayMs,
+          chunks: [
+            { type: "stream-start", warnings: [] },
+            {
+              type: "response-metadata",
+              id: `r${roundTrips}`,
+              modelId: "mock",
+              timestamp: new Date(0),
+            },
+            { type: "text-start", id: "t" },
+            { type: "text-delta", id: "t", delta: `reply ${roundTrips}` },
+            { type: "text-end", id: "t" },
+            {
+              type: "finish",
+              finishReason: { unified: "stop", raw: undefined },
+              usage: streamUsage({ noCache: 4, output: 2 }),
+            },
+          ],
+        }),
+      };
+    },
+  }) as unknown as LanguageModel;
+};
+
+test("aisdk reports a queued message consumed when it starts a turn and when it folds in", async () => {
+  const { db, cleanup } = tmpDb();
+  try {
+    const store = new ProviderMessageStore(db);
+    const p = provider(() => slowTextModel(5), store);
+    assert.equal(p.capabilities.inputReceipts, true);
+    const s = await p.createSession({
+      sessionId: "s1",
+      cwd: "/tmp",
+      prompt: "first",
+      mode: "default",
+      mcpServers: [],
+    });
+    const seen: HarnessEvent[] = [];
+    const reader = (async () => {
+      for await (const e of s.events()) seen.push(e);
+    })();
+    await waitFor(() => seen.some((e) => e.type === "result"));
+    // Idle: this one starts the next turn.
+    await s.send("second", { inputId: "in-2" });
+    // Running: this one is injected and drained into the same turn.
+    await s.send("third", { inputId: "in-3", midTurn: true });
+    await waitFor(() => seen.filter((e) => e.type === "result").length >= 2);
+    await s.close();
+    await reader;
+    const receipts = seen.flatMap((e) =>
+      e.type === "input_consumed" ? [[e.inputId, e.midTurn]] : [],
+    );
+    assert.deepEqual(receipts, [
+      ["in-2", false],
+      ["in-3", true],
+    ]);
+    // Each receipt is reported before the reply that answers it.
+    const consumedAt = seen.findIndex((e) => e.type === "input_consumed" && e.inputId === "in-3");
+    const lastText = seen.findLastIndex((e) => e.type === "assistant_text");
+    assert.ok(consumedAt < lastText);
+  } finally {
+    cleanup();
+  }
+});
+
+test("aisdk reports the queued messages an interrupt dropped, by input id", async () => {
+  const { db, cleanup } = tmpDb();
+  try {
+    const store = new ProviderMessageStore(db);
+    const p = provider(() => slowTextModel(200), store);
+    const s = await p.createSession({
+      sessionId: "s1",
+      cwd: "/tmp",
+      prompt: "first",
+      mode: "default",
+      mcpServers: [],
+    });
+    const seen: HarnessEvent[] = [];
+    const reader = (async () => {
+      for await (const e of s.events()) seen.push(e);
+    })();
+    await s.send("never seen", { inputId: "in-x", midTurn: true });
+    await s.interrupt();
+    await s.close();
+    await reader;
+    const discarded = seen.find((e) => e.type === "input_discarded");
+    assert.deepEqual(discarded?.type === "input_discarded" ? discarded.items : null, [
+      { kind: "message", text: "never seen", ref: "in-x" },
+    ]);
+    assert.ok(!seen.some((e) => e.type === "input_consumed"));
+    assert.ok(!store.load("s1").some((m) => m.content === "never seen"));
+  } finally {
+    cleanup();
+  }
+});

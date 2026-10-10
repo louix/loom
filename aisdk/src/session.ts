@@ -33,6 +33,7 @@ import type {
   SessionMode,
   UserInput,
 } from "@loom/core/types";
+import type { SendOptions } from "@loom/core/message-queue";
 import { AisdkEventMapper } from "./map.ts";
 import { runTurn, type VendorOptions } from "./loop.ts";
 import { dropDanglingToolCalls } from "./transcript.ts";
@@ -167,8 +168,9 @@ export class AisdkSession implements AgentSession {
    * the impl / injection re-chains) from kicking off after an interrupt.
    */
   #interrupted = false;
-  /** User messages sent mid-turn, drained by the loop's `prepareStep`. */
-  readonly #injections: string[] = [];
+  /** User messages sent mid-turn, drained by the loop's `prepareStep`. A
+   *  queued message carries its `inputId`, reported consumed as it drains. */
+  readonly #injections: Array<{ content: string; inputId?: string }> = [];
   #closing = false;
   #compacting = false;
   /** The in-flight `#doCompact`, tracked so `interrupt()` / `close()` can await
@@ -232,7 +234,7 @@ export class AisdkSession implements AgentSession {
             let outcome = result.exitCode === 0 ? "finished" : "failed";
             if (result.timedOut) outcome = "timed out";
             const content = `[loom] Initialization ${outcome}: ${hook.run} (background task ${id}).\n${result.output.slice(0, 8000)}`;
-            if (this.#turnRunning || this.#compacting) this.#injections.push(content);
+            if (this.#turnRunning || this.#compacting) this.#injections.push({ content });
             else {
               const message: ModelMessage = { role: "user", content };
               this.#messages.push(message);
@@ -286,13 +288,17 @@ export class AisdkSession implements AgentSession {
     return this.#outbox;
   }
 
-  async send(input: UserInput): Promise<void> {
+  async send(input: UserInput, opts: SendOptions = {}): Promise<void> {
     if (this.#closing) throw new Error("session is closing");
     // Mid-turn: hand the message to the running loop's `prepareStep`, which
-    // splices it in after the current tool result. The daemon emits the
-    // `user_message` event so every client sees it land.
+    // splices it in after the current tool result and reports it consumed
+    // then. The daemon emits the `user_message` event so every client sees it
+    // land.
     if (this.#turnRunning) {
-      this.#injections.push(input);
+      this.#injections.push({
+        content: input,
+        ...(opts.inputId !== undefined ? { inputId: opts.inputId } : {}),
+      });
       return;
     }
     // Claim the turn *synchronously* — a second send() that arrives before the
@@ -314,19 +320,48 @@ export class AisdkSession implements AgentSession {
     }
     this.#segmentsRun = 0; // a fresh user turn — reset the step-ceiling counter
     this.#interrupted = false; // a new turn supersedes any prior interrupt
+    // The turn is the input's from here: it is in the transcript the turn runs on.
+    if (opts.inputId !== undefined) this.#consumed(opts.inputId, false);
     this.#kickTurn();
+  }
+
+  #consumed(inputId: string, midTurn: boolean): void {
+    this.#emit({ type: "input_consumed", sessionId: this.id, ts: Date.now(), inputId, midTurn });
+  }
+
+  /** Take the queued mid-turn messages, reporting each queued one consumed:
+   *  whoever drains them puts them in front of the model's next step. */
+  #drainInjections(): ModelMessage[] {
+    return this.#injections.splice(0).map(({ content, inputId }) => {
+      if (inputId !== undefined) this.#consumed(inputId, true);
+      return { role: "user", content } as ModelMessage;
+    });
   }
 
   /** Move any queued mid-turn messages into the transcript; returns what moved. */
   #flushInjections(): ModelMessage[] {
     if (this.#injections.length === 0) return [];
-    const msgs: ModelMessage[] = this.#injections.splice(0).map((content) => ({
-      role: "user",
-      content,
-    }));
+    const msgs = this.#drainInjections();
     this.#messages.push(...msgs);
     this.#store?.append(this.id, msgs);
     return msgs;
+  }
+
+  /** An interrupt drops what was queued mid-turn unseen: report it so the
+   *  daemon can put its queued messages back. */
+  #discardInjections(): void {
+    const dropped = this.#injections.splice(0);
+    if (dropped.length === 0) return;
+    this.#emit({
+      type: "input_discarded",
+      sessionId: this.id,
+      ts: Date.now(),
+      items: dropped.map(({ content, inputId }) => ({
+        kind: "message" as const,
+        text: content,
+        ...(inputId !== undefined ? { ref: inputId } : {}),
+      })),
+    });
   }
 
   async compact(instructions?: string): Promise<void> {
@@ -954,8 +989,7 @@ export class AisdkSession implements AgentSession {
         maxSteps: this.#maxSteps,
         abortSignal: abort.signal,
         mapper: this.#mapper,
-        drainInjections: () =>
-          this.#injections.splice(0).map((content) => ({ role: "user", content }) as ModelMessage),
+        drainInjections: () => this.#drainInjections(),
         // A9: end the segment early if a run of big tool reads pushes the
         // transcript near the window — the next segment compacts at its top.
         shouldStopForContext: () =>
@@ -996,7 +1030,7 @@ export class AisdkSession implements AgentSession {
         if (stopped) {
           // The user interrupted — drop anything queued but not yet acted on
           // rather than persisting it as a dangling unanswered user message.
-          this.#injections.length = 0;
+          this.#discardInjections();
         } else {
           // An errored turn may be resumed; keep a late injection for that.
           this.#flushInjections();

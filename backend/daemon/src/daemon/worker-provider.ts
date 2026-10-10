@@ -9,6 +9,7 @@ import {
 import { sessionGitIdentity, type SessionGitIdentity } from "../config/git-identity.ts";
 import type { TranscriptStore } from "../../../../core/src/transcript.ts";
 import type { HarnessEvent } from "../../../../core/src/events.ts";
+import { DeliveryUncertainError, type SendOptions } from "../../../../core/src/message-queue.ts";
 import type {
   AdapterSnapshot,
   AgentProvider,
@@ -228,8 +229,19 @@ export class RemoteWorkerSession implements AgentSession {
       throw this.#failure;
     }
   }
-  async send(input: string): Promise<void> {
-    await this.#request({ method: "send", args: [input] });
+  async send(input: string, opts?: SendOptions): Promise<void> {
+    try {
+      await this.#request({ method: "send", args: opts ? [input, opts] : [input] });
+    } catch (error) {
+      // The worker went away (timeout, disconnect, crash) with the send in
+      // flight: whether its connector handed the input on is unknowable. An
+      // error *response* is the connector refusing it, and nothing went out.
+      if (this.#failure)
+        throw new DeliveryUncertainError(error instanceof Error ? error.message : String(error), {
+          cause: error,
+        });
+      throw error;
+    }
   }
   async compact(instructions?: string): Promise<void> {
     await this.#request(
