@@ -47,6 +47,7 @@ import type {
   SessionRef,
   UserInput,
 } from "@loom/core/types";
+import type { SendOptions } from "@loom/core/message-queue";
 
 const CAPS: ProviderCapabilities = {
   liveModeSwitch: true,
@@ -58,6 +59,8 @@ const CAPS: ProviderCapabilities = {
   compactionInstructions: true, // /compact takes a custom summary steer
   ownsTranscript: false, // history lives in the Claude Agent SDK's own session
   oneShot: true,
+  // The CLI's `command_lifecycle` frames say when it takes a queued message up.
+  inputReceipts: true,
   // `includePartialMessages` is off and the mapper drops `stream_event`, so
   // usage is only emitted from the final `result` — no interim token counts.
   partialTokens: false,
@@ -416,6 +419,12 @@ class ClaudeSession implements AgentSession {
    *  one again (a repeat interrupt, a fold the abort caught after the agent
    *  answered it) must not report it as never seen. */
   #settledInputs = new Set<string>();
+  /**
+   * Queued messages sent with an `inputId` (their uuid) that the CLI has not
+   * taken up yet, and whether each went into a live turn: each gets one
+   * `input_consumed` when it is.
+   */
+  #receipts = new Map<string, boolean>();
   /** Normalized events out: SDK messages + permission prompts, merged. */
   #outbox = new AsyncChannel<HarnessEvent>();
   #pending = new PendingInteractions<PermissionResult | null, PermissionResult | null>();
@@ -508,6 +517,7 @@ class ClaudeSession implements AgentSession {
     // A new CLI process: the old one's queue and its uuids are gone with it.
     this.#queued.clear();
     this.#settledInputs.clear();
+    this.#receipts.clear();
     if (opts.prompt) this.#enqueueInput(opts.prompt, "message");
 
     const canUseTool: CanUseTool = (toolName, input, ctx) => {
@@ -919,38 +929,80 @@ class ClaudeSession implements AgentSession {
     return this.#outbox;
   }
 
-  send(input: UserInput): Promise<void> {
-    return this.#submit(input, "message");
+  send(input: UserInput, opts: SendOptions = {}): Promise<void> {
+    return this.#submit(input, "message", opts);
   }
 
   /** A new turn's input: `send()`'s, or the adapter's own follow-up. */
-  async #submit(input: UserInput, kind: "message" | "command"): Promise<void> {
+  async #submit(
+    input: UserInput,
+    kind: "message" | "command",
+    opts: SendOptions = {},
+  ): Promise<void> {
     if (this.#closing) throw new Error("session is closing");
     if (this.#interruptOperation || this.#interruptFailed || this.#taskStops.size > 0)
       throw new Error("Claude cancellation is unresolved — retry interrupt before sending");
     if (this.#rewindInFlight) throw new Error("a context replacement is in progress");
     this.#interrupted = false; // a fresh user turn supersedes any prior interrupt
-    this.#enqueueInput(input, kind);
+    this.#enqueueInput(input, kind, opts);
   }
 
   /** Queue `text` for the CLI, remembered under its uuid until the agent takes
-   *  it up — see {@link #queued}. */
-  #enqueueInput(text: string, kind: "message" | "command"): void {
-    const uuid = randomUUID();
+   *  it up — see {@link #queued}. A queued message is stamped with its own
+   *  `inputId`, which is what the CLI's receipts name. */
+  #enqueueInput(text: string, kind: "message" | "command", opts: SendOptions = {}): void {
+    const uuid = opts.inputId ?? randomUUID();
     this.#queued.set(uuid, { kind, text, ref: uuid });
     bounded(this.#queued);
+    if (opts.inputId !== undefined) {
+      this.#receipts.set(uuid, opts.midTurn ?? false);
+      bounded(this.#receipts);
+    }
     this.#inbox.push(userMessage(text, uuid));
   }
 
-  /** The agent took these queued inputs up; a Stop can no longer discard them. */
+  /**
+   * The agent took these queued inputs up; a Stop can no longer discard them.
+   * The CLI says so as it happens with a `command_lifecycle` frame in state
+   * `started` — at the start of the turn it runs, or straight after the tool
+   * result it is folded into (not in the SDK's typings; seen on CLI 2.1.280).
+   * The `user_message_uuids` an assistant or `result` frame carries back it
+   * up: a `result` lists every message its turn consumed, folds included.
+   */
   #trackConsumed(msg: SDKMessage): void {
-    if (msg.type !== "assistant") return;
-    const uuids = msg.user_message_uuids ?? (msg.user_message_uuid ? [msg.user_message_uuid] : []);
-    for (const uuid of uuids) this.#settleInput(uuid);
+    const frame = msg as unknown as {
+      type: string;
+      command_uuid?: string;
+      state?: string;
+      user_message_uuid?: string;
+      user_message_uuids?: string[];
+    };
+    if (frame.type === "command_lifecycle") {
+      if (frame.state === "started" && frame.command_uuid) this.#takenUp(frame.command_uuid);
+      return;
+    }
+    if (frame.type !== "assistant" && frame.type !== "result") return;
+    const uuids =
+      frame.user_message_uuids ?? (frame.user_message_uuid ? [frame.user_message_uuid] : []);
+    for (const uuid of uuids) this.#takenUp(uuid);
+  }
+
+  #takenUp(uuid: string): void {
+    const midTurn = this.#receipts.get(uuid);
+    this.#settleInput(uuid);
+    if (midTurn === undefined) return;
+    this.#outbox.push({
+      type: "input_consumed",
+      sessionId: this.id,
+      ts: Date.now(),
+      inputId: uuid,
+      midTurn,
+    });
   }
 
   #settleInput(uuid: string): void {
     this.#queued.delete(uuid);
+    this.#receipts.delete(uuid);
     this.#settledInputs.add(uuid);
     bounded(this.#settledInputs);
   }

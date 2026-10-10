@@ -534,7 +534,7 @@ const setupPulled = async (t: TestContext) => {
     seen.filter(
       (e): e is Extract<HarnessEvent, { type: "input_discarded" }> => e.type === "input_discarded",
     );
-  return { s, q, receipt, pull, discarded };
+  return { s, q, receipt, pull, discarded, seen };
 };
 
 test("a Stop reports the queued input it cancelled that the agent never took up", async (t) => {
@@ -1139,4 +1139,59 @@ test("Claude registers async init on a new fork but does not retain it across qu
   } finally {
     await session.close();
   }
+});
+
+// A9: a queued message is stamped with its entry id, and reported consumed
+// once — when the CLI takes it up — so it reaches the chat log then.
+test("queued messages are stamped with their input id and reported taken up once", async (t) => {
+  const { s, q, receipt, pull, discarded, seen } = await setupPulled(t);
+  const consumed = () =>
+    seen.flatMap((e) => (e.type === "input_consumed" ? [[e.inputId, e.midTurn]] : []));
+  await pull(); // the opening prompt carries no input id: no receipt for it
+  await s.send("fold me", { inputId: "entry-fold", midTurn: true });
+  assert.equal((await pull()).uuid, "entry-fold");
+  await s.send("next turn", { inputId: "entry-next", midTurn: false });
+  assert.equal((await pull()).uuid, "entry-next");
+  await s.send("never taken", { inputId: "entry-dropped", midTurn: true });
+  assert.equal((await pull()).uuid, "entry-dropped");
+  await delay(20);
+  assert.deepEqual(consumed(), [], "handed over is not taken up");
+
+  // The CLI folds the first in after a tool result and says so.
+  q.push({ type: "command_lifecycle", command_uuid: "entry-fold", state: "queued" });
+  q.push({ type: "command_lifecycle", command_uuid: "entry-fold", state: "started" });
+  await delay(20);
+  assert.deepEqual(consumed(), [["entry-fold", true]]);
+  // The turn's result lists it again: still one receipt.
+  q.push({
+    type: "result",
+    subtype: "success",
+    uuid: "r-1",
+    user_message_uuids: ["entry-fold"],
+    usage: { input_tokens: 1, output_tokens: 1 },
+    total_cost_usd: 0,
+  });
+  // The next turn's first frame names the second, with no lifecycle frame.
+  q.push({
+    type: "assistant",
+    parent_tool_use_id: null,
+    uuid: "a-2",
+    user_message_uuid: "entry-next",
+    user_message_uuids: ["entry-next"],
+    message: { content: [] },
+  });
+  await delay(20);
+  assert.deepEqual(consumed(), [
+    ["entry-fold", true],
+    ["entry-next", false],
+  ]);
+
+  // A Stop cancels the third: discarded, never consumed.
+  receipt.cancelled = ["entry-dropped"];
+  await s.interrupt();
+  await delay(20);
+  assert.deepEqual(discarded()[0]?.items, [
+    { kind: "message", text: "never taken", ref: "entry-dropped" },
+  ]);
+  assert.equal(consumed().length, 2);
 });

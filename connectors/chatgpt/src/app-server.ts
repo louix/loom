@@ -24,6 +24,7 @@ import type {
   SessionMode,
   SessionRef,
 } from "@loom/core/types";
+import type { SendOptions } from "@loom/core/message-queue";
 import { CodexRpcClient } from "./rpc.ts";
 import {
   CodexNativeModes,
@@ -273,6 +274,15 @@ export class CodexAppServerSession implements AgentSession {
   #interruptGeneration = 0;
   #threadId: string | null = null;
   #turnId: string | null = null;
+  /**
+   * Queued messages steered into a live turn, by their `clientUserMessageId`,
+   * that Codex has not yet been seen taking up. Its `userMessage` item echoes
+   * the id as `clientId`; a turn that completes has taken the rest.
+   */
+  readonly #steered = new Set<string>();
+  /** Commands and MCP calls reported running at `item/started`: their
+   *  `item/completed` adds only the result. */
+  readonly #runningTools = new Set<string>();
   #model: string;
   #effort: EffortLevel | null;
   /** Effective native settings, as Codex last reported them. */
@@ -564,17 +574,45 @@ export class CodexAppServerSession implements AgentSession {
     return this.#events;
   }
 
-  async send(input: string): Promise<void> {
+  /**
+   * Mid-turn input is steered into the live turn (`expectedTurnId` makes a
+   * steer that lost the race with the turn's end fail, so the caller can start
+   * the next turn with it instead); otherwise it starts a turn. A queued
+   * message's `inputId` rides as `clientUserMessageId`.
+   */
+  async send(input: string, opts: SendOptions = {}): Promise<void> {
     if (!this.#threadId) throw new Error("Codex thread has not started");
+    const id = opts.inputId;
     if (this.#turnId) {
-      await this.#rpc.request("turn/steer", {
-        threadId: this.#threadId,
-        expectedTurnId: this.#turnId,
-        input: [textInput(input)],
-      });
+      // Watched for before the request: its `userMessage` item can be read
+      // ahead of the reply's continuation.
+      if (id !== undefined) this.#steered.add(id);
+      try {
+        await this.#rpc.request("turn/steer", {
+          threadId: this.#threadId,
+          expectedTurnId: this.#turnId,
+          input: [textInput(input)],
+          ...(id !== undefined ? { clientUserMessageId: id } : {}),
+        });
+      } catch (err) {
+        if (id !== undefined) this.#steered.delete(id);
+        throw err;
+      }
       return;
     }
-    await this.#startTurn(input);
+    await this.#startTurn(input, id);
+    // The turn runs on it: taken up now.
+    if (id !== undefined) this.#consumed(id, false);
+  }
+
+  #consumed(inputId: string, midTurn: boolean): void {
+    this.#events.push({ type: "input_consumed", sessionId: this.id, ts: now(), inputId, midTurn });
+  }
+
+  /** A `userMessage` item: Codex put steered input into the conversation. */
+  #userMessageItem(item: Record<string, unknown>): void {
+    const id = item["clientId"];
+    if (typeof id === "string" && this.#steered.delete(id)) this.#consumed(id, true);
   }
 
   async compact(instructions?: string): Promise<void> {
@@ -785,6 +823,10 @@ export class CodexAppServerSession implements AgentSession {
    */
   async interrupt(): Promise<void> {
     this.#interruptGeneration++;
+    // Codex drops steered input with the turn and reports none of it: what
+    // is still unconfirmed stays unknown to the daemon (uncertain).
+    this.#steered.clear();
+    this.#runningTools.clear();
     await this.#endTurn();
   }
   async rewind(): Promise<void> {
@@ -864,7 +906,7 @@ export class CodexAppServerSession implements AgentSession {
     this.#events.close();
   }
 
-  async #startTurn(input: string): Promise<void> {
+  async #startTurn(input: string, clientUserMessageId?: string): Promise<void> {
     // A turn runs under the settings Codex holds when it starts, so it never
     // overtakes a mode change still waiting for its observation.
     await this.#modeChange;
@@ -886,6 +928,7 @@ export class CodexAppServerSession implements AgentSession {
       result = await this.#rpc.request("turn/start", {
         threadId: this.#threadId,
         input: [textInput(input)],
+        ...(clientUserMessageId !== undefined ? { clientUserMessageId } : {}),
         model: this.#model || undefined,
         effort: this.#effort ?? undefined,
         // Approvals and collaboration are thread settings (`setMode`). Only
@@ -1246,6 +1289,7 @@ export class CodexAppServerSession implements AgentSession {
       return;
     }
     const item = p["item"] as Record<string, unknown> | undefined;
+    if (method === "item/started" && item) this.#itemStarted(item);
     if (method === "item/completed" && item) this.#item(item);
     if (method === "item/agentMessage/delta") return; // final item is authoritative and avoids duplicate transcript text.
     if (method === "turn/started") this.#turnId = (p["turn"] as any)?.id ?? this.#turnId;
@@ -1280,6 +1324,12 @@ export class CodexAppServerSession implements AgentSession {
       this.#proposedPlan = null;
       this.#turnMode = null;
       this.#turnId = null;
+      this.#runningTools.clear();
+      // Codex reads steered input before its next sampling, so a turn that
+      // completed took all of it; a server that does not echo `clientId` on
+      // the `userMessage` item is confirmed here. A failed turn says nothing.
+      if (turn?.status === "completed") for (const id of this.#steered) this.#consumed(id, true);
+      this.#steered.clear();
       // Not added to `#staleTurnIds` (see above), but a dispatch still
       // mid-flight for this now-completed turn (e.g. a slow `ToolDispatcher`
       // not yet at its own `ctx.askUser` call) should still see this turn as
@@ -1307,11 +1357,46 @@ export class CodexAppServerSession implements AgentSession {
       this.#idle();
     }
   }
+  /**
+   * The call of a command or MCP tool as it starts, so the daemon sees a tool
+   * running (the queue folds messages in at its boundary); its completion
+   * adds only the result. Steered input appears here as a `userMessage`.
+   */
+  #itemStarted(item: Record<string, unknown>): void {
+    const id = String(item["id"] ?? "");
+    const call = this.#toolCallOf(item);
+    if (item["type"] === "userMessage") this.#userMessageItem(item);
+    else if (call && id && !this.#runningTools.has(id)) {
+      this.#runningTools.add(id);
+      this.#events.push(call);
+    }
+  }
+
+  /** The `tool_call` a command / MCP item reports, or null for other items. */
+  #toolCallOf(item: Record<string, unknown>): Extract<HarnessEvent, { type: "tool_call" }> | null {
+    const base = {
+      type: "tool_call" as const,
+      sessionId: this.id,
+      ts: now(),
+      id: String(item["id"] ?? ""),
+    };
+    if (item["type"] === "commandExecution")
+      return { ...base, name: "Bash", input: { command: item["command"], cwd: item["cwd"] } };
+    if (item["type"] === "mcpToolCall")
+      return {
+        ...base,
+        name: `mcp__${item["server"]}__${item["tool"]}`,
+        input: item["arguments"],
+      };
+    return null;
+  }
+
   #item(item: Record<string, unknown>): void {
     const id = String(item["id"] ?? "");
     const type = item["type"];
     const ts = now();
-    if (type === "agentMessage" && typeof item["text"] === "string")
+    if (type === "userMessage") this.#userMessageItem(item);
+    else if (type === "agentMessage" && typeof item["text"] === "string")
       this.#events.push({ type: "assistant_text", sessionId: this.id, ts, text: item["text"] });
     else if (type === "plan" && typeof item["text"] === "string") {
       // Native Plan's `<proposed_plan>`, split out of the agent message. It is
@@ -1329,14 +1414,8 @@ export class CodexAppServerSession implements AgentSession {
         ].join("\n"),
       });
     else if (type === "commandExecution") {
-      this.#events.push({
-        type: "tool_call",
-        sessionId: this.id,
-        ts,
-        id,
-        name: "Bash",
-        input: { command: item["command"], cwd: item["cwd"] },
-      });
+      const call = this.#toolCallOf(item);
+      if (!this.#runningTools.delete(id) && call) this.#events.push(call);
       this.#events.push({
         type: "tool_result",
         sessionId: this.id,
@@ -1363,14 +1442,8 @@ export class CodexAppServerSession implements AgentSession {
         output: item["status"] ?? "unknown",
       });
     } else if (type === "mcpToolCall") {
-      this.#events.push({
-        type: "tool_call",
-        sessionId: this.id,
-        ts,
-        id,
-        name: `mcp__${item["server"]}__${item["tool"]}`,
-        input: item["arguments"],
-      });
+      const call = this.#toolCallOf(item);
+      if (!this.#runningTools.delete(id) && call) this.#events.push(call);
       this.#events.push({
         type: "tool_result",
         sessionId: this.id,

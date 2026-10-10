@@ -598,6 +598,31 @@ const handle = (req) => {
     respondNow();
     return;
   }
+  // LOOM_TEST_STEER=reject: the turn already ended (`expectedTurnId` no
+  // longer matches). =echo: the steered input becomes a `userMessage` item
+  // carrying its `clientUserMessageId` as `clientId`, as Codex reports it.
+  if (method === "turn/steer" && process.env["LOOM_TEST_STEER"] === "reject") {
+    send({ jsonrpc: "2.0", id, error: { code: -32600, message: "expected turn is not active" } });
+    return;
+  }
+  if (method === "turn/steer" && process.env["LOOM_TEST_STEER"] === "echo") {
+    send({ jsonrpc: "2.0", id, result: { turnId: params?.expectedTurnId } });
+    send({
+      jsonrpc: "2.0",
+      method: "item/started",
+      params: {
+        threadId: startedThreadId,
+        turnId: params?.expectedTurnId,
+        item: {
+          type: "userMessage",
+          id: `user-${id}`,
+          clientId: params?.clientUserMessageId ?? null,
+          content: params?.input ?? [],
+        },
+      },
+    });
+    return;
+  }
   if (
     method === "turn/steer" ||
     method === "turn/settings/update" ||

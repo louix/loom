@@ -138,6 +138,8 @@ class ChatGPTProvider implements AgentProvider {
       compactionInstructions: false,
       ownsTranscript: false,
       oneShot: true,
+      // `clientUserMessageId` comes back on the `userMessage` item it becomes.
+      inputReceipts: true,
       partialTokens: true,
       // Codex's native presets. `acceptEdits` is not offered: it would only
       // duplicate Manual (see `codexAgentMode`, which maps it explicitly).

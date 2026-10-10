@@ -2644,3 +2644,148 @@ test("an external interrupt while a plan's implementation turn is starting ends 
       }
     },
   ));
+// A9 message queue: a queued message rides as `clientUserMessageId`, and the
+// session reports it consumed when Codex takes it up.
+const consumedOf = (seen: HarnessEvent[]) =>
+  seen.flatMap((e) => (e.type === "input_consumed" ? [[e.inputId, e.midTurn]] : []));
+
+test("Codex: a steered message is consumed when its userMessage item names it; a new turn's at the reply", async () => {
+  const codexHome = {
+    dir: "/tmp/loom-codex-queue-steer",
+    authJsonPath: "/tmp/loom-codex-queue-steer/auth.json",
+  };
+  const release = join(tmpdir(), `codex-queue-release-${process.pid}`);
+  Deno.env.set("LOOM_TEST_HOLD_TURN", "1");
+  Deno.env.set("LOOM_TEST_COMPLETE_TURN_FILE", release);
+  Deno.env.set("LOOM_TEST_STEER", "echo");
+  const s = await CodexAppServerSession.start(
+    { sessionId: "q1", cwd: "/tmp", prompt: "go", mode: "default", mcpServers: [] },
+    codexHome,
+    FAKE_CODEX,
+  );
+  const seen: HarnessEvent[] = [];
+  const reader = (async () => {
+    for await (const ev of s.events()) seen.push(ev);
+  })();
+  try {
+    await s.send("also this", { inputId: "entry-steer", midTurn: true });
+    await waitUntil(() => consumedOf(seen).length === 1);
+    assert.deepEqual(consumedOf(seen), [["entry-steer", true]]);
+    await writeFile(release, "");
+    await waitUntil(() => seen.some((e) => e.type === "result"));
+    assert.equal(consumedOf(seen).length, 1, "the turn's end does not report it twice");
+    await rm(release, { force: true });
+    await s.send("next turn", { inputId: "entry-turn" });
+    await waitUntil(() => consumedOf(seen).length === 2);
+    assert.deepEqual(consumedOf(seen)[1], ["entry-turn", false]);
+  } finally {
+    await s.close();
+    await reader;
+    Deno.env.delete("LOOM_TEST_HOLD_TURN");
+    Deno.env.delete("LOOM_TEST_COMPLETE_TURN_FILE");
+    Deno.env.delete("LOOM_TEST_STEER");
+    await rm(release, { force: true });
+  }
+});
+
+test("Codex: a steer the server never echoes is consumed when its turn completes", async () => {
+  const codexHome = {
+    dir: "/tmp/loom-codex-queue-fallback",
+    authJsonPath: "/tmp/loom-codex-queue-fallback/auth.json",
+  };
+  const release = join(tmpdir(), `codex-queue-fallback-${process.pid}`);
+  Deno.env.set("LOOM_TEST_HOLD_TURN", "1");
+  Deno.env.set("LOOM_TEST_COMPLETE_TURN_FILE", release);
+  const s = await CodexAppServerSession.start(
+    { sessionId: "q2", cwd: "/tmp", prompt: "go", mode: "default", mcpServers: [] },
+    codexHome,
+    FAKE_CODEX,
+  );
+  const seen: HarnessEvent[] = [];
+  const reader = (async () => {
+    for await (const ev of s.events()) seen.push(ev);
+  })();
+  try {
+    await s.send("quietly steered", { inputId: "entry-quiet", midTurn: true });
+    await delay(50);
+    assert.deepEqual(consumedOf(seen), []);
+    await writeFile(release, "");
+    await waitUntil(() => consumedOf(seen).length === 1);
+    assert.deepEqual(consumedOf(seen), [["entry-quiet", true]]);
+  } finally {
+    await s.close();
+    await reader;
+    Deno.env.delete("LOOM_TEST_HOLD_TURN");
+    Deno.env.delete("LOOM_TEST_COMPLETE_TURN_FILE");
+    await rm(release, { force: true });
+  }
+});
+
+test("Codex: a steer that lost the race with the turn's end is refused, unconsumed", async () => {
+  const codexHome = {
+    dir: "/tmp/loom-codex-queue-reject",
+    authJsonPath: "/tmp/loom-codex-queue-reject/auth.json",
+  };
+  Deno.env.set("LOOM_TEST_HOLD_TURN", "1");
+  Deno.env.set("LOOM_TEST_STEER", "reject");
+  const s = await CodexAppServerSession.start(
+    { sessionId: "q3", cwd: "/tmp", prompt: "go", mode: "default", mcpServers: [] },
+    codexHome,
+    FAKE_CODEX,
+  );
+  const seen: HarnessEvent[] = [];
+  const reader = (async () => {
+    for await (const ev of s.events()) seen.push(ev);
+  })();
+  try {
+    // The session manager requeues a refused hand-over for the next turn.
+    await assert.rejects(
+      s.send("too late", { inputId: "entry-late", midTurn: true }),
+      /expected turn is not active/,
+    );
+    await delay(30);
+    assert.deepEqual(consumedOf(seen), []);
+  } finally {
+    await s.close();
+    await reader;
+    Deno.env.delete("LOOM_TEST_HOLD_TURN");
+    Deno.env.delete("LOOM_TEST_STEER");
+  }
+});
+
+test("Codex reports a command running at item/started and only its result at completion", async () => {
+  Deno.env.set(
+    "LOOM_TEST_PRE_NOTIFICATION",
+    JSON.stringify({
+      method: "item/started",
+      params: { item: { type: "commandExecution", id: "cmd-1", command: "sleep 9", cwd: "/tmp" } },
+    }),
+  );
+  Deno.env.set("LOOM_TEST_HOLD_TURN", "1");
+  const s = await CodexAppServerSession.start(
+    { sessionId: "q4", cwd: "/tmp", prompt: "go", mode: "default", mcpServers: [] },
+    { dir: "/tmp/loom-codex-item-started", authJsonPath: "/tmp/loom-codex-item-started/auth.json" },
+    FAKE_CODEX,
+  );
+  try {
+    for await (const ev of s.events()) {
+      if (ev.type === "tool_call" && ev.id === "cmd-1") {
+        assert.equal(ev.name, "Bash");
+        assert.deepEqual(ev.input, { command: "sleep 9", cwd: "/tmp" });
+        break;
+      }
+    }
+  } finally {
+    await s.close();
+    Deno.env.delete("LOOM_TEST_PRE_NOTIFICATION");
+    Deno.env.delete("LOOM_TEST_HOLD_TURN");
+  }
+});
+
+const waitUntil = async (cond: () => boolean, ms = 3000): Promise<void> => {
+  const deadline = Date.now() + ms;
+  while (!cond()) {
+    if (Date.now() > deadline) throw new Error("condition not met in time");
+    await delay(5);
+  }
+};
