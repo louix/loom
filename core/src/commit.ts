@@ -5,6 +5,7 @@
  * graph without dragging the other's dependencies in.
  */
 import { spawnSync } from "node:child_process";
+import { INDEX_LOCK_ERROR, clearStaleIndexLock, showIndexLockCheck } from "./git-lock.ts";
 
 export interface CommitResult {
   ok: boolean;
@@ -22,9 +23,20 @@ export const commitInWorktree = (
   const msg = message.trim();
   if (msg === "") return { ok: false, text: "commit aborted: the message is empty" };
 
+  // A lock left by a killed git blocks every write here until someone deletes it.
+  const notes: string[] = [];
+  const write = (args: string[]) => {
+    const first = git(cwd, args);
+    if (first.ok || !INDEX_LOCK_ERROR.test(first.err)) return first;
+    const check = clearStaleIndexLock(cwd);
+    notes.push(showIndexLockCheck(check));
+    return check.kind === "removed" ? git(cwd, args) : first;
+  };
+  const withNotes = (text: string) => [text, ...notes].filter(Boolean).join("\n");
+
   if (opts.stageAll) {
-    const add = git(cwd, ["add", "-A"]);
-    if (!add.ok) return { ok: false, text: `git add failed: ${add.err || add.out}` };
+    const add = write(["add", "-A"]);
+    if (!add.ok) return { ok: false, text: withNotes(`git add failed: ${add.err || add.out}`) };
   }
 
   const staged = git(cwd, ["diff", "--cached", "--name-only"]);
@@ -40,8 +52,8 @@ export const commitInWorktree = (
   // Never sign: these are automated commits, and a machine-wide
   // `commit.gpgsign = true` would block on a passphrase prompt. Identity comes
   // from the session's inherited `GIT_AUTHOR_*` / `GIT_COMMITTER_*`.
-  const co = git(cwd, ["-c", "commit.gpgsign=false", "commit", "-m", msg]);
-  if (!co.ok) return { ok: false, text: `git commit failed: ${co.err || co.out}` };
+  const co = write(["-c", "commit.gpgsign=false", "commit", "-m", msg]);
+  if (!co.ok) return { ok: false, text: withNotes(`git commit failed: ${co.err || co.out}`) };
 
   const sha = git(cwd, ["rev-parse", "--short", "HEAD"]).out.trim();
   const subject = git(cwd, ["log", "-1", "--format=%s"]).out.trim();
@@ -49,7 +61,7 @@ export const commitInWorktree = (
   return {
     ok: true,
     sha,
-    text: `committed ${sha} ${subject}${stat ? `\n${stat}` : ""}`,
+    text: withNotes(`committed ${sha} ${subject}${stat ? `\n${stat}` : ""}`),
   };
 };
 

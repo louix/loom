@@ -18,6 +18,7 @@
     "./status": "./src/status.ts",
     "./git-read": "./src/git-read.ts",
     "./process-group": "./src/process-group.ts",
+    "./git-lock": "./src/git-lock.ts",
     "./tool-paths": "./src/tool-paths.ts",
     "./tokens": "./src/tokens.ts",
     "./paths": "./src/paths.ts",
