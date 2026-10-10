@@ -88,7 +88,8 @@ const terminal = async (
     await waitFor("LOOM_SURVIVED");
     if (tui) {
       await waitFor("\x1b[?1049h");
-      await send("q");
+      // ⌃c quits the TUI; plain q now opens the selected session's queue.
+      await send("\x03");
     }
     assert.equal((await p.status).code, 0, output);
     await drains;
