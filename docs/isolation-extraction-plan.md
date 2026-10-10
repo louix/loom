@@ -47,38 +47,43 @@ Status on 2026-10-10. Every stage below landed with typecheck, lint and the
 full suite green; the suite now runs in a throwaway HOME and XDG root
 (`f21ed739`).
 
-| Stage | State   | Commits (first … last)                | Notes                                                                                              |
-| ----- | ------- | ------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| A0    | Done    | `4f0cf4cc`                            | Baseline green; cost inflation reproduced (resume re-charges restored CLI totals)                  |
-| A1    | Done    | `be48f7c5` … `f6c81d67`               | Answer sheet; provider colours hashed from provider id                                             |
-| A2    | Done    | `5ca63395` … `41cabf98`               | `frontend/tui/src/commands.ts`; Space palette replaces `?`; hover hit testing                      |
-| A3    | Done    | `51dfa2ec`                            | `sessions.turn_completed_at` (migration 28)                                                        |
-| A4    | Done    | `86fabdc0`, `7758689e`                | Native collaboration modes; `turn/completed` race fixed                                            |
-| A5    | Done    | `8a355699`                            | Sessions commit as the user by default; `git.author` / `git.committer` overrides                   |
-| A6    | Done    | `6134038d` … `ff4fb47a`               | Per-provider catalogues; `providers.refreshModels`                                                 |
-| A7    | Done    | `a7b88528` … `021c8fff`, `d99e5ace`   | Seeded from `get_usage`; `usage.provider_total` (migration 29); provider ref follows undo/`/clear` |
-| A8    | Done    | `fd334122`                            | Fork wizard; native vs handoff; lineage (migration 30)                                             |
-| B1    | Done    | `f9da0b8f` … `cdc76fd0`               | `isolation/`, runtime slice, `plain-exec.ts`, boundary test                                        |
-| B2    | Done    | `ce8b14d9` … `25acc182`               | `session.isolation.launcher` (default `legacy`)                                                    |
-| B3    | Partial | `d2705da6` … `74b4fc01`, `491b4000` … | Shells/hooks/inspection on leases; default flipped to `isolation`; legacy sessions resume on it    |
-| B4    | Done    | `e78ceafc` … `9f05b461`               | `loom-isolate` (foreground ownership); `.#loom-isolate`                                            |
-| B5    | Done    | `701a8a0b` … `c96a922c`               | `environment-config/`; `loom.json`, `environment.jsonc`; `loom config convert`                     |
-| B6    | Pending |                                       | After the default flips                                                                            |
+| Stage | State | Commits (first … last)                           | Notes                                                                                              |
+| ----- | ----- | ------------------------------------------------ | -------------------------------------------------------------------------------------------------- |
+| A0    | Done  | `4f0cf4cc`                                       | Baseline green; cost inflation reproduced (resume re-charges restored CLI totals)                  |
+| A1    | Done  | `be48f7c5` … `f6c81d67`                          | Answer sheet; provider colours hashed from provider id                                             |
+| A2    | Done  | `5ca63395` … `41cabf98`                          | `frontend/tui/src/commands.ts`; Space palette replaces `?`; hover hit testing                      |
+| A3    | Done  | `51dfa2ec`                                       | `sessions.turn_completed_at` (migration 28)                                                        |
+| A4    | Done  | `86fabdc0`, `7758689e`                           | Native collaboration modes; `turn/completed` race fixed                                            |
+| A5    | Done  | `8a355699`                                       | Sessions commit as the user by default; `git.author` / `git.committer` overrides                   |
+| A6    | Done  | `6134038d` … `ff4fb47a`                          | Per-provider catalogues; `providers.refreshModels`                                                 |
+| A7    | Done  | `a7b88528` … `021c8fff`, `d99e5ace`              | Seeded from `get_usage`; `usage.provider_total` (migration 29); provider ref follows undo/`/clear` |
+| A8    | Done  | `fd334122`                                       | Fork wizard; native vs handoff; lineage (migration 30)                                             |
+| B1    | Done  | `f9da0b8f` … `cdc76fd0`                          | `isolation/`, runtime slice, `plain-exec.ts`, boundary test                                        |
+| B2    | Done  | `ce8b14d9` … `25acc182`                          | `session.isolation.launcher` (default `legacy`; removed in B6)                                     |
+| B3    | Done  | `d2705da6` … `74b4fc01`, `491b4000` … `7eb04ff0` | Shells/hooks/inspection on leases; default flipped to `isolation`; legacy sessions resume on it    |
+| B4    | Done  | `e78ceafc` … `9f05b461`                          | `loom-isolate` (foreground ownership); `.#loom-isolate`                                            |
+| B5    | Done  | `701a8a0b` … `c96a922c`                          | `environment-config/`; `loom.json`, `environment.jsonc`; `loom config convert`                     |
+| B6    | Done  | `0151cc9c`, `73d1dec0`                           | Legacy launcher, in-VM worker mode and the switch removed; a stale `launcher` key warns once       |
 
 Live verification (`scripts/test-live-daemon-acceptance.ts`, `claude:personal`
 and default `codex`, Linux): isolation launcher sessions with idle suspension
 and fresh-VM resume, Codex native Plan end to end, model discovery and refresh,
 cost across a daemon restart, native Claude and Codex forks and a Claude→Codex
-handoff all passed. Real-VM scripts pass on both launchers on Linux.
+handoff all passed. Real-VM scripts passed on both launchers on Linux and Apple
+Silicon before the flip, and on the single launcher on Linux after B6.
 
 Outstanding:
 
-- Apple Silicon evidence and refreshed `packaging/macos/runtime-hashes.json`.
-- `session.isolation.launcher` now defaults to `isolation`. A session suspended
-  on either launcher resumes on the other in the same state directory
-  (`test/launcher-continuity.test.ts`; on a real VM across a daemon restart,
-  `scripts/test-launcher-continuity-vm.ts`). B6: remove the legacy launcher and
-  the switch in a separate, revertible commit.
+- Apple Silicon evidence and refreshed `packaging/macos/runtime-hashes.json`
+  (`73d1dec0` changes the session runtime image).
+- B6 is done. The default flipped first (`7eb04ff0`): a session suspended on
+  either launcher resumed on the other in the same state directory, on a real VM
+  across a daemon restart (`scripts/test-launcher-continuity-vm.ts` in that
+  commit). The launcher and switch went next (`0151cc9c`), then the guest's
+  in-VM worker mode (`73d1dec0`); revert them newest first.
+  `test/launcher-continuity.test.ts` keeps legacy-saved sessions resumable.
+  Existing configs that still set `session.isolation.launcher` parse; the daemon
+  warns once.
 - A real credential renewal on the isolation path; forced renewal is avoided
   against logins in active use.
 - Follow-ups: `loom shell` and daemon-run hooks ignore Git identity overrides;
