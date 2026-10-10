@@ -8,7 +8,7 @@ import { chmodSync, existsSync, mkdtempSync, rmSync, utimesSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { clearStaleIndexLock } from "@loom/core/git-lock";
+import { GIT_DIR_SHARED_ENV, clearStaleIndexLock } from "@loom/core/git-lock";
 import { commitInWorktree } from "@loom/core/commit";
 
 const OLD_s = Date.now() / 1000 - 600;
@@ -89,6 +89,73 @@ test("a stale index.lock is removed only when old and unused, and the commit too
     assert.match(result.text, /removed a stale .*index\.lock \(10 min old/);
     assert.ok(!existsSync(lock));
     assert.equal(git(root, "log", "-1", "--format=%s"), "after a killed git");
+  } finally {
+    cleanup();
+  }
+});
+
+/** Run `body` with environment variables set, restoring them afterwards. */
+const withEnv = <T>(vars: Record<string, string>, body: () => T): T => {
+  const before = Object.fromEntries(Object.keys(vars).map((key) => [key, Deno.env.get(key)]));
+  for (const [key, value] of Object.entries(vars)) Deno.env.set(key, value);
+  try {
+    return body();
+  } finally {
+    for (const [key, value] of Object.entries(before))
+      if (value === undefined) Deno.env.delete(key);
+      else Deno.env.set(key, value);
+  }
+};
+
+test("the commit tool retries when the lock's holder finished before the check", () => {
+  const { root, lock, cleanup } = repo();
+  const bin = mkdtempSync(join(tmpdir(), "loom-git-shim-"));
+  try {
+    // A git that fails on the lock, whose holder then drops it: the check finds nothing.
+    const realGit = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+    writeFileSync(
+      join(bin, "git"),
+      `#!/bin/sh\n'${realGit}' "$@"; s=$?\n[ $s -ne 0 ] && rm -f '${lock}'\nexit $s\n`,
+    );
+    chmodSync(join(bin, "git"), 0o755);
+    writeFileSync(lock, "");
+    writeFileSync(join(root, "b.txt"), "b\n");
+    const result = withEnv({ PATH: `${bin}:${Deno.env.get("PATH") ?? ""}` }, () =>
+      commitInWorktree(root, "after the holder finished", { stageAll: true }),
+    );
+    assert.equal(result.ok, true, result.text);
+    assert.equal(git(root, "log", "-1", "--format=%s"), "after the holder finished");
+  } finally {
+    rmSync(bin, { recursive: true, force: true });
+    cleanup();
+  }
+});
+
+test("an old lock in a worktree shared with the host is reported, not removed", () => {
+  const { root, lock, cleanup } = repo();
+  try {
+    writeFileSync(lock, "");
+    utimesSync(lock, OLD_s, OLD_s);
+    assert.equal(clearStaleIndexLock(root, { shared: true }).kind, "shared");
+    assert.ok(existsSync(lock), "a host git may hold it");
+
+    // A mount-mode VM worker: the commit tool says how to remove it, and leaves it.
+    writeFileSync(join(root, "b.txt"), "b\n");
+    const shared = withEnv({ [GIT_DIR_SHARED_ENV]: "1" }, () =>
+      commitInWorktree(root, "blocked by the host", { stageAll: true }),
+    );
+    assert.equal(shared.ok, false);
+    assert.match(shared.text, /10 min old .*shared with the host/);
+    assert.ok(shared.text.includes(`rm '${lock}'`), shared.text);
+    assert.ok(existsSync(lock));
+
+    // A local (or private-clone) worker sees every holder: the same lock is removed.
+    const local = withEnv({ [GIT_DIR_SHARED_ENV]: "0" }, () =>
+      commitInWorktree(root, "local recovery", { stageAll: true }),
+    );
+    assert.equal(local.ok, true, local.text);
+    assert.match(local.text, /removed a stale .*index\.lock/);
+    assert.ok(!existsSync(lock));
   } finally {
     cleanup();
   }
