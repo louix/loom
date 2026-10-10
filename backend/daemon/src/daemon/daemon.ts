@@ -1589,176 +1589,196 @@ export class Daemon {
       }
     }
 
-    // Everything past the worktree is torn down together on any failure so a
-    // failed or cancelled fork doesn't leave an orphan worktree / branch / row.
-    const startup = new AbortController();
-    this.#startups.set(newId, startup);
-    try {
-      // The fork runs in the parent's permission mode; record it on the row
-      // so the chip and a restart's revive (which reads the row) agree with
-      // the adapter — an omitted mode stored `default` while the adapter
-      // actually resumed in the parent's mode.
-      const mode: SessionMode = isSessionMode(parent.mode) ? parent.mode : "default";
-      // Uncommitted work crosses only between host worktrees; a clone starts from the
-      // parent's published tip.
-      if (!share && source && !childClone) this.#worktrees.copyChanges(source, wt.path);
-      this.#registry.create({
-        id: newId,
-        provider: providerId,
-        model,
-        effort,
-        mode,
-        parentId: id,
-        title: `${(parent.title ?? "session").slice(0, 180)} (fork)`,
-        worktree: wt.path,
-        branch: wt.branch,
-        baseBranch: wt.baseRef,
-        isolation,
-        ...(childClone ? { checkout: "clone" as const } : {}),
-      });
-      this.#registry.setFields(newId, {
-        forkTurn: parent.turns,
-        forkKind: native ? "native" : "handoff",
-        ...(handoff ? { forkHandoff: JSON.stringify(handoff) } : {}),
-        // Chained forks all name the session that really owns the tree.
-        ...(share ? { worktreeOwner: parent.worktreeOwner ?? parent.id } : {}),
-        ...(native && ownsTranscript ? { providerRef: newId } : {}),
-      });
-      if (native && ownsTranscript) this.#pmsgs.copyTo(id, newId);
-      this.#publishState(newId);
+    // A fork that first builds the VM runtime outlasts any client: then the
+    // reply reports it starting once its row exists, as `session.create` does,
+    // and the start goes on with its progress and outcome on the session.
+    const detached = await this.#runtimeBuildPending(providerId, isolation);
+    let registered = () => {};
+    const created = new Promise<void>((resolve) => (registered = resolve));
+    const starting = (async (): Promise<SessionSnapshot> => {
+      // Everything past the worktree is torn down together on any failure so a
+      // failed or cancelled fork doesn't leave an orphan worktree / branch / row.
+      const startup = new AbortController();
+      this.#startups.set(newId, startup);
+      try {
+        // The fork runs in the parent's permission mode; record it on the row
+        // so the chip and a restart's revive (which reads the row) agree with
+        // the adapter — an omitted mode stored `default` while the adapter
+        // actually resumed in the parent's mode.
+        const mode: SessionMode = isSessionMode(parent.mode) ? parent.mode : "default";
+        // Uncommitted work crosses only between host worktrees; a clone starts from the
+        // parent's published tip.
+        if (!share && source && !childClone) this.#worktrees.copyChanges(source, wt.path);
+        this.#registry.create({
+          id: newId,
+          provider: providerId,
+          model,
+          effort,
+          mode,
+          parentId: id,
+          title: `${(parent.title ?? "session").slice(0, 180)} (fork)`,
+          worktree: wt.path,
+          branch: wt.branch,
+          baseBranch: wt.baseRef,
+          isolation,
+          ...(childClone ? { checkout: "clone" as const } : {}),
+        });
+        this.#registry.setFields(newId, {
+          forkTurn: parent.turns,
+          forkKind: native ? "native" : "handoff",
+          ...(handoff ? { forkHandoff: JSON.stringify(handoff) } : {}),
+          // Chained forks all name the session that really owns the tree.
+          ...(share ? { worktreeOwner: parent.worktreeOwner ?? parent.id } : {}),
+          ...(native && ownsTranscript ? { providerRef: newId } : {}),
+        });
+        if (native && ownsTranscript) this.#pmsgs.copyTo(id, newId);
+        this.#publishState(newId);
+        registered();
 
-      const mcpHandles = this.#mcpHandles();
-      const isAisdk = this.config.providers.aisdk[providerId] !== undefined;
-      const promptAppend = systemPromptAppendFor(
-        isAisdk,
-        mcpHandles.length > 0,
-        wt.path,
-        this.repoRoot,
-        this.#instructionsDir(wt.path),
-      );
-      const instructions = {
-        systemPromptAppend: promptAppend,
-        repoInstructions: repoInstructionsFor(this.#instructionsDir(wt.path), this.repoRoot),
-        workspaceRoot: wt.path,
-      };
-      startup.signal.throwIfAborted();
-      if (handoff) {
-        const prompt = handoffPrompt(handoff);
-        this.#lastSend.set(newId, prompt);
+        const mcpHandles = this.#mcpHandles();
+        const isAisdk = this.config.providers.aisdk[providerId] !== undefined;
+        const promptAppend = systemPromptAppendFor(
+          isAisdk,
+          mcpHandles.length > 0,
+          wt.path,
+          this.repoRoot,
+          this.#instructionsDir(wt.path),
+        );
+        const instructions = {
+          systemPromptAppend: promptAppend,
+          repoInstructions: repoInstructionsFor(this.#instructionsDir(wt.path), this.repoRoot),
+          workspaceRoot: wt.path,
+        };
+        startup.signal.throwIfAborted();
+        if (handoff) {
+          const prompt = handoffPrompt(handoff);
+          this.#lastSend.set(newId, prompt);
+          this.emitEvent({
+            type: "user_message",
+            sessionId: newId,
+            ts: Date.now(),
+            text: prompt,
+            injected: false,
+          });
+          const opts: CreateSessionOptions = {
+            sessionId: newId,
+            cwd: wt.path,
+            prompt,
+            mode,
+            parentId: id,
+            mcpServers: mcpHandles,
+            loomServer: true,
+            disableTools: this.config.providers.claude.disableBuiltin,
+            settingSources: this.config.providers.claude.settingSources,
+            ...instructions,
+            ...(model ? { model } : {}),
+            ...(effort ? { effort } : {}),
+          };
+          Object.assign(opts, { [startupSignal]: startup.signal });
+          await this.#sessions.create(provider, opts);
+        } else {
+          const ref: SessionRef = {
+            initHooks: { hooks: [], env: { LOOM_START_REASON: "create" } },
+            sessionId: newId,
+            providerRef: ownsTranscript ? newId : sourceRef!,
+            ...(ownsTranscript ? {} : { forkHistory: true }),
+            cwd: wt.path,
+            mode,
+            mcpServers: mcpHandles,
+            ...instructions,
+            ...(model ? { model } : {}),
+            ...(effort ? { effort } : {}),
+          };
+          Object.assign(ref, { [startupSignal]: startup.signal });
+          await this.#sessions.resume(provider, ref);
+          if (!ownsTranscript) {
+            // Recorded now, not when the provider first speaks: a restart
+            // before the fork's first turn must resume the copy, never the source.
+            const copied = this.#sessions.snapshot(newId)?.providerRef;
+            if (!copied || copied === sourceRef)
+              throw new Error(`${providerId} did not report the id of its history copy`);
+            this.#registry.setFields(newId, { providerRef: copied });
+          }
+        }
+        startup.signal.throwIfAborted();
+      } catch (err) {
+        await this.#sessions.close(newId).catch(() => {});
+        this.#lastSend.delete(newId);
+        // A shared tree belongs to the source: never this fork's to remove.
+        let removed = share;
+        if (!share) {
+          try {
+            await withStoppedSessionVm(this.repoRoot, newId, () =>
+              this.#removeWorkdir(wt.path, true),
+            );
+            removed = true;
+            // The branch was made for this fork at the source's HEAD; it holds
+            // nothing of its own.
+            if (wt.branch) {
+              this.#worktrees.prune();
+              this.#worktrees.deleteBranch(wt.branch);
+            }
+          } catch (rmErr) {
+            this.#log.warn("fork cleanup: could not remove the worktree", {
+              id: newId,
+              path: wt.path,
+              err: rmErr instanceof Error ? rmErr.message : String(rmErr),
+            });
+          }
+        }
+        if (removed) {
+          if (this.#registry.get(newId)) this.#registry.store.delete(newId); // cascades its events / provider_messages / checkpoints
+        } else {
+          // The tree is still on disk — keep the row (worktree path intact) and
+          // mark it error so a later `session.gc { id }` can still reclaim it,
+          // rather than deleting the row and orphaning the directory.
+          if (!this.#registry.get(newId))
+            this.#registry.create({
+              id: newId,
+              provider: providerId,
+              parentId: id,
+              worktree: wt.path,
+              branch: wt.branch,
+            });
+          this.#registry.setStatus(newId, stateError("fork start failed"));
+        }
+        this.#publishState();
+        if (startup.signal.aborted)
+          throw new RpcError("cancelled", "the fork was cancelled before it started");
+        const m = err instanceof Error ? err.message : String(err);
+        throw new RpcError("provider_error", `could not start the fork: ${m}`);
+      } finally {
+        this.#startups.delete(newId);
+      }
+
+      if (native) this.#registry.setStatus(newId, stateIdle, "forked");
+      if (forkPrompt && native) {
+        const { injected } = await this.#sessions.send(newId, forkPrompt);
         this.emitEvent({
           type: "user_message",
           sessionId: newId,
           ts: Date.now(),
-          text: prompt,
-          injected: false,
+          text: forkPrompt,
+          injected,
         });
-        const opts: CreateSessionOptions = {
-          sessionId: newId,
-          cwd: wt.path,
-          prompt,
-          mode,
-          parentId: id,
-          mcpServers: mcpHandles,
-          loomServer: true,
-          disableTools: this.config.providers.claude.disableBuiltin,
-          settingSources: this.config.providers.claude.settingSources,
-          ...instructions,
-          ...(model ? { model } : {}),
-          ...(effort ? { effort } : {}),
-        };
-        Object.assign(opts, { [startupSignal]: startup.signal });
-        await this.#sessions.create(provider, opts);
-      } else {
-        const ref: SessionRef = {
-          initHooks: { hooks: [], env: { LOOM_START_REASON: "create" } },
-          sessionId: newId,
-          providerRef: ownsTranscript ? newId : sourceRef!,
-          ...(ownsTranscript ? {} : { forkHistory: true }),
-          cwd: wt.path,
-          mode,
-          mcpServers: mcpHandles,
-          ...instructions,
-          ...(model ? { model } : {}),
-          ...(effort ? { effort } : {}),
-        };
-        Object.assign(ref, { [startupSignal]: startup.signal });
-        await this.#sessions.resume(provider, ref);
-        if (!ownsTranscript) {
-          // Recorded now, not when the provider first speaks: a restart
-          // before the fork's first turn must resume the copy, never the source.
-          const copied = this.#sessions.snapshot(newId)?.providerRef;
-          if (!copied || copied === sourceRef)
-            throw new Error(`${providerId} did not report the id of its history copy`);
-          this.#registry.setFields(newId, { providerRef: copied });
-        }
+        this.#lastSend.set(newId, forkPrompt);
       }
-      startup.signal.throwIfAborted();
-    } catch (err) {
-      await this.#sessions.close(newId).catch(() => {});
-      this.#lastSend.delete(newId);
-      // A shared tree belongs to the source: never this fork's to remove.
-      let removed = share;
-      if (!share) {
-        try {
-          await withStoppedSessionVm(this.repoRoot, newId, () =>
-            this.#removeWorkdir(wt.path, true),
-          );
-          removed = true;
-          // The branch was made for this fork at the source's HEAD; it holds
-          // nothing of its own.
-          if (wt.branch) {
-            this.#worktrees.prune();
-            this.#worktrees.deleteBranch(wt.branch);
-          }
-        } catch (rmErr) {
-          this.#log.warn("fork cleanup: could not remove the worktree", {
-            id: newId,
-            path: wt.path,
-            err: rmErr instanceof Error ? rmErr.message : String(rmErr),
-          });
-        }
-      }
-      if (removed) {
-        if (this.#registry.get(newId)) this.#registry.store.delete(newId); // cascades its events / provider_messages / checkpoints
-      } else {
-        // The tree is still on disk — keep the row (worktree path intact) and
-        // mark it error so a later `session.gc { id }` can still reclaim it,
-        // rather than deleting the row and orphaning the directory.
-        if (!this.#registry.get(newId))
-          this.#registry.create({
-            id: newId,
-            provider: providerId,
-            parentId: id,
-            worktree: wt.path,
-            branch: wt.branch,
-          });
-        this.#registry.setStatus(newId, stateError("fork start failed"));
-      }
-      this.#publishState();
-      if (startup.signal.aborted)
-        throw new RpcError("cancelled", "the fork was cancelled before it started");
-      const m = err instanceof Error ? err.message : String(err);
-      throw new RpcError("provider_error", `could not start the fork: ${m}`);
-    } finally {
-      this.#startups.delete(newId);
-    }
-
-    if (native) this.#registry.setStatus(newId, stateIdle, "forked");
-    if (forkPrompt && native) {
-      const { injected } = await this.#sessions.send(newId, forkPrompt);
-      this.emitEvent({
-        type: "user_message",
-        sessionId: newId,
-        ts: Date.now(),
-        text: forkPrompt,
-        injected,
-      });
-      this.#lastSend.set(newId, forkPrompt);
-    }
-    const snap = this.#registry.mustGet(newId);
-    this.#publishState(snap.id);
-    this.#onActivityChange("session-forked");
-    return snap;
+      const snap = this.#registry.mustGet(newId);
+      this.#publishState(snap.id);
+      this.#onActivityChange("session-forked");
+      return snap;
+    })();
+    if (!detached) return await starting;
+    let replied = false;
+    starting.catch((error: unknown) => {
+      // The fork's row is gone with its failure; no reply is left to say why.
+      if (!replied || (error instanceof RpcError && error.code === "cancelled")) return;
+      const message = error instanceof Error ? error.message : String(error);
+      this.#emitNotice(`Fork ${newId.slice(0, 8)}: ${message}`, "warn");
+    });
+    await Promise.race([created, starting]);
+    replied = true;
+    return this.#registry.mustGet(newId);
   }
 
   /**
@@ -1884,8 +1904,7 @@ export class Daemon {
     // Building an Apple Silicon runtime on demand takes far longer than a client
     // waits for this reply. Then the reply reports the session as starting once
     // it exists; build progress and the outcome arrive as session events.
-    const detached =
-      isolation === "vm" && (await this.#providers.runtimeBuildPending(o.providerId));
+    const detached = await this.#runtimeBuildPending(o.providerId, isolation);
     let registered = () => {};
     const created = new Promise<void>((resolve) => (registered = resolve));
     // The row and the adapter are created under one hold on the session queue.
@@ -2069,8 +2088,55 @@ export class Daemon {
     return snap;
   }
 
+  /**
+   * Whether starting a `providerId` session on `isolation` first builds the VM
+   * runtime (Apple Silicon without a matching pin): 15–60 minutes, far longer
+   * than a client waits for a reply.
+   */
+  async #runtimeBuildPending(providerId: string, isolation?: "vm" | "local"): Promise<boolean> {
+    if ((isolation ?? this.#providers.defaultIsolation(providerId)) !== "vm") return false;
+    return await this.#providers.runtimeBuildPending(providerId);
+  }
+
+  /**
+   * When bringing `id` back first builds the VM runtime, start its revival (or
+   * join the one under way) and leave it to finish in the background: build
+   * progress and the outcome reach clients as session events and state, and
+   * whatever waits in its queue goes once it runs. False when the session is
+   * live or nothing needs building; the caller then revives as usual. A revival
+   * refused outright (no such session, nothing to resume) still throws here.
+   */
+  async #reviveDetached(id: string): Promise<boolean> {
+    const cold = () => !this.#sessions.has(id) || this.#sessions.isEnded(id);
+    if (!cold() && !this.#revivals.has(id)) return false;
+    const row = this.#registry.get(id);
+    if (!row || !(await this.#runtimeBuildPending(row.provider, row.isolation))) return false;
+    const revival = this.#revivals.has(id) || !cold() ? undefined : this.#reviveSession(id);
+    if (revival && this.#revivals.get(id) !== revival) await revival;
+    void (async () => {
+      if (revival) await revival;
+      // Whatever else was under way (an idle shutdown, say) settles first.
+      while (this.#revivals.has(id)) await this.#revivals.get(id);
+      if (cold()) await this.#reviveSession(id);
+      this.#publishState(id);
+      this.#onActivityChange("session-resumed");
+      this.#sessions.queueChanged(id);
+    })().catch((error: unknown) => {
+      if (this.#stopping) return;
+      const message = error instanceof Error ? error.message : String(error);
+      this.emitEvent({ type: "error", sessionId: id, ts: Date.now(), message, fatal: false });
+      this.#publishState(id);
+    });
+    return true;
+  }
+
   /** Wake on demand for operations that need an adapter, sharing concurrent revivals. */
   async #ensureSessionLoaded(id: string): Promise<void> {
+    if (await this.#reviveDetached(id))
+      throw new RpcError(
+        "busy",
+        "The session is starting while Loom builds the VM runtime, which can take 15–60 minutes; retry once it is running.",
+      );
     while (this.#revivals.has(id)) await this.#revivals.get(id);
     if (!this.#sessions.has(id) || this.#sessions.isEnded(id)) {
       const snap = await this.#reviveSession(id);
@@ -3479,6 +3545,7 @@ export class Daemon {
       const id = params.id;
       if (this.#sessions.has(id) && !this.#sessions.isEnded(id))
         throw new RpcError("conflict", "session is already running");
+      if (await this.#reviveDetached(id)) return this.#registry.mustGet(id);
       const snap = await this.#reviveSession(id);
       this.#publishState(snap.id);
       this.#onActivityChange("session-resumed");
@@ -3497,24 +3564,28 @@ export class Daemon {
       const entryId = params.entryId ?? randomUUID();
       this.#registry.mustGet(id);
       try {
-        while (this.#revivals.has(id)) await this.#revivals.get(id);
-        // A cold session (daemon restarted, or a turn that ended) is brought back
-        // transparently — `send` is the one verb for "talk to this session", it
-        // doesn't need a separate resume step.
-        if (!this.#sessions.has(id) || this.#sessions.isEnded(id)) {
-          const revived = await this.#reviveSession(id);
-          // An archived session's revive restores a worktree and flips it off
-          // `done` — push that before the turn's own updates so clients don't
-          // briefly show a running session with no tree.
-          this.#publishState(revived.id);
-          this.#onActivityChange("session-resumed");
+        // A start that first builds the VM runtime outlasts any client: then the
+        // message waits in the queue and goes once the session runs.
+        if (!(await this.#reviveDetached(id))) {
+          while (this.#revivals.has(id)) await this.#revivals.get(id);
+          // A cold session (daemon restarted, or a turn that ended) is brought back
+          // transparently — `send` is the one verb for "talk to this session", it
+          // doesn't need a separate resume step.
+          if (!this.#sessions.has(id) || this.#sessions.isEnded(id)) {
+            const revived = await this.#reviveSession(id);
+            // An archived session's revive restores a worktree and flips it off
+            // `done` — push that before the turn's own updates so clients don't
+            // briefly show a running session with no tree.
+            this.#publishState(revived.id);
+            this.#onActivityChange("session-resumed");
+          }
+          while (this.#revivals.has(id)) await this.#revivals.get(id);
+          if (this.#registry.get(id)?.checkout === "clone" && this.#queue.activeKeys.includes(id))
+            throw new RpcError(
+              "busy",
+              "The session is completing a workspace operation; retry in a moment.",
+            );
         }
-        while (this.#revivals.has(id)) await this.#revivals.get(id);
-        if (this.#registry.get(id)?.checkout === "clone" && this.#queue.activeKeys.includes(id))
-          throw new RpcError(
-            "busy",
-            "The session is completing a workspace operation; retry in a moment.",
-          );
       } catch (error) {
         if (error instanceof RpcError && error.code === "busy") throw error;
         const message = error instanceof Error ? error.message : String(error);
@@ -3846,7 +3917,7 @@ export class Daemon {
       if (!snap.worktree)
         throw new RpcError("bad_request", "session runs in place — no branch to rebase");
       if (snap.checkout === "clone") {
-        if (!this.#sessions.has(id) || this.#sessions.isEnded(id)) await this.#reviveSession(id);
+        await this.#ensureSessionLoaded(id);
         return this.#queue.run(id, async () => {
           if (!this.#cloneCanSync(id))
             throw new RpcError(
