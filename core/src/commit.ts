@@ -30,7 +30,8 @@ export const commitInWorktree = (
     if (first.ok || !INDEX_LOCK_ERROR.test(first.err)) return first;
     const check = clearStaleIndexLock(cwd);
     notes.push(showIndexLockCheck(check));
-    return check.kind === "removed" ? git(cwd, args) : first;
+    // "absent": its holder finished between the failed call and the check.
+    return check.kind === "removed" || check.kind === "absent" ? git(cwd, args) : first;
   };
   const withNotes = (text: string) => [text, ...notes].filter(Boolean).join("\n");
 
