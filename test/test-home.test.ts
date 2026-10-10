@@ -8,7 +8,9 @@ import { userConfigPath } from "../backend/daemon/src/config-path.ts";
 import { defaultCatalogueDirectory } from "../backend/daemon/src/daemon/model-catalogue-cache.ts";
 import { mcpOAuthStateDirectory } from "../backend/daemon/src/daemon/mcp-oauth-store.ts";
 import { sessionVmDirectory } from "../backend/daemon/src/daemon/session-vm-state.ts";
+import { isolateStateRoot } from "../cli/src/isolate/state.ts";
 import { recentRepositoriesPath } from "../cli/src/recent-repositories.ts";
+import { environmentUserConfigPath } from "../environment-config/src/paths.ts";
 import { runtimeHome } from "../runtime/src/packaged/artifact.ts";
 import { vmInventoryHome } from "../runtime/src/session-vm/inventory.ts";
 import { repoBaseDirectory } from "../runtime/src/session-vm/repo-base.ts";
@@ -47,6 +49,8 @@ test("every per-user Loom location resolves inside the test roots", { skip: !roo
     runtimeHome(),
     vmInventoryHome(),
     repoBaseDirectory(repo),
+    environmentUserConfigPath(),
+    isolateStateRoot(),
   ])
     assert.ok(within(path), `${path} escapes ${root}`);
 });

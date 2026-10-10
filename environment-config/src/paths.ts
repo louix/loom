@@ -1,5 +1,5 @@
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { userDirectory } from "../../core/src/user-dirs.ts";
 
 /**
  * Trusted environment configuration: `$XDG_CONFIG_HOME/loom/environment.jsonc`,
@@ -8,8 +8,7 @@ import { join } from "node:path";
  * rejects every Loom setting. Nothing reads one file in place of the other.
  */
 export const environmentUserConfigPath = (): string => {
-  const base = Deno.env.get("XDG_CONFIG_HOME")?.trim() || join(homedir(), ".config");
-  return join(base, "loom", "environment.jsonc");
+  return join(userDirectory("config"), "loom", "environment.jsonc");
 };
 
 /** Project intent at the checkout root; the same name and schema as main-new. */

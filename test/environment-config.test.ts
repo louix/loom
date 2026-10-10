@@ -1,6 +1,7 @@
 /** Versioned environment configuration: schemas, intent ≤ grants, precedence and loading. */
 import assert from "node:assert/strict";
 import { dirname, join, relative } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { gitFixture } from "../scripts/lib/git-fixture.ts";
@@ -52,9 +53,10 @@ Deno.test("Loom's config.jsonc is rejected with a pointer to the converter", () 
 Deno.test("the user file lives beside Loom's config under a different name", () => {
   const previous = Deno.env.get("XDG_CONFIG_HOME");
   try {
-    Deno.env.set("XDG_CONFIG_HOME", "/xdg");
-    assert.equal(environmentUserConfigPath(), "/xdg/loom/environment.jsonc");
-    assert.equal(userConfigPath(), "/xdg/loom/config.jsonc");
+    const xdg = join(tmpdir(), "xdg");
+    Deno.env.set("XDG_CONFIG_HOME", xdg);
+    assert.equal(environmentUserConfigPath(), join(xdg, "loom/environment.jsonc"));
+    assert.equal(userConfigPath(), join(xdg, "loom/config.jsonc"));
   } finally {
     if (previous === undefined) Deno.env.delete("XDG_CONFIG_HOME");
     else Deno.env.set("XDG_CONFIG_HOME", previous);

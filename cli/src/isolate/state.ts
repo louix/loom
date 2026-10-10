@@ -4,11 +4,11 @@
  * the whole command; the VM state beneath it is the runtime's, behind its own lock.
  */
 import { createHash } from "node:crypto";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import type { EnvironmentStorage } from "@loom/isolation/storage";
 import { IsolationError } from "@loom/isolation/errors";
 import { canonicalHostPath } from "../../../core/src/host-path.ts";
+import { userDirectory } from "../../../core/src/user-dirs.ts";
 import { workspaceMounts } from "../../../runtime/src/packaged/workspace.ts";
 import { withStoppedVmState } from "../../../runtime/src/session-vm/stopped-state.ts";
 
@@ -28,7 +28,7 @@ export interface EnvironmentRecord {
   preparedAt: string | null;
 }
 
-const stateHome = () => Deno.env.get("XDG_STATE_HOME") || join(homedir(), ".local/state");
+const stateHome = () => userDirectory("state");
 export const isolateStateRoot = () => canonicalHostPath(join(stateHome(), "loom-isolate"));
 /** Loom's session VMs, clones, environments and VM inventory: never mounted or mutated here. */
 export const loomStateRoot = () => canonicalHostPath(join(stateHome(), "loom"));
