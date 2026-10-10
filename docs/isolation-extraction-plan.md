@@ -60,10 +60,10 @@ full suite green; the suite now runs in a throwaway HOME and XDG root
 | A8    | Done  | `fd334122`                                       | Fork wizard; native vs handoff; lineage (migration 30)                                             |
 | B1    | Done  | `f9da0b8f` … `cdc76fd0`                          | `isolation/`, runtime slice, `plain-exec.ts`, boundary test                                        |
 | B2    | Done  | `ce8b14d9` … `25acc182`                          | `session.isolation.launcher` (default `legacy`; removed in B6)                                     |
-| B3    | Done  | `d2705da6` … `74b4fc01`, `491b4000` … `7eb04ff0` | Shells/hooks/inspection on leases; default flipped to `isolation`; legacy sessions resume on it    |
+| B3    | Done  | `d2705da6` … `74b4fc01`, `491b4000` … `7ca2eb0e` | Shells/hooks/inspection on leases; default flipped to `isolation`; legacy sessions resume on it    |
 | B4    | Done  | `e78ceafc` … `9f05b461`                          | `loom-isolate` (foreground ownership); `.#loom-isolate`                                            |
 | B5    | Done  | `701a8a0b` … `c96a922c`                          | `environment-config/`; `loom.json`, `environment.jsonc`; `loom config convert`                     |
-| B6    | Done  | `0151cc9c`, `73d1dec0`                           | Legacy launcher, in-VM worker mode and the switch removed; a stale `launcher` key warns once       |
+| B6    | Done  | `f62e7f7c`, `411bc5e3`                           | Legacy launcher, in-VM worker mode and the switch removed; a stale `launcher` key warns once       |
 
 Live verification (`scripts/test-live-daemon-acceptance.ts`, `claude:personal`
 and default `codex`, Linux): isolation launcher sessions with idle suspension
@@ -75,12 +75,12 @@ Silicon before the flip, and on the single launcher on Linux after B6.
 Outstanding:
 
 - Apple Silicon evidence and refreshed `packaging/macos/runtime-hashes.json`
-  (`73d1dec0` changes the session runtime image).
-- B6 is done. The default flipped first (`7eb04ff0`): a session suspended on
+  (`411bc5e3` changes the session runtime image).
+- B6 is done. The default flipped first (`7ca2eb0e`): a session suspended on
   either launcher resumed on the other in the same state directory, on a real VM
   across a daemon restart (`scripts/test-launcher-continuity-vm.ts` in that
-  commit). The launcher and switch went next (`0151cc9c`), then the guest's
-  in-VM worker mode (`73d1dec0`); revert them newest first.
+  commit). The launcher and switch went next (`f62e7f7c`), then the guest's
+  in-VM worker mode (`411bc5e3`); revert them newest first.
   `test/launcher-continuity.test.ts` keeps legacy-saved sessions resumable.
   Existing configs that still set `session.isolation.launcher` parse; the daemon
   warns once.
