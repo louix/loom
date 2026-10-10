@@ -393,4 +393,28 @@ export const MIGRATIONS: string[] = [
   ALTER TABLE sessions ADD COLUMN fork_handoff TEXT;
   ALTER TABLE sessions ADD COLUMN worktree_owner TEXT;
   `,
+  // 31 — the per-session message queue (docs/message-queue.md). Live entries
+  // are `queued` / `delivering`; settled ones are kept, pruned, so a client
+  // retrying a send with the same id is answered rather than re-queued. The
+  // hold is the session's: while set, nothing is dispatched automatically.
+  /* sql */ `
+  CREATE TABLE session_queue (
+    session_id   TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    id           TEXT NOT NULL,
+    seq          INTEGER NOT NULL,
+    text         TEXT NOT NULL,
+    author       TEXT NOT NULL,
+    delivery     TEXT NOT NULL CHECK (delivery IN ('next_boundary', 'end_of_turn')),
+    state        TEXT NOT NULL CHECK (state IN ('queued', 'delivering', 'consumed', 'cancelled')),
+    uncertain    INTEGER NOT NULL DEFAULT 0,
+    revision     INTEGER NOT NULL DEFAULT 0,
+    created_at   INTEGER NOT NULL,
+    delivered_at INTEGER,
+    consumed_at  INTEGER,
+    PRIMARY KEY (session_id, id)
+  );
+  CREATE INDEX session_queue_live ON session_queue(session_id, state, seq);
+  ALTER TABLE sessions ADD COLUMN queue_hold TEXT
+    CHECK (queue_hold IN ('interrupt', 'restart', 'crash', 'rejected'));
+  `,
 ];
