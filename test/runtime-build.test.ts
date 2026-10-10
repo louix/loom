@@ -14,8 +14,11 @@ import {
   classifyBuildFailure,
   ensureBuiltRuntime,
   ensureRuntimeArtifact,
+  builtRuntimeRetentionMs,
   removeBuiltRuntimes,
+  succeeded,
   type BuildDependencies,
+  type BuilderProcess,
 } from "../runtime/src/packaged/build.ts";
 
 const build = (identity = "a".repeat(32)): RuntimeBuild => ({
@@ -53,6 +56,7 @@ const fixture = async () => {
     },
     inspect: async () => {},
     freeBytes: async () => undefined,
+    alive: async () => false,
   };
   return {
     root,
@@ -194,14 +198,29 @@ test("the builder writes to its log, not to Loom, and sees no inherited environm
     await Deno.writeTextFile(log, "");
     const seen: string[] = [];
     const output = join(f.root, "out");
+    let recorded: BuilderProcess | undefined;
     assert.equal(
-      await buildDependencies.run(builder, output, log, (line) => seen.push(line)),
+      await buildDependencies.run(
+        builder,
+        output,
+        log,
+        (line) => seen.push(line),
+        undefined,
+        async (process) => {
+          recorded = process;
+        },
+      ),
       true,
     );
     assert.deepEqual(seen, [`start ${output}`, "secret=none tmp=/tmp"]);
     assert.equal(await Deno.readTextFile(log), `start ${output}\nsecret=none tmp=/tmp\n`);
+    // Success is marked for a Loom that outlives this one; the exited builder is not alive.
+    await Deno.lstat(succeeded(output));
+    assert.equal(await buildDependencies.alive(recorded!), false);
+    await Deno.remove(succeeded(output));
     await Deno.writeTextFile(builder, "#!/bin/sh\necho failing\nexit 3\n");
     assert.equal(await buildDependencies.run(builder, output, log, () => {}), false);
+    await assert.rejects(Deno.lstat(succeeded(output)));
   } finally {
     Deno.env.delete(secret);
     await f.cleanup();
@@ -241,6 +260,237 @@ test("superseded built runtimes go unless protected or newest", async () => {
     const left = (await Array.fromAsync(Deno.readDir(directory))).map((e) => e.name).sort();
     assert.deepEqual(left, [ids[0]!, `${ids[0]}.log`, ids[2]!, `${ids[2]}.log`].sort());
   } finally {
+    await f.cleanup();
+  }
+});
+
+test("runtimes another Loom used lately stay; prune and age remove them", async () => {
+  const f = await fixture();
+  try {
+    const directory = join(f.home, "built");
+    await Deno.mkdir(directory, { recursive: true });
+    const day = 24 * 60 * 60 * 1000;
+    const now = Date.now();
+    const [recent, stale, newest] = ["1", "2", "3"].map((c) => c.repeat(32));
+    for (const [id, usedAgo] of [
+      [recent!, day],
+      [stale!, 30 * day],
+      [newest!, 0],
+    ] as const) {
+      await Deno.mkdir(join(f.root, "store", id), { recursive: true });
+      await Deno.symlink(join(f.root, "store", id), join(directory, id));
+      await Deno.writeTextFile(join(directory, `${id}.used`), "");
+      const at = new Date(now - usedAgo);
+      await Deno.utime(join(directory, `${id}.used`), at, at);
+    }
+    const left = async () =>
+      (await Array.fromAsync(Deno.readDir(directory))).map((e) => e.name).sort();
+    // After a build: only what no Loom used within the retention window goes.
+    assert.equal(
+      await removeBuiltRuntimes(f.home, () => false, false, builtRuntimeRetentionMs, now),
+      1,
+    );
+    assert.deepEqual(await left(), [recent!, `${recent}.used`, newest!, `${newest}.used`].sort());
+    // `loom runtime prune` keeps only the most recently used.
+    assert.equal(await removeBuiltRuntimes(f.home, () => false), 1);
+    assert.deepEqual(await left(), [newest!, `${newest}.used`]);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("building a second identity keeps the first while it is in use", async () => {
+  const f = await fixture();
+  try {
+    const options = { home: f.home, temporary: f.temporary, dependencies: f.dependencies };
+    const [first, second, third] = ["a", "c", "e"].map((c) => build(c.repeat(32)));
+    const firstArtifact = await ensureBuiltRuntime(first!, options);
+    // Another installed Loom builds its own runtime; the first stays for its user.
+    await ensureBuiltRuntime(second!, options);
+    assert.equal(await ensureBuiltRuntime(first!, options), firstArtifact);
+    assert.equal(f.calls.run, 2);
+    // Once the first has gone unused for long enough, the next build removes it.
+    const long = new Date(Date.now() - builtRuntimeRetentionMs - 60_000);
+    await Deno.utime(builtRuntimePath(first!, f.home) + ".used", long, long);
+    await ensureBuiltRuntime(third!, options);
+    await assert.rejects(Deno.lstat(builtRuntimePath(first!, f.home)));
+    await Deno.lstat(builtRuntimePath(second!, f.home));
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("builds for different runtime homes leave each other's scratch output alone", async () => {
+  const f = await fixture();
+  try {
+    f.hold();
+    const scratch = async () =>
+      (await Array.fromAsync(Deno.readDir(f.temporary)))
+        .map((e) => e.name)
+        .filter((name) => name.startsWith("loom-runtime-build-"));
+    const first = ensureBuiltRuntime(build(), {
+      home: f.home,
+      temporary: f.temporary,
+      dependencies: f.dependencies,
+    });
+    let held: string[] = [];
+    for (let i = 0; i < 100 && !held.length; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      held = await scratch();
+    }
+    assert.equal(held.length, 1);
+    // Another XDG_DATA_HOME has its own lock, so its build runs meanwhile.
+    await ensureBuiltRuntime(build(), {
+      home: join(f.root, "other-home"),
+      temporary: f.temporary,
+      dependencies: {
+        ...f.dependencies,
+        run: async (_builder, output) => {
+          await Deno.mkdir(output);
+          return true;
+        },
+      },
+    });
+    assert.deepEqual(await scratch(), held);
+    f.release();
+    await first;
+    assert.deepEqual(await scratch(), []);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+/** A builder that runs until `go` (succeeds) or `fail` (fails) appears beside it. */
+const blockingBuilder = async (root: string) => {
+  const sleep = new TextDecoder()
+    .decode(
+      (await new Deno.Command("/bin/sh", { args: ["-c", "command -v sleep"] }).output()).stdout,
+    )
+    .trim();
+  const builder = join(root, "builder");
+  await Deno.writeTextFile(
+    builder,
+    [
+      "#!/bin/sh",
+      `echo start >>"${root}/starts"`,
+      'echo "building $1"',
+      `while [ ! -e "${root}/go" ] && [ ! -e "${root}/fail" ]; do ${sleep} 0.05; done`,
+      `[ -e "${root}/fail" ] && exit 1`,
+      'echo built >"$1"',
+      "",
+    ].join("\n"),
+    { mode: 0o755 },
+  );
+  return builder;
+};
+const starts = (root: string) =>
+  Deno.readTextFile(join(root, "starts")).then(
+    (text) => text.trim().split("\n").length,
+    () => 0,
+  );
+const until = async (check: () => Promise<boolean>) => {
+  for (let i = 0; i < 300; i++) {
+    if (await check()) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error("condition did not settle");
+};
+type Fixture = Awaited<ReturnType<typeof fixture>>;
+/** Start a build in another Loom process, and kill that with SIGKILL once its builder runs. */
+const crashMidBuild = async (f: Fixture, builder: string) => {
+  const script = join(f.root, "loom.ts");
+  const module = new URL("../runtime/src/packaged/build.ts", import.meta.url).href;
+  await Deno.writeTextFile(
+    script,
+    `import { buildDependencies, ensureBuiltRuntime } from ${JSON.stringify(module)};
+const [home, temporary, builder] = Deno.args;
+await ensureBuiltRuntime(
+  { version: 1, identity: ${JSON.stringify(build().identity)}, builder },
+  { home, temporary, dependencies: { ...buildDependencies, freeBytes: async () => undefined } },
+);
+`,
+  );
+  const loom = new Deno.Command(Deno.execPath(), {
+    args: ["run", "-A", "--no-config", "--no-lock", script, f.home, f.temporary, builder],
+    cwd: f.root,
+    stdin: "null",
+    stdout: "null",
+    stderr: "null",
+  }).spawn();
+  const record = join(f.home, "built/.build");
+  await until(
+    async () =>
+      (await starts(f.root)) === 1 &&
+      (await Deno.lstat(record).then(
+        () => true,
+        () => false,
+      )),
+  );
+  loom.kill("SIGKILL");
+  await loom.status;
+  return JSON.parse(await Deno.readTextFile(record)) as BuilderProcess & { scratch: string };
+};
+/** Real builder processes; a fixture store stands in for Nix. */
+const realBuilder = (f: Fixture): BuildDependencies => ({
+  ...buildDependencies,
+  register: f.dependencies.register,
+  inspect: async () => {},
+  freeBytes: async () => undefined,
+});
+
+test("a build whose Loom died is waited for and finished, not started again", async () => {
+  const f = await fixture();
+  try {
+    const builder = await blockingBuilder(f.root);
+    const orphan = await crashMidBuild(f, builder);
+    // The builder outlived its Loom.
+    assert.equal(await buildDependencies.alive(orphan), true);
+    const progress: string[] = [];
+    const next = ensureBuiltRuntime(
+      { ...build(), builder },
+      {
+        home: f.home,
+        temporary: f.temporary,
+        dependencies: realBuilder(f),
+        progressIntervalMs: 0,
+        onProgress: (message) => progress.push(message),
+      },
+    );
+    await until(async () => progress.some((m) => /building \//.test(m)));
+    assert.match(progress[0]!, /Waiting for the VM runtime build an earlier Loom process started/);
+    // Its scratch output is still the running build's.
+    await Deno.lstat(orphan.scratch);
+    await Deno.writeTextFile(join(f.root, "go"), "");
+    const artifact = await next;
+    assert.equal(await Deno.readTextFile(artifact), "built\n");
+    assert.equal(await Deno.realPath(builtRuntimePath(build(), f.home)), artifact);
+    assert.equal(await starts(f.root), 1);
+    await assert.rejects(Deno.lstat(orphan.scratch));
+    await assert.rejects(Deno.lstat(join(f.home, "built/.build")));
+  } finally {
+    await Deno.writeTextFile(join(f.root, "go"), "").catch(() => {});
+    await f.cleanup();
+  }
+});
+
+test("a dead builder's leftovers go and the build starts again", async () => {
+  const f = await fixture();
+  try {
+    const builder = await blockingBuilder(f.root);
+    const orphan = await crashMidBuild(f, builder);
+    await Deno.writeTextFile(join(f.root, "fail"), "");
+    await until(async () => !(await buildDependencies.alive(orphan)));
+    await Deno.remove(join(f.root, "fail"));
+    await Deno.writeTextFile(join(f.root, "go"), "");
+    const artifact = await ensureBuiltRuntime(
+      { ...build(), builder },
+      { home: f.home, temporary: f.temporary, dependencies: realBuilder(f) },
+    );
+    assert.equal(await Deno.readTextFile(artifact), "built\n");
+    assert.equal(await starts(f.root), 2);
+    await assert.rejects(Deno.lstat(orphan.scratch));
+  } finally {
+    await Deno.writeTextFile(join(f.root, "go"), "").catch(() => {});
     await f.cleanup();
   }
 });

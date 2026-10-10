@@ -5,9 +5,10 @@
  * no credentials or host configuration, seeing only the guest source and an
  * output directory. Loom adds the result to the Nix store, so sessions still
  * receive an immutable store path, and keeps it under the source's identity
- * until a package with different guest source needs another.
+ * while any installed Loom has used it lately.
  */
-import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { basename, join, resolve } from "node:path";
 import {
   builtRuntimeHome,
   builtRuntimePath,
@@ -39,10 +40,18 @@ export const classifyBuildFailure = (log: string): BuildFailure => {
   return "builder";
 };
 
+/** A builder process; its start time tells it apart from a later process reusing the pid. */
+export interface BuilderProcess {
+  pid: number;
+  started?: string;
+}
+
 export interface BuildDependencies {
   /**
    * Run the builder into `output`, writing its output to `log` and reporting each
-   * line; resolves with success.
+   * line; resolves with success. The builder outlives Loom: `onStart` records it
+   * first, and {@link succeeded}`(output)` appears once it has succeeded, so a later
+   * Loom can finish the build.
    */
   run(
     builder: string,
@@ -50,15 +59,37 @@ export interface BuildDependencies {
     log: string,
     onLine: (line: string) => void,
     signal?: AbortSignal,
+    onStart?: (process: BuilderProcess) => Promise<void>,
   ): Promise<boolean>;
   /** Add `directory` to the Nix store and root it at `link`; returns the store path. */
   register(directory: string, link: string): Promise<string>;
   inspect(artifact: string): Promise<unknown>;
   /** Free bytes on the filesystem holding `path`, when known. */
   freeBytes(path: string): Promise<number | undefined>;
+  /** Whether `process` is still running. */
+  alive(process: BuilderProcess): Promise<boolean>;
 }
 
+/** The marker a successful builder leaves beside its output. */
+export const succeeded = (output: string) => `${output}.ok`;
+
 const decode = (bytes: Uint8Array) => new TextDecoder().decode(bytes).trim();
+/** `pid`'s start time, or undefined once it has exited (or `ps` is unavailable). */
+const processStart = async (pid: number): Promise<string | undefined> => {
+  try {
+    const result = await new Deno.Command("ps", {
+      args: ["-o", "stat=", "-o", "lstart=", "-p", String(pid)],
+      stdin: "null",
+      stdout: "piped",
+      stderr: "null",
+    }).output();
+    const [state, ...started] = decode(result.stdout).split(/\s+/);
+    // A zombie has exited; only its parent has yet to notice.
+    return result.success && state && !state.startsWith("Z") ? started.join(" ") : undefined;
+  } catch {
+    return undefined;
+  }
+};
 const command = async (name: string, args: string[]) => {
   let result: Deno.CommandOutput;
   try {
@@ -108,13 +139,14 @@ const follow = async (path: string, onLine: (line: string) => void, exited: Prom
 };
 
 export const buildDependencies: BuildDependencies = {
-  async run(builder, output, log, onLine, signal) {
+  async run(builder, output, log, onLine, signal, onStart) {
     // Only a temporary directory crosses: the builder sets its own private HOME/XDG
     // paths, and nothing from Loom's environment (credentials included) reaches it.
     // Darwin's Unix socket limit needs the builder's VM state under a short path.
-    // Output goes straight to the log, never through a pipe Loom's exit would close.
+    // Output goes straight to the log, never through a pipe Loom's exit would close,
+    // and the shell marks success for whichever Loom finishes the build.
     const child = new Deno.Command("/bin/sh", {
-      args: ["-c", 'exec "$0" "$1" >>"$2" 2>&1', builder, output, log],
+      args: ["-c", '"$0" "$1" >>"$2" 2>&1 && : >"$3"', builder, output, log, succeeded(output)],
       clearEnv: true,
       env: { TMPDIR: "/tmp" },
       stdin: "null",
@@ -122,16 +154,20 @@ export const buildDependencies: BuildDependencies = {
       stderr: "null",
     }).spawn();
     // Stopping the builder's foreground VM command lets its trap run at once: the
-    // trap stops and deletes the VM. Loom exiting mid-build stops it the same way.
+    // trap stops and deletes the VM. Loom exiting mid-build stops it the same way;
+    // the shell then exits with the builder.
     const stop = () => {
       try {
-        new Deno.Command("pkill", {
-          args: ["-TERM", "-P", String(child.pid)],
+        new Deno.Command("/bin/sh", {
+          args: [
+            "-c",
+            'for p in $(pgrep -P "$0"); do pkill -TERM -P "$p"; kill -TERM "$p"; done',
+            String(child.pid),
+          ],
           stdin: "null",
           stdout: "null",
           stderr: "null",
         }).spawn();
-        child.kill("SIGTERM");
       } catch {
         /* exited */
       }
@@ -139,6 +175,16 @@ export const buildDependencies: BuildDependencies = {
     signal?.addEventListener("abort", stop, { once: true });
     globalThis.addEventListener("unload", stop);
     try {
+      if (onStart) {
+        const started = await processStart(child.pid);
+        try {
+          await onStart({ pid: child.pid, ...(started ? { started } : {}) });
+        } catch (error) {
+          stop();
+          await child.status;
+          throw error;
+        }
+      }
       await follow(log, onLine, child.status);
       return (await child.status).success;
     } finally {
@@ -165,6 +211,18 @@ export const buildDependencies: BuildDependencies = {
       return undefined;
     }
   },
+  async alive({ pid, started }) {
+    if (started) return (await processStart(pid)) === started;
+    // Recorded without `ps`: only the pid can tell.
+    return (
+      await new Deno.Command("/bin/sh", {
+        args: ["-c", 'kill -0 "$0" 2>/dev/null', String(pid)],
+        stdin: "null",
+        stdout: "null",
+        stderr: "null",
+      }).output()
+    ).success;
+  },
 };
 
 /** The built runtime's store path, or undefined if this identity is not built. */
@@ -184,15 +242,25 @@ export const builtRuntime = async (
   return artifact;
 };
 
+/** How long a built runtime stays after its last use, for every installed Loom using it. */
+export const builtRuntimeRetentionMs = 14 * 24 * 60 * 60 * 1000;
+const usedMarker = (link: string) => `${link}.used`;
+/** Record a use of the runtime at `link`; cleanup keeps recently used runtimes. */
+const markUsed = (link: string) =>
+  Deno.writeTextFile(usedMarker(link), "", { mode: 0o600 }).catch(() => {});
+
 /**
- * Remove built runtimes other than `keep` and the newest, which, like a selected
- * runtime generation, stays for whichever installed Loom built it last.
- * The caller holds the VM maintenance lock.
+ * Remove built runtimes other than `keep`, the most recently used one and any
+ * used within `retainMs`: another installed Loom (loom-isolate at another
+ * revision, say) may still start sessions on one, and removing it would make each
+ * rebuild the other's. The caller holds the VM maintenance lock.
  */
 export const removeBuiltRuntimes = async (
   home: string,
   keep: (link: string, artifact: string | undefined) => boolean,
   dryRun = false,
+  retainMs = 0,
+  now = Date.now(),
 ): Promise<number> => {
   const directory = builtRuntimeHome(home);
   let removed = 0;
@@ -203,19 +271,27 @@ export const removeBuiltRuntimes = async (
     if (error instanceof Deno.errors.NotFound) return 0;
     throw error;
   }
-  let newest: { link: string; at: number } | undefined;
+  // A runtime built before uses were recorded was last used when it was built.
+  const lastUse = async (link: string) =>
+    (
+      (await Deno.stat(usedMarker(link)).catch(() => undefined)) ?? (await Deno.lstat(link))
+    ).mtime?.getTime() ?? 0;
+  const used = new Map<string, number>();
   for (const entry of entries) {
     if (!/^[a-f0-9]{32}$/.test(entry.name) || !entry.isSymlink) continue;
     const link = join(directory, entry.name);
-    const at = (await Deno.lstat(link)).mtime?.getTime() ?? 0;
-    if (!newest || at > newest.at) newest = { link, at };
+    used.set(link, await lastUse(link));
   }
+  let newest: string | undefined;
+  for (const [link, at] of used) if (!newest || at > used.get(newest)!) newest = link;
   for (const entry of entries) {
-    const identity = /^([a-f0-9]{32})(\.log)?$/.exec(entry.name);
+    const identity = /^([a-f0-9]{32})(\.log|\.used)?$/.exec(entry.name);
     if (!identity || (identity[2] ? !entry.isFile : !entry.isSymlink)) continue;
     const link = join(directory, identity[1]!);
     const artifact = await Deno.realPath(link).catch(() => undefined);
-    if (link === newest?.link || keep(link, artifact)) continue;
+    const at = used.get(link);
+    if (link === newest || (at !== undefined && now - at < retainMs) || keep(link, artifact))
+      continue;
     // Removing a link releases its GC root; Nix frees the store path at its next collection.
     if (!dryRun) await Deno.remove(join(directory, entry.name));
     if (!identity[2]) removed++;
@@ -246,13 +322,154 @@ const elapsed = (ms: number) => {
   const seconds = Math.floor(ms / 1000);
   return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 };
-const scratchPrefix = "loom-runtime-build-";
+/**
+ * Scratch output in the shared temporary directory, named for the runtime home
+ * whose lock covers it: another home's builds are none of this one's business.
+ */
+const scratchPrefix = (home: string) =>
+  `loom-runtime-build-${createHash("sha256").update(resolve(home)).digest("hex").slice(0, 16)}-`;
 const writable = async (path: string) => {
   const info = await Deno.lstat(path);
   if (info.isSymlink) return;
   await Deno.chmod(path, (info.mode ?? 0) | 0o200);
   if (info.isDirectory)
     for await (const entry of Deno.readDir(path)) await writable(join(path, entry.name));
+};
+const removeScratch = async (path: string) => {
+  await writable(path).catch(() => {});
+  await Deno.remove(path, { recursive: true }).catch(() => {});
+};
+const exists = (path: string) =>
+  Deno.lstat(path).then(
+    () => true,
+    () => false,
+  );
+
+/**
+ * The build under way in a runtime home, kept beside its lock. The builder
+ * outlives the Loom that started it, so while it runs the build is still the
+ * lock's: the next holder waits for it rather than starting a second one.
+ */
+interface BuildRecord extends BuilderProcess {
+  identity: string;
+  scratch: string;
+  since: number;
+}
+const buildRecord = (home: string) => join(builtRuntimeHome(home), ".build");
+const readBuildRecord = async (
+  home: string,
+  temporary: string,
+): Promise<BuildRecord | undefined> => {
+  let value: Partial<BuildRecord> | null;
+  try {
+    value = JSON.parse(await Deno.readTextFile(buildRecord(home)));
+  } catch {
+    return undefined;
+  }
+  const { pid, started, identity, scratch, since } = value ?? {};
+  if (
+    typeof pid !== "number" ||
+    !Number.isSafeInteger(pid) ||
+    pid <= 1 ||
+    (started !== undefined && typeof started !== "string") ||
+    typeof identity !== "string" ||
+    !/^[a-f0-9]{32}$/.test(identity) ||
+    typeof scratch !== "string" ||
+    join(temporary, basename(scratch)) !== scratch ||
+    !basename(scratch).startsWith(scratchPrefix(home)) ||
+    typeof since !== "number"
+  )
+    return undefined;
+  return { pid, ...(started ? { started } : {}), identity, scratch, since };
+};
+
+/** A build's progress: its latest output line, at most every `intervalMs`, and each minute. */
+const buildProgress = (
+  onProgress: (message: string) => void,
+  intervalMs: number,
+  since = Date.now(),
+) => {
+  const tail: string[] = [];
+  let reported = 0;
+  let latest = "";
+  const report = () =>
+    onProgress(
+      `Building the VM runtime (${elapsed(Date.now() - since)} elapsed)${latest ? `: ${latest}` : "…"}`,
+    );
+  const ticker = setInterval(report, 60_000);
+  return {
+    tail,
+    onLine(line: string) {
+      const text = line.trim();
+      if (!text) return;
+      tail.push(text);
+      if (tail.length > 40) tail.shift();
+      latest = text.length > 120 ? text.slice(0, 117) + "…" : text;
+      if (Date.now() - reported >= intervalMs) {
+        reported = Date.now();
+        report();
+      }
+    },
+    elapsed: () => elapsed(Date.now() - since),
+    close: () => clearInterval(ticker),
+  };
+};
+
+/**
+ * Settle whatever build an earlier holder of the lock left. A builder still
+ * running is waited for; one that succeeded is registered as its Loom would have
+ * done. Only then is this home's scratch output an interrupted build's, and goes.
+ * The caller holds the build lock.
+ */
+const settleEarlierBuild = async (
+  home: string,
+  temporary: string,
+  dependencies: BuildDependencies,
+  onProgress: (message: string) => void,
+  progressIntervalMs: number,
+  signal?: AbortSignal,
+) => {
+  const record = await readBuildRecord(home, temporary);
+  if (record) {
+    const link = join(builtRuntimeHome(home), record.identity);
+    const output = join(record.scratch, "lvm");
+    if (await dependencies.alive(record)) {
+      onProgress("Waiting for the VM runtime build an earlier Loom process started…");
+      const log = `${link}.log`;
+      await Deno.writeTextFile(log, "", { append: true, mode: 0o600 });
+      const progress = buildProgress(onProgress, progressIntervalMs, record.since);
+      // Never rejects: `follow` only needs to know when to stop.
+      const exited = (async () => {
+        while (!signal?.aborted && (await dependencies.alive(record)))
+          await sleep(1_000, signal).catch(() => {});
+      })();
+      try {
+        await follow(log, progress.onLine, exited);
+      } finally {
+        progress.close();
+      }
+      signal?.throwIfAborted();
+    }
+    if ((await exists(succeeded(output))) && !(await exists(link))) {
+      onProgress("Adding the VM runtime to the Nix store…");
+      try {
+        await dependencies.inspect(await dependencies.register(output, link));
+        await markUsed(link);
+        await Deno.remove(`${link}.log`).catch(() => {});
+      } catch {
+        // Its output is unusable after all: the identity builds again when needed.
+        await Deno.remove(link).catch(() => {});
+      }
+    }
+  }
+  const prefix = scratchPrefix(home);
+  for await (const entry of Deno.readDir(temporary)) {
+    if (!entry.name.startsWith(prefix) || !entry.isDirectory) continue;
+    const stale = join(temporary, entry.name);
+    if ((await Deno.lstat(stale)).uid !== Deno.uid()) continue;
+    await removeScratch(stale);
+  }
+  await Deno.remove(buildRecord(home)).catch(() => {});
 };
 
 export interface EnsureBuiltRuntimeOptions {
@@ -268,7 +485,8 @@ export interface EnsureBuiltRuntimeOptions {
 /**
  * The runtime for `build`, building it first if this identity has none. Concurrent
  * callers (the daemon's session starts, `loom runtime update`, loom-isolate) wait
- * for one build instead of running their own.
+ * for one build instead of running their own, as does a caller arriving after the
+ * Loom that started a build died: its builder carries on.
  */
 export const ensureBuiltRuntime = async (
   build: RuntimeBuild,
@@ -282,8 +500,12 @@ export const ensureBuiltRuntime = async (
     progressIntervalMs = 5_000,
     dependencies = buildDependencies,
   } = options;
+  const link = builtRuntimePath(build, home);
   const existing = await builtRuntime(build, home, dependencies.inspect);
-  if (existing) return existing;
+  if (existing) {
+    await markUsed(link);
+    return existing;
+  }
   const directory = builtRuntimeHome(home);
   await Deno.mkdir(directory, { recursive: true, mode: 0o700 });
   let lock = await tryLock(join(directory, ".lock"));
@@ -293,8 +515,12 @@ export const ensureBuiltRuntime = async (
     lock = await tryLock(join(directory, ".lock"));
   }
   try {
+    await settleEarlierBuild(home, temporary, dependencies, onProgress, progressIntervalMs, signal);
     const built = await builtRuntime(build, home, dependencies.inspect);
-    if (built) return built;
+    if (built) {
+      await markUsed(link);
+      return built;
+    }
     const gib = 1024 ** 3;
     for (const [path, needed] of [
       [temporary, buildSpace.temporaryGiB],
@@ -306,55 +532,33 @@ export const ensureBuiltRuntime = async (
           `Building the VM runtime needs about ${needed} GB free in ${path}; ${(free / gib).toFixed(1)} GB is available. Free space, then retry with loom runtime update.`,
         );
     }
-    const link = builtRuntimePath(build, home);
     const logPath = `${link}.log`;
     await Deno.writeTextFile(logPath, "", { mode: 0o600 });
-    // Holding the lock, any other scratch output is an interrupted build's.
-    for await (const entry of Deno.readDir(temporary)) {
-      if (!entry.name.startsWith(scratchPrefix) || !entry.isDirectory) continue;
-      const stale = join(temporary, entry.name);
-      if ((await Deno.lstat(stale)).uid !== Deno.uid()) continue;
-      await writable(stale).catch(() => {});
-      await Deno.remove(stale, { recursive: true }).catch(() => {});
-    }
-    const scratch = await Deno.makeTempDir({ dir: temporary, prefix: scratchPrefix });
-    const started = Date.now();
-    const tail: string[] = [];
-    let reported = 0;
-    let latest = "";
-    const report = () =>
-      onProgress(
-        `Building the VM runtime (${elapsed(Date.now() - started)} elapsed)${latest ? `: ${latest}` : "…"}`,
-      );
-    const ticker = setInterval(report, 60_000);
+    const scratch = await Deno.makeTempDir({ dir: temporary, prefix: scratchPrefix(home) });
+    const progress = buildProgress(onProgress, progressIntervalMs);
     try {
       onProgress(
         "Building the VM runtime for this Loom version. The first start after installing or upgrading Loom can take 15–60 minutes; later starts reuse it.",
       );
       const output = join(scratch, "lvm");
+      const record = { identity: build.identity, scratch, since: Date.now() };
       const success = await dependencies.run(
         build.builder,
         output,
         logPath,
-        (line) => {
-          const text = line.trim();
-          if (!text) return;
-          tail.push(text);
-          if (tail.length > 40) tail.shift();
-          latest = text.length > 120 ? text.slice(0, 117) + "…" : text;
-          if (Date.now() - reported >= progressIntervalMs) {
-            reported = Date.now();
-            report();
-          }
-        },
+        progress.onLine,
         signal,
+        (process) =>
+          Deno.writeTextFile(buildRecord(home), JSON.stringify({ ...record, ...process }), {
+            mode: 0o600,
+          }),
       );
       signal?.throwIfAborted();
       if (!success) {
-        const kind = classifyBuildFailure(tail.join("\n"));
+        const kind = classifyBuildFailure(progress.tail.join("\n"));
         throw new Error(
           `${buildFailures[kind]} Retry with loom runtime update or by starting the session again. Build log: ${logPath}` +
-            (kind === "builder" ? `\n${tail.slice(-10).join("\n")}` : ""),
+            (kind === "builder" ? `\n${progress.tail.slice(-10).join("\n")}` : ""),
         );
       }
       onProgress("Adding the VM runtime to the Nix store…");
@@ -365,14 +569,20 @@ export const ensureBuiltRuntime = async (
         await Deno.remove(link).catch(() => {});
         throw error;
       }
+      await markUsed(link);
       await Deno.remove(logPath).catch(() => {});
-      onProgress(`VM runtime ready after ${elapsed(Date.now() - started)}.`);
-      // Older Loom versions' runtimes go once no VM may still use them.
+      onProgress(`VM runtime ready after ${progress.elapsed()}.`);
+      // Runtimes no installed Loom has used lately go once no VM may still use them.
       const maintenance = await vmMaintenanceLock(true, temporary).catch(() => undefined);
       if (maintenance)
         try {
           if (!(await retainedVmStates(temporary)).length)
-            await removeBuiltRuntimes(home, (path) => path === link);
+            await removeBuiltRuntimes(
+              home,
+              (path) => path === link,
+              false,
+              builtRuntimeRetentionMs,
+            );
         } catch {
           /* Cleanup is retried by loom runtime prune. */
         } finally {
@@ -380,15 +590,15 @@ export const ensureBuiltRuntime = async (
         }
       return artifact;
     } finally {
-      clearInterval(ticker);
-      await writable(scratch).catch(() => {});
-      await Deno.remove(scratch, { recursive: true }).catch(() => {});
+      progress.close();
+      // `run` returns only once the builder has exited.
+      await removeScratch(scratch);
+      await Deno.remove(buildRecord(home)).catch(() => {});
     }
   } finally {
     lock.close();
   }
 };
-
 interface SharedBuild {
   done: Promise<string>;
   listeners: Set<(message: string) => void>;
