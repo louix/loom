@@ -226,6 +226,12 @@ export interface DaemonStartOptions {
 export class Daemon {
   readonly #guestStop = new AbortController();
   readonly #cloneFacts = new Map<string, CloneFacts>();
+  /**
+   * Per session, the tail of its serialized guest Git probes. Serial so an older
+   * probe can never land after a newer one; `waiting` while the tail has not
+   * started, so it already answers any later request.
+   */
+  readonly #cloneProbes = new Map<string, { tail: Promise<void>; waiting: boolean }>();
   readonly #guestCommand: NonNullable<DaemonStartOptions["guestCommand"]>;
   readonly repoRoot: string;
   readonly paths: LoomPaths;
@@ -929,18 +935,7 @@ export class Daemon {
     if (!s) return;
     const gitPath = this.#gitKey(s);
     if (!gitPath) return;
-    if (s.checkout === "clone") {
-      try {
-        const facts = await this.#cloneGit(s).facts(s.baseBranch, this.#guestStop.signal);
-        if (this.#stopping || this.#registry.get(id)?.worktree !== s.worktree) return;
-        const previous = this.#cloneFacts.get(id);
-        this.#cloneFacts.set(id, facts);
-        if (JSON.stringify(previous) !== JSON.stringify(facts)) this.#publishState(id);
-      } catch {
-        /* A sleeping VM retains its last observed facts; never probe on the host. */
-      }
-      return;
-    }
+    if (s.checkout === "clone") return this.#probeClone(id);
     const before = this.#worktrees.cachedFacts(gitPath);
     // A clone is never opened by host Git: its facts are what it has published.
     const after = await this.#worktrees.factsAsync(gitPath, s.baseBranch);
@@ -950,6 +945,39 @@ export class Daemon {
       JSON.stringify(before) !== JSON.stringify(after)
     )
       this.#publishState();
+  }
+
+  /** Probe a clone session's Git state in its VM, after any probe already in flight. */
+  #probeClone(id: string): Promise<void> {
+    const entry = this.#cloneProbes.get(id);
+    if (entry?.waiting) return entry.tail;
+    const next = { tail: Promise.resolve(), waiting: true };
+    next.tail = (entry?.tail ?? Promise.resolve()).then(async () => {
+      next.waiting = false;
+      const s = this.#registry.get(id);
+      // A VM being suspended or replaced would kill the probe mid-command; the
+      // lifecycle operation publishes (and so re-probes) once it settles.
+      if (!s || this.#stopping || this.#revivals.has(id)) return;
+      try {
+        const facts = await this.#cloneGit(s).facts(s.baseBranch, this.#guestStop.signal);
+        if (this.#stopping || this.#registry.get(id)?.worktree !== s.worktree) return;
+        const previous = this.#cloneFacts.get(id);
+        this.#cloneFacts.set(id, facts);
+        if (JSON.stringify(previous) !== JSON.stringify(facts)) this.#publishState(id);
+      } catch {
+        /* A sleeping VM retains its last observed facts; never probe on the host. */
+      }
+    });
+    this.#cloneProbes.set(id, next);
+    void next.tail.then(() => {
+      if (this.#cloneProbes.get(id) === next) this.#cloneProbes.delete(id);
+    });
+    return next.tail;
+  }
+
+  /** Let guest Git probes already running finish before their VM is stopped. */
+  async #settleGuestProbes(id: string): Promise<void> {
+    await this.#cloneProbes.get(id)?.tail;
   }
 
   /** A daemon-level advisory for the operator (config reload feedback). */
@@ -2261,14 +2289,16 @@ export class Daemon {
     if (state.kind === "idle" && snap.checkout === "clone") {
       void this.#queue
         .run(id, async () => {
-          if (
-            this.#stopping ||
-            this.#registry.get(id)?.status.kind !== "idle" ||
-            this.#registry.get(id)?.turns !== snap.turns
-          )
-            return;
+          const ended = () =>
+            !this.#stopping &&
+            this.#registry.get(id)?.status.kind === "idle" &&
+            this.#registry.get(id)?.turns === snap.turns;
+          if (!ended()) return;
           try {
             await this.#refreshGitFacts(id);
+            // A slow guest probe can outlast the idle spell: facts read during a
+            // later turn are that turn's business, and its own end handles them.
+            if (!ended()) return;
             const nudged =
               this.config.autoRebase.enabled && this.#cloneCanSync(id)
                 ? (await this.#syncClone(id, true)).nudged
@@ -2914,6 +2944,7 @@ export class Daemon {
       // environment refresh, so sends wait and then transparently revive.
       const operation = this.#queue
         .run(id, async () => {
+          await this.#settleGuestProbes(id);
           if (
             !this.#stopping &&
             !this.#shells.has(id) &&
@@ -2974,6 +3005,7 @@ export class Daemon {
           continue;
         const operation = this.#queue
           .run(id, async () => {
+            await this.#settleGuestProbes(id);
             if (
               this.#stopping ||
               this.#shells.has(id) ||
