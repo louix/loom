@@ -58,6 +58,7 @@ full suite green; the suite now runs in a throwaway HOME and XDG root
 | A6    | Done  | `6134038d` … `ff4fb47a`                          | Per-provider catalogues; `providers.refreshModels`                                                 |
 | A7    | Done  | `a7b88528` … `021c8fff`, `d99e5ace`              | Seeded from `get_usage`; `usage.provider_total` (migration 29); provider ref follows undo/`/clear` |
 | A8    | Done  | `fd334122`                                       | Fork wizard; native vs handoff; lineage (migration 30)                                             |
+| A9    | Done  | `d475a9d4` … `6276eb6d`                          | Daemon-owned message queue (migration 31; protocol v5, worker v4); spec in `docs/message-queue.md` |
 | B1    | Done  | `f9da0b8f` … `cdc76fd0`                          | `isolation/`, runtime slice, `plain-exec.ts`, boundary test                                        |
 | B2    | Done  | `ce8b14d9` … `25acc182`                          | `session.isolation.launcher` (default `legacy`; removed in B6)                                     |
 | B3    | Done  | `d2705da6` … `74b4fc01`, `491b4000` … `7ca2eb0e` | Shells/hooks/inspection on leases; default flipped to `isolation`; legacy sessions resume on it    |
