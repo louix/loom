@@ -40,12 +40,15 @@ runtime pruning.
 The default Loom Nix package bundles Claude, Codex and AISDK session runtimes
 and smolvm. The `withClaude`, `withCodex` and `withAisdk` overrides control
 those bundles. Session isolation remains opt-in through
-`session.isolation.enabled`. Bundled agent runtimes update with Loom.
+`session.isolation.enabled`. Bundled agent runtimes update with Loom. On Apple
+Silicon without a matching pin, Loom builds the session runtime itself on first
+use ([below](#host-and-guest-packaging-boundary)).
 
 For an existing flake producing a complete Loom artifact, use
 `source.kind: "runtime"` with its explicit flake reference.
 `loom runtime prepare|status|update` remains the artifact-level interface;
-without a reference it operates only on configured runtime sources.
+without a reference it operates on configured runtime sources and, when this
+Loom builds its session runtime on demand, on that runtime as `session`.
 
 Loom exports `lib.mkRuntime` from both the root flake and the server-independent
 `packaging/runtimes` flake:
@@ -61,8 +64,8 @@ packages.x86_64-linux.loom-runtime = loom.lib.mkRuntime {
 
 Package all interpreters and subprocess dependencies, wrapping PATH when needed.
 Custom MCP packages target Linux; preparation on macOS requires a configured
-Linux builder. The automatic macOS builder below applies to bundled agent
-runtimes.
+Linux builder. The automatic macOS builder below applies to the bundled agent
+session runtime.
 
 ## Artifact and execution contracts
 
@@ -156,22 +159,50 @@ artifacts always contain Linux packages for the matching CPU architecture. The
 guest's Git links resolve inside its staged store; the host does not need the
 Linux executables installed separately.
 
-On Apple Silicon, a fixed-output Nix derivation starts a disposable smolvm
-builder, bootstraps pinned Linux Nix, and builds the locked runtime recipes. The
-builder has networking and a private writable store. It sees source files and an
-output directory, without provider credentials or host configuration. The Linux
+On Apple Silicon, a disposable smolvm builder VM bootstraps pinned Linux Nix and
+builds the locked runtime recipe. The builder has networking and a private
+writable store. It sees the guest source and an output directory, without
+provider credentials, host configuration or Loom's environment. The Linux
 closure is stored in a read-only EROFS image, preserving case-sensitive
 filenames even on default macOS filesystems. The guest mounts that image at
 `/nix/store`. An archive transports the image and launcher metadata while
-preserving executable permissions. Nix verifies the finished artifact against
-its pinned hash. The builder is stopped and deleted on completion or failure.
+preserving executable permissions. The builder is stopped and deleted on
+completion or failure. Session VMs still receive only their prepared read-only
+store; they do not contain Nix or run a builder. No host Linux builder, Docker
+installation, administrator artifact import or extra trusted Nix key is
+required. Intel macOS is not supported by the pinned package inputs.
 
-This happens at package build time. Session VMs still receive only their
-prepared read-only store; they do not contain Nix or run a builder. A first
-installation can take tens of minutes and download Linux build dependencies. No
-host Linux builder, Docker installation, administrator artifact import or extra
-trusted Nix key is required. Intel macOS is not supported by the pinned package
-inputs.
+When that builder runs depends on `packaging/macos/runtime-hashes.json`:
+
+- **No matching pin (the usual case).** Installing Loom does not build the
+  runtime. The package ships the builder and an identity naming its guest source
+  and recipe. Loom runs the builder at the first VM session start (the session
+  shows its progress), or earlier with `loom runtime update` (listed as
+  `session`), `loom vm prepare` or a `loom-isolate` run. It adds the result to
+  the Nix store under the same name and content address the pinned derivation
+  would produce, roots it at `$XDG_DATA_HOME/loom/runtimes/built/<identity>`,
+  and reuses it for every later start until an upgrade changes the guest source.
+  Concurrent starts wait for one build; cancelling a start leaves the build
+  running for the next, while stopping Loom stops it and deletes the builder VM.
+  Expect 15–60 minutes, about 20 GB free
+  under `/tmp` while building and 4 GB in `/nix` for the result; Loom checks
+  space before starting a builder VM. Network and disk failures name their
+  cause; the build log stays beside the link. Runtimes of earlier identities
+  are released after a build once no VM may still use them (or by
+  `loom runtime prune`); Nix frees them at its next garbage collection.
+- **A matching pin.** Nix builds the same runtime as a fixed-output derivation
+  during installation and bundles it, so the first session start does not wait.
+
+Only the guest's own source decides its identity: the modules `guest.ts` and
+`guest-worker.ts` load (`packaging/macos/guest-source.json`, regenerated by
+`deno task runtime:guest-source` and checked by `test/guest-source.test.ts`),
+the workspace manifests, lockfile, flake and runtime recipes. Changes to the
+CLI, TUI, daemon, docs or tests do not ask Macs to rebuild their runtime.
+
+On a Mac, check the whole path with an unpinned package (`nix build .#loom`):
+`deno run -A scripts/test-on-demand-runtime-vm.ts result [data-dir]` starts two
+VM sessions through a real daemon, asserting that the first builds the runtime
+with progress and the second reuses it.
 
 With Nix's `nix-command` and `flakes` features enabled, install from a checkout:
 
@@ -181,20 +212,22 @@ nix profile add .
 
 Older Nix releases, including 2.28, call this command `nix profile install .`.
 
-Configure isolation and provider login as above. Package upgrades update
-runtimes as well as Loom; nothing downloads when starting a session.
+Configure isolation and provider login as above. Package upgrades update the
+runtime as well as Loom; nothing downloads when starting a session, except for
+the one on-demand build after an upgrade that changed the guest source.
 
-Maintainers update the Apple Silicon output hashes after changing guest source:
+Regenerating the pin is optional; nothing breaks when it is stale or missing.
+To spare Mac users the first-start build for a release, pin it on an Apple
+Silicon Mac with Nix and commit the result:
 
 ```sh
-deno task runtime:hashes  # run on an Apple Silicon Mac with Nix
+deno task runtime:hashes
 ```
 
-Commit `packaging/macos/runtime-hashes.json` with the code. Its source and image
-recipe fingerprints prevent a cached artifact from silently retaining older code
-or packaging.
-The generator uses the same builder, registers each completed artifact in the
-local Nix store, and records its hash after checking that source is unchanged.
-Interrupted runs reuse completed local artifacts; installation need not compile
-them again. Hash metadata, docs and tests are excluded from guest source to
-avoid self-reference and unnecessary runtime rebuilds.
+Its source and image recipe fingerprints prevent a cached artifact from silently
+retaining older code or packaging. The generator reuses a runtime Loom already
+built on demand for the same identity; otherwise it runs the same builder,
+registers the artifact in the local Nix store, and records its hash after
+checking that source is unchanged. Interrupted runs reuse completed local
+artifacts; installation need not compile them again. The hash file itself is
+outside the guest source, avoiding self-reference.

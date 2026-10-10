@@ -75,8 +75,15 @@ Silicon before the flip, and on the single launcher on Linux after B6.
 
 Outstanding:
 
-- Apple Silicon evidence and refreshed `packaging/macos/runtime-hashes.json`
-  (`411bc5e3` changes the session runtime image).
+- Apple Silicon evidence for B6 beyond `scripts/test-isolated-worker-vm.ts`,
+  which passed on an M1 with a runtime Loom built on demand. A refreshed
+  `packaging/macos/runtime-hashes.json` is no longer needed: without a matching
+  pin, Loom builds the guest runtime on the Mac at the first VM session start
+  and reuses it until the guest source changes
+  ([packaging](packaged-runtimes.md#host-and-guest-packaging-boundary)). There,
+  with a stale pin, the first start built it in 15 minutes and a second start
+  reused it (`scripts/test-on-demand-runtime-vm.ts`). Pinning stays optional,
+  to spare users that build for a release.
 - B6 is done. The default flipped first (`7ca2eb0e`): a session suspended on
   either launcher resumed on the other in the same state directory, on a real VM
   across a daemon restart (`scripts/test-launcher-continuity-vm.ts` in that

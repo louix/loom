@@ -65,7 +65,10 @@ nix profile add github:louix/loom
 ```
 
 Older Nix versions use `nix profile install github:louix/loom`.
-See [packaging](docs/packaged-runtimes.md) for options.
+See [packaging](docs/packaged-runtimes.md) for options. On Apple Silicon, the
+first VM session after installing or upgrading may build Loom's Linux guest
+runtime (15–60 minutes, shown as session progress; `loom runtime update` does it
+ahead of time); later sessions reuse it.
 
 Log in to the providers you want to use: `claude auth login` and/or `codex login`.
 For API providers, configure the endpoint, model and credentials instead.

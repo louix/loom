@@ -15,8 +15,10 @@ historical finding; completed plans and investigation reports remain in Git hist
   storage), live IPv6 connections, and real dynamic-registration and confidential
   clients. Do not advertise named service compatibility before testing it.
   See [OAuth](mcp-oauth.md).
-- After guest source changes, regenerate Apple Silicon runtime hashes on a Mac
-  with Nix; see [packaging](packaged-runtimes.md).
+- Apple Silicon on-demand runtime builds: exercised with a synthetic AISDK
+  session; live provider sessions and a build interrupted by a daemon restart
+  remain. Regenerating the runtime hashes is optional (it spares users the
+  first-start build); see [packaging](packaged-runtimes.md).
 
 ## Product proposals
 

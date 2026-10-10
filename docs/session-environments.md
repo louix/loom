@@ -176,8 +176,8 @@ run in configuration order after activation, without provider credentials;
 failure aborts publication. Each hook has its own `timeout` (up to 3600 seconds).
 Updated guest runtimes use environment format 7 and include devenv.
 Upgrade/rebuild older runtimes; older prepared disks are incompatible, but a new
-preparation is optional. On Apple Silicon, rebuilding the packaged runtime
-requires regenerating the macOS runtime hashes.
+preparation is optional. On Apple Silicon, a Loom without a matching runtime
+pin builds the updated runtime itself at the first VM session start.
 
 ## Updating the base
 
@@ -374,9 +374,9 @@ room for preparation alongside active sessions.
 
 Bundled session runtimes use a pinned Debian guest image, supplied with the
 runtime. No Docker daemon or runtime image download is required. Linux
-validation uses real VMs; Apple Silicon releases additionally require
-regenerated runtime hashes and host validation as described in the packaging
-documentation.
+validation uses real VMs; Apple Silicon additionally needs host validation.
+Its runtime hashes are optional: without them Loom builds the runtime on first
+use, as described in the packaging documentation.
 
 ## Network presets
 
@@ -435,8 +435,7 @@ deno run -A scripts/test-session-environment-vm.ts /path/to/aisdk-runtime /path/
 deno run -A scripts/test-pnpm-environment-vm.ts /path/to/session-runtime /path/to/smolvm
 ```
 
-Apple Silicon disk cloning and runtime hash regeneration need validation on a
-Mac.
+Apple Silicon disk cloning needs validation on a Mac.
 
 ### Package-manager networking
 
