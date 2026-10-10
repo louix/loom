@@ -179,6 +179,16 @@ const ttlLabel = (minutes: number): string => {
 type KeepWarmMove = "skip" | "ping" | "giveup";
 
 /**
+ * A session's lifecycle operation in flight. A `start` (a revival) brings the
+ * session up; a `suspend` (idle VM shutdown) stops it; a `refresh` (a new
+ * prepared environment) stops it and starts it again.
+ */
+type Lifecycle = {
+  kind: "start" | "suspend" | "refresh";
+  operation: Promise<SessionSnapshot>;
+};
+
+/**
  * What the keep-warm sweep should do for one session right now. Pure, so it can
  * be unit-tested without timers: `ping` when the session is idle and its cache
  * has dropped into the red band, `giveup` when that's happened
@@ -309,7 +319,7 @@ export class Daemon {
    *  sessions (untracked by SessionManager) don't outlive the daemon. */
   readonly #titleJobs = new Set<Promise<void>>();
 
-  readonly #revivals = new Map<string, Promise<SessionSnapshot>>();
+  readonly #revivals = new Map<string, Lifecycle>();
   #stopping = false;
   #closed: Promise<void>;
   #resolveClosed!: () => void;
@@ -2110,19 +2120,30 @@ export class Daemon {
    * progress and the outcome reach clients as session events and state, and
    * whatever waits in its queue goes once it runs. False when the session is
    * live or nothing needs building; the caller then revives as usual. A revival
-   * refused outright (no such session, nothing to resume) still throws here.
+   * refused outright (no such session, nothing to resume) still throws here, as
+   * does `beforeStart`, which runs just before a revival this call begins.
    */
-  async #reviveDetached(id: string): Promise<boolean> {
+  async #reviveDetached(id: string, beforeStart?: () => void): Promise<boolean> {
     const cold = () => !this.#sessions.has(id) || this.#sessions.isEnded(id);
     if (!cold() && !this.#revivals.has(id)) return false;
     const row = this.#registry.get(id);
     if (!row || !(await this.#runtimeBuildPending(row.provider, row.isolation))) return false;
-    const revival = this.#revivals.has(id) || !cold() ? undefined : this.#reviveSession(id);
-    if (revival && this.#revivals.get(id) !== revival) await revival;
+    // Only a start is joined. An idle shutdown or an environment refresh under
+    // way may yet stop the live session: it settles first, as on the usual path,
+    // and the session is judged once it has.
+    for (let op = this.#revivals.get(id); op && op.kind !== "start"; op = this.#revivals.get(id))
+      await op.operation;
+    let revival: Promise<SessionSnapshot> | undefined;
+    if (!this.#revivals.has(id)) {
+      if (!cold()) return false;
+      beforeStart?.();
+      revival = this.#reviveSession(id);
+      if (this.#revivals.get(id)?.operation !== revival) await revival;
+    }
     void (async () => {
       if (revival) await revival;
-      // Whatever else was under way (an idle shutdown, say) settles first.
-      while (this.#revivals.has(id)) await this.#revivals.get(id);
+      // Whatever began meanwhile settles first.
+      await this.#lifecycleSettled(id);
       if (cold()) await this.#reviveSession(id);
       this.#publishState(id);
       this.#onActivityChange("session-resumed");
@@ -2136,6 +2157,11 @@ export class Daemon {
     return true;
   }
 
+  /** Wait until no lifecycle operation is in flight for `id`; a failed one rejects. */
+  async #lifecycleSettled(id: string): Promise<void> {
+    for (let op = this.#revivals.get(id); op; op = this.#revivals.get(id)) await op.operation;
+  }
+
   /** Wake on demand for operations that need an adapter, sharing concurrent revivals. */
   async #ensureSessionLoaded(id: string): Promise<void> {
     if (await this.#reviveDetached(id))
@@ -2143,7 +2169,7 @@ export class Daemon {
         "busy",
         "The session is starting while Loom builds the VM runtime, which can take 15–60 minutes; retry once it is running.",
       );
-    while (this.#revivals.has(id)) await this.#revivals.get(id);
+    await this.#lifecycleSettled(id);
     if (!this.#sessions.has(id) || this.#sessions.isEnded(id)) {
       const snap = await this.#reviveSession(id);
       this.#publishState(snap.id);
@@ -2157,7 +2183,7 @@ export class Daemon {
    */
   #reviveSession(id: string): Promise<SessionSnapshot> {
     const pending = this.#revivals.get(id);
-    if (pending) return pending;
+    if (pending) return pending.operation;
     const row = this.#registry.get(id);
     if (!row) return Promise.reject(new RpcError("not_found", `no such session: ${id}`));
     if (!this.#registry.store.providerRef(id))
@@ -2183,7 +2209,7 @@ export class Daemon {
         this.#revivals.delete(id);
         this.#publishState(id);
       });
-    this.#revivals.set(id, operation);
+    this.#revivals.set(id, { kind: "start", operation });
     this.#log.info("session_resume_start", { sessionId: id, providerId: row.provider });
     this.#registry.setStatus(id, stateStarting, "resuming");
     this.#publishState(id);
@@ -3055,7 +3081,7 @@ export class Daemon {
           this.#vmIdleSince.delete(id);
           if (!this.#stopping) this.#publishState(id);
         });
-      this.#revivals.set(id, operation);
+      this.#revivals.set(id, { kind: "suspend", operation });
       stopping.push(operation);
     }
     await Promise.allSettled(stopping);
@@ -3137,7 +3163,7 @@ export class Daemon {
             this.#revivals.delete(id);
             if (!this.#stopping) this.#publishState(id);
           });
-        this.#revivals.set(id, operation);
+        this.#revivals.set(id, { kind: "refresh", operation });
         void operation.catch(() => {});
       }
     } catch (error) {
@@ -3569,11 +3595,20 @@ export class Daemon {
       const text = params.text;
       const entryId = params.entryId ?? randomUUID();
       this.#registry.mustGet(id);
+      // A clone's Git operations (a sync, a rebase) hold the command queue.
+      const refuseBusyClone = () => {
+        if (this.#registry.get(id)?.checkout === "clone" && this.#queue.activeKeys.includes(id))
+          throw new RpcError(
+            "busy",
+            "The session is completing a workspace operation; retry in a moment.",
+          );
+      };
       try {
         // A start that first builds the VM runtime outlasts any client: then the
-        // message waits in the queue and goes once the session runs.
-        if (!(await this.#reviveDetached(id))) {
-          while (this.#revivals.has(id)) await this.#revivals.get(id);
+        // message waits in the queue and goes once the session runs. Joining a
+        // start already under way skips the check: the start holds the queue.
+        if (!(await this.#reviveDetached(id, refuseBusyClone))) {
+          await this.#lifecycleSettled(id);
           // A cold session (daemon restarted, or a turn that ended) is brought back
           // transparently — `send` is the one verb for "talk to this session", it
           // doesn't need a separate resume step.
@@ -3585,12 +3620,8 @@ export class Daemon {
             this.#publishState(revived.id);
             this.#onActivityChange("session-resumed");
           }
-          while (this.#revivals.has(id)) await this.#revivals.get(id);
-          if (this.#registry.get(id)?.checkout === "clone" && this.#queue.activeKeys.includes(id))
-            throw new RpcError(
-              "busy",
-              "The session is completing a workspace operation; retry in a moment.",
-            );
+          await this.#lifecycleSettled(id);
+          refuseBusyClone();
         }
       } catch (error) {
         if (error instanceof RpcError && error.code === "busy") throw error;
