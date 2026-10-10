@@ -543,7 +543,8 @@ test("a rate_limit_event becomes a rate_limit event", () => {
       status: "allowed_warning",
       rateLimitType: "five_hour",
       utilization: 82,
-      resetsAt: 12345,
+      // The stream reports epoch seconds.
+      resetsAt: 1_791_600_063,
     },
   });
   const ev = byType(out, "rate_limit")[0];
@@ -551,7 +552,16 @@ test("a rate_limit_event becomes a rate_limit event", () => {
   assert.equal(ev.status, "allowed_warning");
   assert.equal(ev.window, "five_hour");
   assert.equal(ev.utilization, 82);
-  assert.equal(ev.resetsAt, 12345);
+  assert.equal(ev.resetsAt, 1_791_600_063_000);
+});
+
+test("a rate_limit_event reset time already in epoch ms is kept as is", () => {
+  const m = new ClaudeEventMapper(SID);
+  const out = m.map({
+    type: "rate_limit_event",
+    rate_limit_info: { status: "allowed", rateLimitType: "five_hour", resetsAt: 1_791_600_063_000 },
+  });
+  assert.equal(byType(out, "rate_limit")[0]?.resetsAt, 1_791_600_063_000);
 });
 
 test("a rate_limit_event with no info maps to nothing", () => {

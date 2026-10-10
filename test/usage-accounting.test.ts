@@ -69,6 +69,45 @@ test("account readings persist independently of sessions and expire at reset", (
   }
 });
 
+test("a partial streamed reading keeps the fuller snapshot of the same window", () => {
+  const db = openDb(":memory:");
+  try {
+    const s = new SessionStore(db);
+    const reading = (ts: number, extra: { utilization?: number; resetsAt?: number }) =>
+      s.recordAccountUsage("account-1", {
+        type: "rate_limit",
+        sessionId: "a",
+        ts,
+        window: "five_hour",
+        status: "allowed",
+        ...extra,
+      });
+    // get_usage: utilization and the live window's reset.
+    reading(1000, { utilization: 40, resetsAt: 9000 });
+    // Streamed event: no utilization and a reset the CLI cached from a window
+    // that already ended. It must not hide the live window.
+    reading(2000, { resetsAt: 500 });
+    assert.deepEqual(s.accountUsage("account-1", 3000).five_hour, {
+      status: "allowed",
+      utilization: 40,
+      resetsAt: 9000,
+      observedAt: 2000,
+    });
+    // Same window, no utilization: the last known one stays.
+    reading(3000, { resetsAt: 9000 });
+    assert.equal(s.accountUsage("account-1", 4000).five_hour?.utilization, 40);
+    // A new window without a utilization does not inherit the old one.
+    reading(10_000, { resetsAt: 20_000 });
+    assert.deepEqual(s.accountUsage("account-1", 11_000).five_hour, {
+      status: "allowed",
+      resetsAt: 20_000,
+      observedAt: 10_000,
+    });
+  } finally {
+    db.close();
+  }
+});
+
 test("cost provenance preserves mixed and incomplete lifetime totals", () => {
   const db = openDb(":memory:");
   try {

@@ -433,6 +433,9 @@ export class ClaudeEventMapper {
     if (!info) return [];
     const status =
       info.status === "allowed_warning" || info.status === "rejected" ? info.status : "allowed";
+    // The stream reports epoch seconds; everything downstream is epoch ms.
+    let resetsAt = info.resetsAt;
+    if (typeof resetsAt === "number" && resetsAt < 1e12) resetsAt *= 1000;
     return [
       {
         type: "rate_limit",
@@ -440,7 +443,7 @@ export class ClaudeEventMapper {
         status,
         ...(info.rateLimitType ? { window: info.rateLimitType } : {}),
         ...(typeof info.utilization === "number" ? { utilization: info.utilization } : {}),
-        ...(typeof info.resetsAt === "number" ? { resetsAt: info.resetsAt } : {}),
+        ...(typeof resetsAt === "number" ? { resetsAt } : {}),
       },
     ];
   }

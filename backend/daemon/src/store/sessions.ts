@@ -414,14 +414,33 @@ export class SessionStore {
     this.#db.prepare("UPDATE sessions SET updated_at = ? WHERE id = ?").run(now, id);
   }
 
+  /**
+   * Upsert one plan window, newest observation first. Claude's streamed
+   * `rate_limit_event` is partial — no utilization, and a reset time the CLI
+   * may have cached from an already-ended window — so it must not erase a
+   * fuller `get_usage` snapshot: a missing utilization keeps the stored one
+   * while the window is the same, and a reset time already past when observed
+   * never replaces one still ahead.
+   */
   recordAccountUsage(scope: string, ev: RateLimitEvent): void {
     this.#db
       .prepare(`INSERT INTO account_usage
       (scope, window, status, utilization, resets_at, observed_at) VALUES (?, ?, ?, ?, ?, ?)
       ON CONFLICT(scope, window) DO UPDATE SET status = excluded.status,
-        utilization = excluded.utilization, resets_at = excluded.resets_at,
+        utilization = CASE
+          WHEN excluded.utilization IS NOT NULL THEN excluded.utilization
+          WHEN excluded.resets_at IS NULL OR excluded.resets_at = account_usage.resets_at
+            OR (excluded.resets_at <= excluded.observed_at
+              AND account_usage.resets_at > excluded.observed_at)
+            THEN account_usage.utilization
+          ELSE NULL END,
+        resets_at = CASE
+          WHEN excluded.resets_at IS NULL THEN account_usage.resets_at
+          WHEN excluded.resets_at <= excluded.observed_at
+            AND account_usage.resets_at > excluded.observed_at THEN account_usage.resets_at
+          ELSE excluded.resets_at END,
         observed_at = excluded.observed_at
-      WHERE excluded.observed_at >= observed_at`)
+      WHERE excluded.observed_at >= account_usage.observed_at`)
       .run(
         scope,
         ev.window ?? "default",
