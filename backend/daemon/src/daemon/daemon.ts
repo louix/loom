@@ -3533,8 +3533,8 @@ export class Daemon {
         delivery: params.delivery ?? "next_boundary",
       });
       if (!r.ok) throw new RpcError(r.code, r.message, { sessionId: id });
-      const entry = this.#messageQueue.entry(id, entryId) ?? r.value.entry;
-      return { ...this.#enrich(this.#registry.mustGet(id), false), entryId, state: entry.state };
+      const state = this.#messageQueue.entry(id, entryId)?.state ?? r.value.state;
+      return { ...this.#enrich(this.#registry.mustGet(id), false), entryId, state };
     });
 
     d.register("session.queueEntry", (params) => {

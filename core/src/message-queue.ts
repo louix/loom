@@ -102,8 +102,11 @@ export const QUEUE_LIMITS = {
   entries: 100,
   entryBytes: 1024 * 1024,
   sessionBytes: 8 * 1024 * 1024,
-  /** Consumed / cancelled rows kept for idempotent re-enqueues. */
+  /** Consumed / cancelled rows kept whole, the most recently settled. */
   settled: 200,
+  /** Ids (and text hashes) of settled rows pruned since, kept so a retried
+   *  send is still answered rather than queued again. */
+  seen: 10_000,
 } as const;
 
 /**

@@ -11,6 +11,7 @@ import type { PushFrame, SessionSnapshot } from "@loom/core/wire";
 import type { FakeProvider, FakeSession } from "@loom/connector-mock";
 import { DeliveryUncertainError, type QueueEntryView } from "@loom/core/message-queue";
 import { makeHarness, type Harness } from "@loom/harness";
+import { MessageQueueStore } from "@loom/daemon/store/message-queue";
 
 interface Env {
   h: Harness;
@@ -408,3 +409,79 @@ nodeTest("a restart marks a handed-over message uncertain and holds the queue", 
     await h.cleanup();
   }
 });
+
+/**
+ * Record the dispatch policy's store reads (`slots`, `entry`) that name
+ * `sessionId` while `fn` runs. (`live` / `hold` also serve the snapshot, which
+ * is published on its own schedule.)
+ */
+const spyOnQueueStore = async (
+  sessionId: () => string | undefined,
+  fn: (calls: string[]) => Promise<void>,
+): Promise<void> => {
+  const proto = MessageQueueStore.prototype as unknown as Record<
+    string,
+    (...args: unknown[]) => unknown
+  >;
+  const names = ["slots", "entry"];
+  const saved = new Map(names.map((n) => [n, proto[n]!]));
+  const calls: string[] = [];
+  for (const [name, original] of saved)
+    proto[name] = function (this: unknown, ...args: unknown[]) {
+      if (args[0] === sessionId()) calls.push(name);
+      return original.apply(this, args);
+    };
+  try {
+    await fn(calls);
+  } finally {
+    for (const [name, original] of saved) proto[name] = original;
+  }
+};
+
+nodeTest("text deltas never query the queue; a tool boundary and a turn's end still dispatch", () =>
+  withEnv(async (env) => {
+    const { c, frames } = env;
+    let sid: string | undefined;
+    await spyOnQueueStore(
+      () => sid,
+      async (calls) => {
+        const { id, fs } = await runningSession(env);
+        sid = id;
+        const deltas = () =>
+          frames.filter(
+            (f) =>
+              f.type === "event" && f.event.sessionId === id && f.event.type === "assistant_text",
+          ).length;
+        const stream = async (n: number) => {
+          const before = deltas();
+          calls.length = 0;
+          for (let i = 0; i < n; i++) fs.emit({ type: "assistant_text", text: `delta ${i}` });
+          await waitFor(() => deltas() === before + n);
+          await delay(20);
+          assert.deepEqual(calls, [], "no store read per delta");
+        };
+        // An empty queue …
+        await stream(50);
+        // … and a waiting one alike: a delta cannot change what dispatch says.
+        const b1 = await send(c, id, "b1");
+        const e1 = await send(c, id, "e1", "end_of_turn");
+        assert.equal(b1.state, "queued");
+        await stream(50);
+        assert.deepEqual(fs.sends, []);
+        // A root tool opens the boundary window: the boundary message folds in.
+        fs.emit({ type: "tool_call", id: "t1", name: "Bash", input: {} });
+        await waitFor(() => fs.sends.length === 1);
+        assert.deepEqual(fs.sendOptions[0], { inputId: b1.entryId, midTurn: true });
+        fs.emit({ type: "tool_result", id: "t1", ok: true, output: "" });
+        await waitFor(() =>
+          frames.some((f) => f.type === "event" && f.event.type === "tool_result"),
+        );
+        await stream(20);
+        // The turn ends: the end-of-turn message starts the next one.
+        fs.finishTurn();
+        await waitFor(() => fs.sends.length === 2);
+        assert.deepEqual(fs.sendOptions[1], { inputId: e1.entryId, midTurn: false });
+      },
+    );
+  }),
+);

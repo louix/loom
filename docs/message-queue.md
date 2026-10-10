@@ -91,15 +91,21 @@ type QueueHold = "interrupt" | "restart" | "crash" | "rejected" | null;
   ([decision 3](#decisions)).
 - Limits (main-new's): 100 live entries, 1 MiB per entry, 8 MiB per session;
   past them enqueue fails with `queue_full`. Consumed/cancelled rows are kept,
-  pruned to the newest 200, so re-enqueueing a known `id` with the same text
-  returns it and different text is a `conflict`.
+  pruned to the 200 most recently settled (by settlement order, not `seq`); a
+  pruned row leaves its id, a hash of its text and its final state behind
+  (the newest 10,000 per session). Re-enqueueing a known `id` with the same
+  text returns it (or, pruned, just its state) and different text is a
+  `conflict`.
 
 ## Dispatch
 
 `backend/daemon/src/daemon/message-queue.ts` (new) is a pure policy,
 `nextAction(queue, hold, run) → none | handover(ids, freshTurn)`, re-evaluated
-after every event, state transition, queue mutation and RPC. SessionManager
-executes it under its op gate (`#enqueue`).
+after every state transition, queue mutation and RPC, and after every event
+that moved what it reads off the run (state, root tool in flight,
+restructuring, stopping, backoff) — a text delta does not, and costs no query.
+It reads entries without their text. SessionManager executes it under its op
+gate (`#enqueue`).
 
 1. Nothing is dispatched while held; while `starting`, restructuring (compact,
    rewind, provider switch), stopping or cancellation `failed`; while

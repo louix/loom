@@ -71,7 +71,7 @@ const blocked = (v: DispatchView): boolean =>
  *   one per finish (the turn it starts makes the next finish a new one).
  */
 export const nextAction = (
-  entries: readonly QueueEntry[],
+  entries: readonly Pick<QueueEntry, "id" | "state" | "delivery">[],
   hold: QueueHold | null,
   view: DispatchView,
   forced: string | null = null,

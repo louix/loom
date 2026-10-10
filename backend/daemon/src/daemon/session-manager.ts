@@ -45,7 +45,12 @@ import {
 import { deriveStatus } from "./status-machine.ts";
 import { RpcError } from "./rpc.ts";
 import { dequeueHints, nextAction, type DispatchView } from "./message-queue.ts";
-import type { MessageQueueStore, QueueResult, QueueTarget } from "../store/message-queue.ts";
+import type {
+  Enqueued,
+  MessageQueueStore,
+  QueueResult,
+  QueueTarget,
+} from "../store/message-queue.ts";
 
 export interface ManagerHooks {
   /** Forward a normalized event to the push stream + persistence. */
@@ -192,6 +197,10 @@ interface Running {
   handingOver: boolean;
   /** The provider refused a hand-over; no retry until the state moves. */
   backoff: boolean;
+  /** What the dispatch policy last read off this run (`#dispatchKey`), or
+   *  null once the queue may have moved under it. An event that leaves the
+   *  key as it was cannot change the policy's answer: no re-evaluation. */
+  evaluated: string | null;
   /** Loom is closing the adapter: its stream ending is no crash. */
   closing: boolean;
 }
@@ -351,6 +360,7 @@ export class SessionManager {
       rootTools: new Map(),
       handingOver: false,
       backoff: false,
+      evaluated: null,
       closing: false,
     };
     this.#running.set(id, run);
@@ -394,6 +404,7 @@ export class SessionManager {
             id,
             kinds: ev.items.map((item) => item.kind),
           });
+          run.evaluated = null;
           try {
             this.#requeueDiscarded(id, ev.items);
             this.#hooks.onInputDiscarded?.(id, ev.items);
@@ -408,6 +419,7 @@ export class SessionManager {
         // Neither is a receipt the transcript carries: the message it names
         // enters the log now, as the `user_message` this emits.
         if (ev.type === "input_consumed") {
+          run.evaluated = null;
           try {
             this.#consume(id, ev.inputId, ev.midTurn);
             this.#hooks.onOverlay(id);
@@ -466,8 +478,9 @@ export class SessionManager {
           // Titling is deliberately asynchronous — a later transition of its own.
           if (ev.type === "result") this.#hooks.onResult(id, ev.kind === "ok");
           // A tool starting, a turn ending: the queue may have something to
-          // hand over now.
-          void this.#pumpQueue(id);
+          // hand over now. Only an event that moved what the policy reads can
+          // change its answer — a text delta never does, and skips the store.
+          if (this.#dispatchKey(run) !== run.evaluated) void this.#pumpQueue(id);
         } catch (err) {
           this.#hooks.log.error("event hook threw; continuing drain", {
             id,
@@ -790,7 +803,14 @@ export class SessionManager {
   // --- message queue (docs/message-queue.md) -----------------------------
 
   #hasQueued(id: string): boolean {
-    return this.#hooks.queue?.live(id).some((e) => e.state === "queued") ?? false;
+    return this.#hooks.queue?.slots(id).some((e) => e.state === "queued") ?? false;
+  }
+
+  /** The part of the dispatch view the policy decides on (`handingOver`
+   *  aside: the pump never evaluates while one runs). */
+  #dispatchKey(run: Running): string {
+    const v = this.#dispatchView(run);
+    return `${v.attached}|${v.state.kind}|${v.restructuring}|${v.cancelling}|${v.backoff}|${v.rootTool !== null}`;
   }
 
   /** What the dispatch policy reads off the session's run. */
@@ -814,9 +834,11 @@ export class SessionManager {
    */
   #holdQueue(id: string, hold: "crash" | "interrupt"): boolean {
     const q = this.#hooks.queue;
-    if (!q || q.live(id).length === 0) return false;
+    if (!q || q.slots(id).length === 0) return false;
     q.markUncertain(id);
     this.#forced.delete(id);
+    const run = this.#running.get(id);
+    if (run) run.evaluated = null;
     if (q.hold(id) === null) q.setHold(id, hold);
     return true;
   }
@@ -853,14 +875,16 @@ export class SessionManager {
 
   /**
    * Evaluate the dispatch policy and, if it says so, run the hand-over on the
-   * op gate. Called after every event, transition, queue change and op.
+   * op gate. Called after every transition, queue change and op, and after
+   * every event that moved the dispatch key.
    */
   #pumpQueue(id: string): Promise<void> | undefined {
     const q = this.#hooks.queue;
     const run = this.#running.get(id);
     if (!q || !run || run.ended || run.handingOver) return undefined;
+    run.evaluated = this.#dispatchKey(run);
     const action = nextAction(
-      q.live(id),
+      q.slots(id),
       q.hold(id),
       this.#dispatchView(run),
       this.#forced.get(id) ?? null,
@@ -886,7 +910,7 @@ export class SessionManager {
     if (!q || this.#running.get(id) !== run || run.ended) return;
     const forced = this.#forced.get(id) ?? null;
     const action = nextAction(
-      q.live(id),
+      q.slots(id),
       q.hold(id),
       { ...this.#dispatchView(run), handingOver: false },
       forced,
@@ -983,7 +1007,7 @@ export class SessionManager {
   async enqueue(
     id: string,
     e: { entryId: string; text: string; author: string; delivery: QueueEntry["delivery"] },
-  ): Promise<QueueResult<{ entry: QueueEntry; created: boolean }>> {
+  ): Promise<QueueResult<Enqueued>> {
     const q = this.#hooks.queue;
     if (!q) throw new Error("this daemon has no message queue");
     const held = q.hold(id) !== null;
@@ -1084,7 +1108,7 @@ export class SessionManager {
   /** Entries handed over and not yet taken — undo must wait for them. */
   queueDelivering(id: string): boolean {
     return (
-      this.#hooks.queue?.live(id).some((e) => e.state === "delivering" && !e.uncertain) ?? false
+      this.#hooks.queue?.slots(id).some((e) => e.state === "delivering" && !e.uncertain) ?? false
     );
   }
 

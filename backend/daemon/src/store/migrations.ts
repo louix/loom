@@ -417,4 +417,24 @@ export const MIGRATIONS: string[] = [
   ALTER TABLE sessions ADD COLUMN queue_hold TEXT
     CHECK (queue_hold IN ('interrupt', 'restart', 'crash', 'rejected'));
   `,
+  // 32 — settled queue rows are pruned by when they settled, not by `seq`
+  // (an entry put at the head of the queue has a lower `seq` than everything
+  // before it). `settled_seq` counts settlements per session; existing
+  // settled rows take their insertion order. A pruned row leaves its id, a
+  // hash of its text and how it settled in `session_queue_seen`, so a client
+  // retrying a send long after is still answered rather than re-queued.
+  /* sql */ `
+  ALTER TABLE session_queue ADD COLUMN settled_seq INTEGER;
+  UPDATE session_queue SET settled_seq = rowid WHERE state IN ('consumed', 'cancelled');
+  CREATE INDEX session_queue_settled ON session_queue(session_id, settled_seq);
+  CREATE TABLE session_queue_seen (
+    session_id  TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    id          TEXT NOT NULL,
+    text_sha256 TEXT NOT NULL,
+    state       TEXT NOT NULL CHECK (state IN ('consumed', 'cancelled')),
+    settled_seq INTEGER NOT NULL,
+    PRIMARY KEY (session_id, id)
+  );
+  CREATE INDEX session_queue_seen_settled ON session_queue_seen(session_id, settled_seq);
+  `,
 ];

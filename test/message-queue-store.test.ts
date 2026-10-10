@@ -37,7 +37,7 @@ const add = (
   id: string,
   delivery: QueueEntry["delivery"] = "next_boundary",
   text = `text ${id}`,
-): QueueEntry => value(q.enqueue("s", { id, text, author: "c1", delivery })).entry;
+): QueueEntry => value(q.enqueue("s", { id, text, author: "c1", delivery })).entry!;
 
 const order = (q: MessageQueueStore) => q.live("s").map((e) => e.id);
 
@@ -59,7 +59,7 @@ test("re-enqueueing a known id answers with it; different text is a conflict", (
       q.enqueue("s", { id: "a", text: "text a", author: "c2", delivery: "end_of_turn" }),
     );
     assert.equal(again.created, false);
-    assert.equal(again.entry.author, "c1");
+    assert.equal(again.entry?.author, "c1");
     const clash = q.enqueue("s", {
       id: "a",
       text: "other",
@@ -75,7 +75,7 @@ test("re-enqueueing a known id answers with it; different text is a conflict", (
       q.enqueue("s", { id: "a", text: "text a", author: "c1", delivery: "next_boundary" }),
     );
     assert.equal(settled.created, false);
-    assert.equal(settled.entry.state, "consumed");
+    assert.equal(settled.entry?.state, "consumed");
     assert.deepEqual(order(q), []);
   });
 });
@@ -236,6 +236,56 @@ test("settled rows are pruned to the newest few hundred", () => {
   });
 });
 
+/** Settle `n` ordinary entries, oldest first. */
+const settleMany = (q: MessageQueueStore, prefix: string, n: number): void => {
+  for (let i = 0; i < n; i++) {
+    add(q, `${prefix}${i}`);
+    q.markDelivering("s", [`${prefix}${i}`]);
+    q.markConsumed("s", `${prefix}${i}`);
+  }
+};
+
+test("pruning keeps the most recently settled, a head-inserted entry's low seq notwithstanding", () => {
+  withStore((q) => {
+    settleMany(q, "m", QUEUE_LIMITS.settled);
+    // Sent to a held queue: in front of everything, so its seq is the lowest.
+    const head = { id: "h", text: "now", author: "c1", delivery: "end_of_turn" } as const;
+    value(q.enqueue("s", head, { head: true }));
+    q.markDelivering("s", ["h"]);
+    q.markConsumed("s", "h");
+    assert.equal(q.entry("s", "h")?.state, "consumed", "the newest settled row stays whole");
+    assert.equal(q.entry("s", "m0"), null, "the oldest one went instead");
+    // The client never saw the reply and retries: answered, not queued again.
+    const retry = value(q.enqueue("s", head));
+    assert.equal(retry.created, false);
+    assert.equal(retry.state, "consumed");
+    assert.deepEqual(order(q), []);
+  });
+});
+
+test("a retried send is answered even after its row is pruned", () => {
+  withStore((q) => {
+    const sent = { id: "x", text: "once", author: "c1", delivery: "next_boundary" } as const;
+    value(q.enqueue("s", sent, { head: true }));
+    q.markDelivering("s", ["x"]);
+    q.markConsumed("s", "x");
+    add(q, "c");
+    q.remove("s", [{ entryId: "c", revision: 0 }]);
+    settleMany(q, "m", QUEUE_LIMITS.settled + 5);
+    assert.equal(q.entry("s", "x"), null, "pruned");
+    const retry = value(q.enqueue("s", sent));
+    assert.deepEqual(retry, { created: false, entry: null, state: "consumed" });
+    assert.deepEqual(order(q), [], "not queued a second time");
+    const cancelled = value(
+      q.enqueue("s", { id: "c", text: "text c", author: "c1", delivery: "next_boundary" }),
+    );
+    assert.equal(cancelled.state, "cancelled");
+    const clash = q.enqueue("s", { ...sent, text: "different" });
+    assert.equal(!clash.ok && clash.code, "conflict");
+    assert.deepEqual(order(q), []);
+  });
+});
+
 test("deleting a session takes its queue with it", () => {
   withStore((q, db) => {
     add(q, "a");
@@ -268,6 +318,43 @@ test("migration 31 applies to a copied pre-31 database", () => {
     assert.throws(() =>
       db.prepare("UPDATE sessions SET queue_hold = 'bogus' WHERE id = 'old'").run(),
     );
+    db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("migration 32 orders a pre-32 database's settled rows and keeps answering their ids", () => {
+  const dir = mkdtempSync(join(tmpdir(), "loom-queue-mig32-"));
+  try {
+    const path = join(dir, "loom.db");
+    const old = new DatabaseSync(path);
+    old.exec("PRAGMA foreign_keys = ON");
+    for (let v = 0; v < 31; v++) old.exec(MIGRATIONS[v]!);
+    old.exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+    old.prepare("INSERT INTO meta (key, value) VALUES ('schema_version', '31')").run();
+    old
+      .prepare(
+        "INSERT INTO sessions (id, provider, mode, status, created_at, updated_at) VALUES ('s', 'fake', 'default', 'idle', 1, 1)",
+      )
+      .run();
+    const row = old.prepare(
+      "INSERT INTO session_queue (session_id, id, seq, text, author, delivery, state, created_at) " +
+        "VALUES ('s', ?, ?, ?, 'c', 'next_boundary', 'consumed', 1)",
+    );
+    // Settled in this order; the later one was head-inserted, so its seq is lower.
+    row.run("first", 1, "one");
+    row.run("head", -1, "two");
+    old.close();
+    const db = openDb(path);
+    const q = new MessageQueueStore(db);
+    settleMany(q, "m", QUEUE_LIMITS.settled - 1);
+    assert.equal(q.entry("s", "first"), null, "the earliest settled went first");
+    assert.equal(q.entry("s", "head")?.state, "consumed");
+    const again = value(
+      q.enqueue("s", { id: "first", text: "one", author: "c", delivery: "next_boundary" }),
+    );
+    assert.deepEqual(again, { created: false, entry: null, state: "consumed" });
     db.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });

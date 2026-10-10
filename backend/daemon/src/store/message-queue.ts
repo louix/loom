@@ -14,6 +14,7 @@ import {
   type QueueEntryState,
   type QueueHold,
 } from "@loom/core/message-queue";
+import { createHash } from "node:crypto";
 import { type Db, withTransaction } from "./db.ts";
 
 export type QueueFailureCode = "not_found" | "conflict" | "refused" | "queue_full";
@@ -37,6 +38,21 @@ export interface QueueTarget {
   readonly revision: number;
 }
 
+/**
+ * What `enqueue` answers. A retried id answers with the entry as it is now —
+ * or, settled and pruned since, with only how it settled (`entry: null`).
+ */
+export type Enqueued =
+  | { readonly created: true; readonly entry: QueueEntry; readonly state: QueueEntryState }
+  | {
+      readonly created: false;
+      readonly entry: QueueEntry | null;
+      readonly state: QueueEntryState;
+    };
+
+/** A live entry as dispatch reads it: no text. */
+export type QueueSlot = Pick<QueueEntry, "id" | "state" | "delivery" | "uncertain">;
+
 interface Row {
   id: string;
   seq: number;
@@ -49,6 +65,7 @@ interface Row {
   created_at: number;
   delivered_at: number | null;
   consumed_at: number | null;
+  settled_seq: number | null;
 }
 
 const toEntry = (r: Row): QueueEntry & { seq: number } => ({
@@ -66,12 +83,15 @@ const toEntry = (r: Row): QueueEntry & { seq: number } => ({
 });
 
 const bytesOf = (text: string): number => new TextEncoder().encode(text).length;
+const sha256 = (text: string): string => createHash("sha256").update(text).digest("hex");
 
 const LIVE = "state IN ('queued', 'delivering')";
+const SETTLED = "state IN ('consumed', 'cancelled')";
 /** Dispatch order: every `next_boundary` entry before any `end_of_turn` one. */
 const ORDER = "CASE delivery WHEN 'next_boundary' THEN 0 ELSE 1 END, seq";
 
 export const ALREADY_HANDED = "Already handed to the agent.";
+const REUSED = "That message id is already used for different text.";
 
 export class MessageQueueStore {
   readonly #db: Db;
@@ -90,6 +110,18 @@ export class MessageQueueStore {
       .prepare(`SELECT * FROM session_queue WHERE session_id = ? AND ${LIVE} ORDER BY ${ORDER}`)
       .all(sessionId) as unknown as Row[];
     return rows.map(toEntry);
+  }
+
+  /** The live entries in dispatch order without their text — what the
+   *  dispatch policy reads, cheap enough to ask after any event. */
+  slots(sessionId: string): QueueSlot[] {
+    const rows = this.#db
+      .prepare(
+        `SELECT id, state, delivery, uncertain FROM session_queue ` +
+          `WHERE session_id = ? AND ${LIVE} ORDER BY ${ORDER}`,
+      )
+      .all(sessionId) as unknown as Array<Pick<Row, "id" | "state" | "delivery" | "uncertain">>;
+    return rows.map((r) => ({ ...r, uncertain: r.uncertain === 1 }));
   }
 
   entry(sessionId: string, id: string): QueueEntry | null {
@@ -133,19 +165,24 @@ export class MessageQueueStore {
    * Add an entry behind its group — or, with `head`, in front of every live
    * entry (a message sent to a held queue goes first). Re-enqueueing a known
    * id with the same text answers with that entry (`created: false`), however
-   * far it has got; different text is a `conflict`.
+   * far it has got — pruned since included; different text is a `conflict`.
    */
   enqueue(
     sessionId: string,
     e: { id: string; text: string; author: string; delivery: QueueDelivery },
     opts: { head?: boolean; at?: number } = {},
-  ): QueueResult<{ entry: QueueEntry; created: boolean }> {
+  ): QueueResult<Enqueued> {
     return withTransaction(this.#db, () => {
       const known = this.#row(sessionId, e.id);
       if (known) {
-        if (known.text !== e.text)
-          return fail("conflict", "That message id is already used for different text.");
-        return ok({ entry: this.entry(sessionId, e.id)!, created: false });
+        if (known.text !== e.text) return fail("conflict", REUSED);
+        const entry = this.entry(sessionId, e.id)!;
+        return ok({ created: false, entry, state: entry.state });
+      }
+      const seen = this.#seen(sessionId, e.id);
+      if (seen) {
+        if (seen.text_sha256 !== sha256(e.text)) return fail("conflict", REUSED);
+        return ok({ created: false, entry: null, state: seen.state });
       }
       const bytes = bytesOf(e.text);
       if (bytes > QUEUE_LIMITS.entryBytes)
@@ -171,8 +208,22 @@ export class MessageQueueStore {
           opts.head ? "next_boundary" : e.delivery,
           opts.at ?? Date.now(),
         );
-      return ok({ entry: this.entry(sessionId, e.id)!, created: true });
+      const entry = this.entry(sessionId, e.id)!;
+      return ok({ created: true, entry, state: entry.state });
     });
+  }
+
+  /** A pruned settled row's trace: its text's hash and how it settled. */
+  #seen(sessionId: string, id: string): { text_sha256: string; state: QueueEntryState } | null {
+    return (
+      (this.#db
+        .prepare(
+          "SELECT text_sha256, state FROM session_queue_seen WHERE session_id = ? AND id = ?",
+        )
+        .get(sessionId, id) as unknown as
+        | { text_sha256: string; state: QueueEntryState }
+        | undefined) ?? null
+    );
   }
 
   #maxSeq(sessionId: string): number {
@@ -213,6 +264,20 @@ export class MessageQueueStore {
         `UPDATE session_queue SET ${set}, revision = revision + 1 WHERE session_id = ? AND id = ?`,
       )
       .run(...args, sessionId, id);
+  }
+
+  /** Settle a row (`set` names its final state). It takes the session's next
+   *  settlement number: pruning keeps the most recently settled. */
+  #settle(sessionId: string, id: string, set: string, ...args: Array<string | number | null>) {
+    const { n } = this.#db
+      .prepare(
+        "SELECT MAX(" +
+          "(SELECT COALESCE(MAX(settled_seq), 0) FROM session_queue WHERE session_id = ?), " +
+          "(SELECT COALESCE(MAX(settled_seq), 0) FROM session_queue_seen WHERE session_id = ?)" +
+          ") + 1 AS n",
+      )
+      .get(sessionId, sessionId) as { n: number };
+    this.#update(sessionId, id, `${set}, settled_seq = ?`, ...args, n);
   }
 
   edit(sessionId: string, t: QueueTarget, text: string): QueueResult<QueueEntry> {
@@ -294,7 +359,7 @@ export class MessageQueueStore {
           return fail("refused", ALREADY_HANDED);
       }
       const out = targets.map((t) => {
-        this.#update(sessionId, t.entryId, "state = 'cancelled', consumed_at = NULL");
+        this.#settle(sessionId, t.entryId, "state = 'cancelled', consumed_at = NULL");
         return this.entry(sessionId, t.entryId)!;
       });
       this.#prune(sessionId);
@@ -314,7 +379,7 @@ export class MessageQueueStore {
         if (!row) continue;
         if (row.state !== "queued" && !(row.state === "delivering" && row.uncertain === 1))
           continue;
-        this.#update(sessionId, id, "state = 'cancelled'");
+        this.#settle(sessionId, id, "state = 'cancelled'");
         out.push(this.entry(sessionId, id)!);
       }
       this.#prune(sessionId);
@@ -361,7 +426,7 @@ export class MessageQueueStore {
     return withTransaction(this.#db, () => {
       const row = this.#row(sessionId, id);
       if (!row || (row.state !== "delivering" && row.state !== "queued")) return null;
-      this.#update(sessionId, id, "state = 'consumed', uncertain = 0, consumed_at = ?", at);
+      this.#settle(sessionId, id, "state = 'consumed', uncertain = 0, consumed_at = ?", at);
       this.#prune(sessionId);
       return this.entry(sessionId, id);
     });
@@ -392,14 +457,37 @@ export class MessageQueueStore {
     });
   }
 
-  /** Keep only the newest settled rows: enough to answer a retried send. */
+  /**
+   * Keep whole only the most recently settled rows — by settlement, never by
+   * `seq`, which puts a head-inserted entry before everything older. The rest
+   * leave their id, text hash and fate in `session_queue_seen` (bounded far
+   * more generously), so a retried send is answered rather than re-queued.
+   */
   #prune(sessionId: string): void {
+    const doomed = this.#db
+      .prepare(
+        "SELECT id, text, state, settled_seq FROM session_queue " +
+          `WHERE session_id = ? AND ${SETTLED} ORDER BY settled_seq DESC LIMIT -1 OFFSET ?`,
+      )
+      .all(sessionId, QUEUE_LIMITS.settled) as unknown as Array<
+      Pick<Row, "id" | "text" | "state" | "settled_seq">
+    >;
+    if (doomed.length === 0) return;
+    const trace = this.#db.prepare(
+      "INSERT OR REPLACE INTO session_queue_seen " +
+        "(session_id, id, text_sha256, state, settled_seq) VALUES (?, ?, ?, ?, ?)",
+    );
+    const drop = this.#db.prepare("DELETE FROM session_queue WHERE session_id = ? AND id = ?");
+    for (const r of doomed) {
+      trace.run(sessionId, r.id, sha256(r.text), r.state, r.settled_seq ?? 0);
+      drop.run(sessionId, r.id);
+    }
     this.#db
       .prepare(
-        "DELETE FROM session_queue WHERE session_id = ? AND state IN ('consumed', 'cancelled') " +
-          "AND id NOT IN (SELECT id FROM session_queue WHERE session_id = ? " +
-          "AND state IN ('consumed', 'cancelled') ORDER BY seq DESC LIMIT ?)",
+        "DELETE FROM session_queue_seen WHERE session_id = ? AND settled_seq <= (" +
+          "SELECT settled_seq FROM session_queue_seen WHERE session_id = ? " +
+          "ORDER BY settled_seq DESC LIMIT 1 OFFSET ?)",
       )
-      .run(sessionId, sessionId, QUEUE_LIMITS.settled);
+      .run(sessionId, sessionId, QUEUE_LIMITS.seen);
   }
 }
