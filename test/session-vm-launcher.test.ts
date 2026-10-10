@@ -164,16 +164,16 @@ for (const kind of ["claude", "codex", "aisdk"] as const) {
   });
 }
 
-Deno.test("the launcher switch selects the isolation adapter only when configured", async () => {
-  assert.equal(normalizeConfig({}).isolation.launcher, "legacy");
+Deno.test("the launcher switch defaults to the isolation adapter and keeps legacy on request", async () => {
+  assert.equal(normalizeConfig({}).isolation.launcher, "isolation");
   assert.equal(
-    normalizeConfig({ session: { isolation: { launcher: "isolation" } } }).isolation.launcher,
-    "isolation",
+    normalizeConfig({ session: { isolation: { launcher: "legacy" } } }).isolation.launcher,
+    "legacy",
   );
   assert.throws(() => normalizeConfig({ session: { isolation: { launcher: "remote" } } }));
   const policy = { artifact: "/fake", smolvm: "/fake", repoRoot: "/fake" };
-  const legacy = selectSessionVmLauncher(policy);
-  const isolated = selectSessionVmLauncher({ ...policy, launcher: "isolation" });
+  const legacy = selectSessionVmLauncher({ ...policy, launcher: "legacy" });
+  const isolated = selectSessionVmLauncher(policy);
   assert(!("inspect" in legacy));
   assert("inspect" in isolated);
   await Promise.all([legacy.close(), isolated.close()]);

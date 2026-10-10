@@ -282,7 +282,7 @@ export class Daemon {
   readonly #vmExecutions = new Map<string, SessionExecutions>();
   /** Fixed for the daemon's life: changing the launcher needs a restart. */
   get #isolatedVms(): boolean {
-    return this.config.isolation.launcher === "isolation";
+    return this.config.isolation.launcher !== "legacy";
   }
   #environmentPoll: NodeJS.Timeout | undefined;
   #checkingEnvironment = false;

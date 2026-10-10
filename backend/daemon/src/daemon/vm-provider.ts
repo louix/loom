@@ -38,16 +38,14 @@ const executable = async (name: string) => {
     }
   throw new Error(`Executable not found: ${name}`);
 };
-/** A provider's VM launches: the current session-vm-worker path or the isolation adapter. */
+/** A provider's VM launches: the isolation adapter, or the legacy session-vm-worker path. */
 export type SessionVmLauncher = {
   launch(options: IsolatedLaunchOptions): Promise<WorkerProcess & { binding: { state: string } }>;
   close(): Promise<void>;
 };
 type SessionVmPolicy = NonNullable<ConnectorContext["config"]["sessionVm"]>;
 export const selectSessionVmLauncher = (vm: SessionVmPolicy): SessionVmLauncher =>
-  vm.launcher === "isolation"
-    ? createIsolatedWorkerLauncher(vm.repoRoot)
-    : createSessionVmLauncher();
+  vm.launcher === "legacy" ? createSessionVmLauncher() : createIsolatedWorkerLauncher(vm.repoRoot);
 
 export const withVmSessions = async <T extends AgentProvider>(
   base: T,
@@ -57,7 +55,7 @@ export const withVmSessions = async <T extends AgentProvider>(
 ): Promise<T> => {
   const vm = ctx.config.sessionVm!;
   const launches = createLauncher(vm);
-  const isolated = vm.launcher === "isolation";
+  const isolated = vm.launcher !== "legacy";
   const smolvm = await executable(vm.smolvm);
   let owner: ClaudeAuthOwner | CodexAuthOwner | undefined;
   let auth: SessionVmOptions["auth"] = {};

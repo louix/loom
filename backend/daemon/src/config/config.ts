@@ -234,7 +234,7 @@ export interface LoomConfig {
     codex?: { artifact: string; smolvm: string };
     extraAllowedHosts: string[];
     idleTimeoutMinutes?: number;
-    /** Session VM launch path; absent means legacy. */
+    /** Session VM launch path; absent means isolation. */
     launcher?: "legacy" | "isolation";
     environment?: SessionEnvironment;
     /** How new VM sessions reach the repository. Absent means mount. */

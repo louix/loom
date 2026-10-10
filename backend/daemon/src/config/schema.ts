@@ -305,9 +305,9 @@ export const createConfigSchema = (d: LoomConfig, events: readonly HookEvent[]) 
             ),
           launcher: z
             .enum(["legacy", "isolation"])
-            .default("legacy")
+            .default("isolation")
             .describe(
-              "How the daemon starts session VMs. legacy runs the agent worker as the VM's own workload. isolation boots the VM through the isolation library and runs the same worker inside it as a leased execution; it needs a session runtime built from this Loom version. A change applies after a daemon restart.",
+              "How the daemon starts session VMs. isolation boots the VM through the isolation library and runs the agent worker inside it as a leased execution; it needs a session runtime built from this Loom version. legacy runs the worker as the VM's own workload. Sessions keep their VM state across a change, which applies after a daemon restart.",
             ),
           checkout: section({
             mode: z

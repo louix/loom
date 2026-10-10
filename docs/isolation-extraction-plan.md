@@ -60,7 +60,7 @@ full suite green; the suite now runs in a throwaway HOME and XDG root
 | A8    | Done    | `fd334122`                            | Fork wizard; native vs handoff; lineage (migration 30)                                             |
 | B1    | Done    | `f9da0b8f` … `cdc76fd0`               | `isolation/`, runtime slice, `plain-exec.ts`, boundary test                                        |
 | B2    | Done    | `ce8b14d9` … `25acc182`               | `session.isolation.launcher` (default `legacy`)                                                    |
-| B3    | Partial | `d2705da6` … `74b4fc01`, `491b4000` … | Shells/hooks/inspection on leases; scripts run on either launcher; default not yet flipped         |
+| B3    | Partial | `d2705da6` … `74b4fc01`, `491b4000` … | Shells/hooks/inspection on leases; default flipped to `isolation`; legacy sessions resume on it    |
 | B4    | Done    | `e78ceafc` … `9f05b461`               | `loom-isolate` (foreground ownership); `.#loom-isolate`                                            |
 | B5    | Done    | `701a8a0b` … `c96a922c`               | `environment-config/`; `loom.json`, `environment.jsonc`; `loom config convert`                     |
 | B6    | Pending |                                       | After the default flips                                                                            |
@@ -74,8 +74,11 @@ handoff all passed. Real-VM scripts pass on both launchers on Linux.
 Outstanding:
 
 - Apple Silicon evidence and refreshed `packaging/macos/runtime-hashes.json`.
-- Flip `session.isolation.launcher` to `isolation`, then B6: remove the legacy
-  launcher and the switch in a separate, revertible commit.
+- `session.isolation.launcher` now defaults to `isolation`. A session suspended
+  on either launcher resumes on the other in the same state directory
+  (`test/launcher-continuity.test.ts`; on a real VM across a daemon restart,
+  `scripts/test-launcher-continuity-vm.ts`). B6: remove the legacy launcher and
+  the switch in a separate, revertible commit.
 - A real credential renewal on the isolation path; forced renewal is avoided
   against logins in active use.
 - Follow-ups: `loom shell` and daemon-run hooks ignore Git identity overrides;
