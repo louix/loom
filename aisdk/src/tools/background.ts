@@ -351,6 +351,7 @@ const killGroup = (task: Task): void => {
   if (typeof c.pid === "number") {
     try {
       // SIGTERM first: a `git` killed outright leaves its worktree's index.lock behind.
+      // The escalation is tracked: the worker's exit waits for it.
       Deno.kill(-c.pid, "SIGTERM");
       void escalateProcessGroup(c.pid);
       return;

@@ -71,7 +71,8 @@ export const launchLocalWorker: WorkerLauncher = (spec) => {
           terminated = true;
           try {
             // SIGKILL follows only for what outlives the grace: an agent's `git`
-            // killed outright leaves its index.lock behind.
+            // killed outright leaves its index.lock behind. The escalation is
+            // tracked; Daemon.stop waits for it before the daemon exits.
             Deno.kill(-child.pid, "SIGTERM");
             void escalateProcessGroup(child.pid);
           } catch (e) {

@@ -4,11 +4,16 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
-import { terminateProcessGroup } from "@loom/core/process-group";
+import {
+  escalateProcessGroup,
+  settleProcessGroups,
+  terminateProcessGroup,
+} from "@loom/core/process-group";
 
 const git = (cwd: string, ...args: string[]): string =>
   execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", stdio: "pipe" }).trim();
@@ -71,6 +76,66 @@ test("terminating a process group kills what ignores SIGTERM once the grace is o
   const child = spawn("sh", ["-c", "trap '' TERM; sleep 30"], { detached: true, stdio: "ignore" });
   await delay(50);
   await terminateProcessGroup(child.pid!, 200);
+  await exited(child);
+  assert.equal(child.signalCode, "SIGKILL");
+});
+
+const fixture = (name: string) => fileURLToPath(new URL(`./fixtures/${name}`, import.meta.url));
+const config = fileURLToPath(new URL("../deno.json", import.meta.url));
+
+/** Whether any process (zombies included) is still in `pgid`. */
+const groupExists = (pgid: number): boolean => {
+  try {
+    Deno.kill(-pgid, 0 as unknown as Deno.Signal);
+    return true;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return false;
+    throw error;
+  }
+};
+
+for (const exit of ["worker", "abrupt"] as const) {
+  test(`a worker's ${exit} exit does not leave a Bash group that ignores SIGTERM running`, async () => {
+    const dir = mkdtempSync(join(tmpdir(), "loom-tool-group-"));
+    const pidFile = join(dir, "pgid");
+    let pgid = 0;
+    try {
+      const worker = await new Deno.Command(Deno.execPath(), {
+        args: ["run", "-A", "--config", config, fixture("tool-group-exit.ts"), pidFile, exit],
+        cwd: dir,
+        stdout: "null",
+        stderr: "piped",
+      }).output();
+      assert.equal(worker.code, 0, new TextDecoder().decode(worker.stderr));
+      pgid = Number(readFileSync(pidFile, "utf8").trim());
+      assert.ok(pgid > 0);
+      // Killed members are reparented and reaped by init: allow for that.
+      for (let i = 0; i < 100 && groupExists(pgid); i++) await delay(20);
+      assert.equal(groupExists(pgid), false, "the TERM-proof group was killed before the exit");
+    } finally {
+      if (pgid > 0 && groupExists(pgid)) Deno.kill(-pgid, "SIGKILL");
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}
+
+test("a group is watched with kill(-pgid, 0) where /proc and ps are unavailable", async () => {
+  const watch = await new Deno.Command(Deno.execPath(), {
+    args: ["run", "--allow-run", "--allow-env", "--deny-run=ps", fixture("group-watch.ts")],
+    stdout: "piped",
+    stderr: "piped",
+  }).output();
+  assert.equal(watch.code, 0, new TextDecoder().decode(watch.stderr));
+  // Blind, the group would be SIGKILLed after 250 ms, before its trap finished.
+  assert.deepEqual(JSON.parse(new TextDecoder().decode(watch.stdout)), { code: 7, signal: null });
+});
+
+test("settling waits for a fire-and-forget escalation to kill a TERM-proof group", async () => {
+  const child = spawn("sh", ["-c", "trap '' TERM; sleep 30"], { detached: true, stdio: "ignore" });
+  await delay(50);
+  Deno.kill(-child.pid!, "SIGTERM");
+  void escalateProcessGroup(child.pid!, 200);
+  await settleProcessGroups();
   await exited(child);
   assert.equal(child.signalCode, "SIGKILL");
 });

@@ -77,6 +77,8 @@ export class BashShell {
 }
 
 // SIGTERM first: a `git` killed outright leaves its worktree's index.lock behind.
+// The group is detached from the worker's, so the worker's exit waits for the
+// tracked escalation (exitWorker) rather than leaving a TERM-proof group behind.
 const killGroup = (child: ChildProcess) => {
   if (child.pid !== undefined) {
     try {

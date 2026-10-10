@@ -7,6 +7,7 @@ import type { HookAttempt } from "../../../../core/src/shell-hook.ts";
 import { pruneVmInventory } from "../../../../runtime/src/session-vm/inventory.ts";
 import { startupSignal } from "./startup.ts";
 import { stateInterrupted } from "@loom/core/session-state";
+import { settleProcessGroups } from "@loom/core/process-group";
 import type { RpcParams } from "@loom/core/rpc-params";
 import {
   currentRepoBase,
@@ -746,6 +747,9 @@ export class Daemon {
       await this.#providers.close().catch((error) => {
         this.#log.warn("provider shutdown failed", { error: String(error) });
       });
+      // Closed workers' groups (and hooks') still within their SIGTERM grace: the
+      // exit after `whenClosed()` would drop their SIGKILL. Bounded by the grace.
+      await settleProcessGroups();
       // Give in-flight auto-title jobs (one-shot titler sessions live outside
       // the SessionManager) a brief window to finish before the DB closes.
       if (this.#titleJobs.size > 0) {
