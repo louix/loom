@@ -10,6 +10,7 @@ import { cacheHitRate } from "@loom/core/cache";
 import { foldLoadable } from "@loom/core/loadable";
 import type { DaemonSnapshot, ModelUsage, PushFrame, SessionSnapshot } from "@loom/core/wire";
 import type { HarnessEvent } from "@loom/core/events";
+import { describeDequeue } from "@loom/core/message-queue";
 import { isLiveState, sessionStateLabel } from "@loom/core/session-state";
 import { LOOM_VERSION } from "@loom/core/version";
 import { availableRepositories, rememberRepository } from "./recent-repositories.ts";
@@ -39,7 +40,8 @@ commands:
 
   run <prompt...>        start a session   [--provider P] [--model M] [--mode manual|plan|acceptEdits|auto]
                          [--in-place | --worktree]  override session.worktree.enabled for this session
-  send <id> <text...>    send a follow-up turn / answer
+  send <id> <text...>    queue a follow-up for the next tool boundary   [--end-of-turn]
+  queue <id>             show a session's queued messages and when each goes   [--release] [--json]
   compact <id> [text...] compact the context window (optional steer for the summary)
   interrupt <id>         stop a session mid-turn
   approve <id> <reqId>   allow an outstanding permission request
@@ -138,7 +140,17 @@ loom config convert [FILE] [--out NEW] [--json]
   using it. --out writes the new file to NEW and refuses to overwrite anything.`,
   send: `loom send <id> <text...>  — send a follow-up turn, or answer a question
 
-  if the session is mid-turn the text is injected after the current tool call.`,
+  the message enters the session's queue. Mid-turn it goes in at the next tool
+  boundary (or as the next turn); it reaches the chat log once the agent takes
+  it. An idle session gets it at once; a cold one is revived first.
+  --end-of-turn                wait until the agent has finished (background
+                               work included), one message per finish`,
+  queue: `loom queue <id>  — a session's queued messages
+
+  each live entry with where it goes (next boundary / after it finishes) and
+  when, in the daemon's words. After an interrupt the queue is held.
+  --release                    let a held queue go on (uncertain entries stay)
+  --json                       the snapshot's queue as JSON`,
   plan: `loom plan <id> <reqId> <what> [text...]  — resolve a plan review
 
   what:
@@ -214,6 +226,8 @@ const main = async (): Promise<void> => {
       isolation: { type: "string" },
       worktree: { type: "boolean", default: false },
       "delete-branch": { type: "boolean", default: false },
+      "end-of-turn": { type: "boolean", default: false },
+      release: { type: "boolean", default: false },
       out: { type: "string" },
     },
   });
@@ -527,8 +541,29 @@ const main = async (): Promise<void> => {
         const id = need(positionals[1], "send <id> <text...>");
         const text = positionals.slice(2).join(" ");
         if (!text) need(undefined, "send <id> <text...>");
-        const r = await client.request<SessionSnapshot>("session.send", { id, text });
-        writeOut(`${r.id} -> ${sessionStateLabel(r.status)}\n`);
+        const r = await client.request<SessionSnapshot & { state: string }>("session.send", {
+          id,
+          text,
+          by: client.clientId,
+          ...(values["end-of-turn"] ? { delivery: "end_of_turn" } : {}),
+        });
+        const queued = r.state === "queued" ? " (queued)" : "";
+        writeOut(`${r.id} -> ${sessionStateLabel(r.status)}${queued}\n`);
+        break;
+      }
+      case "queue": {
+        const id = need(positionals[1], "queue <id> [--release]");
+        const r = values.release
+          ? await client.request<SessionSnapshot>("session.queueRelease", {
+              id,
+              by: client.clientId,
+            })
+          : await client.request<SessionSnapshot>("session.get", { id });
+        if (values.json) {
+          writeOut(JSON.stringify(r.queue ?? { hold: null, entries: [] }, null, 2) + "\n");
+          break;
+        }
+        writeOut(printQueue(r, client.clientId));
         break;
       }
       case "interrupt": {
@@ -725,11 +760,27 @@ const main = async (): Promise<void> => {
   }
 };
 
+/** `loom queue`: the hold, then each live entry with the daemon's word on when it goes. */
+const printQueue = (s: SessionSnapshot, clientId: string): string => {
+  const q = s.queue;
+  if (!q || (q.entries.length === 0 && q.hold === null)) return `${s.id}: no queued messages\n`;
+  const lines = [`${s.id}: ${q.entries.length} queued${q.hold ? ` · held (${q.hold})` : ""}`];
+  for (const e of q.entries) {
+    const when = e.uncertain ? "may have reached the agent" : describeDequeue(e.dequeue);
+    const where = e.delivery === "next_boundary" ? "next boundary" : "after it finishes";
+    const who = e.author === clientId ? "you" : e.author;
+    lines.push(`  ${e.id.slice(0, 8)}  ${where} · ${when} · ${who}`);
+    lines.push(`            ${e.preview.replace(/\s+/g, " ").trim().slice(0, 100)}`);
+  }
+  return lines.join("\n") + "\n";
+};
+
 const ID_CMDS = new Set([
   "shell",
   "get",
   "history",
   "send",
+  "queue",
   "compact",
   "interrupt",
   "approve",

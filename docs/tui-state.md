@@ -10,7 +10,7 @@ permissions and plans come from the snapshot. Durable row IDs merge history with
 concurrent live output without duplicates. There is no transport replay or event
 ring buffer; transient notices and raw `loom tail` output while disconnected may
 be missed. Requests with uncertain outcomes fail explicitly and are never retried
-automatically. Protocol v4 requires matching client and daemon versions.
+automatically. Protocol v5 requires matching client and daemon versions.
 
 Session startup and cold resume publish `starting` before launching a worker or
 VM. Submitting a new message closes the composer so the STARTING state is visible.
@@ -34,9 +34,15 @@ Mode selection shows its target immediately; the existing 300ms debounce delays
 the RPC, not local feedback. The mode chip is clickable in DETAIL and in new/reply
 composers. Pending or uncertain sends disable composer mode changes.
 
-Outbox entries own their operation identity. Clearing waiting messages preserves
-a send already in flight. A late callback cannot consume a newer or identical
-message. Disconnection retains unsent text while disabling daemon actions.
+Queued messages are the daemon's ([message queue](message-queue.md)): every send
+enters the session's queue, every client draws it — and when each entry goes —
+from the snapshot, and a message reaches the log only once the agent has taken
+it. The TUI's outbox holds only what its RPC is doing: a `session.send` in flight,
+and one whose reply never came or was refused (held). A held message is never
+re-sent by itself; opening that session's send prompt hands it back, and sending
+it unchanged reuses its entry id, so a send that did arrive is answered rather
+than queued twice. A late callback cannot consume a newer send. Disconnection
+retains unsent text while disabling daemon actions.
 
 See [keybindings](keybindings.md) for controls. Regression coverage lives in
 `test/tui-model.test.ts`, `test/tui-render.test.ts`, `test/session-manager.test.ts`

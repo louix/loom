@@ -37,9 +37,8 @@ Consequences:
 - `Ctrl` never triggers an app action, so `⌃e` is line-end again (it used to be
   stolen for "$EDITOR").
 - `Shift` is never a decorative "variant of" — it means the heavier sibling of
-  the lowercase, almost always _bigger blast radius_: `q`→`Q` (also stops the
-  daemon), `r`→`R` (restarts the daemon), `x` (archive, reversible) →`X`
-  (delete, permanent). `F` (fork) stands with them as a structural op;
+  the lowercase, almost always _bigger blast radius_: `r`→`R` (restarts the
+  daemon), `x` (archive, reversible) →`X` (delete, permanent). `F` (fork) stands with them as a structural op;
   the one label-only pair is `y`→`Y` — branch name → session id.
 - Rare actions don't need a memorised key — they're one `Space`, a few letters,
   `Enter` away, and the palette teaches you the key for next time.
@@ -82,22 +81,23 @@ you can see what you type.
 
 Children have no verbs of their own. While one is selected, the session verbs
 that would look like they act on the child — compose (`⏎`), interrupt (`i`),
-compact, mode / model / effort / provider, undo, fork, rename, comment, clear
-queue, archive, delete — are off the key bar and do nothing on their keys; the
+compact, mode / model / effort / provider, undo, fork, rename, comment, the
+queue (`q`, release, clear), archive, delete — are off the key bar and do nothing on their keys; the
 palette lists them as unavailable until you step back to the session row with
 `←`. Approving or answering the session's pending request, opening a shell and
 copying its branch or id still work.
 
 ### Acting on the selected session (footer verbs)
 
-| key | action                                                                                                                                                                                                                   |
-| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `⏎` | act on the selected session: compose a message (running / idle / stopped — a stopped one is revived first), or take up a pending question / plan. It's the one "talk to this session" verb — there's no separate resume. |
-| `a` | approve a pending permission (Enter deliberately doesn't — this one's explicit); also answers / reviews, like `⏎`                                                                                                        |
-| `d` | deny the pending request (**deny-only** — never deletes)                                                                                                                                                                 |
-| `i` | interrupt the current turn                                                                                                                                                                                               |
-| `c` | compact the context window (offered once the meter passes half)                                                                                                                                                          |
-| `x` | archive the session — stop it and drop its worktree, keeping the branch + chat; message it again to resume on a fresh tree (a dirty tree prompts to confirm)                                                             |
+| key | action                                                                                                                                                                                                                                                                                                                               |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `⏎` | act on the selected session: compose a message (running / idle / stopped — a stopped one is revived first), or take up a pending question / plan. It's the one "talk to this session" verb — there's no separate resume. On a working session the chip reads "queue · next tool boundary": the message waits in the session's queue. |
+| `q` | open the session's message queue (below) — the chip reads "queue N", or "N held" after an interrupt                                                                                                                                                                                                                                  |
+| `a` | approve a pending permission (Enter deliberately doesn't — this one's explicit); also answers / reviews, like `⏎`                                                                                                                                                                                                                    |
+| `d` | deny the pending request (**deny-only** — never deletes)                                                                                                                                                                                                                                                                             |
+| `i` | interrupt the current turn                                                                                                                                                                                                                                                                                                           |
+| `c` | compact the context window (offered once the meter passes half)                                                                                                                                                                                                                                                                      |
+| `x` | archive the session — stop it and drop its worktree, keeping the branch + chat; message it again to resume on a fresh tree (a dirty tree prompts to confirm)                                                                                                                                                                         |
 
 Press `s` in browse mode to open a shell in the selected session's repository or
 worktree, inside its VM when applicable. Exit or Ctrl-D returns to the same Loom
@@ -130,15 +130,18 @@ view. Ctrl-C belongs to the shell while it is open. You can also run
 | `F` | fork — native history or a handoff to any provider, into a copied or shared worktree (`F` again cancels a starting fork) |
 | `X` | delete the session — worktree + transcript go too (confirm; `b` there also drops the branch)                             |
 | `R` | restart the daemon (confirm)                                                                                             |
-| `Q` | quit the UI **and stop the daemon** (confirm)                                                                            |
+
+"Quit and stop the daemon" (confirm) and "release the queue" are palette
+commands; `Q` is unbound.
 
 ### Always
 
-| key        | action                                                                                                                                                                                                                               |
-| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `n`        | new session — the prompt shows the provider / model; `⌥p` changes them                                                                                                                                                               |
-| `/`        | filter the fleet in place — type to narrow the list (fuzzy, over titles and message text; matched in the daemon, so sessions this TUI has never opened are found too); `↑↓` keep moving the selection, `enter` accepts, `esc` clears |
-| `q` / `⌃c` | quit the UI — the daemon keeps running                                                                                                                                                                                               |
+| key  | action                                                                                                                                                                                                                               |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `n`  | new session — the prompt shows the provider / model; `⌥p` changes them                                                                                                                                                               |
+| `/`  | filter the fleet in place — type to narrow the list (fuzzy, over titles and message text; matched in the daemon, so sessions this TUI has never opened are found too); `↑↓` keep moving the selection, `enter` accepts, `esc` clears |
+| `⌃c` | quit the UI — the daemon keeps running (`q` opens the queue)                                                                                                                                                                         |
+| `⌥x` | clear the selected session's queued messages, after a confirm over the ones shown                                                                                                                                                    |
 
 `v` cycles EVENTS verbosity: `full` → `chat` → `chat+tools` → `full`.
 The same action is available as **verbosity** in the Space command palette.
@@ -159,18 +162,18 @@ to the request panel with the answers kept, and `a` resumes where you left off.
 
 `Ctrl` carries the readline motions and nothing else:
 
-| key                              | motion                                                                                                                      |
-| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `⌃a` / `⌃e`                      | start / end of line                                                                                                         |
-| `⌃b` / `⌃f`                      | one char back / forward                                                                                                     |
-| `⌃←` / `⌃→`                      | one word back / forward                                                                                                     |
-| `⌃u` / `⌃k`                      | kill to start / end of line — a second `⌃u` (nothing left on the line) clears the whole input, pasted wall of text and all  |
-| `⌃w`                             | delete the word before the cursor                                                                                           |
-| `↑` / `↓`                        | walk the prompt history (vertical caret move in multi-line text)                                                            |
-| `Enter`                          | submit · `Esc` cancel — on a _send_ prompt targeting a still-running session, sends now (lands after the current tool call) |
-| `Esc` on a _new_ / _send_ prompt | keeps the typed text as a draft — reopening either prompt (whichever you meant) restores it, until it's actually sent       |
-| `⇧⏎`                             | insert a newline (only in terminals that send a distinct code for Shift+Enter)                                              |
-| `⌥⏎`                             | insert a newline (always — it never sends)                                                                                  |
+| key                              | motion                                                                                                                     |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `⌃a` / `⌃e`                      | start / end of line                                                                                                        |
+| `⌃b` / `⌃f`                      | one char back / forward                                                                                                    |
+| `⌃←` / `⌃→`                      | one word back / forward                                                                                                    |
+| `⌃u` / `⌃k`                      | kill to start / end of line — a second `⌃u` (nothing left on the line) clears the whole input, pasted wall of text and all |
+| `⌃w`                             | delete the word before the cursor                                                                                          |
+| `↑` / `↓`                        | walk the prompt history (vertical caret move in multi-line text)                                                           |
+| `Enter`                          | submit · `Esc` cancel — on a _send_ prompt targeting a working session, queues for the next tool boundary                  |
+| `Esc` on a _new_ / _send_ prompt | keeps the typed text as a draft — reopening either prompt (whichever you meant) restores it, until it's actually sent      |
+| `⇧⏎`                             | insert a newline (only in terminals that send a distinct code for Shift+Enter)                                             |
+| `⌥⏎`                             | insert a newline (always — it never sends)                                                                                 |
 
 `Alt` runs an action without dropping what you've typed:
 
@@ -182,8 +185,8 @@ to the request panel with the answers kept, and `a` resumes where you left off.
 | `⌥m` | switch the model — a model step for the new session _(new prompt)_, or a live switch on the one you're messaging _(send prompt, draft kept)_                                               |
 | `⌥t` | switch the thinking-effort level, same shape as `⌥m` — only offered when the current (or chosen) model takes one                                                                           |
 | `⌥p` | pick the provider / model — for the new session, or live on the one you're messaging _(send prompt)_; a model that takes a thinking-effort level asks for one as a third step              |
-| `⌥q` | queue the message for turn end while the session is still working; on an idle session, plain send _(send prompt only)_                                                                     |
-| `⌥x` | clear the session's queued messages _(send prompt only)_                                                                                                                                   |
+| `⌥q` | queue the message for when the agent has finished (background work included); on an idle session, plain send _(send prompt only)_                                                          |
+| `⌥x` | clear the session's queued messages, after a confirm _(send prompt only)_                                                                                                                  |
 | `⌥i` | interrupt the session you're messaging; the draft stays _(send prompt only)_                                                                                                               |
 
 `⇧⏎` / `⌥⏎` insert a newline inline; `⌥e` hands the whole thing to `$EDITOR`
@@ -199,6 +202,7 @@ Each overlay owns the screen and shows its own fixed key set on the footer:
 
 - **Command palette / pickers** — type to filter (the prompt's readline motions work on the filter: `⌃a`/`⌃e`/`⌃w`…), `↑↓` move, `Enter` pick, `Esc` cancel. Session search is not a picker anymore — `/` filters the FLEET list in place and ranks it: title hits first, then your messages, then the agent's; space-separated terms are AND'd and a leading `'` pins a term to a literal substring (`'hello` won't match a spelled-out "h-e-l-l-o"). While a query is up the list is one flat, relevance-ordered set (same readline motions; `↑↓` keep moving the selection, `enter` accepts, `esc` clears).
 - **Confirm** — `Enter` confirm, `Esc` cancel (`b` toggles "also delete the branch" on a delete confirm).
+- **Queue** (`q`) — the session's queued messages in two groups, _next tool boundary_ and _when the agent finishes_, each row `state · author · first line`; the selected one shows when it goes (in the daemon's words, the same on every client), its full text and, when a hand-over's fate is unknown, a warning. `↑↓` select (by message, so an arrival never moves it) · `e` edit in the composer, `Enter` saves (a conflicting edit elsewhere reopens it with your text and the reason) · `x` remove · `⇧↑`/`⇧↓` (`K`/`J`) move within the group · `t` switch between the two groups · `s` send now (an uncertain one asks first: it may arrive twice) · `r` release a held queue · `c` clear, after a confirm over the messages shown · `Esc` back. After an interrupt the queue is held; a new message you send goes first and releases it.
 - **Plan review** — `i` implement · `f` implement fresh (compact first) · `e` edit in `$EDITOR` then implement · `d` discuss (note back, stay in plan mode) · `⇧⇥` cycle the mode the implementation runs in (manual → acceptEdits → auto) · `⌥p` retarget `f` for model / thinking-effort / provider (pre-selected to the session's current; a different provider forks a fresh session) · `⌥o`/`o` view · `PgUp`/`PgDn` / mouse wheel scroll a long plan. The overlay also shows the session's context meter. `Esc` backs out to the fleet without answering — the review stays pending and `a` re-opens it.
 
 ## Notes on terminals
