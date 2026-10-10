@@ -119,6 +119,10 @@ const afterReady = async function* <T>(
   yield* inbox;
 };
 
+/** `Query.interrupt` as the SDK implements it: it takes `{ cancelQueued }`. */
+type InterruptWithOptions = (options: { cancelQueued: boolean }) => ReturnType<Query["interrupt"]>;
+const CANCEL_QUEUED = { cancelQueued: true } as const;
+
 /** An in-flight `/compact` — see {@link ClaudeSession.#compactWait}. */
 interface CompactWait {
   /** Settles when the compaction ends (boundary, failed turn, teardown, ceiling). */
@@ -1179,9 +1183,11 @@ class ClaudeSession implements AgentSession {
     this.#interruptEpoch++;
     // Stop the live turn, and don't let anything queued behind it speak into
     // the stopped session. `#inbox.drain()` clears sends the SDK hasn't pulled
-    // yet; `#interrupted` (lifted by the next `send()`) muzzles a turn already
-    // in the SDK's own command queue — 0.3.251's `interrupt()` takes no
-    // `cancel_queued`, so that queue can't be emptied from here.
+    // yet; `cancelQueued` has the CLI drop what it already queued behind the
+    // turn (sends made mid-turn, sub-agent hand-backs, task notifications).
+    // Without it each of those would run as its own turn after the stop, so a
+    // retry could only ever clear one of them. `#interrupted` (lifted by the
+    // next `send()`) still muzzles anything an older CLI lets through.
     this.#interrupted = true;
     // C6: release any gate / ask_user / plan promise parked on this turn now —
     // don't wait for the stream to end or `close()` to run.
@@ -1190,7 +1196,13 @@ class ClaudeSession implements AgentSession {
     const failures: string[] = [];
     const parent = Promise.resolve().then(async () => {
       try {
-        const receipt = await this.#query?.interrupt();
+        const q = this.#query;
+        // The SDK forwards `cancelQueued` as the control request's
+        // `cancel_queued` (CLI capability `interrupt_cancel_queued_v1`), though
+        // its typings don't declare the parameter yet.
+        const receipt = q
+          ? await (q.interrupt as InterruptWithOptions).call(q, CANCEL_QUEUED)
+          : undefined;
         if (receipt?.still_queued?.length)
           failures.push(`Claude still has ${receipt.still_queued.length} queued turn(s)`);
       } catch (err) {

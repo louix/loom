@@ -477,6 +477,24 @@ test("queued turns surviving Claude interrupt are reported as incomplete cancell
   await assert.rejects(s.send("more"), /cancellation is unresolved/);
 });
 
+// A turn blocked for hours queued a mid-turn send and two sub-agent hand-backs
+// behind it; a plain interrupt left them all queued, so every Stop "failed" and
+// each retry let just one of them run.
+test("interrupt has Claude cancel the turns queued behind it", async (t) => {
+  const asked: unknown[] = [];
+  const { s } = await setupLive(t, (q) => {
+    q.interrupt = async (...args: unknown[]) => {
+      asked.push(args[0]);
+      const cancel = (args[0] as { cancelQueued?: boolean } | undefined)?.cancelQueued === true;
+      const queued = ["mid-turn-send", "hand-back"];
+      return cancel ? { still_queued: [], cancelled: queued } : { still_queued: queued };
+    };
+  });
+  await s.interrupt();
+  assert.deepEqual(asked, [{ cancelQueued: true }]);
+  await s.send("next");
+});
+
 test("a task completing while its stop request fails is already cancelled", async (t) => {
   let reject!: (err: Error) => void;
   const { s, q } = await setupLive(t, (q) => {
