@@ -36,6 +36,7 @@ import type {
   SessionRef,
 } from "@loom/core/types";
 import { deriveStatus } from "./status-machine.ts";
+import { RpcError } from "./rpc.ts";
 
 export interface ManagerHooks {
   /** Forward a normalized event to the push stream + persistence. */
@@ -868,6 +869,32 @@ export class SessionManager {
     this.#hooks.onOverlay(id);
   }
 
+  /**
+   * Take outstanding request `requestId` off the set for an answer of one of
+   * `kinds`. False when it is no longer outstanding. An answer of the wrong kind
+   * throws and leaves the request in place: adapters park each kind separately
+   * and ignore an id they don't hold under it, so consuming it here would hide
+   * the prompt from every client while the turn stays blocked on it for good
+   * (an `approve` aimed at an `ask_user` question did exactly that).
+   */
+  #claimPending(
+    run: Running,
+    requestId: string,
+    kinds: readonly SessionInteraction["kind"][],
+    action: string,
+  ): boolean {
+    const request = run.pending.get(requestId);
+    if (!request) return false;
+    if (!kinds.includes(request.kind)) {
+      throw new RpcError(
+        "bad_request",
+        `request ${requestId} is a ${request.kind.replace("_", " ")}; it can't be resolved with ${action}`,
+      );
+    }
+    run.pending.delete(requestId);
+    return true;
+  }
+
   async respondToPermission(
     id: string,
     requestId: string,
@@ -875,8 +902,8 @@ export class SessionManager {
   ): Promise<RespondResult> {
     const run = this.#require(id);
     if (run.ended) return { ok: false, alreadyResolved: true };
-    if (!run.pending.has(requestId)) return { ok: false, alreadyResolved: true };
-    run.pending.delete(requestId);
+    if (!this.#claimPending(run, requestId, ["permission", "user_question"], "approve or deny"))
+      return { ok: false, alreadyResolved: true };
     // The user's answer drives the turn on (an approved plan can even start a
     // new SDK turn), so its outcome is theirs. Armed before the adapter call,
     // as in `send`; the same holds for questions and plan decisions.
@@ -890,8 +917,8 @@ export class SessionManager {
   async answerQuestion(id: string, questionId: string, text: string): Promise<RespondResult> {
     const run = this.#require(id);
     if (run.ended) return { ok: false, alreadyResolved: true };
-    if (!run.pending.has(questionId)) return { ok: false, alreadyResolved: true };
-    run.pending.delete(questionId);
+    if (!this.#claimPending(run, questionId, ["question"], "answer"))
+      return { ok: false, alreadyResolved: true };
     run.userTurn = true;
     await run.session.answerQuestion(questionId, text);
     // The `answer` event the adapter emits will also carry status back to
@@ -907,8 +934,8 @@ export class SessionManager {
   ): Promise<RespondResult> {
     const run = this.#require(id);
     if (run.ended) return { ok: false, alreadyResolved: true };
-    if (!run.pending.has(requestId)) return { ok: false, alreadyResolved: true };
-    run.pending.delete(requestId);
+    if (!this.#claimPending(run, requestId, ["plan_review"], "review"))
+      return { ok: false, alreadyResolved: true };
     run.userTurn = true;
     await run.session.respondToPlan(requestId, decision);
     // Every branch of respondToPlan either leaves plan mode or (for `discuss`)

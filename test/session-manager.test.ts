@@ -239,6 +239,46 @@ describe("session-manager", { concurrency: 4 }, () => {
     await c.close();
   });
 
+  // An `approve` loop over `loom get`'s request ids once approved an ask_user
+  // question: the daemon dropped it while the adapter, holding no permission
+  // under that id, kept the tool call parked — no prompt, turn blocked for good.
+  test("a request answered as the wrong kind stays outstanding", async () => {
+    const c = await client();
+    const { id, fs } = await createFake(c);
+    fs.emit({ type: "question", id: "q1", question: "which database?" });
+    fs.emit({ type: "plan_review", id: "plan1", plan: "1. do it" });
+    fs.emit({ type: "permission_request", id: "p1", tool: "Bash", input: {} });
+    await waitFor(
+      async () => (await c.request<SessionSnapshot>("session.get", { id })).requests.length === 3,
+    );
+
+    for (const requestId of ["q1", "plan1"]) {
+      await assert.rejects(
+        c.request("session.respondPermission", { id, requestId, decision: "allow" }),
+        /can't be resolved with approve or deny/,
+      );
+    }
+    await assert.rejects(
+      c.request("session.answer", { id, requestId: "p1", text: "yes" }),
+      /is a permission; it can't be resolved with answer/,
+    );
+    await assert.rejects(
+      c.request("session.respondPlan", { id, requestId: "q1", action: "implement" }),
+      /is a question; it can't be resolved with review/,
+    );
+    assert.deepEqual(fs.permissionResponses, []);
+    assert.deepEqual(fs.questionAnswers, []);
+    assert.deepEqual(fs.planResponses, []);
+    const blocked = await c.request<SessionSnapshot>("session.get", { id });
+    assert.deepEqual(blocked.requests.map((r) => r.id).sort(), ["p1", "plan1", "q1"]);
+    assert.equal(blocked.status.kind, "awaiting_input");
+
+    const answered = await c.request("session.answer", { id, requestId: "q1", text: "sqlite" });
+    assert.deepEqual(answered, { ok: true, alreadyResolved: false });
+    assert.deepEqual(fs.questionAnswers, [{ id: "q1", text: "sqlite" }]);
+    await c.close();
+  });
+
   test("a plan_review blocks the session; session.respondPlan resolves it", async () => {
     const c = await client();
     const { id, fs } = await createFake(c);
