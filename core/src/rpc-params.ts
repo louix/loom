@@ -3,12 +3,16 @@ import { harnessEventSchema } from "./events.ts";
 import { historyCursorSchema, helloParamsSchema } from "./wire.ts";
 import { sessionModeSchema, planDecisionSchema, permissionDecisionSchema } from "./types.ts";
 import { sessionStateSchema } from "./session-state.ts";
+import { queueDeliverySchema } from "./message-queue.ts";
 
 const text = z.string().min(1);
 const optionalText = z.string().optional();
 const by = optionalText;
 const session = z.object({ id: text, by });
 const empty = z.object({});
+/** A queue entry as the client saw it: a stale `revision` is a conflict. */
+const queueTarget = z.object({ entryId: text, revision: z.int().nonnegative() });
+const queueEntry = session.extend(queueTarget.shape);
 const mode = z
   .union([sessionModeSchema, z.literal("manual")])
   .transform((v) => (v === "manual" ? ("default" as const) : v));
@@ -85,7 +89,23 @@ export const rpcParamsSchemas = {
     by,
   }),
   "session.resume": session,
-  "session.send": session.extend({ text }),
+  /** Queue a message. `entryId` (a client UUID) makes a retry idempotent;
+   *  `delivery` defaults to the next tool boundary. */
+  "session.send": session.extend({
+    text,
+    entryId: z.uuid().optional(),
+    delivery: queueDeliverySchema.optional(),
+  }),
+  "session.queueEntry": session.extend({ entryId: text }),
+  "session.queueEdit": queueEntry.extend({ text }),
+  "session.queueMove": queueEntry.extend({ direction: z.enum(["up", "down"]) }),
+  "session.queueSetDelivery": queueEntry.extend({ delivery: queueDeliverySchema }),
+  /** `confirm`: send an uncertain entry again, knowing it may duplicate. */
+  "session.queueSendNow": queueEntry.extend({ confirm: z.boolean().optional() }),
+  "session.queueRemove": session.extend({ entries: z.array(queueTarget).min(1).max(100) }),
+  /** Clears exactly these ids — the ones the client showed when it asked. */
+  "session.queueClear": session.extend({ entryIds: z.array(text).max(100) }),
+  "session.queueRelease": session,
   "session.checkpoints": session,
   "session.rewind": session.extend({
     toTurn: z.coerce.number().int().nonnegative(),

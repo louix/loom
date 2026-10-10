@@ -5,6 +5,7 @@ import { sessionStateSchema } from "./session-state.ts";
 import { sessionInteractionSchema } from "./interaction.ts";
 import { sessionModeSchema } from "./types.ts";
 import { modelChoiceSchema } from "./model-catalogue.ts";
+import { sessionQueueSchema } from "./message-queue.ts";
 
 /**
  * Loom's client<->daemon wire protocol: newline-delimited JSON over a Unix
@@ -23,7 +24,9 @@ import { modelChoiceSchema } from "./model-catalogue.ts";
  */
 // v3 returns all search IDs in one response instead of paginating them.
 // v4 reconnects from a fresh snapshot and durable history; no transport replay.
-export const PROTOCOL_VERSION = 4;
+// v5 queues every `session.send` daemon-side (`SessionSnapshot.queue`); a
+// queued message reaches the log only once the agent has taken it.
+export const PROTOCOL_VERSION = 5;
 
 /**
  * Hard cap on a single newline-delimited frame (bytes). Enforced identically on
@@ -380,6 +383,12 @@ export const sessionSnapshotSchema = z.object({
       generated: z.number(),
     })
     .optional(),
+  /**
+   * The session's message queue: the live entries in dispatch order, each
+   * with the daemon's word on when it goes, and the hold. Absent when empty
+   * and unheld. Persisted; the full text of an entry is `session.queueEntry`'s.
+   */
+  queue: sessionQueueSchema.optional(),
   /** Stop requested; the provider has not yet confirmed cancellation. */
   stopping: z.boolean().optional(),
   /** Cancellation failed; retry interrupt before starting more work. */

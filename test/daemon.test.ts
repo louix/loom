@@ -1252,7 +1252,7 @@ test("in-place sessions: no worktree, repo-root git facts, hard fork refused", a
   }
 });
 
-test("session.send always broadcasts a user_message; injected reflects whether a turn was live", async () => {
+test("session.send queues mid-turn until a tool boundary; the user_message lands when it goes", async () => {
   const hh = await makeHarness();
   const c = await LoomClient.connect({
     repoRoot: hh.repoRoot,
@@ -1278,23 +1278,38 @@ test("session.send always broadcasts a user_message; injected reflects whether a
     fs?.emit({ type: "assistant_text", text: "working…" }); // → running
     await delay(80);
 
-    const r1 = await c.request<{ injected?: boolean }>("session.send", {
-      id: snap.id,
-      text: "also handle Y",
-    });
+    // The model is only writing: the message waits in Loom, editable.
+    frames.length = 0;
+    const r1 = await c.request<SessionSnapshot & { state: string; entryId: string }>(
+      "session.send",
+      {
+        id: snap.id,
+        text: "also handle Y",
+      },
+    );
     await delay(60);
-    assert.equal(r1.injected, true);
-    assert.deepEqual(umEvents().at(-1), { text: "also handle Y", injected: true });
+    assert.equal(r1.state, "queued");
+    assert.deepEqual(r1.queue?.entries[0]?.dequeue, { t: "next_tool_or_turn_end" });
+    assert.deepEqual(umEvents(), [], "nothing enters the log before the agent has it");
+    assert.deepEqual(fs?.sends, []);
+
+    // A root tool starts: the boundary window opens and it is handed over.
+    fs?.emit({ type: "tool_call", id: "t1", name: "Bash", input: {} });
+    await waitFor(() => umEvents().length === 1);
+    assert.deepEqual(umEvents(), [{ text: "also handle Y", injected: true }]);
+    assert.deepEqual(fs?.sends, ["also handle Y"]);
+    assert.deepEqual(fs?.sendOptions[0], { inputId: r1.entryId, midTurn: true });
+    fs?.emit({ type: "tool_result", id: "t1", ok: true, output: "" });
 
     fs?.finishTurn(); // → idle
     await delay(60);
     frames.length = 0;
-    const r2 = await c.request<{ injected?: boolean }>("session.send", {
+    const r2 = await c.request<{ state?: string }>("session.send", {
       id: snap.id,
       text: "next turn please",
     });
     await delay(60);
-    assert.equal(r2.injected, false);
+    assert.equal(r2.state, "consumed");
     assert.deepEqual(umEvents().at(-1), { text: "next turn please", injected: false });
   } finally {
     await c.close();
@@ -1336,12 +1351,12 @@ test("a send that revives a cold session (daemon restart) starts a fresh turn, n
     await hh.daemon.sessions.close(snap.id);
 
     frames.length = 0;
-    const r = await c.request<{ injected?: boolean }>("session.send", {
+    const r = await c.request<{ state?: string }>("session.send", {
       id: snap.id,
       text: "follow-up after restart",
     });
     await delay(60);
-    assert.equal(r.injected, false);
+    assert.equal(r.state, "consumed");
     assert.deepEqual(umEvents().at(-1), { text: "follow-up after restart", injected: false });
     assert.equal(
       (await c.request<SessionSnapshot>("session.get", { id: snap.id })).status.kind,
@@ -3018,7 +3033,7 @@ test("failed startup keeps the opening message and error on the session", async 
   }
 });
 
-test("failed cold send keeps the attempted message and error in history", async () => {
+test("failed cold send records only the error: the message never reached the agent", async () => {
   const c = await client();
   try {
     const row = await c.request<SessionSnapshot>("session.createStub", {
@@ -3030,17 +3045,21 @@ test("failed cold send keeps the attempted message and error in history", async 
       (error: unknown) => (error as { data: { sessionId: string } }).data.sessionId === row.id,
     );
     const page = await c.request<HistoryPage>("session.events", { id: row.id });
-    const events = page.items.slice(-2).map(({ event }) => event);
-    assert.equal(events[0]!.type, "user_message");
-    assert.equal((events[0] as { text: string }).text, "keep my follow-up");
-    assert.equal(events[1]!.type, "error");
-    assert.match((events[1] as { message: string }).message, /no provider ref/);
+    const events = page.items.map(({ event }) => event);
+    assert.equal(events.at(-1)!.type, "error");
+    assert.match((events.at(-1) as { message: string }).message, /no provider ref/);
+    assert.ok(
+      !events.some((e) => e.type === "user_message" && e.text === "keep my follow-up"),
+      "the client keeps the text as a draft; the log only gets what the agent took",
+    );
+    const after = await c.request<SessionSnapshot>("session.get", { id: row.id });
+    assert.equal(after.queue, undefined, "a failed revive queues nothing");
   } finally {
     await c.close();
   }
 });
 
-test("failed live send records the error beside the attempted message", async () => {
+test("a refused hand-over keeps the message queued and records the error; the next send retries", async () => {
   const hh = await makeHarness();
   const c = await LoomClient.connect({
     repoRoot: hh.repoRoot,
@@ -3053,19 +3072,27 @@ test("failed live send records the error beside the attempted message", async ()
       prompt: "hello",
     });
     const provider = (await hh.daemon.providers.get("fake")) as FakeProvider;
-    provider.session(row.id)!.send = async () => {
-      throw new Error("fixture send failed");
-    };
-    await assert.rejects(
-      c.request("session.send", { id: row.id, text: "follow-up" }),
-      (error: unknown) => (error as { data: { sessionId: string } }).data.sessionId === row.id,
+    const fs = provider.session(row.id)!;
+    fs.finishTurn();
+    await waitFor(
+      async () =>
+        (await c.request<SessionSnapshot>("session.get", { id: row.id })).status.kind === "idle",
     );
+    fs.failNextSend = new Error("fixture send failed");
+    const first = await c.request<{ state: string }>("session.send", {
+      id: row.id,
+      text: "follow-up",
+    });
+    assert.equal(first.state, "queued", "refused, so still waiting");
     const page = await c.request<HistoryPage>("session.events", { id: row.id });
-    const events = page.items.slice(-2).map(({ event }) => event);
-    assert.equal(events[0]!.type, "user_message");
-    assert.equal((events[0] as { text: string }).text, "follow-up");
-    assert.equal(events[1]!.type, "error");
-    assert.equal((events[1] as { message: string }).message, "fixture send failed");
+    const events = page.items.map(({ event }) => event);
+    assert.equal(events.at(-1)!.type, "error");
+    assert.equal((events.at(-1) as { message: string }).message, "fixture send failed");
+    assert.ok(!events.some((e) => e.type === "user_message" && e.text === "follow-up"));
+    // A refusal is not retried by itself; the next message tries both, in order.
+    await c.request("session.send", { id: row.id, text: "second" });
+    await waitFor(() => fs.sends.length === 2);
+    assert.deepEqual(fs.sends, ["follow-up", "second"]);
   } finally {
     await c.close();
     await hh.cleanup();

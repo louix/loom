@@ -35,8 +35,16 @@ import type {
   SessionMode,
   SessionRef,
 } from "@loom/core/types";
+import {
+  DeliveryUncertainError,
+  QUEUE_PREVIEW_CHARS,
+  type QueueEntry,
+  type SessionQueue,
+} from "@loom/core/message-queue";
 import { deriveStatus } from "./status-machine.ts";
 import { RpcError } from "./rpc.ts";
+import { dequeueHints, nextAction, type DispatchView } from "./message-queue.ts";
+import type { MessageQueueStore, QueueResult, QueueTarget } from "../store/message-queue.ts";
 
 export interface ManagerHooks {
   /** Forward a normalized event to the push stream + persistence. */
@@ -87,6 +95,17 @@ export interface ManagerHooks {
    * {@link SessionManager.interrupt} settles.
    */
   onInputDiscarded?(sessionId: string, items: readonly DiscardedInput[]): void;
+  /**
+   * A queued user message is starting a fresh turn — the text the turn's
+   * checkpoint and auto-title are seeded from. Not called for one folded into
+   * a live turn, nor for Loom's own sends.
+   */
+  onFreshTurn?(sessionId: string, text: string): void;
+  /**
+   * The sessions' message queues (`docs/message-queue.md`). Without one,
+   * {@link SessionManager.enqueue} refuses and only direct sends work.
+   */
+  queue?: MessageQueueStore;
   log: Logger;
 }
 
@@ -156,6 +175,18 @@ interface Running {
    * yet. That outcome is the session's fleet turn boundary — see `#turnEnded`.
    */
   userTurn: boolean;
+  /** The adapter reports `input_consumed`; without it a queued message is
+   *  consumed the moment it is handed over. */
+  inputReceipts: boolean;
+  /** Root tool calls without a result yet, id → tool name: while one runs,
+   *  the queue's boundary window is open. */
+  rootTools: Map<string, string>;
+  /** A queue hand-over is scheduled on, or running through, the op gate. */
+  handingOver: boolean;
+  /** The provider refused a hand-over; no retry until the state moves. */
+  backoff: boolean;
+  /** Loom is closing the adapter: its stream ending is no crash. */
+  closing: boolean;
 }
 
 export class SessionManager {
@@ -165,6 +196,12 @@ export class SessionManager {
   readonly #keepWarm = new Set<string>();
   /** Consecutive keep-warm pings since the last real user message, per session. */
   readonly #warmPings = new Map<string, number>();
+  /**
+   * Per session, the queue entry that goes next and alone, whatever the hold
+   * says: a send-now, or a message sent to a held queue. Runtime-only — a
+   * restart forgets the request and the entry waits under the ordinary rules.
+   */
+  readonly #forced = new Map<string, string>();
 
   constructor(hooks: ManagerHooks) {
     this.#hooks = hooks;
@@ -247,7 +284,7 @@ export class SessionManager {
       operation: "create",
       elapsedMs: Math.round(performance.now() - started),
     });
-    this.#attach(provider.id, opts.sessionId, session, stateStarting, started, opts.mode);
+    this.#attach(provider, opts.sessionId, session, stateStarting, started, opts.mode);
   }
 
   async resume(provider: AgentProvider, ref: SessionRef): Promise<void> {
@@ -265,11 +302,11 @@ export class SessionManager {
     // follow-up send read as a mid-turn injection (`injected: true`), which the
     // TUI renders as "sent mid-turn" and the daemon treats as not-a-turn-start
     // (no transition to running, no checkpoint user-text seed).
-    this.#attach(provider.id, ref.sessionId, session, stateIdle, undefined, ref.mode);
+    this.#attach(provider, ref.sessionId, session, stateIdle, undefined, ref.mode);
   }
 
   #attach(
-    providerId: string,
+    provider: AgentProvider,
     id: string,
     session: AgentSession,
     state: SessionState = stateStarting,
@@ -277,7 +314,7 @@ export class SessionManager {
     requestedMode?: SessionMode,
   ): void {
     const run: Running = {
-      provider: providerId,
+      provider: provider.id,
       firstOutputSince: state.kind === "starting" ? started : null,
       session,
       state,
@@ -302,6 +339,11 @@ export class SessionManager {
       interruptOperation: null,
       // A create carries its opening prompt; a resume parks until the next send.
       userTurn: state.kind === "starting",
+      inputReceipts: provider.capabilities.inputReceipts ?? false,
+      rootTools: new Map(),
+      handingOver: false,
+      backoff: false,
+      closing: false,
     };
     this.#running.set(id, run);
     // The adapter may have landed on another mode than the one it was given:
@@ -345,9 +387,24 @@ export class SessionManager {
             kinds: ev.items.map((item) => item.kind),
           });
           try {
+            this.#requeueDiscarded(id, ev.items);
             this.#hooks.onInputDiscarded?.(id, ev.items);
           } catch (err) {
             this.#hooks.log.error("input-discarded hook threw; continuing drain", {
+              id,
+              err: err instanceof Error ? err.message : String(err),
+            });
+          }
+          continue;
+        }
+        // Neither is a receipt the transcript carries: the message it names
+        // enters the log now, as the `user_message` this emits.
+        if (ev.type === "input_consumed") {
+          try {
+            this.#consume(id, ev.inputId, ev.midTurn);
+            this.#hooks.onOverlay(id);
+          } catch (err) {
+            this.#hooks.log.error("queue consumption failed; continuing drain", {
               id,
               err: err instanceof Error ? err.message : String(err),
             });
@@ -389,6 +446,8 @@ export class SessionManager {
             ev.type === "rate_limit",
             this.#trackUsage(id, ev),
             this.#trackTurnBoundary(id, run, ev),
+            this.#trackRootTools(id, run, ev),
+            this.#trackCrash(id, ev),
           ].some((c) => c);
           this.#trackRef(id, run);
           // Publishes when it fires, carrying everything applied above.
@@ -398,6 +457,9 @@ export class SessionManager {
           // so the checkpoint is taken against the turn that produced them.
           // Titling is deliberately asynchronous — a later transition of its own.
           if (ev.type === "result") this.#hooks.onResult(id, ev.kind === "ok");
+          // A tool starting, a turn ending: the queue may have something to
+          // hand over now.
+          void this.#pumpQueue(id);
         } catch (err) {
           this.#hooks.log.error("event hook threw; continuing drain", {
             id,
@@ -408,7 +470,11 @@ export class SessionManager {
       }
       // The adapter stream ended. A clean run leaves state at idle/error;
       // anything still live stopped without a clean finish → interrupted.
+      // An adapter that went away by itself may have taken queued input with
+      // it; one Loom closed (a swap, an idle suspension, teardown) did not.
+      const deliberate = run.ended || run.closing;
       run.ended = true;
+      if (!deliberate) this.#holdQueue(id, "crash");
       // Whatever was still outstanding can no longer be answered — the adapter
       // session is gone. Drop it so a late respondTo* doesn't forward to a
       // dead session (interrupt() does the same).
@@ -421,6 +487,7 @@ export class SessionManager {
         this.#hooks.onOverlay(id);
       }
     } catch (err) {
+      if (!run.ended && !run.closing) this.#holdQueue(id, "crash");
       run.ended = true;
       this.#clearOverlays(run);
       const message = err instanceof Error ? err.message : String(err);
@@ -674,8 +741,337 @@ export class SessionManager {
   #transition(id: string, run: Running, next: SessionState, note?: string): boolean {
     if (sameSessionState(run.state, next) && note === undefined) return false;
     run.state = next;
+    // A refused hand-over is retried once the session has moved on.
+    run.backoff = false;
     this.#hooks.onStatus(id, next, note);
     return true;
+  }
+
+  /**
+   * Root tool calls in flight — the queue's boundary window. Returns whether
+   * the window moved while something waits in the queue, whose hints then
+   * need publishing.
+   */
+  #trackRootTools(id: string, run: Running, ev: HarnessEvent): boolean {
+    if (ev.agentId !== undefined) return false;
+    let changed = false;
+    if (ev.type === "tool_call") {
+      run.rootTools.set(ev.id, ev.name);
+      changed = true;
+    } else if (ev.type === "tool_result") changed = run.rootTools.delete(ev.id);
+    else if (ev.type === "result" || (ev.type === "error" && ev.fatal)) {
+      changed = run.rootTools.size > 0;
+      run.rootTools.clear();
+    }
+    return changed && this.#hasQueued(id);
+  }
+
+  /** A fatal root error may have taken handed-over input with it. */
+  #trackCrash(id: string, ev: HarnessEvent): boolean {
+    return ev.type === "error" && ev.fatal && ev.agentId === undefined
+      ? this.#holdQueue(id, "crash")
+      : false;
+  }
+
+  // --- message queue (docs/message-queue.md) -----------------------------
+
+  #hasQueued(id: string): boolean {
+    return this.#hooks.queue?.live(id).some((e) => e.state === "queued") ?? false;
+  }
+
+  /** What the dispatch policy reads off the session's run. */
+  #dispatchView(run: Running | undefined): DispatchView {
+    return {
+      attached: run !== undefined && !run.ended,
+      state: run?.state ?? stateIdle,
+      restructuring: (run?.restructuring ?? null) !== null,
+      cancelling: run?.cancellation === "stopping" || run?.cancellation === "failed",
+      handingOver: run?.handingOver ?? false,
+      rootTool: run ? ([...run.rootTools.values()][0] ?? null) : null,
+      backoff: run?.backoff ?? false,
+    };
+  }
+
+  /**
+   * Stop the queue after something that may have lost handed-over input — a
+   * crash, a fatal error: delivering entries become uncertain and the queue
+   * waits for the user. A hold already set stays (its reason came first).
+   * Returns whether anything changed.
+   */
+  #holdQueue(id: string, hold: "crash" | "interrupt"): boolean {
+    const q = this.#hooks.queue;
+    if (!q || q.live(id).length === 0) return false;
+    q.markUncertain(id);
+    this.#forced.delete(id);
+    if (q.hold(id) === null) q.setHold(id, hold);
+    return true;
+  }
+
+  /** The agent took entry `entryId`: it enters the log here, as a `user_message`. */
+  #consume(id: string, entryId: string, midTurn: boolean): void {
+    const entry = this.#hooks.queue?.markConsumed(id, entryId);
+    if (!entry) return;
+    this.#hooks.emitEvent({
+      type: "user_message",
+      sessionId: id,
+      ts: entry.consumedAt ?? Date.now(),
+      text: entry.text,
+      injected: midTurn,
+      queueEntryId: entry.id,
+      author: entry.author,
+    });
+  }
+
+  /**
+   * A stop discarded input before the agent saw it: the queue's entries go
+   * back to `queued` at their old places, held. Anything else — Loom's own
+   * direct sends, the provider's notifications — is dropped.
+   */
+  #requeueDiscarded(id: string, items: readonly DiscardedInput[]): void {
+    const q = this.#hooks.queue;
+    if (!q) return;
+    let back = 0;
+    for (const item of items) if (item.ref !== undefined && q.requeue(id, item.ref)) back++;
+    if (back === 0) return;
+    if (q.hold(id) === null) q.setHold(id, "interrupt");
+    this.#hooks.onOverlay(id);
+  }
+
+  /**
+   * Evaluate the dispatch policy and, if it says so, run the hand-over on the
+   * op gate. Called after every event, transition, queue change and op.
+   */
+  #pumpQueue(id: string): Promise<void> | undefined {
+    const q = this.#hooks.queue;
+    const run = this.#running.get(id);
+    if (!q || !run || run.ended || run.handingOver) return undefined;
+    const action = nextAction(
+      q.live(id),
+      q.hold(id),
+      this.#dispatchView(run),
+      this.#forced.get(id) ?? null,
+    );
+    if (action.t === "none") return undefined;
+    run.handingOver = true;
+    return this.#enqueue(run, () => this.#handOver(id, run))
+      .catch((err) => {
+        this.#hooks.log.error("queue hand-over failed", {
+          id,
+          err: err instanceof Error ? err.message : String(err),
+        });
+      })
+      .finally(() => {
+        run.handingOver = false;
+        void this.#pumpQueue(id);
+      });
+  }
+
+  /** On the op gate: decide again (things moved while waiting) and hand over. */
+  async #handOver(id: string, run: Running): Promise<void> {
+    const q = this.#hooks.queue;
+    if (!q || this.#running.get(id) !== run || run.ended) return;
+    const forced = this.#forced.get(id) ?? null;
+    const action = nextAction(
+      q.live(id),
+      q.hold(id),
+      { ...this.#dispatchView(run), handingOver: false },
+      forced,
+    );
+    if (action.t !== "handover") return;
+    if (forced !== null && action.ids.includes(forced)) this.#forced.delete(id);
+    const entries = action.ids.flatMap((entryId) => q.entry(id, entryId) ?? []);
+    // Recorded before the provider is called, so a crash in between leaves
+    // them delivering — uncertain after a restart, never silently re-sent.
+    q.markDelivering(
+      id,
+      entries.map((e) => e.id),
+    );
+    this.#hooks.onOverlay(id);
+    for (const [i, entry] of entries.entries()) {
+      // The first of a fresh batch starts the turn; the rest join it.
+      const midTurn = !action.fresh || i > 0;
+      if (await this.#deliver(id, run, entry, midTurn)) continue;
+      if (entry.id === forced) this.#forced.set(id, forced);
+      for (const rest of entries.slice(i + 1)) q.requeue(id, rest.id);
+      break;
+    }
+    this.#hooks.onOverlay(id);
+  }
+
+  /** Hand one entry to the adapter. False when it did not go. */
+  async #deliver(id: string, run: Running, entry: QueueEntry, midTurn: boolean): Promise<boolean> {
+    const q = this.#hooks.queue!;
+    const before = run.state;
+    if (!midTurn) run.firstOutputSince = performance.now();
+    // Armed before the hand-off, as in `send`: a fast turn can report its
+    // outcome before the adapter's `send()` resolves. A fold joins the turn.
+    const armed = run.userTurn;
+    run.userTurn = true;
+    run.cancellation = "none";
+    this.#warmPings.delete(id);
+    try {
+      await run.session.send(entry.text, { inputId: entry.id, midTurn });
+    } catch (err) {
+      run.userTurn = armed;
+      const message = err instanceof Error ? err.message : String(err);
+      const uncertain = err instanceof DeliveryUncertainError;
+      if (uncertain) {
+        // It may have arrived: never retried by itself — the user decides.
+        q.markUncertain(id, [entry.id]);
+        q.setHold(id, "rejected");
+        this.#hooks.emitEvent({
+          type: "error",
+          sessionId: id,
+          ts: Date.now(),
+          fatal: false,
+          message: `A queued message may not have reached the agent (${message}); the queue is held — review it with q.`,
+        });
+      } else {
+        // Refused, so nothing went out: it waits for the session to move on,
+        // or for the user to touch the queue. Folding into a turn that just
+        // ended is refused routinely (Codex's `expectedTurnId`); a refused
+        // turn start is worth saying.
+        q.requeue(id, entry.id);
+        run.backoff = true;
+        if (!midTurn)
+          this.#hooks.emitEvent({
+            type: "error",
+            sessionId: id,
+            ts: Date.now(),
+            fatal: false,
+            message,
+          });
+      }
+      this.#hooks.log.warn("queued message not handed over", {
+        id,
+        entryId: entry.id,
+        uncertain,
+        err: message,
+      });
+      return false;
+    }
+    if (this.#running.get(id) !== run) return false;
+    if (!midTurn) {
+      this.#hooks.onFreshTurn?.(id, entry.text);
+      // S2, as in `send`: only claim `running` if nothing moved the state yet.
+      if (sameSessionState(run.state, before)) this.#transition(id, run, stateRunning);
+    }
+    // Without receipts the hand-over is all the evidence there will be.
+    if (!run.inputReceipts) this.#consume(id, entry.id, midTurn);
+    return true;
+  }
+
+  /**
+   * Queue a user message (`session.send`). Sent to a held queue it goes first
+   * and alone, and sending it releases the hold; the held entries then follow
+   * the ordinary rules relative to the turn it starts.
+   */
+  async enqueue(
+    id: string,
+    e: { entryId: string; text: string; author: string; delivery: QueueEntry["delivery"] },
+  ): Promise<QueueResult<{ entry: QueueEntry; created: boolean }>> {
+    const q = this.#hooks.queue;
+    if (!q) throw new Error("this daemon has no message queue");
+    const held = q.hold(id) !== null;
+    const r = q.enqueue(
+      id,
+      { id: e.entryId, text: e.text, author: e.author, delivery: e.delivery },
+      { head: held },
+    );
+    if (!r.ok || !r.value.created) return r;
+    if (held) {
+      this.#forced.set(id, e.entryId);
+      q.setHold(id, null);
+    }
+    this.#retry(id);
+    this.#hooks.onOverlay(id);
+    // Settles once a hand-over this triggered has run (or straight away when
+    // the message waits), so the caller reports how far it got.
+    await this.#pumpQueue(id);
+    return r;
+  }
+
+  /** The queue changed outside the manager (a client edit): publish, re-evaluate. */
+  queueChanged(id: string): void {
+    this.#retry(id);
+    this.#hooks.onOverlay(id);
+    void this.#pumpQueue(id);
+  }
+
+  /** The user acted on the queue: a refused hand-over may be tried again. */
+  #retry(id: string): void {
+    const run = this.#running.get(id);
+    if (run) run.backoff = false;
+  }
+
+  /**
+   * Send now. On a running, unheld session the entry moves to the head of the
+   * next tool boundary; on an idle or held one it starts a turn alone and the
+   * rest stay as they are. An uncertain entry needs `confirm` — it may
+   * duplicate.
+   */
+  sendNow(id: string, target: QueueTarget, confirm: boolean): QueueResult<QueueEntry> {
+    const q = this.#hooks.queue;
+    if (!q) throw new Error("this daemon has no message queue");
+    if (q.entry(id, target.entryId)?.uncertain && !confirm)
+      return {
+        ok: false,
+        code: "refused",
+        message: "This message may already have reached the agent; confirm to send it again.",
+      };
+    const r = q.toHead(id, target);
+    if (!r.ok) return r;
+    const run = this.#running.get(id);
+    const live = run !== undefined && !run.ended && isLiveState(run.state);
+    if (!live || q.hold(id) !== null) this.#forced.set(id, target.entryId);
+    this.queueChanged(id);
+    return r;
+  }
+
+  /** Clear the hold; uncertain entries stay where they are. False when unheld. */
+  releaseQueue(id: string): boolean {
+    const q = this.#hooks.queue;
+    if (!q || q.hold(id) === null) return false;
+    q.setHold(id, null);
+    this.queueChanged(id);
+    return true;
+  }
+
+  /** The queue as the snapshot carries it; null when empty and unheld. */
+  queueView(id: string): SessionQueue | null {
+    const q = this.#hooks.queue;
+    if (!q) return null;
+    const entries = q.live(id);
+    const hold = q.hold(id);
+    if (entries.length === 0 && hold === null) return null;
+    const hints = dequeueHints(entries, hold, this.#dispatchView(this.#running.get(id)));
+    return {
+      hold,
+      entries: entries.map((e) => ({
+        id: e.id,
+        author: e.author,
+        delivery: e.delivery,
+        state: e.state,
+        uncertain: e.uncertain,
+        revision: e.revision,
+        preview: e.text.slice(0, QUEUE_PREVIEW_CHARS),
+        bytes: new TextEncoder().encode(e.text).length,
+        dequeue: hints.get(e.id) ?? { t: "handed_over" },
+      })),
+    };
+  }
+
+  /** Something in the queue would be handed over now (keep-warm stays away). */
+  queueDispatchable(id: string): boolean {
+    const q = this.#hooks.queue;
+    return q !== undefined && q.hold(id) === null && this.#hasQueued(id);
+  }
+
+  /** Entries handed over and not yet taken — undo must wait for them. */
+  queueDelivering(id: string): boolean {
+    return (
+      this.#hooks.queue?.live(id).some((e) => e.state === "delivering" && !e.uncertain) ?? false
+    );
   }
 
   // --- keep-warm -----------------------------------------------------
@@ -815,6 +1211,9 @@ export class SessionManager {
         run.restructuringSince = null;
         run.compaction = null;
         this.#hooks.onOverlay(id);
+        // Messages that waited out the compaction go now (after this op
+        // releases the gate: the hand-over queues behind it).
+        void this.#pumpQueue(id);
       }
     });
   }
@@ -841,11 +1240,22 @@ export class SessionManager {
     // requests are withdrawn as soon as the user requests a stop.
     run.pending.clear();
     run.cancellation = "stopping";
+    // Hold the queue first, so nothing is dispatched into the stop: after an
+    // interrupt nothing queued reaches the agent until the user says so.
+    const q = this.#hooks.queue;
+    this.#forced.delete(id);
+    if (q && q.hold(id) === null && q.live(id).length > 0) q.setHold(id, "interrupt");
     this.#hooks.onOverlay(id);
     const operation = Promise.resolve().then(async () => {
       try {
         await run.session.interrupt();
         run.cancellation = "stopped";
+        run.rootTools.clear();
+        // Handed over, and neither taken up nor reported discarded: whether
+        // the agent saw them is unknown. A discard reported after this still
+        // puts one back in the queue. (Without receipts nothing is left
+        // delivering: an entry is consumed at hand-over.)
+        if (q && run.inputReceipts) q.markUncertain(id);
         this.#clearOverlays(run);
         if (!run.ended && !compactOnly) {
           // A confirmed user stop is the turn's (interrupted) outcome — unless
@@ -871,6 +1281,7 @@ export class SessionManager {
       } finally {
         run.interruptOperation = null;
         this.#hooks.onOverlay(id);
+        void this.#pumpQueue(id);
       }
     });
     run.interruptOperation = operation;
@@ -1035,7 +1446,7 @@ export class SessionManager {
         const session = await newProvider.resumeSession(ref);
         // #attach replaces #running[id] with a fresh Running (new gate,
         // reportedRef=null) and starts its own drain.
-        this.#attach(newProvider.id, id, session, stateIdle, undefined, ref.mode);
+        this.#attach(newProvider, id, session, stateIdle, undefined, ref.mode);
       } catch (err) {
         this.#running.delete(id);
         throw err;
@@ -1043,6 +1454,8 @@ export class SessionManager {
         run.restructuring = null;
         run.restructuringSince = null;
         this.#hooks.onOverlay(id);
+        // The queue survives the swap; the new adapter takes it from here.
+        void this.#pumpQueue(id);
       }
     });
   }
@@ -1090,6 +1503,7 @@ export class SessionManager {
         run.restructuringSince = null;
         this.#hooks.onOverlay(id);
         run.rewinding = false;
+        void this.#pumpQueue(id);
       }
     });
   }
@@ -1108,7 +1522,9 @@ export class SessionManager {
       !run.compaction &&
       run.pending.size === 0 &&
       run.backgroundTasks.length === 0 &&
-      ![...run.subagents.values()].some((s) => s.active)
+      ![...run.subagents.values()].some((s) => s.active) &&
+      // Input handed over and not yet taken would go with the adapter.
+      !this.queueDelivering(id)
     );
   }
 
@@ -1132,6 +1548,7 @@ export class SessionManager {
   async close(id: string, reason: HostStopReason = "session_close"): Promise<void> {
     const run = this.#running.get(id);
     if (!run) return;
+    run.closing = true;
     await run.session.close(reason);
     this.#running.delete(id);
     this.#keepWarm.delete(id);
@@ -1150,6 +1567,7 @@ export class SessionManager {
     this.#warmPings.clear();
     await Promise.all(
       runs.map(async (run) => {
+        run.closing = true;
         try {
           await run.session.close("daemon_shutdown");
         } catch {

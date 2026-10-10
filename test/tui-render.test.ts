@@ -942,9 +942,13 @@ describe("tui-render", { concurrency: 4 }, () => {
       await delay(100);
       stdin.feed("hold that thought");
       await delay(100);
-      stdin.feed("\r"); // bare Enter — sends now, no overlay
+      stdin.feed("\r"); // bare Enter — queued for the next tool boundary
       await delay(150);
+      assert.deepEqual(fs?.sends, [], "the model is only writing: it waits in the queue");
+      fs?.emit({ type: "tool_call", id: "t1", name: "Bash", input: {} });
+      await waitFor(stdout, () => fs?.sends.length === 1);
       assert.deepEqual(fs?.sends, ["hold that thought"]);
+      fs?.emit({ type: "tool_result", id: "t1", ok: true, output: "" });
 
       // queue one while still running, via ⌥⏎
       stdin.feed("\r"); // Enter opens the send prompt

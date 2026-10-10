@@ -94,6 +94,7 @@ import {
 } from "../store/sessions.ts";
 import { ProviderMessageStore } from "../store/provider-messages.ts";
 import { SessionEventStore } from "../store/session-events.ts";
+import { MessageQueueStore, type QueueResult } from "../store/message-queue.ts";
 import { SessionSearchStore } from "../store/session-search.ts";
 import { estimateTokens, knownContextLimit } from "@loom/core/tokens";
 import { probeOpenAiModels } from "./model-catalog.ts";
@@ -241,6 +242,8 @@ export class Daemon {
   #checkpoints: CheckpointStore;
   #pmsgs: ProviderMessageStore;
   #sessionEvents: SessionEventStore;
+  /** Every session's message queue (`docs/message-queue.md`). */
+  #messageQueue: MessageQueueStore;
   #search: SessionSearchStore;
   #providerDefaults: ProviderDefaultStore;
   /**
@@ -350,6 +353,7 @@ export class Daemon {
     this.#checkpoints = new CheckpointStore(this.#db);
     this.#pmsgs = new ProviderMessageStore(this.#db);
     this.#sessionEvents = new SessionEventStore(this.#db);
+    this.#messageQueue = new MessageQueueStore(this.#db);
     this.#search = new SessionSearchStore(this.#db);
     this.#providerDefaults = new ProviderDefaultStore(this.#db);
     this.#dispatcher = new RpcDispatcher();
@@ -557,6 +561,12 @@ export class Daemon {
             this.#log.warn("mode notification failed", { id, error: String(err) });
           });
       },
+      // The text a queued message starts a turn with seeds that turn's
+      // checkpoint and auto-title; one folded into a live turn does not.
+      onFreshTurn: (id, text) => {
+        if (!this.#stopping) this.#lastSend.set(id, text);
+      },
+      queue: this.#messageQueue,
       log: this.#log.child("sessions"),
     });
     this.#idle = new IdleTimer(this.config.daemon.idleShutdownMinutes, () => {
@@ -633,6 +643,10 @@ export class Daemon {
     for (const { id } of this.#hygiene.interruptedSessions) {
       this.#publishState(id);
     }
+    // Nothing is mid-hand-over after a restart: a queued message that was may
+    // or may not have reached the agent, so its session's queue waits for the
+    // user. Auto-resume bypasses the queue.
+    for (const id of this.#messageQueue.recoverAfterRestart()) this.#publishState(id);
 
     this.#watchConfig();
     this.#environmentPoll = setInterval(() => void this.#checkEnvironment(), 1000);
@@ -955,6 +969,9 @@ export class Daemon {
     if (pendingMode !== undefined) out = { ...out, pendingMode };
     if (this.#sessions.isStopping(s.id)) out = { ...out, stopping: true };
     if (this.#sessions.stopFailed(s.id)) out = { ...out, stopFailed: true };
+    // The queue with the daemon's dequeue hints, so every client says the same.
+    const queue = this.#sessions.queueView(s.id);
+    if (queue) out = { ...out, queue };
     // Outstanding requests, complete enough to answer without any transcript —
     // this is what lets a second client act on a permission it never saw raised.
     const requests = this.#sessions.requestsOf(s.id);
@@ -2799,7 +2816,9 @@ export class Daemon {
           Date.now(),
           this.#sessions.warmPingCount(id),
         );
-        if (move === "skip") continue;
+        // A queued message about to go warms the cache itself; a held queue
+        // does not stop the ping.
+        if (move === "skip" || this.#sessions.queueDispatchable(id)) continue;
         if (move === "giveup") {
           this.#sessions.setKeepWarm(id, false);
           this.#publishState(id);
@@ -3414,12 +3433,19 @@ export class Daemon {
       const snap = await this.#reviveSession(id);
       this.#publishState(snap.id);
       this.#onActivityChange("session-resumed");
+      // Whatever waited in its queue goes by the ordinary rules from here.
+      this.#sessions.queueChanged(id);
       return snap;
     });
 
+    // Every message enters the session's queue; the queue decides when the
+    // agent gets it (`docs/message-queue.md`). It reaches the log as a
+    // `user_message` only once the agent has taken it, so nothing is emitted
+    // here — a failure emits only the `error`.
     d.register("session.send", async (params) => {
       const id = params.id;
       const text = params.text;
+      const entryId = params.entryId ?? randomUUID();
       this.#registry.mustGet(id);
       try {
         while (this.#revivals.has(id)) await this.#revivals.get(id);
@@ -3434,52 +3460,97 @@ export class Daemon {
           this.#publishState(revived.id);
           this.#onActivityChange("session-resumed");
         }
-        // A `compact` / `rewind` holds the session's op gate — a straight send
-        // would park behind it (a compaction can run for minutes). Fast-fail with
-        // a distinct `code` the TUI recognises and re-routes to its own outgoing
-        // queue (which drains when the compaction boundary lands).
         while (this.#revivals.has(id)) await this.#revivals.get(id);
         if (this.#registry.get(id)?.checkout === "clone" && this.#queue.activeKeys.includes(id))
           throw new RpcError(
             "busy",
             "The session is completing a workspace operation; retry in a moment.",
           );
-        const restructuring = this.#sessions.isRestructuring(id);
-        if (this.#sessions.isStopping(id))
-          throw new RpcError("busy", "session is stopping — the message was not sent");
-        if (restructuring) {
-          const doing = restructuring === "provider" ? "switching provider" : `${restructuring}ing`;
-          throw new RpcError(
-            "busy",
-            `session is ${doing} — the message was not sent, retry in a moment`,
-          );
-        }
-        const { injected } = await this.#sessions.send(id, text);
-        // Always emit the message so every client renders it from one source
-        // (clients don't local-echo sends). `injected: true` = it landed in a
-        // live turn (aisdk splices after the current tool result; Claude queues
-        // for the next boundary); false = it started a fresh turn.
-        this.emitEvent({ type: "user_message", sessionId: id, ts: Date.now(), text, injected });
-        // Only the text that *starts* a turn is the checkpoint / auto-title seed.
-        if (!injected) this.#lastSend.set(id, text);
-        return { ...this.#registry.mustGet(id), injected };
       } catch (error) {
-        // Busy sends are queued by the client and have not been accepted yet.
         if (error instanceof RpcError && error.code === "busy") throw error;
         const message = error instanceof Error ? error.message : String(error);
-        this.emitEvent({
-          type: "user_message",
-          sessionId: id,
-          ts: Date.now(),
-          text,
-          injected: false,
-        });
         this.emitEvent({ type: "error", sessionId: id, ts: Date.now(), message, fatal: false });
         this.#publishState(id);
         throw new RpcError(error instanceof RpcError ? error.code : "provider_error", message, {
           sessionId: id,
         });
       }
+      // A compaction, a rewind or a stop in progress no longer refuses the
+      // message: it waits in the queue until the session can take it.
+      const r = await this.#sessions.enqueue(id, {
+        entryId,
+        text,
+        author: params.by ?? "unknown",
+        delivery: params.delivery ?? "next_boundary",
+      });
+      if (!r.ok) throw new RpcError(r.code, r.message, { sessionId: id });
+      const entry = this.#messageQueue.entry(id, entryId) ?? r.value.entry;
+      return { ...this.#enrich(this.#registry.mustGet(id), false), entryId, state: entry.state };
+    });
+
+    d.register("session.queueEntry", (params) => {
+      this.#registry.mustGet(params.id);
+      const entry = this.#messageQueue.entry(params.id, params.entryId);
+      if (!entry) throw new RpcError("not_found", "That message is not in the queue.");
+      return entry;
+    });
+
+    /** A queue mutation's outcome: the entry, or the reason as an RPC error. */
+    const queued = <T>(id: string, r: QueueResult<T>): T => {
+      if (!r.ok) throw new RpcError(r.code, r.message, { sessionId: id });
+      this.#sessions.queueChanged(id);
+      return r.value;
+    };
+    const target = (p: { entryId: string; revision: number }) => ({
+      entryId: p.entryId,
+      revision: p.revision,
+    });
+
+    d.register("session.queueEdit", (params) => {
+      this.#registry.mustGet(params.id);
+      return queued(params.id, this.#messageQueue.edit(params.id, target(params), params.text));
+    });
+
+    d.register("session.queueMove", (params) => {
+      this.#registry.mustGet(params.id);
+      return queued(
+        params.id,
+        this.#messageQueue.move(params.id, target(params), params.direction),
+      );
+    });
+
+    d.register("session.queueSetDelivery", (params) => {
+      this.#registry.mustGet(params.id);
+      return queued(
+        params.id,
+        this.#messageQueue.setDelivery(params.id, target(params), params.delivery),
+      );
+    });
+
+    d.register("session.queueRemove", (params) => {
+      this.#registry.mustGet(params.id);
+      return queued(params.id, this.#messageQueue.remove(params.id, params.entries));
+    });
+
+    d.register("session.queueClear", (params) => {
+      this.#registry.mustGet(params.id);
+      const cleared = this.#messageQueue.clear(params.id, params.entryIds);
+      this.#sessions.queueChanged(params.id);
+      return { cleared: cleared.map((e) => e.id) };
+    });
+
+    d.register("session.queueSendNow", (params) => {
+      this.#registry.mustGet(params.id);
+      const r = this.#sessions.sendNow(params.id, target(params), params.confirm === true);
+      if (!r.ok) throw new RpcError(r.code, r.message, { sessionId: params.id });
+      return r.value;
+    });
+
+    d.register("session.queueRelease", (params) => {
+      this.#registry.mustGet(params.id);
+      if (!this.#sessions.releaseQueue(params.id))
+        throw new RpcError("refused", "The queue is not held.", { sessionId: params.id });
+      return this.#enrich(this.#registry.mustGet(params.id), false);
     });
 
     d.register("session.checkpoints", (params) => {
@@ -3518,6 +3589,14 @@ export class Daemon {
         // rewind() awaits the in-flight #turn, which for a running / parked
         // session never settles until it's interrupted → the RPC would hang.
         throw new RpcError("bad_request", "interrupt the session before rewinding it");
+      }
+      // Queued and held messages are not history and survive an undo; one
+      // already handed to the agent may be about to become history.
+      if (this.#sessions.queueDelivering(id)) {
+        throw new RpcError(
+          "bad_request",
+          "a queued message is being handed to the agent — wait for it, or interrupt first",
+        );
       }
 
       // A transcript-owning provider (aisdk) can truncate its own array (or
@@ -3674,6 +3753,14 @@ export class Daemon {
       if (!this.#sessions.has(id)) throw new RpcError("not_found", `session not running: ${id}`);
       this.#hooks.forget(id);
       await this.#sessions.interrupt(id);
+      const held = this.#sessions.queueView(id);
+      if (held?.hold === "interrupt" && held.entries.length > 0) {
+        const n = held.entries.length;
+        this.#emitNotice(
+          `Interrupted · ${n} message${n === 1 ? "" : "s"} held · q to review`,
+          "info",
+        );
+      }
       return this.#registry.mustGet(id);
     });
 
@@ -4089,6 +4176,9 @@ export class Daemon {
         }
         this.#hooks.forget(id);
         if (this.#sessions.has(id)) await this.#sessions.close(id, "user_stop");
+        // Archiving is a stop: whatever is still queued waits for the user.
+        if (this.#messageQueue.live(id).length > 0 && this.#messageQueue.hold(id) === null)
+          this.#messageQueue.setHold(id, "interrupt");
         return await withStoppedSessionVm(this.repoRoot, id, async () => {
           if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
           this.#lastSend.delete(id);

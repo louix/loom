@@ -34,9 +34,14 @@ export type QueueAction =
 
 const NONE: QueueAction = { t: "none" };
 
-/** The turn is over: nothing of the root agent's is running. */
+/** The turn is over: nothing of the root agent's is running. A failed turn
+ *  counts — a message starts the next one, as a send always has; the entries
+ *  that were waiting when it failed are held (`crash`) by the manager. */
 const turnEnded = (s: SessionState): boolean =>
-  s.kind === "idle" || s.kind === "interrupted" || s.kind === "working_background";
+  s.kind === "idle" ||
+  s.kind === "interrupted" ||
+  s.kind === "working_background" ||
+  s.kind === "error";
 
 /** Rule 1: states in which nothing is handed over at all. */
 const blocked = (v: DispatchView): boolean =>

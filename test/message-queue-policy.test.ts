@@ -54,7 +54,6 @@ test("rule 1: nothing goes while held, cold, starting, awaiting input, restructu
   assert.deepEqual(nextAction(queue, null, view({ cancelling: true })), NONE);
   assert.deepEqual(nextAction(queue, null, view({ handingOver: true })), NONE);
   assert.deepEqual(nextAction(queue, null, view({ backoff: true })), NONE);
-  assert.deepEqual(nextAction(queue, null, view({ state: stateError("x") })), NONE);
 });
 
 test("rule 2: a root tool in flight opens the boundary window for every next_boundary entry", () => {
@@ -69,8 +68,13 @@ test("rule 3: while the model only writes, next_boundary entries wait in Loom", 
   assert.deepEqual(nextAction(queue, null, view({ state: stateRunning })), NONE);
 });
 
-test("rule 4: at turn end the leftover next_boundary entries go as one fresh turn", () => {
-  for (const state of [stateIdle, stateInterrupted("user"), stateWorkingBackground]) {
+test("rule 4: at turn end (a failed one too) the leftover next_boundary entries go as one fresh turn", () => {
+  for (const state of [
+    stateIdle,
+    stateInterrupted("user"),
+    stateWorkingBackground,
+    stateError("turn failed"),
+  ]) {
     assert.deepEqual(nextAction(queue, null, view({ state })), {
       t: "handover",
       ids: ["b1", "b2"],

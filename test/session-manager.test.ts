@@ -867,7 +867,9 @@ describe("session-manager", { concurrency: 4 }, () => {
     assert.equal(snap.subagents[0]?.active, true);
     assert.equal(snap.backgroundTasks.length, 1);
     assert.notEqual(snap.status.kind, "interrupted");
-    await assert.rejects(c.request("session.send", { id, text: "racing send" }), /stopping/);
+    // A message sent into the stop is queued, not handed to the stopping agent.
+    const racing = await c.request<{ state: string }>("session.send", { id, text: "racing send" });
+    assert.equal(racing.state, "queued");
     reject(new Error("child stop rejected"));
     await failure;
     snap = await c.request<SessionSnapshot>("session.get", { id });
@@ -885,12 +887,14 @@ describe("session-manager", { concurrency: 4 }, () => {
     await waitFor(async () => !!(await c.request<SessionSnapshot>("session.get", { id })).stopping);
     snap = await c.request<SessionSnapshot>("session.get", { id });
     assert.equal(snap.stopFailed, undefined, "retrying is stopping, not also failed");
-    await assert.rejects(c.request("session.send", { id, text: "retry racing send" }), /stopping/);
     finishStop();
     await retry;
     snap = await c.request<SessionSnapshot>("session.get", { id });
     assert.equal(snap.status.kind, "interrupted");
     assert.equal(snap.stopFailed, undefined);
+    // The retry held the queue the racing send was waiting in.
+    assert.equal(snap.queue?.hold, "interrupt");
+    assert.deepEqual(fs.sends, [], "nothing queued reached the stopping agent");
     assert.equal(snap.subagents[0]?.active, false);
     assert.deepEqual(snap.backgroundTasks, []);
     fs.emit({ type: "subagent_started", subagentId: "late", name: "stale" });
@@ -902,9 +906,17 @@ describe("session-manager", { concurrency: 4 }, () => {
     snap = await c.request<SessionSnapshot>("session.get", { id });
     assert.ok(!snap.subagents.some((s) => s.active));
     assert.deepEqual(snap.backgroundTasks, []);
+    // A new message goes first, alone, and releases the hold; the held one
+    // waits for this turn's boundary.
     await c.request("session.send", { id, text: "continue after retry" });
-    assert.equal(await statusOf(c, id), "running");
-    assert.equal(fs.sends.at(-1), "continue after retry");
+    await waitFor(async () => (await statusOf(c, id)) === "running");
+    assert.deepEqual(fs.sends, ["continue after retry"]);
+    snap = await c.request<SessionSnapshot>("session.get", { id });
+    assert.equal(snap.queue?.hold, null);
+    assert.deepEqual(
+      snap.queue?.entries.map((e) => e.state),
+      ["queued"],
+    );
     await c.close();
   });
 
@@ -1310,7 +1322,7 @@ describe("session-manager", { concurrency: 4 }, () => {
 
   // --- Phase 1: per-session serialization + cooperative cancellation ----------
 
-  test("session.send is refused with code=busy while a compact is in flight", async () => {
+  test("session.send during a compact is queued and goes when it finishes", async () => {
     const c = await client();
     const { id, fs } = await createFake(c);
     fs.finishTurn({ contextUsed: 50_000 });
@@ -1337,10 +1349,15 @@ describe("session-manager", { concurrency: 4 }, () => {
     assert.equal(typeof flag.startedAt, "number");
     assert.equal(flag.before, 50_000, "`before` is the pre-compact context fill");
 
-    await assert.rejects(
-      c.request("session.send", { id, text: "hi" }),
-      (e: unknown) => (e as { code?: unknown }).code === "busy",
-    );
+    // A message sent now waits in the queue, saying why, instead of parking
+    // on the gate for the whole compaction or bouncing back as `busy`.
+    const sent = await c.request<SessionSnapshot & { state: string }>("session.send", {
+      id,
+      text: "hi",
+    });
+    assert.equal(sent.state, "queued");
+    assert.deepEqual(sent.queue?.entries[0]?.dequeue, { t: "after_compaction" });
+    assert.deepEqual(fs.sends, [], "nothing reaches the adapter mid-compaction");
 
     release();
     await compacting;
@@ -1349,7 +1366,8 @@ describe("session-manager", { concurrency: 4 }, () => {
     await waitFor(() => latestCompacting() === undefined);
     assert.equal(latestCompacting(), undefined, "the overlay clears when the gate releases");
     assert.equal(fs.compacts.length, 1);
-    assert.deepEqual(fs.sends, [], "the send never reached the adapter");
+    await waitFor(() => fs.sends.length === 1);
+    assert.deepEqual(fs.sends, ["hi"], "the queued message went once the gate released");
     await c.close();
   });
 
@@ -1994,7 +2012,7 @@ for (const failure of [false, true]) {
         await waitFor(async () => (await statusOf(c, id)) === (failure ? "error" : "interrupted"));
 
         const before = await c.request<SessionSnapshot>("session.get", { id });
-        const result = await c.request<SessionSnapshot & { injected?: boolean }>(
+        const result = await c.request<SessionSnapshot & { state?: string }>(
           command,
           command === "session.send" ? { id, text: "continue after login" } : { id },
         );
@@ -2008,7 +2026,9 @@ for (const failure of [false, true]) {
         assert.deepEqual(fs.sends, []);
         assert.deepEqual(fresh.sends, command === "session.send" ? ["continue after login"] : []);
         assert.equal(result.status.kind, command === "session.send" ? "running" : "idle");
-        if (command === "session.send") assert.equal(result.injected, false);
+        // The fake has no receipts: the hand-over that started the turn is
+        // its consumption.
+        if (command === "session.send") assert.equal(result.state, "consumed");
         if (command === "session.compact") assert.deepEqual(fresh.compacts, [undefined]);
       } finally {
         await c.close();
