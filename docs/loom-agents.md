@@ -1,6 +1,6 @@
 # Loom agents: sessions that supervise sessions
 
-Status: design, agreed 2026-10-11; not implemented.
+Status: design, agreed 2026-10-11; stage 1 implemented (see Stages).
 
 ## Goal
 
@@ -173,9 +173,40 @@ messages, interrupts and outcomes are ordinary session events.
 3. `report` outcomes as events; supervisor question handling once designed;
    optional concurrency limits.
 
+### Stage 1 as built
+
+- Native sub-agents: Claude runs with `disallowedTools` `Agent` and `Task`;
+  aisdk sessions lost their `task` tool; Codex app-servers start with
+  `-c features.multi_agent=false -c features.multi_agent_v2=false` (start,
+  resume and fork alike).
+- The tools are mounted in each provider (Claude: an in-process `loom-agents`
+  MCP server; aisdk: plain tools; Codex: dynamic tools, so only threads started
+  with them have them). A call parks in the adapter as an `agent_call` event;
+  the daemon runs it (`backend/daemon/src/daemon/agents.ts`) and answers with
+  `respondToAgentCall` (worker protocol v5). A caller acts only on sessions
+  whose `supervisor_id` is its own id. `agent_stop` takes `discard`, and
+  `agent_wait` takes `until: any | all` and a timeout (default 60 s, at most
+  600 s); `agent_read` returns at most 16 KB with a cursor.
+- A profile's unset provider, model, effort and mode follow the spawner (a
+  `plan` spawner's children run in `default`); `mcp` filters the session's MCP
+  servers and names `loom-agents`; `skills` and the tool lists apply to Claude
+  (`skills`, `tools`, `disallowedTools`) and aisdk (built-in tools), and are
+  refused for providers that cannot honour them. A child's system prompt gets a
+  note naming its supervisor before the profile's prompt.
+- Closing a supervisor with open agents needs a choice (`children: stop |
+detach` on `session.markDone` / `session.remove`, `--children` in the CLI,
+  `c` in the TUI confirm, detach by default). Stopping a child with
+  uncommitted changes keeps it, stopped.
+
 ## Open
 
-- Codex's switch for disabling its native sub-agents.
+- Codex's switch for disabling its native sub-agents: `features.multi_agent`
+  (on by default) and `features.multi_agent_v2` are set off; both flags exist
+  in Codex 0.156.1. The bundled model catalogue also declares a per-model
+  `multi_agent_version` (`v2` for the current models), and
+  `codex debug prompt-input` still renders the v2 team instructions with both
+  flags off, though it may not apply feature gating at all. Confirm against a live thread
+  that `spawn_agent` and the v2 team tools are absent for a v2 model.
 - Shared VM for children (running inside the supervisor's VM).
 - Clone children while the supervisor's VM is stopped: the clone directory
   persists on the host, so the child can still mount it; confirm nothing in the
