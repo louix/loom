@@ -768,7 +768,10 @@ const assertCodexTools = async (
   );
   const params = starts.find((p) => p.cwd === s.worktree) ?? starts[0] ?? {};
   const dynamic = (params.dynamicTools ?? []).map((t) => t.name);
-  const argv = (await tap.argv()).filter((a) => a.startsWith("app-server"));
+  // The session's app-server, not a model-discovery or auth probe that may start after it.
+  const argv = (await tap.argv()).filter(
+    (a) => a.startsWith("app-server") && !a.endsWith(" -c mcp_servers={}"),
+  );
   const said = texts.get(s.id) ?? "";
   const listed = said.match(/TOOLS:(.*)/)?.[1] ?? "";
   const nested = said.match(/NESTED:(.*)/)?.[1] ?? "";
