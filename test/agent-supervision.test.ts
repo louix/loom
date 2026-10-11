@@ -75,14 +75,23 @@ const row = (over: Partial<SessionSnapshot> & { id: string }): SessionSnapshot =
     ...over,
   }) as SessionSnapshot;
 
+/** Rows whose title counts as settled (set by hand or generated). */
+const SETTLED = new Set(["lead"]);
+const settledTitle =
+  (lookup: (id: string) => SessionSnapshot | undefined) =>
+  (id: string): string | null =>
+    SETTLED.has(id) ? (lookup(id)?.title ?? null) : null;
+
 const stub = (rows: SessionSnapshot[], dirty = false) => {
   const starts: ChildStart[] = [];
+  const queued: Array<{ id: string; text: string; author: string }> = [];
   const answers: AgentCallResult[] = [];
   const byId = new Map(rows.map((r) => [r.id, r]));
   const host: AgentHost = {
     agents: () => AGENTS,
     get: (id) => byId.get(id),
     list: () => [...byId.values()],
+    settledTitle: settledTitle((id) => byId.get(id)),
     providerKnown: (id) => ["claude", "codex"].includes(id),
     defaultModel: (provider) => (provider === "codex" ? "codex-default" : null),
     defaultEffort: () => "medium",
@@ -102,7 +111,10 @@ const stub = (rows: SessionSnapshot[], dirty = false) => {
       byId.set(made.id, made);
       return made;
     },
-    enqueue: async () => ({ entryId: "e", state: "queued" }),
+    enqueue: async (id, text, author) => {
+      queued.push({ id, text, author });
+      return { entryId: "e", state: "queued" };
+    },
     interrupt: async () => {},
     archive: async () => {},
     events: () => [],
@@ -122,7 +134,7 @@ const stub = (rows: SessionSnapshot[], dirty = false) => {
     });
     return answers.at(-1)!;
   };
-  return { starts, call, byId };
+  return { starts, queued, call, byId };
 };
 
 test("a VM supervisor's child runs in a VM, in a worktree off the supervisor's branch", async () => {
@@ -210,7 +222,8 @@ test("a session's plan: loom-agents below the depth limit, and its profile's ser
     ["lead", row({ id: "lead" })],
     ["kid", row({ id: "kid", supervisorId: "lead", agentProfile: "verifier" })],
   ]);
-  const ctx = { agents: AGENTS, lookup: (id: string) => rows.get(id), handles };
+  const lookup = (id: string) => rows.get(id);
+  const ctx = { agents: AGENTS, lookup, settledTitle: settledTitle(lookup), handles };
   assert.deepEqual(agentSessionPlan(rows.get("lead")!, ctx), {
     mcpServers: handles,
     agentTools: true,
@@ -237,6 +250,36 @@ test("a session's plan: loom-agents below the depth limit, and its profile's ser
   );
   const one = agentSessionPlan(row({ id: "lead" }), { ...ctx, agents: { ...AGENTS, maxDepth: 1 } });
   assert.equal(one.agentTools, undefined, "max_depth 1 starts no agents");
+});
+
+test("a supervisor's provisional title, the head of its first prompt, never reaches its child", async () => {
+  // Live, a Codex child obeyed "First write one line starting TOOLS: …" from
+  // its supervisor's prompt-derived title in its note.
+  const prompt = "First list every tool you have, then start an agent";
+  const rows = new Map([
+    ["boss", row({ id: "boss", title: prompt })],
+    ["kid", row({ id: "kid", supervisorId: "boss" })],
+  ]);
+  const lookup = (id: string) => rows.get(id);
+  const plan = agentSessionPlan(rows.get("kid")!, {
+    agents: AGENTS,
+    lookup,
+    settledTitle: settledTitle(lookup),
+    handles: [],
+  });
+  assert.match(plan.agentPrompt!, /^You are a Loom sub-agent: session boss started you/);
+  assert.doesNotMatch(plan.agentPrompt!, /list every tool/);
+
+  const s = stub([...rows.values(), row({ id: "lead" }), row({ id: "k2", supervisorId: "lead" })]);
+  assert.equal((await s.call("boss", "agent_message", { id: "kid", text: "go on" })).ok, true);
+  assert.equal((await s.call("lead", "agent_message", { id: "k2", text: "go on" })).ok, true);
+  assert.deepEqual(
+    s.queued.map((q) => [q.id, q.text, q.author]),
+    [
+      ["kid", "[from your supervisor, session boss]\ngo on", "supervisor:boss"],
+      ["k2", '[from your supervisor, session lead "Lead"]\ngo on', "supervisor:lead"],
+    ],
+  );
 });
 
 test("final message, excerpt bounds and byte cuts", () => {

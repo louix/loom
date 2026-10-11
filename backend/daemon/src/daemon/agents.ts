@@ -82,6 +82,8 @@ export const agentSessionPlan = (
   ctx: {
     agents: LoomConfig["agents"];
     lookup: (id: string) => SessionSnapshot | undefined;
+    /** See {@link AgentHost.settledTitle}. */
+    settledTitle: (id: string) => string | null;
     handles: McpServerHandle[];
   },
 ): AgentSessionPlan => {
@@ -92,7 +94,10 @@ export const agentSessionPlan = (
   const depth = supervisionDepth(row.id, (id) => (id === row.id ? row : ctx.lookup(id)));
   const keeps = (name: string) => profile?.mcp === undefined || profile.mcp.includes(name);
   const supervisor = row.supervisorId ? ctx.lookup(row.supervisorId) : undefined;
-  const prompt = [supervisor ? childNote(supervisor) : "", profile?.prompt ?? ""]
+  const prompt = [
+    supervisor ? childNote(supervisor.id, ctx.settledTitle(supervisor.id)) : "",
+    profile?.prompt ?? "",
+  ]
     .filter(Boolean)
     .join("\n\n");
   return {
@@ -105,9 +110,9 @@ export const agentSessionPlan = (
   };
 };
 
-const childNote = (supervisor: SessionSnapshot): string =>
+const childNote = (supervisorId: string, title: string | null): string =>
   [
-    `You are a Loom sub-agent: session ${short(supervisor.id)}${supervisor.title ? ` ("${supervisor.title}")` : ""} started you with a task and supervises you.`,
+    `You are a Loom sub-agent: session ${short(supervisorId)}${title ? ` ("${title}")` : ""} started you with a task and supervises you.`,
     "Your final message at the end of each turn is sent to it, so end every turn with a clear report: what you did, how you verified it, and what is left or failed.",
     "Commit your work before you report: your supervisor sees your branch, not your uncommitted files.",
     "Questions and permission requests go to the user, as usual.",
@@ -243,6 +248,12 @@ export interface AgentHost {
   agents(): LoomConfig["agents"];
   /** A session with its git facts, or undefined. */
   get(id: string): SessionSnapshot | undefined;
+  /**
+   * A session's title once it is a real one (set by hand or generated), else
+   * null. Until then a title is the head of the first prompt, which a child
+   * shown it as its supervisor's name would read as instructions.
+   */
+  settledTitle(id: string): string | null;
   list(): SessionSnapshot[];
   /** Is the provider configured and enabled here? */
   providerKnown(id: string): boolean;
@@ -483,8 +494,8 @@ export class AgentSupervision {
       input["delivery"] === "end_of_turn" ? "end_of_turn" : "next_boundary";
     if (child.status.kind === "done")
       refuse(`${short(child.id)} is archived; start a new agent instead`);
-    const me = this.#host.get(caller);
-    const from = `[from your supervisor, session ${short(caller)}${me?.title ? ` "${me.title}"` : ""}]`;
+    const title = this.#host.settledTitle(caller);
+    const from = `[from your supervisor, session ${short(caller)}${title ? ` "${title}"` : ""}]`;
     const queued = await this.#host.enqueue(
       child.id,
       `${from}\n${text}`,

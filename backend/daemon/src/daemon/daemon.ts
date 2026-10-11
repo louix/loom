@@ -621,6 +621,7 @@ export class Daemon {
         return row ? this.#enrich(row, false) : undefined;
       },
       list: () => this.#registry.listSorted().map((s) => this.#enrich(s, false)),
+      settledTitle: (id) => this.#settledTitle(id),
       providerKnown: (id) => this.#providers.has(id),
       defaultModel: (provider) => this.#defaultModelFor(provider) || null,
       defaultEffort: (provider, model) =>
@@ -2810,6 +2811,14 @@ export class Daemon {
     });
   }
 
+  /** `id`'s title once set by hand or generated; null while it is still the
+   *  head of the first prompt (`AgentHost.settledTitle`). */
+  #settledTitle(id: string): string | null {
+    const store = this.#registry.store;
+    if (!store.titleLocked(id) && !store.autoTitleDone(id)) return null;
+    return this.#registry.get(id)?.title ?? null;
+  }
+
   /** Retry unfinished naming on successful turns, independently of turn count. */
   async #maybeAutoTitle(id: string): Promise<void> {
     if (this.#stopping || !this.config.titles.enabled || this.#titling.has(id)) return;
@@ -2915,6 +2924,7 @@ export class Daemon {
     return agentSessionPlan(row, {
       agents: this.config.agents,
       lookup: (other) => this.#registry.get(other) ?? undefined,
+      settledTitle: (other) => this.#settledTitle(other),
       handles: this.#mcpHandles(),
     });
   }
