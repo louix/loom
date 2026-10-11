@@ -6,7 +6,7 @@ import { CloneGit, type CloneFacts } from "./clone-git.ts";
 import type { HookAttempt } from "../../../../core/src/shell-hook.ts";
 import { pruneVmInventory } from "../../../../runtime/src/session-vm/inventory.ts";
 import { startupSignal } from "./startup.ts";
-import { stateInterrupted } from "@loom/core/session-state";
+import { stateInterrupted, type StopCause } from "@loom/core/session-state";
 import { PROCESS_GROUP_GRACE_MS, settleProcessGroups } from "@loom/core/process-group";
 import type { RpcParams } from "@loom/core/rpc-params";
 import {
@@ -262,6 +262,11 @@ export interface DaemonStartOptions {
 export class Daemon {
   readonly #guestStop = new AbortController();
   readonly #cloneFacts = new Map<string, CloneFacts>();
+  /** Per live session, the base its agent was last told, as its checkout
+   *  names it (`#pushAgentBase`). */
+  readonly #agentBases = new Map<string, string>();
+  /** Per clone session, the host base branch its last sync fetched. */
+  readonly #cloneFetchedBase = new Map<string, string>();
   /**
    * Per session, the tail of its serialized guest Git probes. Serial so an older
    * probe can never land after a newer one; `waiting` while the tail has not
@@ -384,7 +389,7 @@ export class Daemon {
     this.paths.trees = loomPaths(this.repoRoot, this.config.worktreeDir).trees;
     const dbPath = resolveAgainstRepo(opts.repoRoot, this.config.db);
     this.#db = openDb(dbPath);
-    this.#registry = new Registry(this.#db);
+    this.#registry = new Registry(this.#db, this.#log.child("registry"));
     // Legacy sessions predate the mode column. Saved VM state is evidence of
     // their actual environment; current defaults must not reclassify them.
     for (const row of this.#registry.store.list()) {
@@ -450,8 +455,9 @@ export class Daemon {
           this.#sessions.setKeepWarm(id, false);
           await this.#queue.run(id, async () => {
             if (!isCurrent()) return;
-            await this.#sessions.close(id, "user_stop");
+            await this.#sessions.close(id, "user_stop", "user");
             this.#vmGenerations.delete(id);
+            this.#sessions.holdForStop(id, "user");
             this.#registry.setStatus(id, stateInterrupted("user"));
             this.#publishState(id);
           });
@@ -529,9 +535,9 @@ export class Daemon {
         }
         this.emitEvent(ev);
       },
-      onStatus: (id, state, note) => {
+      onStatus: (id, state, note, cause) => {
         this.#vmIdleSince.delete(id);
-        this.#onDerivedStatus(id, state, note);
+        this.#onDerivedStatus(id, state, note, cause);
       },
       onUsage: (id, delta) => {
         if (this.#stopping) return;
@@ -624,9 +630,7 @@ export class Daemon {
         const row = this.#registry.get(id);
         return row ? this.#enrich(row, false) : undefined;
       },
-      row: (id) => this.#registry.get(id) ?? undefined,
-      children: (id) => this.#registry.listSorted().filter((s) => s.supervisorId === id),
-      list: () => this.#registry.listSorted().map((s) => this.#enrich(s, false)),
+      children: (id) => this.#registry.children(id).map((s) => this.#enrich(s, false)),
       settledTitle: (id) => this.#settledTitle(id),
       providerKnown: (id) => this.#providers.has(id),
       defaultModel: (provider) => this.#defaultModelFor(provider) || null,
@@ -639,10 +643,10 @@ export class Daemon {
       enqueue: (id, text, author, delivery, opts) =>
         this.#enqueueMessage(id, text, author, delivery, undefined, opts),
       interrupt: async (id) => {
-        await this.#interruptSession(id);
+        await this.#interruptSession(id, "supervisor");
       },
       archive: async (id, force) => {
-        await this.#archive(id, force, "detach");
+        await this.#archive(id, force, "detach", "supervisor");
       },
       events: (id, { after, limit }) =>
         after === undefined
@@ -1011,6 +1015,11 @@ export class Daemon {
       mode,
       this.#guestStop.signal,
     );
+    // The clone now has `origin/<base>`: a renamed base can be told.
+    if (snap.baseBranch && res.outcome !== "no-base") {
+      this.#cloneFetchedBase.set(id, snap.baseBranch);
+      this.#pushAgentBase(id);
+    }
     await this.#refreshGitFacts(id);
     return this.#reportBaseSync(id, snap, mode, res, nudge);
   }
@@ -2184,13 +2193,11 @@ export class Daemon {
         if (workspace === "clone") {
           try {
             const made = this.#worktrees.createBranch(id, from ? { baseRef: from } : {});
+            // Stored before the await below, never after it: a supervisor's
+            // rename meanwhile rewrites the stored base, and must not be undone.
+            this.#registry.setFields(id, { branch: made.branch, baseBranch: made.baseRef });
             clonePath = await this.#clonePath(id, o.providerId);
-            this.#registry.setFields(id, {
-              worktree: clonePath,
-              branch: made.branch,
-              baseBranch: made.baseRef,
-              checkout: "clone",
-            });
+            this.#registry.setFields(id, { worktree: clonePath, checkout: "clone" });
             this.#publishState(id);
           } catch (cause) {
             throw new RpcError(
@@ -2267,7 +2274,9 @@ export class Daemon {
           this.#registry.setFields(id, { worktree: null });
         }
         if (startup.signal.aborted) {
-          this.#registry.setStatus(id, stateInterrupted("user"));
+          // The interrupt that aborted it has said who stopped it.
+          if (this.#registry.get(id)?.status.kind !== "interrupted")
+            this.#registry.setStatus(id, stateInterrupted("user"));
           this.#publishState(id);
           return;
         }
@@ -2601,9 +2610,13 @@ export class Daemon {
     return list.map((s) => this.#enrich(s));
   }
 
-  /** A state transition the session manager derived from the event stream. */
-  #onDerivedStatus(id: string, state: SessionState, note?: string): void {
+  /** A state transition the session manager derived from the event stream;
+   *  `cause`, who asked for the stop a turn ended in. */
+  #onDerivedStatus(id: string, state: SessionState, note?: string, cause?: StopCause): void {
     if (this.#stopping) return;
+    // A turn end decides on a nudge below: until it has, a Loom agent's
+    // supervisor does not count this idle as the turn settled.
+    if (state.kind === "idle") this.#agents.turnEnding(id);
     const snap = this.#registry.setStatus(id, state, note ?? null);
     this.emitEvent({
       type: "status_changed",
@@ -2628,6 +2641,7 @@ export class Daemon {
     }
     if (state.kind === "idle" && snap.checkout === "clone") {
       let nudged = false;
+      let fired = false;
       void this.#queue
         .run(id, async () => {
           const ended = () =>
@@ -2648,17 +2662,20 @@ export class Daemon {
           } catch (error) {
             this.#emitNotice(String(error), "warn");
           }
+          fired = true;
           this.#fireStatusHooks(snap, state, nudged);
         })
-        .catch((error) =>
-          this.#log.warn("clone turn-end Git failed", { id, error: String(error) }),
-        );
+        .catch((error) => this.#log.warn("clone turn-end Git failed", { id, error: String(error) }))
+        // A turn end overtaken by the next turn is that turn's to report.
+        .finally(() => {
+          if (!fired) this.#agents.turnEnded(id);
+        });
       return;
     }
     const nudged =
       state.kind === "idle" && (this.#maybeAutoRebase(id) || this.#maybeCommitNudge(id));
 
-    this.#fireStatusHooks(snap, state, nudged);
+    this.#fireStatusHooks(snap, state, nudged, cause);
   }
 
   /**
@@ -2672,11 +2689,18 @@ export class Daemon {
    * the agent a message, which moves the session back to `running`, and a
    * notifier should be told the state the session actually settled in.
    * `nudged`: they did, so the turn did not settle — a Loom agent's
-   * supervisor hears of the turn the nudge started when that one ends.
+   * supervisor hears of it, with the reply to the nudge, when the turn the
+   * nudge started ends.
    */
-  #fireStatusHooks(snap: SessionSnapshot, state: SessionState, nudged = false): void {
+  #fireStatusHooks(
+    snap: SessionSnapshot,
+    state: SessionState,
+    nudged = false,
+    cause?: StopCause,
+  ): void {
     const current = this.#registry.get(snap.id) ?? snap;
-    if (!nudged) this.#notifySupervisor(current, state);
+    if (!nudged) this.#notifySupervisor(current, state, cause);
+    this.#agents.turnEnded(snap.id);
     if (this.#hooks.empty) return;
     const session = hookSessionOf(current);
     switch (state.kind) {
@@ -2699,9 +2723,9 @@ export class Daemon {
 
   /** A Loom agent's supervisor hears of a finished, failed or interrupted
    *  turn through its queue (`AgentSupervision.notify`); not of a wait, which
-   *  the user answers. */
-  #notifySupervisor(row: SessionSnapshot, state: SessionState): void {
-    if (row.supervisorId && !this.#stopping) void this.#agents.notify(row, state);
+   *  the user answers, nor of a stop it asked for itself (`cause`). */
+  #notifySupervisor(row: SessionSnapshot, state: SessionState, cause?: StopCause): void {
+    if (!this.#stopping) void this.#agents.notify(row, state, cause);
   }
 
   /** A turn-end nudge that never reached the agent: the turn did settle after
@@ -2797,6 +2821,8 @@ export class Daemon {
       `[loom] The base branch \`${base}\` advanced by ${res.behind} commit(s) and ${why}. ` +
       `When you're at a clean stopping point, ${verb} \`${base}\` into this branch ` +
       `and resolve any conflicts.`;
+    // Before the nudge enters the log: the turn's answer is what precedes it.
+    this.#agents.nudging(id, "rebase");
     // Mirror the `session.send` RPC's echo, minus `#lastSend`: this nudge is
     // Loom's, so it shouldn't seed the undo picker or the next auto-title.
     this.emitEvent({ type: "user_message", sessionId: id, ts: Date.now(), text, injected: false });
@@ -2839,6 +2865,7 @@ export class Daemon {
       "[loom] This turn ended with uncommitted changes in your worktree. If that " +
       "work is done, commit it (the `commit` tool, or `git commit`). If you left it " +
       "uncommitted on purpose, ignore this — you won't be reminded again until you commit.";
+    this.#agents.nudging(id, "commit");
     // Loom's own message, like the auto-rebase nudge: keep it out of `#lastSend`
     // so it seeds neither the undo picker nor the auto-title.
     this.emitEvent({ type: "user_message", sessionId: id, ts: Date.now(), text, injected: false });
@@ -2910,10 +2937,22 @@ export class Daemon {
       if (branch === snap.branch) return;
       this.#registry.setFields(id, { branch });
       // Its agents branched from it, and count ahead / behind against it:
-      // stored for their next start, and told now if they are running.
-      for (const kid of this.#registry.listSorted())
-        if (kid.supervisorId === id && kid.baseBranch === snap.branch) {
+      // stored for their next start, and told now if they are running. Read
+      // and written in one step, so a child whose row is being made reads
+      // either name, never writes back the old one (`#startSession`).
+      for (const kid of this.#registry.children(id))
+        if (kid.baseBranch === snap.branch) {
           this.#registry.setFields(kid.id, { baseBranch: branch });
+          // A clone fetches its base through the relay, by name.
+          if (kid.checkout === "clone")
+            void this.#queue
+              .run(kid.id, () => this.#publishCloneBranch(kid.id))
+              .catch((err) =>
+                this.#log.warn("could not republish a clone's base", {
+                  id: kid.id,
+                  err: String(err),
+                }),
+              );
           this.#pushAgentBase(kid.id);
         }
       if (snap.checkout === "clone") await this.#publishCloneBranch(id);
@@ -3001,14 +3040,23 @@ export class Daemon {
   }
 
   /**
-   * Tell `id`'s running agent its stored base when that is not `sent`, the
-   * one it was started with: its supervisor's branch was renamed after the
-   * start read it, or while it ran. A session not running reads the stored
-   * base when it next starts.
+   * Tell `id`'s running agent its stored base when that is not the one it
+   * was last told (`sent`, what a start or resume just gave it): its
+   * supervisor's branch was renamed after the start read it, or while it
+   * ran. A session not running reads the stored base when it next starts.
+   *
+   * A private clone names the base `origin/<name>`, which it has only once a
+   * sync fetched it: until its next sync after a rename it keeps the old
+   * name, which still resolves there.
    */
   #pushAgentBase(id: string, sent?: string): void {
-    const { base } = this.#agentBase(id);
-    if (!base || base === sent || !this.#sessions.has(id)) return;
+    if (sent !== undefined) this.#agentBases.set(id, sent);
+    const row = this.#registry.get(id);
+    if (!row?.baseBranch || !this.#sessions.has(id)) return;
+    if (row.checkout === "clone" && this.#cloneFetchedBase.get(id) !== row.baseBranch) return;
+    const base = checkoutRef(row, row.baseBranch);
+    if (this.#agentBases.get(id) === base) return;
+    this.#agentBases.set(id, base);
     void this.#sessions.setBase(id, base).catch((err) => {
       this.#log.warn("could not update a session's base", { id, err: String(err) });
     });
@@ -3591,7 +3639,9 @@ export class Daemon {
    * Put a message in `id`'s queue (`docs/message-queue.md`), bringing a cold
    * session back first: `session.send`, and Loom agents messaging each other.
    * `behindHold` (a child's notification): a held queue stays held — the
-   * message waits behind the held entries and wakes nothing.
+   * message waits behind the held entries and wakes nothing, a cold session
+   * included. Whether it is held is decided by the enqueue itself, so a hold
+   * set while the session came back still counts.
    */
   async #enqueueMessage(
     id: string,
@@ -3603,11 +3653,20 @@ export class Daemon {
   ): Promise<{ entryId: string; state: string }> {
     const entryId = requestedId ?? randomUUID();
     this.#registry.mustGet(id);
-    if (opts.behindHold && this.#messageQueue.hold(id) !== null) {
-      const r = await this.#sessions.enqueue(id, { entryId, text, author, delivery }, opts);
-      if (!r.ok) throw new RpcError(r.code, r.message, { sessionId: id });
-      return { entryId, state: this.#messageQueue.entry(id, entryId)?.state ?? r.value.state };
-    }
+    if (!opts.behindHold || this.#messageQueue.hold(id) === null) await this.#reviveForQueue(id);
+    // A compaction, a rewind or a stop in progress no longer refuses the
+    // message: it waits in the queue until the session can take it.
+    const r = await this.#sessions.enqueue(id, { entryId, text, author, delivery }, opts);
+    if (!r.ok) throw new RpcError(r.code, r.message, { sessionId: id });
+    return { entryId, state: this.#messageQueue.entry(id, entryId)?.state ?? r.value.state };
+  }
+
+  /**
+   * Bring `id` back, if it is cold, for its queue to go to: a send, or the
+   * user releasing a held queue. A failure is reported on the session and
+   * thrown.
+   */
+  async #reviveForQueue(id: string): Promise<void> {
     // A clone's Git operations (a sync, a rebase) hold the command queue.
     const refuseBusyClone = () => {
       if (this.#registry.get(id)?.checkout === "clone" && this.#queue.activeKeys.includes(id))
@@ -3645,32 +3704,29 @@ export class Daemon {
         sessionId: id,
       });
     }
-    // A compaction, a rewind or a stop in progress no longer refuses the
-    // message: it waits in the queue until the session can take it.
-    const r = await this.#sessions.enqueue(id, { entryId, text, author, delivery });
-    if (!r.ok) throw new RpcError(r.code, r.message, { sessionId: id });
-    return { entryId, state: this.#messageQueue.entry(id, entryId)?.state ?? r.value.state };
   }
 
   /**
-   * Stop `id`'s turn (`session.interrupt`, `agent_interrupt`). Its own
-   * blocking agent waits end with it; the agents it supervises run on.
+   * Stop `id`'s turn (`session.interrupt`; `agent_interrupt`, `by` its
+   * supervisor). Its own blocking agent waits end with it; the agents it
+   * supervises run on. A user's stop holds its queue, empty or not.
    */
-  async #interruptSession(id: string): Promise<SessionSnapshot> {
+  async #interruptSession(id: string, by: StopCause = "user"): Promise<SessionSnapshot> {
     this.#agents.cancel(id);
     const startup = this.#startups.get(id);
     if (startup && !this.#sessions.has(id)) {
       startup.abort();
       this.#hooks.forget(id);
-      const stopped = this.#registry.setStatus(id, stateInterrupted("user"));
+      this.#sessions.holdForStop(id, by);
+      const stopped = this.#registry.setStatus(id, stateInterrupted(by), by);
       // No stream will report this stop; a supervisor hears of it here.
-      this.#notifySupervisor(stopped, stopped.status);
+      this.#notifySupervisor(stopped, stopped.status, by);
       this.#publishState(id);
       return this.#registry.mustGet(id);
     }
     if (!this.#sessions.has(id)) throw new RpcError("not_found", `session not running: ${id}`);
     this.#hooks.forget(id);
-    await this.#sessions.interrupt(id);
+    await this.#sessions.interrupt(id, by);
     const held = this.#sessions.queueView(id);
     if (held?.hold === "interrupt" && held.entries.length > 0) {
       const n = held.entries.length;
@@ -3688,9 +3744,7 @@ export class Daemon {
    * default: refused without one.
    */
   #openChildren(id: string, children: ChildrenOnClose | undefined): SessionSnapshot[] {
-    const kids = this.#registry
-      .listSorted()
-      .filter((s) => s.supervisorId === id && s.status.kind !== "done");
+    const kids = this.#registry.children(id).filter((s) => s.status.kind !== "done");
     if (kids.length > 0 && !children)
       throw new RpcError(
         "conflict",
@@ -3726,10 +3780,16 @@ export class Daemon {
   }
 
   /**
-   * Archive `id` (`session.markDone`, `agent_stop`). A supervisor with agents
-   * still open needs `children`: stop (archive) them too, or detach them.
+   * Archive `id` (`session.markDone`; `agent_stop`, `by` its supervisor). A
+   * supervisor with agents still open needs `children`: stop (archive) them
+   * too, or detach them.
    */
-  async #archive(id: string, force: boolean, children?: ChildrenOnClose): Promise<SessionSnapshot> {
+  async #archive(
+    id: string,
+    force: boolean,
+    children?: ChildrenOnClose,
+    by: StopCause = "user",
+  ): Promise<SessionSnapshot> {
     const kids = this.#openChildren(id, children);
     this.#agents.cancel(id);
     const archived = await this.#queue.run(id, async () => {
@@ -3747,7 +3807,8 @@ export class Daemon {
         );
       }
       this.#hooks.forget(id);
-      if (this.#sessions.has(id)) await this.#sessions.close(id, "user_stop");
+      // What the closing turn ends in is `by`'s doing.
+      if (this.#sessions.has(id)) await this.#sessions.close(id, "user_stop", by);
       // Archiving is a stop: whatever is still queued waits for the user.
       if (this.#messageQueue.live(id).length > 0 && this.#messageQueue.hold(id) === null)
         this.#messageQueue.setHold(id, "interrupt");
@@ -3755,6 +3816,8 @@ export class Daemon {
         if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
         this.#lastSend.delete(id);
         this.#cacheTtlSeen.delete(id);
+        this.#agentBases.delete(id);
+        this.#cloneFetchedBase.delete(id);
         if (borrowed && row.worktree) this.#registry.setFields(id, { worktree: null });
         else if (row.worktree && !row.inPlace) {
           try {
@@ -4224,11 +4287,18 @@ export class Daemon {
       return r.value;
     });
 
-    d.register("session.queueRelease", (params) => {
-      this.#registry.mustGet(params.id);
-      if (!this.#sessions.releaseQueue(params.id))
-        throw new RpcError("refused", "The queue is not held.", { sessionId: params.id });
-      return this.#enrich(this.#registry.mustGet(params.id), false);
+    d.register("session.queueRelease", async (params) => {
+      const id = params.id;
+      this.#registry.mustGet(id);
+      const refused = () => new RpcError("refused", "The queue is not held.", { sessionId: id });
+      if (this.#messageQueue.hold(id) === null) throw refused();
+      // What the release lets go goes to the agent: a cold session (a stop, a
+      // restart, a crash) comes back for it as it would for a send. Still
+      // held meanwhile, so a failed revival leaves the queue as it was.
+      if (this.#messageQueue.slots(id).some((e) => e.state === "queued" && !e.uncertain))
+        await this.#reviveForQueue(id);
+      if (!this.#sessions.releaseQueue(id)) throw refused();
+      return this.#enrich(this.#registry.mustGet(id), false);
     });
 
     d.register("session.checkpoints", (params) => {
@@ -4866,6 +4936,8 @@ export class Daemon {
         return await withStoppedSessionVm(this.repoRoot, id, async () => {
           this.#lastSend.delete(id);
           this.#cacheTtlSeen.delete(id);
+          this.#agentBases.delete(id);
+          this.#cloneFetchedBase.delete(id);
           if (s.worktree && !borrowed) {
             try {
               this.#removeWorkdir(s.worktree, true);

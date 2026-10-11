@@ -479,23 +479,151 @@ describe("loom agents", { concurrency: 4 }, () => {
     assert.equal(lead.fs.sends[sendsBefore], "then this");
   });
 
-  test("a turn the commit reminder carries on is reported once, when it ends", async (env) => {
+  test("a turn the commit reminder carries on is reported once, with its answer, when it ends", async (env) => {
     const lead = await idleSession(env);
     const child = await startChild(env, lead.fs);
     const notes = () => lead.fs.sends.filter((s) => s.startsWith("[from your agent"));
     writeFileSync(join((await get(env.c, child.id)).worktree!, "wip.txt"), "uncommitted\n");
-    child.fs.emit({ type: "assistant_text", text: "first pass, not committed" });
+    // A wait made before the turn ends is not settled by the idle the
+    // reminder carries on from.
+    let waited: string | null = null;
+    void lead.fs
+      .callAgentTool("agent_wait", { ids: [child.id], timeout: 30 })
+      .then((r) => (waited = r.text));
+    await delay(20);
+    child.fs.emit({ type: "assistant_text", text: "Widget added; tests pass." });
     child.fs.finishTurn();
     await waitFor(() => child.fs.sends.some((s) => /uncommitted changes in your worktree/.test(s)));
     await delay(50);
     assert.deepEqual(notes(), [], "the nudged turn has not settled");
+    assert.equal(waited, null, "nor has the wait");
 
     child.fs.emit({ type: "assistant_text", text: "Committed it." });
     child.fs.finishTurn();
-    await waitFor(() => notes().length > 0);
+    await waitFor(() => notes().length > 0 && waited !== null);
     await delay(50);
+    assert.match(waited!, /^All settled\./);
     assert.equal(notes().length, 1);
-    assert.match(notes()[0]!, /It finished a turn\.[\s\S]*Committed it\./);
+    // The task's answer, and the reply to the reminder after it.
+    assert.match(
+      notes()[0]!,
+      /It finished a turn\.\n\nFinal message:\nWidget added; tests pass\.\n\nLoom then sent it a reminder to commit its work; its reply:\nCommitted it\.$/,
+    );
+  });
+
+  test("a user's stop holds a supervisor with nothing queued: a child's report waits for release", async (env) => {
+    const lead = await idleSession(env);
+    const child = await startChild(env, lead.fs);
+    await env.c.request("session.send", { id: lead.id, text: "keep going", by: "client" });
+    await waitFor(() => lead.fs.sends.includes("keep going"));
+    lead.fs.emit({ type: "assistant_text", text: "working" });
+    await waitFor(async () => (await get(env.c, lead.id)).status.kind === "running");
+    // Nothing queued: the user's stop holds the queue all the same.
+    await env.c.request("session.interrupt", { id: lead.id });
+    assert.deepEqual((await get(env.c, lead.id)).queue, { hold: "interrupt", entries: [] });
+    const sendsBefore = lead.fs.sends.length;
+
+    await finish(env, child, "Widget added.");
+    await waitFor(async () => ((await get(env.c, lead.id)).queue?.entries.length ?? 0) === 1);
+    await delay(50);
+    assert.equal(lead.fs.sends.length, sendsBefore, "the stopped supervisor stays stopped");
+    assert.equal((await get(env.c, lead.id)).status.kind, "interrupted");
+
+    await env.c.request("session.queueRelease", { id: lead.id });
+    await waitFor(() => lead.fs.sends.length > sendsBefore);
+    assert.match(lead.fs.sends.at(-1)!, /^\[from your agent [\s\S]*Widget added\./);
+  });
+
+  test("a cold, held supervisor is not revived by a report; releasing it revives it and delivers", async (env) => {
+    const lead = await idleSession(env);
+    const child = await startChild(env, lead.fs);
+    lead.fs.emit({ type: "assistant_text", text: "working" });
+    await waitFor(async () => (await get(env.c, lead.id)).status.kind === "running");
+    await env.c.request("session.interrupt", { id: lead.id });
+    // Its adapter goes away: the supervisor is cold.
+    lead.fs.endStream();
+    await delay(50);
+
+    await finish(env, child, "Widget added.");
+    await waitFor(async () => ((await get(env.c, lead.id)).queue?.entries.length ?? 0) === 1);
+    await delay(50);
+    assert.ok(!env.provider.resumes.some((r) => r.sessionId === lead.id), "not revived");
+
+    await env.c.request("session.queueRelease", { id: lead.id });
+    await waitFor(() => env.provider.resumes.some((r) => r.sessionId === lead.id));
+    await waitFor(() => env.provider.session(lead.id) !== lead.fs);
+    const revived = env.provider.session(lead.id)!;
+    await waitFor(() => revived.sends.some((s) => s.startsWith("[from your agent")));
+    assert.equal((await get(env.c, lead.id)).queue, undefined);
+  });
+
+  test("a hold set while a cold supervisor comes back for a report still holds the report", async (env) => {
+    const lead = await idleSession(env);
+    const child = await startChild(env, lead.fs);
+    lead.fs.endStream();
+    await delay(50);
+    const unblock = env.provider.blockResume();
+    await finish(env, child, "Widget added.");
+    await waitFor(() => env.provider.resumes.some((r) => r.sessionId === lead.id));
+    // The user stops the supervisor while it is coming back.
+    env.h.daemon.sessions.holdForStop(lead.id, "user");
+    unblock();
+    await waitFor(async () => ((await get(env.c, lead.id)).queue?.entries.length ?? 0) === 1);
+    await delay(50);
+    const queue = (await get(env.c, lead.id)).queue!;
+    assert.equal(queue.hold, "interrupt", "the report did not release it");
+    assert.deepEqual(env.provider.session(lead.id)!.sends, [], "no turn started");
+  });
+
+  test("a user's interrupt joining the supervisor's own is reported", async (env) => {
+    const lead = await idleSession(env);
+    const child = await startChild(env, lead.fs);
+    const notes = () => lead.fs.sends.filter((s) => s.startsWith("[from your agent"));
+    child.fs.emit({ type: "assistant_text", text: "busy" });
+    await waitFor(async () => (await get(env.c, child.id)).status.kind === "running");
+    let stop!: () => void;
+    child.fs.interrupt = () => new Promise<void>((resolve) => (stop = resolve));
+    const bySupervisor = lead.fs.callAgentTool("agent_interrupt", { id: child.id });
+    await waitFor(() => stop !== undefined);
+    const byUser = env.c.request("session.interrupt", { id: child.id });
+    await delay(20);
+    stop();
+    await Promise.all([bySupervisor, byUser]);
+    const row = await get(env.c, child.id);
+    assert.deepEqual(row.status, { kind: "interrupted", by: "user" });
+    await waitFor(() => notes().length > 0);
+    assert.match(notes()[0]!, /It was interrupted \(user\)\./);
+  });
+
+  test("what a supervisor's stop ends in is its own, however late it lands", async (env) => {
+    const lead = await idleSession(env);
+    const notes = () => lead.fs.sends.filter((s) => s.startsWith("[from your agent"));
+    // An interrupt the adapter reports a failure for after it settled.
+    const first = await startChild(env, lead.fs, { title: "One" });
+    first.fs.emit({ type: "assistant_text", text: "busy" });
+    await waitFor(async () => (await get(env.c, first.id)).status.kind === "running");
+    await lead.fs.callAgentTool("agent_interrupt", { id: first.id });
+    assert.deepEqual((await get(env.c, first.id)).status, {
+      kind: "interrupted",
+      by: "supervisor",
+    });
+    first.fs.fail("turn cancelled");
+    await waitFor(async () => (await get(env.c, first.id)).status.kind === "error");
+
+    // A stop whose closing stream ends in an error.
+    const second = await startChild(env, lead.fs, { title: "Two" });
+    second.fs.emit({ type: "assistant_text", text: "busy" });
+    await waitFor(async () => (await get(env.c, second.id)).status.kind === "running");
+    const close = second.fs.close.bind(second.fs);
+    second.fs.close = async () => {
+      second.fs.fail("worker torn down");
+      await delay(10);
+      await close();
+    };
+    const stopped = await lead.fs.callAgentTool("agent_stop", { id: second.id, discard: true });
+    assert.equal(stopped.ok, true, stopped.text);
+    await delay(100);
+    assert.deepEqual(notes(), [], "neither reaches the supervisor");
   });
 
   test("a user's interrupt of a child still starting reaches its supervisor", async (env) => {

@@ -121,14 +121,29 @@ children inside the supervisor's VM is a later shared-VM feature.
   cut to about 2 KB with a pointer to `agent_read`; no model-written summary),
   or fails or is interrupted. It is queued as an end-of-turn entry labelled as
   coming from the child: a busy supervisor is not interrupted, an idle one is
-  woken, and one the user stopped stays stopped (the notification waits behind
-  the held queue; only the user releases it). A child waiting for input (a
-  permission or a question) is not notified: both go to the user, so the
-  supervisor could not act on it, and the fleet already shows the child
-  waiting. Waits stay unnotified until supervisor question handling is
-  designed. Nor is a stop the supervisor made itself (`agent_interrupt`,
-  `agent_stop`): the tool's answer already says so. A turn a commit or rebase
-  nudge carries on is reported once, when the turn it continues into ends.
+  woken (a cold one revived), and one the user stopped stays stopped. A user's
+  stop always holds the supervisor's queue, empty or not
+  ([message-queue.md](message-queue.md#interrupt)), so the notification is
+  just an entry behind the hold: it revives nothing, starts no turn and
+  releases nothing. Whether the queue is held is decided as the entry is
+  queued, so a stop that lands while a cold supervisor is coming back for it
+  still holds it. The user's send or release (`r`) revives a cold supervisor
+  and delivers. A child waiting for input (a permission or a question) is not
+  notified: both go to the user, so the supervisor could not act on it, and
+  the fleet already shows the child waiting. Waits stay unnotified until
+  supervisor question handling is designed.
+- Nor is a stop the supervisor made itself (`agent_interrupt`, `agent_stop`)
+  notified: the tool's answer already says so. Who asked for a stop travels
+  with what it ends in: the child is `interrupted` by `supervisor` (not
+  `user`), and a failure its turn ends in after the supervisor's stop — a late
+  error from the adapter, a stream that breaks as `agent_stop` closes it — is
+  attributed to the supervisor too, until the child's next turn starts. A
+  user's stop is reported, including one that joins the supervisor's while
+  it is under way; so are crashes and failures.
+- A turn a commit or rebase nudge carries on has not settled: neither a
+  notification nor `agent_wait` counts the idle the nudge interrupts. When the
+  child settles, one notification carries the task turn's final message (the
+  last one before the nudge) and the reply to the nudge.
 - Recommended pattern: start children, end the turn, be woken by
   notifications; `agent_wait` exists for short waits.
 - Questions and permissions: tool permissions always go to the user. Until a
@@ -202,6 +217,13 @@ messages, interrupts and outcomes are ordinary session events.
   (`skills`, `tools`, `disallowedTools`) and aisdk (built-in tools), and are
   refused for providers that cannot honour them. A child's system prompt gets a
   note naming its supervisor before the profile's prompt.
+- A child's base is its supervisor's branch. When that branch is renamed
+  (auto-titling), the child's stored base follows, and a running child is told
+  the new name (`setBase`). A child in a private clone names it
+  `origin/<name>`, which its clone has only once a sync has fetched it: it is
+  told after its next sync and keeps the old name, which still resolves, until
+  then. A child whose row is being made reads its base once, before anything
+  awaits, so a rename meanwhile is never undone.
 - Closing a supervisor with open agents needs a choice (`children: stop |
 detach` on `session.markDone` / `session.remove`, `--children` in the CLI,
   `c` in the TUI confirm, detach by default). Stopping a child with

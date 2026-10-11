@@ -12,7 +12,10 @@ import { MIGRATIONS } from "@loom/daemon/store/migrations";
 import { SessionStore } from "@loom/daemon/store/sessions";
 import { supervisionCycle, supervisionDepth, type Supervised } from "@loom/core/agents";
 import { sessionSnapshotSchema } from "@loom/core/wire";
-import { setLogLevel } from "@loom/core/logger";
+import { makeLogger, setLogLevel } from "@loom/core/logger";
+import { stateIdle, stateInterrupted, stateRunning } from "@loom/core/session-state";
+import type { Db } from "@loom/daemon/store/db";
+import { Registry, sortSnapshots } from "@loom/daemon/daemon/registry";
 
 setLogLevel("error");
 
@@ -105,5 +108,66 @@ test("the store refuses a supervisor that would close a loop", () => {
     store.create({ id: "other", provider: "fake" });
     store.setFields("grandchild", { supervisorId: "other" });
     assert.equal(store.get("grandchild")!.supervisorId, "other");
+  });
+});
+
+const withRegistry = (fn: (registry: Registry, db: Db, warned: string[]) => void): void => {
+  const dir = mkdtempSync(join(tmpdir(), "loom-agents-registry-"));
+  const db = openDb(join(dir, "loom.db"));
+  try {
+    const warned: string[] = [];
+    fn(new Registry(db, { ...makeLogger("test"), warn: (m) => void warned.push(m) }), db, warned);
+  } finally {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+};
+
+test("a supervisor's children come from one indexed query, in fleet order", () => {
+  withRegistry((registry, db) => {
+    for (const [id, supervisorId] of [
+      ["lead", undefined],
+      ["other", undefined],
+      ["a", "lead"],
+      ["b", "lead"],
+      ["c", "other"],
+    ] as const)
+      registry.create({ id, provider: "fake", ...(supervisorId ? { supervisorId } : {}) });
+    registry.setStatus("b", stateRunning);
+    assert.deepEqual(
+      registry.children("lead").map((s) => s.id),
+      sortSnapshots(registry.list().filter((s) => s.supervisorId === "lead")).map((s) => s.id),
+    );
+    assert.deepEqual(
+      registry.store
+        .children("lead")
+        .map((s) => s.id)
+        .sort(),
+      ["a", "b"],
+    );
+    assert.deepEqual(registry.children("a"), []);
+    const plan = db
+      .prepare("EXPLAIN QUERY PLAN SELECT * FROM sessions WHERE supervisor_id = ?")
+      .all("lead") as Array<{ detail: string }>;
+    assert.match(plan.map((p) => p.detail).join("\n"), /sessions_supervisor_idx/);
+  });
+});
+
+test("every status listener hears every write; one that throws breaks neither the write nor the rest", () => {
+  withRegistry((registry, _db, warned) => {
+    registry.create({ id: "s", provider: "fake" });
+    const heard: string[] = [];
+    registry.watchStatus(() => {
+      throw new Error("listener bug");
+    });
+    const stop = registry.watchStatus((id, state) => heard.push(`${id}:${state.kind}`));
+    const snap = registry.setStatus("s", stateInterrupted("supervisor"));
+    assert.deepEqual(snap.status, { kind: "interrupted", by: "supervisor" }, "the write stands");
+    assert.deepEqual(registry.get("s")!.status, { kind: "interrupted", by: "supervisor" });
+    assert.deepEqual(heard, ["s:interrupted"]);
+    assert.deepEqual(warned, ["status listener failed"]);
+    stop();
+    registry.setStatus("s", stateIdle);
+    assert.deepEqual(heard, ["s:interrupted"], "unsubscribed");
   });
 });

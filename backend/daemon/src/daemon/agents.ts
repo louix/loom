@@ -13,7 +13,7 @@
 import type { AgentCallEvent, HarnessEvent } from "@loom/core/events";
 import type { AgentCallResult, McpServerHandle, SessionMode } from "@loom/core/types";
 import type { QueueDelivery } from "@loom/core/message-queue";
-import type { SessionState } from "@loom/core/session-state";
+import type { SessionState, StopCause } from "@loom/core/session-state";
 import type { SessionSnapshot, TranscriptEntry } from "@loom/core/wire";
 import type { Logger } from "@loom/core/logger";
 import {
@@ -247,12 +247,12 @@ export interface ChildStart {
 /** What {@link AgentSupervision} needs from the daemon. */
 export interface AgentHost {
   agents(): LoomConfig["agents"];
-  /** A session with its git facts, or undefined. */
+  /**
+   * A session as clients see it — its row, live overlays and last-known git
+   * facts (never a fresh `git` run) — or undefined.
+   */
   get(id: string): SessionSnapshot | undefined;
-  /** A session's stored row — status, supervisor, branch — without the git
-   *  probe {@link get} pays for; what the frequent checks read. */
-  row(id: string): SessionSnapshot | undefined;
-  /** The stored rows of the sessions `supervisorId` supervises. */
+  /** The sessions `supervisorId` supervises, as {@link get} reads them. */
   children(supervisorId: string): SessionSnapshot[];
   /**
    * A session's title once it is a real one (set by hand or generated), else
@@ -260,7 +260,6 @@ export interface AgentHost {
    * shown it as its supervisor's name would read as instructions.
    */
   settledTitle(id: string): string | null;
-  list(): SessionSnapshot[];
   /** Is the provider configured and enabled here? */
   providerKnown(id: string): boolean;
   defaultModel(provider: string): string | null;
@@ -273,7 +272,8 @@ export interface AgentHost {
   /**
    * Put a message in a session's queue (reviving it when it is cold). With
    * `behindHold`, a held queue keeps its hold: the message waits behind the
-   * held entries, and nothing starts until the user releases them.
+   * held entries — a cold session stays cold — and nothing starts until the
+   * user sends or releases them.
    */
   enqueue(
     id: string,
@@ -282,8 +282,11 @@ export interface AgentHost {
     delivery: QueueDelivery,
     opts?: { behindHold?: boolean },
   ): Promise<{ entryId: string; state: string }>;
+  /** Interrupt a child for its supervisor: the turn's end is attributed to
+   *  the supervisor (`interrupted` by `supervisor`). */
   interrupt(id: string): Promise<void>;
-  /** Archive; refuses uncommitted changes unless `force`. */
+  /** Archive a child for its supervisor, likewise attributed; refuses
+   *  uncommitted changes unless `force`. */
   archive(id: string, force: boolean): Promise<void>;
   /** Transcript entries: after a cursor, oldest first; or the newest `limit`. */
   events(id: string, opts: { after?: number; limit: number }): TranscriptEntry[];
@@ -321,17 +324,35 @@ const TURN_ENDED: ReadonlySet<SessionState["kind"]> = new Set([
   "done",
 ]);
 
+/** A Loom message that carries a finished turn on (`docs/loom-agents.md`). */
+export type Nudge = "commit" | "rebase";
+
+const NUDGE_WORDS: Record<Nudge, string> = {
+  commit: "a reminder to commit its work",
+  rebase: "a request to bring in its base branch",
+};
+
+/** A turn a nudge carried on: what it had answered before the nudge. */
+interface Carried {
+  readonly answer: string;
+  readonly nudges: Nudge[];
+}
+
 /** The agent tools, the profile rules and the notifications up. */
 export class AgentSupervision {
   readonly #host: AgentHost;
   /** `agent_wait` calls in flight, per caller. */
   readonly #waits = new Map<string, Set<Waiter>>();
   /**
-   * Children whose stop or interrupt their own supervisor asked for, while
-   * the call runs: the supervisor caused that turn end, so it is not woken
-   * for it. A user's stop, a crash or a failure is still reported.
+   * Sessions whose turn just ended idle while the daemon decides whether a
+   * nudge carries it on ({@link turnEnding} to {@link turnEnded}).
    */
-  readonly #stopping = new Set<string>();
+  readonly #deciding = new Set<string>();
+  /**
+   * Sessions a nudge carried on, with the answer of the turn it carried on:
+   * reported, with the reply to the nudge, when the session settles.
+   */
+  readonly #carried = new Map<string, Carried>();
 
   constructor(host: AgentHost) {
     this.#host = host;
@@ -381,6 +402,57 @@ export class AgentSupervision {
    */
   observe(id: string, state: SessionState): void {
     if (TURN_ENDED.has(state.kind)) this.cancel(id);
+    // Moved on from the idle a nudge was being decided for.
+    if (state.kind !== "idle") this.#deciding.delete(id);
+    if (state.kind === "done") this.#carried.delete(id);
+    this.#wake(id);
+  }
+
+  /**
+   * `id`'s turn is about to end idle, and the daemon will decide whether a
+   * commit or rebase nudge carries it on: until {@link turnEnded}, that idle
+   * is not the turn settled.
+   */
+  turnEnding(id: string): void {
+    this.#deciding.add(id);
+  }
+
+  /** The daemon has handled `id`'s turn end: nudged it on, or reported it. */
+  turnEnded(id: string): void {
+    if (this.#deciding.delete(id)) this.#wake(id);
+  }
+
+  /**
+   * A nudge is about to carry `id`'s finished turn on. The turn's answer is
+   * read now, before the nudge enters the log: it is what the session's
+   * supervisor hears of when the session settles, with the reply. A second
+   * nudge keeps the first answer.
+   */
+  nudging(id: string, nudge: Nudge): void {
+    if (!this.#host.get(id)?.supervisorId) return;
+    const carried = this.#carried.get(id);
+    if (carried) {
+      carried.nudges.push(nudge);
+      return;
+    }
+    const answer = finalMessage(this.#host.events(id, { limit: 200 }).map((e) => e.event));
+    this.#carried.set(id, { answer, nudges: [nudge] });
+  }
+
+  /**
+   * Has `id`'s turn stopped? A session gone or archived has. An idle one has
+   * not while a nudge is being decided for it or carries it on: the turn it
+   * nudged is not over until the reply is.
+   */
+  #settled(id: string): boolean {
+    const s = this.#host.get(id);
+    if (!s || s.status.kind === "done") return true;
+    if (!SETTLED.has(s.status.kind)) return false;
+    return s.status.kind !== "idle" || !(this.#deciding.has(id) || this.#carried.has(id));
+  }
+
+  /** Something `id` waits on, or is waited on for, may have changed. */
+  #wake(id: string): void {
     // A wait that settles removes itself; Map and Set iteration allow that.
     for (const waits of this.#waits.values())
       for (const wait of waits) if (wait.ids.includes(id)) wait.wake();
@@ -411,11 +483,10 @@ export class AgentSupervision {
     return this.#host.get(id) ?? refuse(`no such session: ${id}`);
   }
 
-  /** A child `caller` supervises, by full id (or an unambiguous prefix): its
-   *  stored row, without git facts. */
+  /** A child `caller` supervises, by full id (or an unambiguous prefix). */
   #child(caller: string, input: Record<string, unknown>): SessionSnapshot {
     const id = str(input, "id") ?? refuse("id is required");
-    const exact = this.#host.row(id);
+    const exact = this.#host.get(id);
     if (exact?.supervisorId === caller) return exact;
     const match = this.#host.children(caller).filter((s) => s.id.startsWith(id));
     if (match.length === 1) return match[0]!;
@@ -583,13 +654,10 @@ export class AgentSupervision {
   }
 
   #status(caller: string, input: Record<string, unknown>): string {
-    if (str(input, "id")) {
-      const child = this.#child(caller, input);
-      return this.#describe(this.#host.get(child.id) ?? child);
-    }
+    if (str(input, "id")) return this.#describe(this.#child(caller, input));
     const mine = this.#host.children(caller);
     if (mine.length === 0) return "You have no agents. Start one with agent_start.";
-    return mine.map((s) => this.#describe(this.#host.get(s.id) ?? s)).join("\n\n");
+    return mine.map((s) => this.#describe(s)).join("\n\n");
   }
 
   #read(caller: string, input: Record<string, unknown>): string {
@@ -628,19 +696,8 @@ export class AgentSupervision {
       !["running", "starting", "working_background", "awaiting_input"].includes(child.status.kind)
     )
       return `${short(child.id)} is not running (${child.status.kind}).`;
-    await this.#quietly(child.id, () => this.#host.interrupt(child.id));
+    await this.#host.interrupt(child.id);
     return `Interrupted ${short(child.id)}. Message it to go on.`;
-  }
-
-  /** Run `stop`, the caller's own stop of `child`, without reporting the
-   *  turn end it causes back to that caller. */
-  async #quietly(child: string, stop: () => Promise<void>): Promise<void> {
-    this.#stopping.add(child);
-    try {
-      await stop();
-    } finally {
-      this.#stopping.delete(child);
-    }
   }
 
   async #stop(caller: string, input: Record<string, unknown>): Promise<string> {
@@ -656,7 +713,7 @@ export class AgentSupervision {
       refuse(
         `${short(child.id)} has uncommitted changes: message it to commit them, or call agent_stop with discard: true to lose them.`,
       );
-    await this.#quietly(child.id, () => this.#host.archive(child.id, discard));
+    await this.#host.archive(child.id, discard);
     return `Stopped and archived ${short(child.id)}; its branch${child.branch ? ` ${child.branch}` : ""} and transcript are kept.`;
   }
 
@@ -671,12 +728,8 @@ export class AgentSupervision {
         ? input["timeout"]
         : WAIT_DEFAULT_S,
     );
-    // Read off the stored rows: this runs on every status change of a child.
     const done = () => {
-      const settled = ids.map((id) => {
-        const s = this.#host.row(id);
-        return !s || SETTLED.has(s.status.kind);
-      });
+      const settled = ids.map((id) => this.#settled(id));
       return all ? settled.every(Boolean) : settled.some(Boolean);
     };
     type Outcome = "settled" | "timeout" | "cancelled";
@@ -709,7 +762,7 @@ export class AgentSupervision {
     };
     const head = heads[outcome];
     const lines = ids.map((id) => {
-      const s = this.#host.row(id);
+      const s = this.#host.get(id);
       return s ? `${short(id)}: ${s.status.kind}` : `${short(id)}: gone`;
     });
     return [head, ...lines].join("\n");
@@ -726,17 +779,17 @@ export class AgentSupervision {
    * (the fleet shows the child waiting).
    *
    * Nor is a turn end the supervisor caused itself (`agent_interrupt`,
-   * `agent_stop`): its tool call already answers it. And `state` must still
-   * be the child's: one that has moved on since (a commit or rebase nudge
-   * started its next turn) is reported when that turn ends, so each settled
-   * turn sends exactly one notification.
+   * `agent_stop`): its tool call already answers it. Who caused it travels
+   * with the state — `interrupted` by `supervisor`, or `cause` for an error
+   * the stop ended in — however late it lands.
+   *
+   * And `state` must still be the child's: one that has moved on since is
+   * reported when the turn it moved on to ends. A turn a commit or rebase
+   * nudge carried on ({@link nudging}) is reported once, when it settles,
+   * with the answer it gave before the nudge and its reply to it.
    */
-  async notify(child: SessionSnapshot, state: SessionState): Promise<void> {
-    if (!child.supervisorId) return;
-    if (state.kind === "interrupted" && this.#stopping.has(child.id)) return;
-    if (this.#host.row(child.id)?.status.kind !== state.kind) return;
-    const supervisor = this.#host.row(child.supervisorId);
-    if (!supervisor || supervisor.status.kind === "done") return;
+  async notify(child: SessionSnapshot, state: SessionState, cause?: StopCause): Promise<void> {
+    if (!child.supervisorId && !this.#carried.has(child.id)) return;
     let event: string;
     switch (state.kind) {
       case "idle":
@@ -751,20 +804,40 @@ export class AgentSupervision {
       default:
         return;
     }
-    const final = finalMessage(this.#host.events(child.id, { limit: 200 }).map((e) => e.event));
-    const { text, cut } = cutBytes(final, NOTIFY_MESSAGE_BYTES);
+    if (this.#host.get(child.id)?.status.kind !== state.kind) return;
+    // The turn is over, whether or not it is reported (a child detached
+    // meanwhile has no one to tell).
+    const carried = this.#carried.get(child.id);
+    this.#carried.delete(child.id);
+    this.#wake(child.id);
+    if (!child.supervisorId) return;
+    if (cause === "supervisor" || (state.kind === "interrupted" && state.by === "supervisor"))
+      return;
+    const supervisor = this.#host.get(child.supervisorId);
+    if (!supervisor || supervisor.status.kind === "done") return;
+    const latest = finalMessage(this.#host.events(child.id, { limit: 200 }).map((e) => e.event));
+    const nudges = carried && [...new Set(carried.nudges)].map((n) => NUDGE_WORDS[n]).join(" and ");
+    const sections: Array<[label: string, text: string]> = carried
+      ? [
+          ["Final message:", carried.answer],
+          [`Loom then sent it ${nudges}; its reply:`, latest],
+        ]
+      : [["Final message:", latest]];
     const body = [
       `[from your agent ${short(child.id)} "${child.title ?? ""}" (profile ${child.agentProfile ?? SELF_PROFILE})] It ${event}.`,
-      ...(final
-        ? [
+      ...sections
+        .filter(([, message]) => message)
+        .flatMap(([label, message]) => {
+          const { text, cut } = cutBytes(message, NOTIFY_MESSAGE_BYTES);
+          return [
             "",
-            "Final message:",
+            label,
             text,
             ...(cut
               ? [`[… cut at 2 KB; agent_read with id ${child.id} for the whole message]`]
               : []),
-          ]
-        : []),
+          ];
+        }),
     ].join("\n");
     try {
       // Behind a hold: a supervisor the user stopped stays stopped.
