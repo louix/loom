@@ -85,18 +85,28 @@ for statistics.
 A child always gets its own Loom workspace and is never less isolated than its
 supervisor:
 
-| Supervisor | Child                                                                                       |
-| ---------- | ------------------------------------------------------------------------------------------- |
-| in-place   | worktree from the repository's current HEAD                                                 |
-| worktree   | worktree from the supervisor's branch                                                       |
-| clone (VM) | its own private clone, in its own VM, from the supervisor's branch as published to the host |
+| Supervisor | Child                                              |
+| ---------- | -------------------------------------------------- |
+| in-place   | worktree from the repository's current HEAD        |
+| worktree   | worktree from the supervisor's branch              |
+| clone (VM) | worktree off the supervisor's clone, in its own VM |
+
+A clone session's clone lives on the host under its session VM directory
+(`~/.local/state/loom/session-vms/<repo>/<id>/`) and is mounted into its VM; the
+host never runs Git against a clone, whose `.git` the guest controls. A clone
+child's VM mounts the supervisor's clone at the same guest path (Git worktrees
+record absolute paths) and creates its worktree with `git worktree add` inside
+the guest. The child gets no access to host `.git`, like its supervisor; it can
+reach the supervisor's clone, which shares its trust domain. Commits land in
+the supervisor's clone, so `agent_merge` is a local merge there and nothing is
+published to the host first. Two guests share that `.git` through Git's own
+locks, with one index per worktree.
 
 Children start from the supervisor's last commit; uncommitted supervisor
 changes do not carry over, so `agent_start` warns about them. A verifier gets
 its own read-only workspace at the commit the implementer reported, rather than
-a live view of the implementer's worktree. Each child has its own VM for now; a
-worktree inside the supervisor's clone and VM belongs to a later shared-VM
-feature (the set of mounts is fixed when a VM boots).
+a live view of the implementer's worktree. Each child has its own VM; running
+children inside the supervisor's VM is a later shared-VM feature.
 
 ## Communication
 
@@ -152,5 +162,8 @@ writes runs as JSONL or CSV.
 ## Open
 
 - Codex's switch for disabling its native sub-agents.
-- Shared VM for children (worktree inside the supervisor's clone).
+- Shared VM for children (running inside the supervisor's VM).
+- Clone children while the supervisor's VM is stopped: the clone directory
+  persists on the host, so the child can still mount it; confirm nothing in the
+  supervisor's resume path assumes exclusive use of its clone.
 - Prompt files for long prompts.
