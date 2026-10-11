@@ -154,6 +154,13 @@ export const createSessionOptionsSchema = z.object({
    *  tool-steer text), kept distinct from `cwd` (where the provider's own
    *  process/tooling actually runs). Defaults to `cwd` when omitted. */
   workspaceRoot: z.string().optional(),
+  /**
+   * The session's own base, as a ref its checkout resolves (`origin/<branch>`
+   * in a private clone; a branch or commit otherwise) — what the `status` tool
+   * counts ahead/behind against. Absent for a session stored without a base:
+   * the provider-wide `ConnectorContext.baseBranch` applies.
+   */
+  base: z.string().optional(),
   mcpServers: z.array(mcpServerHandleSchema),
   /** Mount the in-process `loom` MCP server (ask_user, commit) in this session. */
   loomServer: z.boolean().optional(),
@@ -190,6 +197,8 @@ export const sessionRefSchema = z.object({
   repoInstructions: z.union([z.string(), z.null()]).optional(),
   /** See {@link CreateSessionOptions.workspaceRoot}. */
   workspaceRoot: z.string().optional(),
+  /** See {@link CreateSessionOptions.base}. */
+  base: z.string().optional(),
   /**
    * The provider's running totals for `providerRef` as Loom last observed
    * them. An adapter whose provider restores its totals on resume seeds its

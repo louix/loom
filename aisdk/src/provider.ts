@@ -107,6 +107,12 @@ export class AisdkProvider implements AgentProvider {
     };
   }
 
+  /** The session's own base when the daemon passed one, else the provider-wide fallback. */
+  #baseOf(session: string | undefined): { base?: string } {
+    const base = session ?? this.#base;
+    return base ? { base } : {};
+  }
+
   async createSession(opts: CreateSessionOptions): Promise<AgentSession> {
     const modelId = opts.model || this.#defaultModel;
     const messages: ModelMessage[] = opts.prompt ? [{ role: "user", content: opts.prompt }] : [];
@@ -149,7 +155,7 @@ export class AisdkProvider implements AgentProvider {
       cwd: opts.cwd,
       mcpHandles: opts.mcpServers,
       loomServer: opts.loomServer ?? false,
-      ...(this.#base ? { base: this.#base } : {}),
+      ...this.#baseOf(opts.base),
       ...(this.#search ? { search: this.#search } : {}),
       ...(this.#maxSteps != null ? { maxSteps: this.#maxSteps } : {}),
       store: this.#store,
@@ -182,7 +188,7 @@ export class AisdkProvider implements AgentProvider {
       cwd: ref.cwd,
       mcpHandles: ref.mcpServers ?? [],
       loomServer: true,
-      ...(this.#base ? { base: this.#base } : {}),
+      ...this.#baseOf(ref.base),
       ...(this.#search ? { search: this.#search } : {}),
       ...(this.#maxSteps != null ? { maxSteps: this.#maxSteps } : {}),
       store: this.#store,

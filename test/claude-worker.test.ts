@@ -232,6 +232,60 @@ test(
 );
 
 test(
+  "the status tool counts against the session's own base, else the provider's",
+  { timeout: 30_000 },
+  async () => {
+    const f = await fixture();
+    let session: AgentSession | undefined;
+    const git = async (...args: string[]) => {
+      const result = await new Deno.Command("git", {
+        args: ["-C", f.workspace, "-c", "commit.gpgsign=false", ...args],
+        stdout: "null",
+        stderr: "piped",
+      }).output();
+      assert.equal(result.success, true, new TextDecoder().decode(result.stderr));
+    };
+    try {
+      // main ← feature-x (+1) ← the session's branch (+1).
+      await git("checkout", "-q", "-b", "feature-x");
+      await git("commit", "-q", "--allow-empty", "-m", "feature");
+      await git("checkout", "-q", "-b", "loom/session");
+      await git("commit", "-q", "--allow-empty", "-m", "work");
+      const provider = await createClaudeWorkerProvider({ ...f.ctx, baseBranch: "main" });
+      const statusLine = async (s: AgentSession) => {
+        const r = reader(s);
+        await s.send("status");
+        const result = await r.until("result");
+        assert.equal(result.kind, "ok");
+        return /## loom\/session[^\\]*/.exec(JSON.stringify(result))?.[0];
+      };
+      const options = {
+        sessionId: "based",
+        cwd: f.workspace,
+        mode: "default" as const,
+        mcpServers: [],
+        loomServer: true,
+      };
+      session = await provider.createSession({ ...options, prompt: "", base: "feature-x" });
+      assert.equal(await statusLine(session), "## loom/session [+1 -0 vs feature-x]");
+      const ref = session.providerRef!;
+      await session.close();
+
+      session = await provider.resumeSession({ ...options, providerRef: ref, base: "feature-x" });
+      assert.equal(await statusLine(session), "## loom/session [+1 -0 vs feature-x]");
+      await session.close();
+
+      // A session stored without a base keeps the provider-wide fallback.
+      session = await provider.resumeSession({ ...options, providerRef: ref });
+      assert.equal(await statusLine(session), "## loom/session [+2 -0 vs main]");
+    } finally {
+      await session?.close();
+      await f.cleanup();
+    }
+  },
+);
+
+test(
   "Claude title runs in a private cwd and leaves profile/workspace intact",
   { timeout: 20_000 },
   async () => {

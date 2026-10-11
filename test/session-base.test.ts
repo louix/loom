@@ -4,12 +4,15 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { setTimeout as delay } from "node:timers/promises";
 import { makeHarness, type Harness } from "@loom/harness";
 import { LoomClient } from "@loom/client";
-import { FakeProvider } from "@loom/connector-mock";
+import { FakeProvider, type FakeSession } from "@loom/connector-mock";
 import type { ConnectorContext, ConnectorManifest } from "@loom/core/connector";
 import type { BaseChoices, SessionSnapshot } from "@loom/core/wire";
 import { sessionVmDirectory } from "../backend/daemon/src/daemon/session-vm-state.ts";
+import { statusInWorktree } from "../core/src/status.ts";
+import { prepareCheckout } from "../runtime/src/session-vm/checkout.ts";
 
 const quiet = { session: { titles: { enabled: false }, auto_resume: { enabled: false } } };
 
@@ -29,6 +32,10 @@ const commit = (cwd: string, file: string) => {
   gitIn(cwd)("commit", "-q", "-m", file);
   return gitIn(cwd)("rev-parse", "HEAD");
 };
+
+/** The `status` tool's branch line in `cwd`, measured against the base the agent was handed. */
+const statusLine = (cwd: string, base: string | undefined) =>
+  statusInWorktree(cwd, base ? { base } : {}).text.split("\n")[0] ?? "";
 
 test("a new session starts from what is checked out and keeps that base", async () => {
   const h = await makeHarness({ config: JSON.stringify(quiet) });
@@ -191,6 +198,11 @@ test("a private clone starts from a non-main branch, and needs a branch", async 
   const previous = Deno.env.get("XDG_STATE_HOME");
   Deno.env.set("XDG_STATE_HOME", state);
   let lifecycle: ConnectorContext["vmLifecycle"];
+  /** The base each start handed the agent, in order. */
+  const handed = new Map<string, Array<string | undefined>>();
+  const hand = (id: string, base: string | undefined) =>
+    handed.set(id, [...(handed.get(id) ?? []), base]);
+  const live = new Map<string, FakeSession>();
   const connectors: ConnectorManifest = {
     "@loom/connector-claude": async () => ({
       createProvider: (ctx) => {
@@ -199,6 +211,7 @@ test("a private clone starts from a non-main branch, and needs a branch", async 
         const ready = async (id: string, session: ReturnType<FakeProvider["createSession"]>) => {
           const s = await session;
           Object.defineProperty(s, "providerRef", { value: id });
+          live.set(id, s as FakeSession);
           if (ctx.config.sessionVm) {
             const history = join(
               sessionVmDirectory(ctx.config.sessionVm.repoRoot, id),
@@ -213,8 +226,14 @@ test("a private clone starts from a non-main branch, and needs a branch", async 
           id: ctx.id,
           capabilities: fake.capabilities,
           listPersistedSessions: () => fake.listPersistedSessions(),
-          createSession: (opts) => ready(opts.sessionId, fake.createSession(opts)),
-          resumeSession: (opts) => ready(opts.sessionId, fake.resumeSession(opts)),
+          createSession: (opts) => {
+            hand(opts.sessionId, opts.base);
+            return ready(opts.sessionId, fake.createSession(opts));
+          },
+          resumeSession: (opts) => {
+            hand(opts.sessionId, opts.base);
+            return ready(opts.sessionId, fake.resumeSession(opts));
+          },
         };
       },
     }),
@@ -233,7 +252,7 @@ test("a private clone starts from a non-main branch, and needs a branch", async 
     }),
   });
   const git = gitIn(h.repoRoot);
-  const c = await connect(h);
+  let c = await connect(h);
   try {
     git("checkout", "-q", "-b", "feature/y");
     const tip = commit(h.repoRoot, "y.txt");
@@ -247,6 +266,36 @@ test("a private clone starts from a non-main branch, and needs a branch", async 
     // What the relay advertises and the guest checks out against.
     assert.equal(lifecycle?.clone?.(clone.id)?.base, "feature/y");
     assert.ok(existsSync(join(sessionVmDirectory(h.repoRoot, clone.id))));
+    // The agent sees the host's branches as `origin/*`: measure from a checkout
+    // prepared the way the guest prepares it, with the host as its remote.
+    assert.deepEqual(handed.get(clone.id), ["origin/feature/y"]);
+    const guest = join(state, "guest-checkout");
+    await prepareCheckout(
+      {
+        path: guest,
+        branch: clone.branch!,
+        base: "feature/y",
+        identity: { name: "Guest", email: "guest@localhost" },
+      },
+      { remote: h.repoRoot },
+    );
+    commit(guest, "guest.txt");
+    assert.match(statusLine(guest, "origin/feature/y"), /\[\+1 -0 vs origin\/feature\/y\]$/);
+    // The provider-wide fallback names a branch the clone does not have locally.
+    assert.doesNotMatch(statusLine(guest, "main"), /vs main/);
+
+    // A restart resumes it with the same base.
+    live.get(clone.id)!.finishTurn();
+    for (let i = 0; i < 200; i++) {
+      const s = await c.request<SessionSnapshot>("session.get", { id: clone.id });
+      if (s.status.kind === "idle") break;
+      await delay(5);
+    }
+    await c.close();
+    await h.restart();
+    c = await connect(h);
+    await c.request("session.send", { id: clone.id, text: "continue" });
+    assert.deepEqual(handed.get(clone.id), ["origin/feature/y", "origin/feature/y"]);
 
     git("checkout", "-q", "--detach", tip);
     await assert.rejects(
@@ -266,11 +315,97 @@ test("a private clone starts from a non-main branch, and needs a branch", async 
       workspace: "worktree",
     });
     assert.equal(worktree.baseBranch, tip);
+    // A VM session on a mounted worktree resolves the commit itself.
+    assert.deepEqual(handed.get(worktree.id), [tip]);
   } finally {
     await c.close();
     await h.cleanup();
     if (previous === undefined) Deno.env.delete("XDG_STATE_HOME");
     else Deno.env.set("XDG_STATE_HOME", previous);
     rmSync(state, { recursive: true, force: true });
+  }
+});
+
+test("the agent is handed its session's own base: create, fork, switch, restart", async () => {
+  const h = await makeHarness({ config: JSON.stringify(quiet) });
+  const git = gitIn(h.repoRoot);
+  let c = await connect(h);
+  const fake = async (id = "fake") => (await h.daemon.providers.get(id)) as FakeProvider;
+  const createdWith = async (id: string) => (await fake()).creates.find((o) => o.sessionId === id);
+  const resumedWith = async (id: string, provider = "fake") =>
+    (await fake(provider)).resumes.findLast((r) => r.sessionId === id);
+  /** End the session's turn, which also records its provider ref for a later revive. */
+  const settle = async (id: string, provider = "fake") => {
+    (await fake(provider)).session(id)!.finishTurn();
+    for (let i = 0; i < 200; i++) {
+      const s = await c.request<SessionSnapshot>("session.get", { id });
+      if (s.status.kind === "idle") return;
+      await delay(5);
+    }
+    throw new Error("session did not become idle");
+  };
+  try {
+    git("checkout", "-q", "-b", "feature-x");
+    commit(h.repoRoot, "feature.txt");
+    const onFeature = await c.request<SessionSnapshot>("session.create", {
+      prompt: "on the branch",
+      provider: "fake",
+    });
+    // One commit of the session's own on top of feature-x, two on top of main.
+    commit(onFeature.worktree!, "work.txt");
+    const base = (await createdWith(onFeature.id))?.base;
+    assert.equal(base, "feature-x");
+    assert.match(statusLine(onFeature.worktree!, base), /\[\+1 -0 vs feature-x\]$/);
+
+    // A commit works as a base too.
+    const tip = git("rev-parse", "HEAD");
+    const onCommit = await c.request<SessionSnapshot>("session.create", {
+      prompt: "on a commit",
+      provider: "fake",
+      base: tip,
+    });
+    commit(onCommit.worktree!, "detached-work.txt");
+    const commitBase = (await createdWith(onCommit.id))?.base;
+    assert.equal(commitBase, tip);
+    assert.match(
+      statusLine(onCommit.worktree!, commitBase),
+      new RegExp(`\\[\\+1 -0 vs ${tip}\\]$`),
+    );
+
+    // A fork is handed the fork's own stored base.
+    await settle(onFeature.id);
+    const fork = await c.request<SessionSnapshot>("session.fork", { id: onFeature.id });
+    assert.ok(fork.baseBranch);
+    assert.equal((await createdWith(fork.id))?.base, fork.baseBranch);
+
+    // A provider switch re-hands it.
+    (await fake()).capabilities.ownsTranscript = true;
+    (await fake("mock")).capabilities.ownsTranscript = true;
+    await c.request("session.setProvider", { id: onFeature.id, provider: "mock", model: "fake-1" });
+    assert.equal((await resumedWith(onFeature.id, "mock"))?.base, "feature-x");
+
+    // Legacy: a row stored without a base hands none; the provider-wide `main` applies.
+    const legacy = await c.request<SessionSnapshot>("session.create", {
+      prompt: "legacy",
+      provider: "fake",
+    });
+    h.daemon.db.prepare("UPDATE sessions SET base_branch = NULL WHERE id = ?").run(legacy.id);
+    await settle(onCommit.id);
+    await settle(legacy.id);
+
+    // A restart revives each from its row.
+    await c.close();
+    await h.restart();
+    c = await connect(h);
+    for (const id of [onFeature.id, onCommit.id, legacy.id])
+      await c.request("session.send", { id, text: "continue" });
+    assert.equal((await resumedWith(onFeature.id, "mock"))?.base, "feature-x");
+    assert.equal((await resumedWith(onCommit.id))?.base, tip);
+    const legacyRef = await resumedWith(legacy.id);
+    assert.ok(legacyRef);
+    assert.equal(legacyRef.base, undefined);
+  } finally {
+    await c.close();
+    await h.cleanup();
   }
 });

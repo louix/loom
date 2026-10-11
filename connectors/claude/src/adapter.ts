@@ -1691,19 +1691,21 @@ export class ClaudeProvider implements AgentProvider {
     return this.#cli;
   }
 
-  #extra(cli: string | undefined) {
+  /** `session`: the session's own base, when the daemon passed one. */
+  #extra(cli: string | undefined, session: string | undefined) {
+    const base = session ?? this.#base;
     return {
       ...(cli ? { cli } : {}),
       ...(this.#promptCacheTtl ? { promptCacheTtl: this.#promptCacheTtl } : {}),
       ...(this.#configDir ? { configDir: this.#configDir } : {}),
-      ...(this.#base ? { base: this.#base } : {}),
+      ...(base ? { base } : {}),
     };
   }
 
   async createSession(opts: CreateSessionOptions): Promise<AgentSession> {
     const cli = this.#resolveCli();
     const s = new ClaudeSession(opts);
-    s.start(opts, this.#extra(cli));
+    s.start(opts, this.#extra(cli, opts.base));
     return s;
   }
 
@@ -1732,7 +1734,7 @@ export class ClaudeProvider implements AgentProvider {
     s.start(opts, {
       resume,
       ...(ref.usageBaseline && !ref.forkHistory ? { usageBaseline: ref.usageBaseline } : {}),
-      ...this.#extra(cli),
+      ...this.#extra(cli, ref.base),
     });
     return s;
   }

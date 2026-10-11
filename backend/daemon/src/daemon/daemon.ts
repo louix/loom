@@ -1765,6 +1765,7 @@ export class Daemon {
           systemPromptAppend: promptAppend,
           repoInstructions: repoInstructionsFor(this.#instructionsDir(wt.path), this.repoRoot),
           workspaceRoot: wt.path,
+          ...this.#agentBase(newId),
         };
         startup.signal.throwIfAborted();
         if (handoff) {
@@ -2159,6 +2160,7 @@ export class Daemon {
           mcpServers: mcpHandles,
           disableTools: this.config.providers.claude.disableBuiltin,
           settingSources: this.config.providers.claude.settingSources,
+          ...this.#agentBase(id),
           ...(isClaude || isAisdk
             ? {
                 loomServer: true,
@@ -2449,6 +2451,7 @@ export class Daemon {
         ...(model ? { model } : {}),
         ...(row.effort ? { effort: row.effort } : {}),
         ...(usageBaseline ? { usageBaseline } : {}),
+        ...this.#agentBase(id),
         ...(isClaude || isAisdk
           ? {
               systemPromptAppend: promptAppend,
@@ -2689,9 +2692,11 @@ export class Daemon {
       res.outcome === "dirty"
         ? "your worktree has uncommitted changes, so it was left alone"
         : `an automatic ${verb} hit conflicts, so your branch is unchanged`;
+    // Named as the agent's checkout resolves it — see `#agentBase`.
+    const base = (snap.checkout === "clone" ? "origin/" : "") + res.base;
     const text =
-      `[loom] The base branch \`${res.base}\` advanced by ${res.behind} commit(s) and ${why}. ` +
-      `When you're at a clean stopping point, ${verb} \`${res.base}\` into this branch ` +
+      `[loom] The base branch \`${base}\` advanced by ${res.behind} commit(s) and ${why}. ` +
+      `When you're at a clean stopping point, ${verb} \`${base}\` into this branch ` +
       `and resolve any conflicts.`;
     // Mirror the `session.send` RPC's echo, minus `#lastSend`: this nudge is
     // Loom's, so it shouldn't seed the undo picker or the next auto-title.
@@ -2824,6 +2829,18 @@ export class Daemon {
       branch: row.branch,
       base,
     });
+  }
+
+  /**
+   * The session's stored base as its agent's checkout names it — what the
+   * `status` tool counts ahead/behind against. A private clone sees the host's
+   * branches only as `origin/*`. Empty for a row stored without a base, which
+   * keeps the provider-wide fallback.
+   */
+  #agentBase(id: string): { base?: string } {
+    const row = this.#registry.get(id);
+    if (!row?.baseBranch) return {};
+    return { base: (row.checkout === "clone" ? "origin/" : "") + row.baseBranch };
   }
 
   /** A session's `GIT_AUTHOR_*` / `GIT_COMMITTER_*`, for commits the daemon makes on its behalf. */
@@ -4409,6 +4426,7 @@ export class Daemon {
           ),
           model,
           ...(effort ? { effort } : {}),
+          ...this.#agentBase(id),
         };
 
         try {
