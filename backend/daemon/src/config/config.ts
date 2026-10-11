@@ -224,7 +224,7 @@ export interface LoomConfig {
   /** Removed settings the file still sets: ignored, and reported by removedConfigWarnings. */
   removedKeys?: string[];
   autoNix: boolean;
-  tui: { includeEventLogInEditor: boolean };
+  tui: { includeEventLogInEditor: boolean; compat: boolean };
   providerAccess: { only?: string[]; disabled: string[] };
   isolation: {
     /** Project-wide default for new sessions; runtime availability is separate. */
@@ -392,7 +392,7 @@ export const legacyBaseBranch = (config: Pick<LoomConfig, "baseBranch">): string
 
 export const DEFAULT_CONFIG: LoomConfig = {
   autoNix: false,
-  tui: { includeEventLogInEditor: false },
+  tui: { includeEventLogInEditor: false, compat: false },
   worktreeDir: "",
   providerAccess: { disabled: [] },
   isolation: { enabled: false, extraAllowedHosts: [] },
@@ -756,7 +756,10 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
   return {
     ...(isolation.launcher !== undefined ? { removedKeys: ["session.isolation.launcher"] } : {}),
     autoNix: settings.session.auto_nix,
-    tui: { includeEventLogInEditor: settings.tui.include_event_log_in_editor },
+    tui: {
+      includeEventLogInEditor: settings.tui.include_event_log_in_editor,
+      compat: settings.tui.compat,
+    },
     ...(settings.base_branch ? { baseBranch: settings.base_branch } : {}),
     worktreeDir: settings.worktree_dir,
     providerAccess: { ...(only ? { only } : {}), disabled },

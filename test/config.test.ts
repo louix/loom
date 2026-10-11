@@ -43,6 +43,30 @@ test("TUI editor event log defaults to false and accepts an opt-in", () => {
   );
 });
 
+test("TUI compat mode defaults to false and accepts an opt-in, per repo too", () => {
+  assert.equal(cfg("").tui.compat, false);
+  assert.equal(cfg('{"tui":{"compat":true}}').tui.compat, true);
+  assert.equal(cfg('{"tui":{"compat":"yes"}}').tui.compat, false);
+  assert.equal(
+    cfg('{"tui":{"compat":true,"include_event_log_in_editor":true}}').tui.includeEventLogInEditor,
+    true,
+    "the two settings sit side by side",
+  );
+  const dir = mkdtempSync(join(tmpdir(), "loom-tui-compat-"));
+  try {
+    const file = join(dir, "config.json");
+    const repo = join(dir, "repo");
+    mkdirSync(repo);
+    writeFileSync(file, JSON.stringify({ tui: { compat: true } }));
+    assert.equal(loadConfig(repo, file).tui.compat, true);
+    writeFileSync(file, JSON.stringify({ repos: [{ path: repo, tui: { compat: true } }] }));
+    assert.equal(loadConfig(repo, file).tui.compat, true);
+    assert.equal(loadConfig(dir, file).tui.compat, false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("[worktree] enabled defaults to true and parses a false override", () => {
   assert.equal(cfg("").worktree.enabled, true);
   assert.equal(

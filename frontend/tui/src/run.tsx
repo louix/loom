@@ -22,10 +22,22 @@ import { pickerCurrent, pickerVisible } from "./overlay.ts";
 import { repositoryPicker } from "./repositories.ts";
 import type { LoomClient } from "@loom/client";
 import { App } from "./app.tsx";
-import { MOUSE_OFF, MOUSE_ON, PASTE_OFF, PASTE_ON } from "./mouse.ts";
+import { terminalModes } from "./mouse.ts";
 
 const encoder = new TextEncoder();
 const writeStdout = (s: string): void => void Deno.stdout.writeSync(encoder.encode(s));
+
+/**
+ * Compat mode, for terminals such as mosh (and Termux behind it): full redraws
+ * instead of Ink's incremental ones — mosh ignores its CSI E row skips and has
+ * no unique environment marker — and no any-motion mouse tracking, hence no
+ * hover (see {@link terminalModes}). On when `LOOM_TUI_COMPAT=1` or the
+ * config's `tui.compat` is true.
+ */
+export const tuiCompat = (
+  configured: boolean | undefined,
+  env: string | undefined = Deno.env.get("LOOM_TUI_COMPAT"),
+): boolean => configured === true || env === "1";
 
 export const runTui = async (
   client: LoomClient,
@@ -35,6 +47,8 @@ export const runTui = async (
     logs?: { daemon: string; tui: string };
     themeState?: string;
     includeEventLogInEditor?: boolean;
+    /** The config's `tui.compat`; `LOOM_TUI_COMPAT=1` turns compat on too. */
+    compat?: boolean;
     openShell?: (id: string) => Promise<number>;
     prepareEnvironment?: () => Promise<number>;
     repositories?: () => string[];
@@ -42,19 +56,23 @@ export const runTui = async (
   } = {},
 ): Promise<string | null> => {
   let nextRepository: string | null = null;
+  const compat = tuiCompat(opts.compat);
+  const modes = terminalModes(compat);
   try {
     // Ask the terminal to bracket pastes so a multi-line paste arrives as one
     // chunk instead of a stream of Enter-looking carriage returns. Also turn on
     // SGR mouse reporting so the wheel arrives as its own escape sequence —
     // without it, terminals translate wheel scroll into Up/Down arrow keys on
     // the alt screen, which App's keymap reads as fleet-selection movement.
-    // Any-motion tracking lets hover feedback follow the pointer (see mouse.ts).
-    if (Deno.stdout.isTerminal()) writeStdout(PASTE_ON + MOUSE_ON);
+    // Any-motion tracking lets hover feedback follow the pointer, except in
+    // compat mode (see mouse.ts).
+    if (Deno.stdout.isTerminal()) writeStdout(modes.on);
 
     const instance = render(
       <App
         client={client}
         includeEventLogInEditor={opts.includeEventLogInEditor ?? false}
+        compat={compat}
         {...(opts.checkEnvironment ? { checkEnvironment: opts.checkEnvironment } : {})}
         {...(opts.logs ? { logs: opts.logs } : {})}
         {...(opts.themeState ? { themeState: opts.themeState } : {})}
@@ -70,15 +88,13 @@ export const runTui = async (
         exitOnCtrlC: false,
         maxFps: 60,
         alternateScreen: true,
-        // Mosh ignores Ink's CSI E row skips and has no unique environment
-        // marker. LOOM_TUI_COMPAT=1 opts into full redraws for such terminals.
-        incrementalRendering: Deno.env.get("LOOM_TUI_COMPAT") !== "1",
+        incrementalRendering: !compat,
       },
     );
     await instance.waitUntilExit();
     return nextRepository;
   } finally {
-    if (Deno.stdout.isTerminal()) writeStdout(MOUSE_OFF + PASTE_OFF);
+    if (Deno.stdout.isTerminal()) writeStdout(modes.off);
     await client.close();
   }
 };
@@ -120,7 +136,11 @@ export const RepositoryMenu = ({
   );
 };
 
-export const pickRepository = async (repositories: string[]): Promise<string | null> => {
+/** `compat`: the config's `tui.compat`, as for {@link runTui}. */
+export const pickRepository = async (
+  repositories: string[],
+  compat?: boolean,
+): Promise<string | null> => {
   let selected: string | null = null;
   const instance = render(
     <RepositoryMenu
@@ -134,7 +154,7 @@ export const pickRepository = async (repositories: string[]): Promise<string | n
       alternateScreen: true,
       exitOnCtrlC: false,
       maxFps: 60,
-      incrementalRendering: Deno.env.get("LOOM_TUI_COMPAT") !== "1",
+      incrementalRendering: !tuiCompat(compat),
     },
   );
   await instance.waitUntilExit();

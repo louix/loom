@@ -629,6 +629,11 @@
           "default": false,
           "description": "Open the event log alongside the input on Alt+E. Defaults to false; enabling this may require :wq! in Vim/Neovim.",
           "type": "boolean"
+        },
+        "compat": {
+          "default": false,
+          "description": "Terminal compatibility mode, for mosh (e.g. from Termux): full redraws, and mouse reporting without any-motion tracking, so there is no hover underline. Clicks and the wheel still work. LOOM_TUI_COMPAT=1 turns it on too. Defaults to false. Restart the TUI to apply.",
+          "type": "boolean"
         }
       },
       "additionalProperties": false
@@ -2012,6 +2017,11 @@
               "include_event_log_in_editor": {
                 "default": false,
                 "description": "Open the event log alongside the input on Alt+E. Defaults to false; enabling this may require :wq! in Vim/Neovim.",
+                "type": "boolean"
+              },
+              "compat": {
+                "default": false,
+                "description": "Terminal compatibility mode, for mosh (e.g. from Termux): full redraws, and mouse reporting without any-motion tracking, so there is no hover underline. Clicks and the wheel still work. LOOM_TUI_COMPAT=1 turns it on too. Defaults to false. Restart the TUI to apply.",
                 "type": "boolean"
               }
             },

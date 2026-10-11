@@ -263,6 +263,9 @@ export const createConfigSchema = (d: LoomConfig, events: readonly HookEvent[]) 
       include_event_log_in_editor: flag(d.tui.includeEventLogInEditor).describe(
         "Open the event log alongside the input on Alt+E. Defaults to false; enabling this may require :wq! in Vim/Neovim.",
       ),
+      compat: flag(d.tui.compat).describe(
+        "Terminal compatibility mode, for mosh (e.g. from Termux): full redraws, and mouse reporting without any-motion tracking, so there is no hover underline. Clicks and the wheel still work. LOOM_TUI_COMPAT=1 turns it on too. Defaults to false. Restart the TUI to apply.",
+      ),
     }),
     session: preprocess(
       record,

@@ -12,7 +12,7 @@ import { createElement } from "react";
 import { stripVTControlCharacters } from "node:util";
 import { Box, render, renderToString, type Key } from "ink";
 import { LoomClient } from "@loom/client";
-import { RepositoryMenu } from "@loom/tui/run";
+import { RepositoryMenu, tuiCompat } from "@loom/tui/run";
 import type { ClientState } from "@loom/client";
 import { loadableIdle, loadableLoaded, loadablePending } from "@loom/core/loadable";
 import { stateAwaitingInput, stateIdle, stateRunning } from "@loom/core/session-state";
@@ -58,7 +58,8 @@ import {
 import { initialState, fleetSessions, shownLog, reduce, sessionLog } from "@loom/tui/model";
 import { openPrompt, pickerCurrent, sessionPrompt } from "@loom/tui/overlay";
 import { requestsFor } from "@loom/tui/interactions";
-import { MOUSE_OFF, MOUSE_ON, PASTE_OFF, PASTE_ON, mouseReport } from "@loom/tui/mouse";
+import { mouseReport, terminalModes } from "@loom/tui/mouse";
+import { normalizeConfig, parseConfig } from "@loom/daemon/config/config";
 import type { FakeProvider } from "@loom/connector-mock";
 import { makeHarness, type Harness } from "@loom/harness";
 
@@ -2373,6 +2374,14 @@ const fakeTerm: Term = {
   onResize: () => () => {},
 };
 
+// Bracketed paste + mouse reporting, spelled out byte for byte. Since hover
+// (stage A2) any-motion `?1003` rides along; compat mode keeps the pre-A2 set,
+// because mosh forwards only the last tracking mode and Termux lacks 1003.
+const A2_ON = "\x1b[?2004h\x1b[?1000h\x1b[?1003h\x1b[?1006h";
+const A2_OFF = "\x1b[?1006l\x1b[?1003l\x1b[?1000l\x1b[?2004l";
+const COMPAT_ON = "\x1b[?2004h\x1b[?1000h\x1b[?1006h";
+const COMPAT_OFF = "\x1b[?1006l\x1b[?1000l\x1b[?2004l";
+
 test("terminal focus reports stay out of prompts, including fragmented reports and pasted literals", async () => {
   const fake = mkFakeClient();
   fake.deliver(fleetOf());
@@ -4443,10 +4452,10 @@ test("s hands off the selected session and restores the TUI after shell exit or 
       handle.handleKey("s", {} as Key);
       handle.handleKey("s", {} as Key);
       handle.handleKey("c", { ctrl: true } as Key);
-      assert.deepEqual(steps, ["suspend", MOUSE_OFF + PASTE_OFF, "shell:a"]);
+      assert.deepEqual(steps, ["suspend", A2_OFF, "shell:a"]);
       finish();
       await delay(0);
-      assert.deepEqual(steps.slice(-2), ["restore", PASTE_ON + MOUSE_ON]);
+      assert.deepEqual(steps.slice(-2), ["restore", A2_ON]);
       assert.equal(handle.getView().sel?.id, before.sel?.id);
       assert.equal(handle.getView().layoutView, before.layoutView);
       assert.equal(handle.getView().ui.overlay.t, "browse");
@@ -4661,7 +4670,6 @@ test("mouse motion and drags are never clicks", () => {
   assert.equal(mouseReport("[<64;10;3M")?.kind, "wheel");
   assert.equal(mouseReport("[<68;10;3M")?.button, 64, "modifier bits are not buttons");
   assert.equal(mouseReport("hello"), null);
-  assert.ok(MOUSE_ON.includes("?1003h") && MOUSE_OFF.includes("?1003l"));
 });
 
 test("hover follows the pointer over enabled targets and never activates them", () => {
@@ -4749,6 +4757,122 @@ test("hover follows the pointer over enabled targets and never activates them", 
       ),
     );
     assert.ok(!handle.getView().hits.some((h) => h.kind === "mode"));
+  } finally {
+    off();
+    stop();
+  }
+});
+
+test("terminal modes are the A2 set by default and the pre-A2 set under compat, from env or config", () => {
+  // What run.tsx writes at start (`on`) and exit (`off`), byte for byte.
+  assert.deepEqual(terminalModes(false), { on: A2_ON, off: A2_OFF });
+  assert.deepEqual(terminalModes(true), { on: COMPAT_ON, off: COMPAT_OFF });
+  assert.ok(!COMPAT_ON.includes("1003") && !COMPAT_OFF.includes("1003"));
+
+  // LOOM_TUI_COMPAT=1 or `tui.compat: true`, either one.
+  assert.equal(tuiCompat(undefined, undefined), false);
+  assert.equal(tuiCompat(false, undefined), false);
+  assert.equal(tuiCompat(false, "0"), false);
+  assert.equal(tuiCompat(undefined, "1"), true);
+  assert.equal(tuiCompat(false, "1"), true);
+  assert.equal(tuiCompat(true, undefined), true);
+  const fromConfig = (text: string) =>
+    terminalModes(tuiCompat(normalizeConfig(parseConfig(text)).tui.compat, undefined));
+  assert.deepEqual(fromConfig("{}"), { on: A2_ON, off: A2_OFF });
+  assert.deepEqual(fromConfig('{"tui":{"compat":false}}'), { on: A2_ON, off: A2_OFF });
+  assert.deepEqual(fromConfig('{"tui":{"compat":true}}'), { on: COMPAT_ON, off: COMPAT_OFF });
+});
+
+for (const compat of [false, true]) {
+  test(`handoffs switch the terminal modes off and back on (compat ${compat})`, async () => {
+    const [on, off] = compat ? [COMPAT_ON, COMPAT_OFF] : [A2_ON, A2_OFF];
+    const fake = mkFakeClient();
+    const steps: string[] = [];
+    const handle = mkFleetHandle({
+      client: fake.client,
+      compat,
+      term: {
+        ...fakeTerm,
+        write: (text) => steps.push(text),
+        suspendTerminal: async (fn) => {
+          steps.push("suspend");
+          try {
+            await fn();
+          } finally {
+            steps.push("restore");
+          }
+        },
+      },
+      openShell: async (id) => {
+        steps.push("shell:" + id);
+        return 0;
+      },
+      prepareEnvironment: async () => {
+        steps.push("prepare");
+        return 0;
+      },
+    });
+    const stop = handle.effectStart();
+    try {
+      fake.deliver(fleetOf(testSession({ inPlace: true })));
+      handle.handleKey("s", {} as Key);
+      await delay(0);
+      assert.deepEqual(steps, ["suspend", off, "shell:a", "restore", on]);
+      steps.length = 0;
+      handle.handleKey(" ", {} as Key);
+      handle.handleKey("Prepare repo environment", {} as Key);
+      handle.handleKey("", { return: true } as Key);
+      await delay(0);
+      assert.deepEqual(steps, ["suspend", off, "prepare", "restore", on]);
+    } finally {
+      stop();
+    }
+  });
+}
+
+test("compat mode tracks no hover; clicks and the wheel still work", () => {
+  const fake = mkFakeClient();
+  let renders = 0;
+  const handle = mkFleetHandle({ client: fake.client, term: fakeTerm, compat: true });
+  const stop = handle.effectStart();
+  const off = handle.subscribe(() => renders++);
+  const press = (input: string, key = {}) => handle.handleKey(input, key as Key);
+  const target = (key: string) => {
+    const hit = handle.getView().hits.find((h) => hitKey(h) === key);
+    assert.ok(hit, `${key} is not a target`);
+    return hit;
+  };
+  try {
+    const a = testSession({ id: "a", status: stateIdle, title: "first", updatedAt: 2 });
+    const b = testSession({ id: "b", status: stateIdle, title: "second", updatedAt: 1 });
+    fake.deliver(fleetOf(a, b));
+    const selected = handle.getView().ui.selectedId;
+    const other = selected === "a" ? "b" : "a";
+    const row = target(`session:${other}`);
+
+    // A motion report (should a terminal send one anyway) neither hovers nor redraws.
+    const before = renders;
+    press(`[<35;${row.x0 + 1};${row.y}M`);
+    assert.equal(handle.getView().hover, null);
+    assert.equal(renders, before);
+
+    // A click selects, and leaves no underline behind where it landed.
+    press(`[<0;${row.x0 + 1};${row.y}M`);
+    press(`[<0;${row.x0 + 1};${row.y}m`);
+    assert.equal(handle.getView().ui.selectedId, other);
+    assert.equal(handle.getView().hover, null);
+
+    // A key-bar chip still runs its command.
+    const chip = target("bar:palette");
+    press(`[<0;${chip.x0};${chip.y}M`);
+    assert.equal(handle.getView().ui.overlay.t, "picker");
+    assert.equal(handle.getView().hover, null);
+    press("", { escape: true });
+
+    // The wheel still scrolls instead of arriving as ↑/↓.
+    press(`[<64;${row.x0 + 1};${row.y}M`);
+    assert.equal(handle.getView().ui.selectedId, other, "the wheel is not fleet movement");
+    assert.equal(handle.getView().hover, null);
   } finally {
     off();
     stop();

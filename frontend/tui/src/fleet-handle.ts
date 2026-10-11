@@ -51,7 +51,7 @@ import type {
 import { LOOM_VERSION } from "@loom/core/version";
 import { spawnEditor, type EditorHandoff } from "./editor-handoff.ts";
 import { applyKey, buffer } from "./editor.ts";
-import { MOUSE_OFF, MOUSE_ON, PASTE_OFF, PASTE_ON, mouseReport } from "./mouse.ts";
+import { mouseReport, terminalModes } from "./mouse.ts";
 import { setThemeMode, shortId, truncate, modeChipText } from "./theme.ts";
 import { loadPersistedTheme, persistTheme } from "./theme-store.ts";
 import {
@@ -352,6 +352,9 @@ export interface MkFleetHandleInput {
   readonly themeState?: string;
   /** Include the event log as a second file when editing a prompt. Default false. */
   readonly includeEventLogInEditor?: boolean;
+  /** Compat mode (`tuiCompat` in run.tsx): handoffs restore the mouse modes
+   *  without any-motion tracking, and nothing is hovered. Default false. */
+  readonly compat?: boolean;
   readonly openShell?: (id: string) => Promise<number>;
   readonly prepareEnvironment?: () => Promise<number>;
   readonly repositories?: () => string[];
@@ -585,6 +588,7 @@ export const mkFleetHandle = ({
   logs,
   themeState,
   includeEventLogInEditor = false,
+  compat = false,
   openShell,
   prepareEnvironment,
   repositories,
@@ -611,7 +615,11 @@ export const mkFleetHandle = ({
   let planScroll = 0;
   // Where the mouse pointer was last reported, while it is over the UI. Any
   // key clears it: the feedback belongs to the mouse, not to the keyboard.
+  // Compat mode has no motion reports, so it never tracks one: a click's
+  // position would otherwise stay underlined until the next key.
   let pointer: { x: number; y: number } | null = null;
+  // Re-asserted after every handoff, as `run.tsx` set them at start.
+  const terminal = terminalModes(compat);
   let inspection: { key: string; text: string } | null = null;
   let inspectionPending: string | null = null;
   let inspectionGeneration = 0;
@@ -1105,7 +1113,7 @@ export const mkFleetHandle = ({
     try {
       await term.suspendTerminal(async () => {
         // The editor gets the terminal as it found it: no motion reports in its input.
-        if (term.isTTY) term.write(MOUSE_OFF + PASTE_OFF);
+        if (term.isTTY) term.write(terminal.off);
         saved = spawnEditor(text, opts);
       });
     } catch (e) {
@@ -1116,7 +1124,7 @@ export const mkFleetHandle = ({
     }
     // Whatever the pointer was over before the handoff, it is not now.
     pointer = null;
-    if (term.isTTY) term.write(PASTE_ON + MOUSE_ON);
+    if (term.isTTY) term.write(terminal.on);
     return saved;
   };
 
@@ -1128,7 +1136,7 @@ export const mkFleetHandle = ({
     try {
       let code = 0;
       await term.suspendTerminal(async () => {
-        if (term.isTTY) term.write(MOUSE_OFF + PASTE_OFF);
+        if (term.isTTY) term.write(terminal.off);
         code = await openShell(id);
       });
       if (code !== 0) note(`Shell exited with status ${code}`, "bad");
@@ -1138,7 +1146,7 @@ export const mkFleetHandle = ({
       shellOpen = false;
       // Whatever the pointer was over before the handoff, it is not now.
       pointer = null;
-      if (term.isTTY) term.write(PASTE_ON + MOUSE_ON);
+      if (term.isTTY) term.write(terminal.on);
     }
   };
 
@@ -1151,7 +1159,7 @@ export const mkFleetHandle = ({
     try {
       let code = 1;
       await term.suspendTerminal(async () => {
-        if (term.isTTY) term.write(MOUSE_OFF + PASTE_OFF);
+        if (term.isTTY) term.write(terminal.off);
         code = await prepareEnvironment();
         if (checkEnvironment) {
           environmentCheck += 1;
@@ -1168,7 +1176,7 @@ export const mkFleetHandle = ({
       preparingRepo = false;
       // Whatever the pointer was over before the handoff, it is not now.
       pointer = null;
-      if (term.isTTY) term.write(PASTE_ON + MOUSE_ON);
+      if (term.isTTY) term.write(terminal.on);
     }
   };
 
@@ -2475,18 +2483,22 @@ export const mkFleetHandle = ({
     }
 
     // SGR mouse reports arrive as raw `input` (`[<Cb;Cx;Cy(M|m)`, `run.tsx` turns
-    // the reporting on) with every `key.*` flag false. Every report moves the
-    // pointer hover feedback follows; motion never does more than that. The
-    // wheel scrolls whatever reading view owns the screen (plan review, answer
-    // sheet), otherwise the event log; a left press hit-tests against the
-    // frame's `hits` — the same targets hover shows (built in `deriveView`).
+    // the reporting on) with every `key.*` flag false. Outside compat mode every
+    // report moves the pointer hover feedback follows; motion never does more
+    // than that. The wheel scrolls whatever reading view owns the screen (plan
+    // review, answer sheet), otherwise the event log; a left press hit-tests
+    // against the frame's `hits` — the same targets hover shows (built in
+    // `deriveView`).
     const mouse = mouseReport(input);
     if (mouse) {
-      const hoverBefore = store.get().hover;
-      pointer = { x: mouse.x, y: mouse.y };
-      const hoverNow = hitAt(store.get().hits, pointer);
-      // Only a change of target redraws, not every cell the pointer crosses.
-      if ((hoverNow ? hitKey(hoverNow) : null) !== hoverBefore) publish();
+      const at = { x: mouse.x, y: mouse.y };
+      if (!compat) {
+        const hoverBefore = store.get().hover;
+        pointer = at;
+        const hoverNow = hitAt(store.get().hits, pointer);
+        // Only a change of target redraws, not every cell the pointer crosses.
+        if ((hoverNow ? hitKey(hoverNow) : null) !== hoverBefore) publish();
+      }
       if (mouse.kind === "move") return;
       if (mouse.kind === "wheel" && (mouse.button === 64 || mouse.button === 65)) {
         if (
@@ -2511,7 +2523,7 @@ export const mkFleetHandle = ({
         mouse.pressed &&
         (state.overlay.t === "browse" || state.overlay.t === "prompt")
       ) {
-        const hit = hitAt(store.get().hits, pointer);
+        const hit = hitAt(store.get().hits, at);
         if (!hit) return;
         if (hit.kind === "promptMode") return handleKey("", { tab: true, shift: true } as Key);
         if (hit.kind === "bar") {

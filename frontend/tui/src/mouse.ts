@@ -1,8 +1,8 @@
 /**
  * SGR mouse reports. Ink hands them to the key handler as raw input with the
  * leading ESC stripped (`[<Cb;Cx;Cy(M|m)`). Any-motion tracking (`?1003`) is
- * on so the pointer can be followed for hover feedback; a motion report is
- * never a click.
+ * on, outside compat mode, so the pointer can be followed for hover feedback;
+ * a motion report is never a click.
  */
 export type MouseReport = {
   /** The button, with the shift/meta/ctrl and motion bits cleared. */
@@ -26,10 +26,27 @@ export const mouseReport = (input: string): MouseReport | null => {
   return { ...point, kind: "button", pressed: match[4] === "M" };
 };
 
-/** Press/release, any-motion and SGR encoding — and their reverse. Without
- *  reporting, terminals turn the wheel into ↑/↓ on the alternate screen. */
-export const MOUSE_ON = "\x1b[?1000h\x1b[?1003h\x1b[?1006h";
-export const MOUSE_OFF = "\x1b[?1006l\x1b[?1003l\x1b[?1000l";
-/** Bracketed paste, which the TUI turns on alongside the mouse. */
-export const PASTE_ON = "\x1b[?2004h";
-export const PASTE_OFF = "\x1b[?2004l";
+/** Terminal modes the TUI owns: `on` at start and after every handoff, `off`
+ *  before a handoff and at exit. */
+export interface TerminalModes {
+  readonly on: string;
+  readonly off: string;
+}
+
+/**
+ * Bracketed paste plus mouse reporting: press/release, any-motion and SGR
+ * encoding — and their reverse. Without reporting, terminals turn the wheel
+ * into ↑/↓ on the alternate screen.
+ *
+ * Compat mode leaves any-motion (`?1003`) out, as before hover existed: mosh
+ * keeps a single tracking mode (the last one set) and would forward only
+ * `?1003`, which Termux doesn't implement — leaving no reporting at all, so
+ * swipes arrive as ↑/↓ and taps open the soft keyboard. No motion, no hover.
+ */
+export const terminalModes = (compat: boolean): TerminalModes =>
+  compat
+    ? { on: "\x1b[?2004h\x1b[?1000h\x1b[?1006h", off: "\x1b[?1006l\x1b[?1000l\x1b[?2004l" }
+    : {
+        on: "\x1b[?2004h\x1b[?1000h\x1b[?1003h\x1b[?1006h",
+        off: "\x1b[?1006l\x1b[?1003l\x1b[?1000l\x1b[?2004l",
+      };

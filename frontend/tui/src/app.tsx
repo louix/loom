@@ -53,6 +53,7 @@ export const App = ({
   logs,
   themeState,
   includeEventLogInEditor = false,
+  compat = false,
   openShell,
   prepareEnvironment,
   repositories,
@@ -69,6 +70,8 @@ export const App = ({
   /** TUI preference file — the theme persists across restarts there. */
   themeState?: string;
   includeEventLogInEditor?: boolean;
+  /** Compat mode (see `tuiCompat` in run.tsx): no any-motion tracking, no hover. */
+  compat?: boolean;
   openShell?: (id: string) => Promise<number>;
   prepareEnvironment?: () => Promise<number>;
   repositories?: () => string[];
@@ -106,6 +109,7 @@ export const App = ({
         },
       },
       includeEventLogInEditor,
+      compat,
       ...(logs ? { logs } : {}),
       ...(openShell ? { openShell } : {}),
       ...(prepareEnvironment ? { prepareEnvironment } : {}),

@@ -222,6 +222,17 @@ never runs anything, and a key press hides the underline until the mouse moves.
 The wheel scrolls whatever is being read: the plan review, the answer sheet,
 the active tab.
 
+Compat mode is for mosh (for example from Termux). Turn it on with
+`tui.compat: true` in the Loom config or with `LOOM_TUI_COMPAT=1`; either one is
+enough, and it takes effect when the TUI starts. It redraws whole frames, because
+mosh ignores Ink's row skips. It also turns hover off. Hover needs any-motion
+mouse tracking (`?1003`), and mosh keeps only one tracking mode, the last one
+set, so it would forward just that mode. Termux doesn't implement it, which
+leaves no mouse reporting at all: swipes arrive as ↑/↓ and move the fleet
+selection, and taps open the soft keyboard. In compat mode Loom asks only for
+press/release reporting (`?1000`, SGR `?1006`, plus bracketed paste `?2004`).
+Clicks and the wheel work as usual, but nothing underlines under the pointer.
+
 The permission-mode chip also accepts mouse clicks in DETAIL and in the new-session
 and reply composers, using the same cycle as `⇧⇥`. It is disabled while a send is
 pending or its outcome needs review. Starting or resuming a session displays

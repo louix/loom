@@ -276,7 +276,17 @@ const main = async (): Promise<void> => {
       if ((cmd === "runtime" || cmd === "mcp") && !values.repo) return Deno.cwd();
       if (wantTui && !values.repo) {
         const { pickRepository } = await import("@loom/tui/run");
-        return pickRepository(availableRepositories());
+        const { loadConfig } = await import("@loom/daemon/config/config");
+        // No repository yet: the user defaults decide. A broken config file must
+        // not keep the picker from opening.
+        const compat = (() => {
+          try {
+            return loadConfig(Deno.cwd()).tui.compat;
+          } catch {
+            return false;
+          }
+        })();
+        return pickRepository(availableRepositories(), compat);
       }
       throw error;
     }
@@ -368,9 +378,11 @@ const main = async (): Promise<void> => {
     const { runTui } = await import("@loom/tui/run");
     const { loadConfig } = await import("@loom/daemon/config/config");
     rememberRepository(logRoot);
+    const tui = loadConfig(logRoot).tui;
     const nextRepository = await runTui(client, {
       repositories: availableRepositories,
-      includeEventLogInEditor: loadConfig(logRoot).tui.includeEventLogInEditor,
+      includeEventLogInEditor: tui.includeEventLogInEditor,
+      compat: tui.compat,
       logs: { daemon: paths.log, tui: paths.tuiLog },
       themeState: paths.tuiState,
       openShell: async (id) => {
