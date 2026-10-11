@@ -33,8 +33,11 @@ interface Env {
   get: (id: string) => Promise<SessionSnapshot>;
   /** Park every guest command until the returned fn is called. */
   blockGuest: () => { entered: () => boolean; release: () => void };
-  /** Runs as a resume launches, before it reads the clone's refs. */
-  hooks: { beforeLaunch?: (id: string) => Promise<void> };
+  /** Runs as a resume launches, before it reads the clone's refs; `fetch`
+   *  false: the launch succeeds without its checkout fetching. */
+  hooks: { beforeLaunch?: (id: string) => Promise<void>; fetch?: boolean };
+  /** A launch that reads its checkout policy, then fails before its checkout runs. */
+  failedLaunch: (id: string) => void;
 }
 
 const withClones = async (fn: (env: Env) => Promise<void>): Promise<void> => {
@@ -42,6 +45,7 @@ const withClones = async (fn: (env: Env) => Promise<void>): Promise<void> => {
   const cwds = new Map<string, string>();
   const hooks: Env["hooks"] = {};
   let gate: { promise: Promise<void>; entered: boolean } | null = null;
+  let readPolicy: (id: string) => void = () => {};
   const connectors: ConnectorManifest = {
     "@loom/connector-claude": async () => ({
       createProvider: (ctx) => ({
@@ -49,6 +53,7 @@ const withClones = async (fn: (env: Env) => Promise<void>): Promise<void> => {
         capabilities: fake.capabilities,
         listPersistedSessions: () => fake.listPersistedSessions(),
         createSession: async (opts) => {
+          readPolicy = (id) => void ctx.vmLifecycle!.clone!(id);
           const clone = ctx.vmLifecycle!.clone!(opts.sessionId);
           if (clone) {
             const repo = ctx.config.sessionVm!.repoRoot;
@@ -65,7 +70,7 @@ const withClones = async (fn: (env: Env) => Promise<void>): Promise<void> => {
           // policy shows, the base by its stored name.
           const clone = ctx.vmLifecycle!.clone!(opts.sessionId);
           const cwd = cwds.get(opts.sessionId);
-          if (clone && cwd) git(cwd, "fetch", "-q", "--prune", "origin");
+          if (clone && cwd && hooks.fetch !== false) git(cwd, "fetch", "-q", "--prune", "origin");
           return fake.resumeSession(opts);
         },
       }),
@@ -127,6 +132,7 @@ const withClones = async (fn: (env: Env) => Promise<void>): Promise<void> => {
       get: (id) => c.request<SessionSnapshot>("session.get", { id }),
       blockGuest,
       hooks,
+      failedLaunch: (id) => readPolicy(id),
     });
   } finally {
     c.close();
@@ -210,6 +216,55 @@ test("a clone child resumed as its supervisor's branch is renamed is told the na
     // The launch fetched the new name: the kid is told it, with no sync.
     await until(() => resumed.bases.length > 0, "base pushed after the resume");
     assert.deepEqual(resumed.bases, [`origin/${renamed}`]);
+  }));
+
+test("a base counts as fetched only when a launch succeeded and its clone has the ref", () =>
+  withClones(async ({ fake, cwds, h, c, get, hooks, failedLaunch }) => {
+    const lead = await c.request<SessionSnapshot>("session.create", {
+      provider: "claude",
+      prompt: "lead",
+      workspace: "worktree",
+    });
+    const before = lead.branch!;
+    const kid = await c.request<SessionSnapshot>("session.create", {
+      provider: "claude",
+      prompt: "kid",
+      base: before,
+    });
+    h.daemon.registry.setFields(kid.id, { supervisorId: lead.id });
+    const first = fake.session(kid.id)!;
+    first.finishTurn();
+    await until(async () => (await get(kid.id)).status.kind === "idle", "kid idle");
+    // Queued behind its turn-end sync: once this answers, that sync is done.
+    await c.request("session.rebase", { id: kid.id });
+    await c.request("session.setTitle", { id: lead.id, title: "Lead work" });
+    const renamed = (await get(lead.id)).branch!;
+    assert.notEqual(renamed, before);
+
+    // A launch reads its policy (the new name) and fails before its checkout.
+    failedLaunch(kid.id);
+    first.endStream();
+    await until(() => !h.daemon.sessions.has(kid.id) || h.daemon.sessions.isEnded(kid.id), "cold");
+    // The next launch succeeds, but its checkout did not fetch the new name.
+    hooks.fetch = false;
+    await c.request("session.send", { id: kid.id, text: "go on" });
+    await until(() => fake.session(kid.id) !== first, "resumed");
+    const resumed = fake.session(kid.id)!;
+    const clone = cwds.get(kid.id)!;
+    assert.throws(() => git(clone, "rev-parse", "--verify", `refs/remotes/origin/${renamed}`));
+    assert.equal(
+      fake.resumes.at(-1)?.base,
+      `origin/${renamed}`,
+      "the launch named the stored base",
+    );
+    // Told the base its clone does have, not the one neither launch fetched.
+    await until(() => resumed.bases.length > 0, "base corrected after the launch");
+    assert.deepEqual(resumed.bases, [`origin/${before}`]);
+
+    // Its turn ends; the sync fetches the new name, and it is told that.
+    resumed.finishTurn();
+    await until(() => resumed.bases.length > 1, "base pushed after the sync");
+    assert.deepEqual(resumed.bases, [`origin/${before}`, `origin/${renamed}`]);
   }));
 
 test("releasing a live clone session's queue mid workspace operation is refused as busy, as a send is", () =>

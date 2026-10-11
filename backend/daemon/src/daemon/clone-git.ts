@@ -76,6 +76,16 @@ printf '%s\\0' "$head" "$branch" "$commits" "$subject" "$dirty" "$ahead" "$behin
       },
     };
   }
+  /** Whether the clone has `origin/<base>`: a fetch (its launch's checkout,
+   *  a sync) brought it. Read-only; false when it cannot tell. */
+  async hasBase(base: string, signal: AbortSignal): Promise<boolean> {
+    const result = await this.run(
+      `git rev-parse --verify --quiet ${shellQuote("refs/remotes/origin/" + base)} >/dev/null`,
+      15000,
+      signal,
+    );
+    return result.code === 0 && !result.timedOut;
+  }
   async sync(
     branch: string,
     base: string | null,

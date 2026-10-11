@@ -272,8 +272,12 @@ export class Daemon {
   /** Per live session, the base its agent was last told, as its checkout
    *  names it (`#pushAgentBase`). */
   readonly #agentBases = new Map<string, string>();
-  /** Per clone session, the host base branch its last launch or sync fetched. */
+  /** Per clone session, the host base branch a launch or sync is known to
+   *  have fetched: the clone has `origin/<it>`. */
   readonly #cloneFetchedBase = new Map<string, string>();
+  /** Per clone session, the base the launch under way was told to fetch —
+   *  recorded as fetched only once the launch succeeded and the ref is there. */
+  readonly #cloneLaunchBase = new Map<string, string>();
   /**
    * Per session, the tail of its serialized guest Git probes. Serial so an older
    * probe can never land after a newer one; `waiting` while the tail has not
@@ -456,8 +460,10 @@ export class Daemon {
           const row = this.#registry.get(id);
           if (row?.checkout !== "clone" || !row.branch) return;
           const checkout = this.config.isolation.checkout;
-          // The launch's checkout fetches this base: the agent may be told it.
-          if (row.baseBranch) this.#cloneFetchedBase.set(id, row.baseBranch);
+          // The launch's checkout is to fetch this base; whether it did is
+          // known once the launch succeeds (#launched).
+          if (row.baseBranch) this.#cloneLaunchBase.set(id, row.baseBranch);
+          else this.#cloneLaunchBase.delete(id);
           return {
             branch: row.branch,
             base: row.baseBranch ?? legacyBaseBranch(this.config),
@@ -2286,7 +2292,7 @@ export class Daemon {
         Object.assign(opts, { [startupSignal]: startup.signal });
         await this.#sessions.create(provider, opts);
         // A supervisor's rename while the provider started missed this agent.
-        this.#pushAgentBase(id, opts.base);
+        this.#launched(id, opts.base);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         // Init may have changed files before the provider failed. Preserve those
@@ -2579,7 +2585,7 @@ export class Daemon {
       const message = err instanceof Error ? err.message : String(err);
       throw new RpcError("provider_error", `could not resume session: ${message}`);
     }
-    this.#pushAgentBase(id, base.base);
+    this.#launched(id, base.base);
     // Truthfully idle: a resume re-mounts the adapter with no turn in flight
     // (the manager seeds its tracked state `idle` too — see SessionManager.resume).
     return this.#registry.setStatus(id, stateIdle, "resumed");
@@ -2738,24 +2744,34 @@ export class Daemon {
   /** A Loom agent's supervisor hears of a finished, failed or interrupted
    *  turn through its queue (`AgentSupervision.notify`); not of a wait, which
    *  the user answers, nor of a stop it asked for itself (`cause`). A
-   *  finished turn carries its workspace's facts, read now: the supervisor,
-   *  not a nudge, decides what an uncommitted change needs. */
+   *  finished turn carries its workspace's facts, read now (off the daemon
+   *  thread): the supervisor, not a nudge, decides what an uncommitted change
+   *  needs. A turn that moved on while they were read is not reported here
+   *  (`notify` checks the state is still the child's). */
   #notifySupervisor(row: SessionSnapshot, state: SessionState, cause?: StopCause): void {
     if (this.#stopping || !row.supervisorId) return;
-    const git = state.kind === "idle" ? this.#turnEndGit(row) : null;
-    void this.#agents.notify(git ? { ...row, git } : row, state, cause);
+    if (state.kind !== "idle") {
+      void this.#agents.notify(row, state, cause);
+      return;
+    }
+    void this.#turnEndGit(row)
+      .catch(() => null)
+      .then((git) => {
+        if (this.#stopping) return;
+        return this.#agents.notify(git ? { ...row, git } : row, state, cause);
+      });
   }
 
   /**
    * `row`'s Git facts as its turn ends: a clone's, which its turn-end probe
-   * just refreshed; a worktree's, probed afresh.
+   * just refreshed; a worktree's, probed afresh without blocking the loop.
    */
-  #turnEndGit(row: SessionSnapshot): GitFacts | null {
+  async #turnEndGit(row: SessionSnapshot): Promise<GitFacts | null> {
     if (row.checkout === "clone") return this.#cloneFacts.get(row.id)?.git ?? null;
     const path = this.#gitKey(row);
     if (!path) return null;
     this.#worktrees.invalidateFacts(path);
-    return this.#worktrees.facts(path, row.baseBranch);
+    return await this.#worktrees.factsAsync(path, row.baseBranch);
   }
 
   /**
@@ -3054,11 +3070,12 @@ export class Daemon {
    *
    * A private clone names the base `origin/<name>`, which it has only once a
    * fetch brought it (`#cloneFetchedBase`): its launch's checkout, which
-   * fetches the stored base, or a sync. Until its next sync after a rename it
+   * fetches the stored base, or a sync — either recorded only once the clone
+   * shows the ref. Until then, and until its next sync after a rename, it
    * keeps the old name, which still resolves there. `launching`: a start or
    * resume is about to run, so the stored base is what the clone will have
-   * (the launch records what it actually fetched, and `#pushAgentBase`
-   * corrects a rename in between).
+   * (`#launched` records what it actually fetched and corrects a rename in
+   * between).
    */
   #agentBase(id: string, launching = false): { base?: string } {
     const row = this.#registry.get(id);
@@ -3066,6 +3083,32 @@ export class Daemon {
     if (row.checkout !== "clone" || launching) return { base: checkoutRef(row, row.baseBranch) };
     const fetched = this.#cloneFetchedBase.get(id);
     return fetched ? { base: checkoutRef(row, fetched) } : {};
+  }
+
+  /**
+   * A start or resume of `id` succeeded, its agent told `sent`. A clone's
+   * launch was to fetch the base its checkout policy named
+   * (`#cloneLaunchBase`): as for a sync, that base counts as fetched only
+   * once the clone shows `origin/<base>` — a launch that failed, or whose
+   * fetch did not bring it, records nothing. Then the agent is told the base
+   * the clone has, if that is not `sent` (a rename while it launched).
+   */
+  #launched(id: string, sent: string | undefined): void {
+    const launchBase = this.#cloneLaunchBase.get(id);
+    this.#cloneLaunchBase.delete(id);
+    const row = this.#registry.get(id);
+    if (launchBase === undefined || row?.checkout !== "clone") {
+      this.#pushAgentBase(id, sent);
+      return;
+    }
+    if (sent !== undefined) this.#agentBases.set(id, sent);
+    void this.#cloneGit(row)
+      .hasBase(launchBase, this.#guestStop.signal)
+      .then((fetched) => {
+        if (fetched && this.#registry.get(id)) this.#cloneFetchedBase.set(id, launchBase);
+        this.#pushAgentBase(id);
+      })
+      .catch((err) => this.#log.warn("could not read a clone's base", { id, err: String(err) }));
   }
 
   /**
@@ -3091,6 +3134,7 @@ export class Daemon {
     this.#cacheTtlSeen.delete(id);
     this.#agentBases.delete(id);
     this.#cloneFetchedBase.delete(id);
+    this.#cloneLaunchBase.delete(id);
   }
 
   /** A session's `GIT_AUTHOR_*` / `GIT_COMMITTER_*`, for commits the daemon makes on its behalf. */

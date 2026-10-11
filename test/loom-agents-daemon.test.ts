@@ -15,6 +15,7 @@ import type { SessionSnapshot } from "@loom/core/wire";
 import { FakeProvider, type FakeSession } from "@loom/connector-mock";
 import type { ConnectorContext } from "@loom/core/connector";
 import { makeHarness, type Harness } from "@loom/harness";
+import { WorktreeManager } from "@loom/daemon/daemon/worktrees";
 
 const CONFIG = JSON.stringify({
   agents: {
@@ -906,3 +907,43 @@ describe("loom agents", { concurrency: 4 }, () => {
     assert.match(res.text, /^Stopped waiting/);
   });
 });
+
+// Outside the concurrent suite: it stubs Git for the whole process.
+nodeTest("a child's turn-end workspace facts are read off the daemon thread", (t) =>
+  withEnv(async (env) => {
+    const lead = await idleSession(env);
+    const child = await startChild(env, lead.fs);
+    const tree = (await get(env.c, child.id)).worktree!;
+    writeFileSync(join(tree, "wip.txt"), "uncommitted\n");
+    const notes = () => lead.fs.sends.filter((s) => s.startsWith("[from your agent"));
+    const gate = Promise.withResolvers<void>();
+    const original = WorktreeManager.prototype.factsAsync;
+    let probed = false;
+    t.mock.method(
+      WorktreeManager.prototype,
+      "factsAsync",
+      function (this: WorktreeManager, path: string, base: string | null) {
+        if (path !== tree) return original.call(this, path, base);
+        probed = true;
+        return gate.promise.then(() => original.call(this, path, base));
+      },
+    );
+    const sync = t.mock.method(WorktreeManager.prototype, "facts");
+    try {
+      child.fs.emit({ type: "assistant_text", text: "Widget added." });
+      child.fs.finishTurn();
+      await waitFor(() => env.h.daemon.registry.get(child.id)?.status.kind === "idle");
+      await waitFor(() => probed);
+      await delay(50);
+      assert.deepEqual(notes(), [], "the notification waits for the probe");
+      assert.ok(
+        !sync.mock.calls.some((c) => c.arguments[0] === tree),
+        "no synchronous Git for the child's turn end",
+      );
+    } finally {
+      gate.resolve();
+    }
+    await waitFor(() => notes().length === 1);
+    assert.match(notes()[0]!, /Its workspace: 0 commits ahead of its base, uncommitted changes\./);
+  }),
+);
