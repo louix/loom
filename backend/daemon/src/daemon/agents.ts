@@ -279,6 +279,9 @@ export interface AgentHost {
   /** A session's stored status, or undefined when it is gone: cheap, for
    *  checks that run on every status change. */
   status(id: string): SessionState | undefined;
+  /** Which spell in its state a session is in (`Registry.statusEpoch`): a
+   *  settled turn's identity, which its next turn does not share. */
+  turn(id: string): number;
   /** The sessions `supervisorId` supervises, as {@link get} reads them. */
   children(supervisorId: string): SessionSnapshot[];
   /**
@@ -358,6 +361,8 @@ export class AgentSupervision {
   readonly #host: AgentHost;
   /** `agent_wait` calls in flight, per caller. */
   readonly #waits = new Map<string, Set<Waiter>>();
+  /** Per child, the settled turn (`AgentHost.turn`) last reported. */
+  readonly #notified = new Map<string, number>();
 
   constructor(host: AgentHost) {
     this.#host = host;
@@ -747,14 +752,25 @@ export class AgentSupervision {
    * with the state — `interrupted` by `supervisor`, or `cause` for an error
    * the stop ended in — however late it lands.
    *
-   * And `state` must still be the child's: one that has moved on since is
-   * reported when the turn it moved on to ends.
+   * A settled turn is reported once, identified by `turn` (`AgentHost.turn`
+   * when it settled), not by the kind of state it settled in: two turns that
+   * both end `idle` are two reports, and two writes of one settled state
+   * one. The turn must still be the child's: one that has moved on since —
+   * now or while its facts were read — is reported when the turn it moved
+   * on to ends. Its final message is read before anything is awaited, so it
+   * is that turn's own.
    *
    * A child gets no commit or rebase nudges, so its turn end is its own: the
-   * notification says what its workspace holds (`child.git`, read fresh at
-   * the turn end), and the supervisor decides whether to ask for a commit.
+   * notification says what its workspace holds (`git`, read fresh at the
+   * turn end, else `child.git`), and the supervisor decides whether to ask
+   * for a commit.
    */
-  async notify(child: SessionSnapshot, state: SessionState, cause?: StopCause): Promise<void> {
+  async notify(
+    child: SessionSnapshot,
+    state: SessionState,
+    opts: { turn: number; cause?: StopCause; git?: Promise<GitFacts | null> },
+  ): Promise<void> {
+    const { turn, cause } = opts;
     if (!child.supervisorId) return;
     let event: string;
     switch (state.kind) {
@@ -770,14 +786,18 @@ export class AgentSupervision {
       default:
         return;
     }
-    if (this.#host.status(child.id)?.kind !== state.kind) return;
+    const current = () =>
+      this.#host.turn(child.id) === turn && this.#host.status(child.id)?.kind === state.kind;
+    if (!current() || this.#notified.get(child.id) === turn) return;
     if (cause === "supervisor" || (state.kind === "interrupted" && state.by === "supervisor"))
       return;
     const supervisor = this.#host.status(child.supervisorId);
     if (!supervisor || supervisor.kind === "done") return;
+    this.#notified.set(child.id, turn);
     const final = finalMessage(this.#host.events(child.id, { limit: 200 }).map((e) => e.event));
     const { text, cut } = cutBytes(final, NOTIFY_MESSAGE_BYTES);
-    const git = child.git;
+    const git = (opts.git ? await opts.git.catch(() => null) : null) ?? child.git;
+    if (!current()) return;
     const workspace = git
       ? `Its workspace: ${gitSummary(git)}${git.dirty ? "" : ", nothing uncommitted"}.`
       : null;

@@ -274,6 +274,10 @@ export class Daemon {
   /** Per clone session, the host base branch a launch or sync is known to
    *  have fetched: the clone has `origin/<it>`. */
   readonly #cloneFetchedBase = new Map<string, string>();
+  /** Per clone session, a generation bumped by every write of
+   *  `#cloneFetchedBase` and every launch's probe of it: a probe that
+   *  resolves after a newer write or probe records nothing. */
+  readonly #cloneBaseGeneration = new Map<string, number>();
   /** Per clone session, the base the launch under way was told to fetch —
    *  recorded as fetched only once the launch succeeded and the ref is there. */
   readonly #cloneLaunchBase = new Map<string, string>();
@@ -655,6 +659,7 @@ export class Daemon {
         return row ? this.#enrich(row, false) : undefined;
       },
       status: (id) => this.#registry.get(id)?.status,
+      turn: (id) => this.#registry.statusEpoch(id),
       children: (id) => this.#registry.children(id).map((s) => this.#enrich(s, false)),
       settledTitle: (id) => this.#settledTitle(id),
       providerKnown: (id) => this.#providers.has(id),
@@ -1047,6 +1052,7 @@ export class Daemon {
     );
     // The clone now has `origin/<base>`: a renamed base can be told.
     if (snap.baseBranch && res.outcome !== "no-base") {
+      this.#nextCloneBaseGeneration(id);
       this.#cloneFetchedBase.set(id, snap.baseBranch);
       this.#pushAgentBase(id);
     }
@@ -2646,6 +2652,8 @@ export class Daemon {
   #onDerivedStatus(id: string, state: SessionState, note?: string, cause?: StopCause): void {
     if (this.#stopping) return;
     const snap = this.#registry.setStatus(id, state, note ?? null);
+    // This transition's identity, for a supervisor's one report of it.
+    const turn = this.#registry.statusEpoch(id);
     this.emitEvent({
       type: "status_changed",
       sessionId: id,
@@ -2690,7 +2698,7 @@ export class Daemon {
         } catch (error) {
           this.#emitNotice(String(error), "warn");
         }
-        this.#fireStatusHooks(snap, state);
+        this.#fireStatusHooks(snap, state, undefined, turn);
       }).catch((error) =>
         this.#log.warn("clone turn-end Git failed", { id, error: String(error) }),
       );
@@ -2699,7 +2707,7 @@ export class Daemon {
     if (state.kind === "idle" && !this.#maybeAutoRebase(id, nudges) && nudges)
       this.#maybeCommitNudge(id);
 
-    this.#fireStatusHooks(snap, state, cause);
+    this.#fireStatusHooks(snap, state, cause, turn);
   }
 
   /**
@@ -2713,9 +2721,14 @@ export class Daemon {
    * the agent a message, which moves the session back to `running`, and a
    * notifier should be told the state the session actually settled in.
    */
-  #fireStatusHooks(snap: SessionSnapshot, state: SessionState, cause?: StopCause): void {
+  #fireStatusHooks(
+    snap: SessionSnapshot,
+    state: SessionState,
+    cause: StopCause | undefined,
+    turn: number,
+  ): void {
     const current = this.#registry.get(snap.id) ?? snap;
-    this.#notifySupervisor(current, state, cause);
+    this.#notifySupervisor(current, state, cause, turn);
     if (this.#hooks.empty) return;
     const session = hookSessionOf(current);
     switch (state.kind) {
@@ -2741,19 +2754,26 @@ export class Daemon {
    *  the user answers, nor of a stop it asked for itself (`cause`). A
    *  finished turn carries its workspace's facts, read now (off the daemon
    *  thread): the supervisor, not a nudge, decides what an uncommitted change
-   *  needs. A turn that moved on while they were read is not reported here
-   *  (`notify` checks the state is still the child's). */
-  #notifySupervisor(row: SessionSnapshot, state: SessionState, cause?: StopCause): void {
+   *  needs. `turn` identifies the settled turn (`Registry.statusEpoch` as
+   *  it settled, by default now): it is reported once, and not once it has
+   *  moved on (`notify`). */
+  #notifySupervisor(
+    row: SessionSnapshot,
+    state: SessionState,
+    cause?: StopCause,
+    turn = this.#registry.statusEpoch(row.id),
+  ): void {
     if (this.#stopping || !row.supervisorId) return;
-    if (state.kind !== "idle") {
-      void this.#agents.notify(row, state, cause);
-      return;
-    }
-    void this.#turnEndGit(row)
-      .catch(() => null)
-      .then((git) => {
-        if (this.#stopping) return;
-        return this.#agents.notify(git ? { ...row, git } : row, state, cause);
+    const git = state.kind === "idle" ? this.#turnEndGit(row) : undefined;
+    void this.#agents
+      .notify(row, state, {
+        turn,
+        ...(cause ? { cause } : {}),
+        ...(git ? { git } : {}),
+      })
+      .catch((err: unknown) => {
+        // Facts read across a shutdown find the store closed.
+        if (!this.#stopping) this.#log.warn("agent notification failed", { err: String(err) });
       });
   }
 
@@ -3095,13 +3115,24 @@ export class Daemon {
       return;
     }
     if (sent !== undefined) this.#agentBases.set(id, sent);
+    // The probe is unordered against a sync, and a later launch's probe: it
+    // records only if nothing wrote or probed the fetched base since.
+    const generation = this.#nextCloneBaseGeneration(id);
     void this.#cloneGit(row)
       .hasBase(launchBase, this.#guestStop.signal)
       .then((fetched) => {
+        if (this.#cloneBaseGeneration.get(id) !== generation) return;
         if (fetched && this.#registry.get(id)) this.#cloneFetchedBase.set(id, launchBase);
         this.#pushAgentBase(id);
       })
       .catch((err) => this.#log.warn("could not read a clone's base", { id, err: String(err) }));
+  }
+
+  /** Start a new generation of `id`'s fetched clone base; returns it. */
+  #nextCloneBaseGeneration(id: string): number {
+    const next = (this.#cloneBaseGeneration.get(id) ?? 0) + 1;
+    this.#cloneBaseGeneration.set(id, next);
+    return next;
   }
 
   /**
@@ -3128,6 +3159,7 @@ export class Daemon {
     this.#agentBases.delete(id);
     this.#cloneFetchedBase.delete(id);
     this.#cloneLaunchBase.delete(id);
+    this.#cloneBaseGeneration.delete(id);
   }
 
   /** A session's `GIT_AUTHOR_*` / `GIT_COMMITTER_*`, for commits the daemon makes on its behalf. */

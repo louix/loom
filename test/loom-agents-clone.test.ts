@@ -31,8 +31,11 @@ interface Env {
   h: Harness;
   c: LoomClient;
   get: (id: string) => Promise<SessionSnapshot>;
-  /** Park every guest command until the returned fn is called. */
-  blockGuest: () => { entered: () => boolean; release: () => void };
+  /** Park every guest command (or each that `only` picks) until the returned fn is called. */
+  blockGuest: (only?: (command: string) => boolean) => {
+    entered: () => boolean;
+    release: () => void;
+  };
   /** Runs as a resume launches, before it reads the clone's refs; `fetch`
    *  false: the launch succeeds without its checkout fetching. */
   hooks: { beforeLaunch?: (id: string) => Promise<void>; fetch?: boolean };
@@ -44,7 +47,11 @@ const withClones = async (fn: (env: Env) => Promise<void>): Promise<void> => {
   const fake = new FakeProvider();
   const cwds = new Map<string, string>();
   const hooks: Env["hooks"] = {};
-  let gate: { promise: Promise<void>; entered: boolean } | null = null;
+  let gate: {
+    promise: Promise<void>;
+    entered: boolean;
+    only: ((command: string) => boolean) | undefined;
+  } | null = null;
   let readPolicy: (id: string) => void = () => {};
   const connectors: ConnectorManifest = {
     "@loom/connector-claude": async () => ({
@@ -79,7 +86,7 @@ const withClones = async (fn: (env: Env) => Promise<void>): Promise<void> => {
   const h = await makeHarness({
     connectors,
     guestCommand: async (s, command, _timeout, signal) => {
-      if (gate) {
+      if (gate && (!gate.only || gate.only(command))) {
         gate.entered = true;
         await gate.promise;
       }
@@ -111,9 +118,13 @@ const withClones = async (fn: (env: Env) => Promise<void>): Promise<void> => {
     sockPath: h.sockPath,
     autospawn: false,
   });
-  const blockGuest = () => {
+  const blockGuest = (only?: (command: string) => boolean) => {
     let release!: () => void;
-    const g = { promise: new Promise<void>((resolve) => (release = resolve)), entered: false };
+    const g = {
+      promise: new Promise<void>((resolve) => (release = resolve)),
+      entered: false,
+      only,
+    };
     gate = g;
     return {
       entered: () => g.entered,
@@ -267,6 +278,48 @@ test("a base counts as fetched only when a launch succeeded and its clone has th
     resumed.finishTurn();
     await until(() => resumed.bases.length > 1, "base pushed after the sync");
     assert.deepEqual(resumed.bases, [`origin/${before}`, `origin/${renamed}`]);
+  }));
+
+test("a launch's late base probe never overwrites the base a newer sync fetched", () =>
+  withClones(async ({ fake, h, c, get, blockGuest }) => {
+    const lead = await c.request<SessionSnapshot>("session.create", {
+      provider: "claude",
+      prompt: "lead",
+      workspace: "worktree",
+    });
+    const before = lead.branch!;
+    const kid = await c.request<SessionSnapshot>("session.create", {
+      provider: "claude",
+      prompt: "kid",
+      base: before,
+    });
+    h.daemon.registry.setFields(kid.id, { supervisorId: lead.id });
+    const first = fake.session(kid.id)!;
+    first.finishTurn();
+    await until(async () => (await get(kid.id)).status.kind === "idle", "kid idle");
+    await c.request("session.rebase", { id: kid.id });
+    first.endStream();
+    await until(() => !h.daemon.sessions.has(kid.id) || h.daemon.sessions.isEnded(kid.id), "cold");
+
+    // The resume's probe of what its checkout fetched is slow.
+    const probe = blockGuest((command) => command.startsWith("git rev-parse --verify --quiet"));
+    try {
+      await c.request("session.resume", { id: kid.id });
+      await until(probe.entered, "the launch's probe is under way");
+      const resumed = fake.session(kid.id)!;
+      // Meanwhile the base is renamed and a sync fetches the new name.
+      await c.request("session.setTitle", { id: lead.id, title: "Lead work" });
+      const renamed = (await get(lead.id)).branch!;
+      await c.request("session.rebase", { id: kid.id });
+      await until(() => resumed.bases.length > 0, "the sync's base pushed");
+      assert.deepEqual(resumed.bases, [`origin/${renamed}`]);
+      // The older probe lands after it, and records nothing.
+      probe.release();
+      await delay(100);
+      assert.deepEqual(resumed.bases, [`origin/${renamed}`]);
+    } finally {
+      probe.release();
+    }
   }));
 
 test("releasing a live clone session's queue mid workspace operation is refused as busy, as a send is", () =>

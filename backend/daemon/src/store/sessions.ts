@@ -19,9 +19,13 @@ import { type Db, withTransaction } from "./db.ts";
 /** How long a plan window with no reset time and no utilization (a streamed
  *  status) is shown after it was read. */
 const UNTIMED_STATUS_MS = 5 * 60_000;
-/** How long a plan window with no reset time but a utilization is shown, and
- *  counts as fresh, after it was read: nothing says when it moves on. */
+/** How long a plan window with no reset time but a utilization counts as
+ *  fresh after it was read: nothing says when it moves on, so past this a
+ *  refresh confirms it (and, read again, it is fresh again). */
 export const UNTIMED_READING_MS = 30 * 60_000;
+/** How long such a window is shown after it was read: longer than it is
+ *  fresh, so the refresh that confirms it lands before it would vanish. */
+export const UNTIMED_SHOWN_MS = 2 * UNTIMED_READING_MS;
 
 // ---------------------------------------------------------------------------
 // Row shapes (snake_case, straight from SQLite)
@@ -514,7 +518,7 @@ export class SessionStore {
       .prepare(`SELECT * FROM account_usage WHERE scope = ?
       AND (resets_at > ? OR (resets_at IS NULL AND observed_at >
         CASE WHEN utilization IS NULL THEN ? ELSE ? END))`)
-      .all(scope, now, now - UNTIMED_STATUS_MS, now - UNTIMED_READING_MS);
+      .all(scope, now, now - UNTIMED_STATUS_MS, now - UNTIMED_SHOWN_MS);
     return Object.fromEntries(
       rows.map((r) => [
         String(r["window"]),
@@ -534,14 +538,14 @@ export class SessionStore {
    * (`polled`: a full on-demand reading has reported them); a streamed-only
    * row — `default`, a sparse notification's bucket — never makes the account
    * stale, as no refresh could fill it. Stale: no such window was ever read,
-   * one is hidden by {@link accountUsage} (its reset passed, or an untimed
-   * reading aged out), or one shows without a utilization. Readings untouched
-   * for a month are forgotten rather than chased — a window the provider
-   * stopped reporting.
+   * its reset passed, an untimed reading is older than
+   * {@link UNTIMED_READING_MS} (still shown a while longer, so the refresh
+   * that confirms it lands first), or one shows without a utilization.
+   * Readings untouched for a month are forgotten rather than chased — a
+   * window the provider stopped reporting.
    *
    * `readings` fingerprints those windows' values (not when they were read),
-   * so a refresher can tell a refresh that changed something from one that
-   * only read the same again.
+   * so a refresher can tell values that changed some other way.
    */
   planUsageState(scope: string, now = Date.now()): { stale: boolean; readings: string } {
     const rows = this.#db

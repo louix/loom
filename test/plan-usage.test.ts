@@ -166,35 +166,32 @@ test("a refresh that leaves the windows stale counts as a failure", async () => 
   }
 });
 
-test("a refresh that reads the same values again backs off instead of resetting", async () => {
+test("a refresh that confirms an untimed window's same values helped: no backoff", async () => {
   const h = harness();
   try {
-    // An untimed window: every refresh makes it fresh for a while, but reads
-    // the same utilization.
+    // An untimed window: every refresh makes it fresh again at the same
+    // utilization. Each time it ages out, it is refreshed at the shortest gap.
     const same = { stale: false, readings: "old" };
-    const gaps: number[] = [];
-    let at = 0;
     for (let round = 0; round < 6; round++) {
       const before = h.calls.length;
-      while (h.calls.length === before) {
-        h.refresher.observe("acct", "claude", STALE);
-        if (h.calls.length > before) break;
-        h.advance(MIN);
-        at += MIN;
-      }
-      gaps.push(at / MIN);
-      at = 0;
+      h.refresher.observe("acct", "claude", STALE);
+      assert.equal(h.calls.length, before + 1, `round ${round} refreshes at once`);
       h.calls.at(-1)!.settle({ via: "live" });
       await h.flush();
-      // Fresh again, the same values: not judged a help.
+      // Fresh again, the same values: a help, which clears any backoff.
       h.refresher.observe("acct", "claude", same);
+      h.advance(PLAN_USAGE_MIN_GAP_MS);
     }
-    assert.deepEqual(gaps, [0, 4, 8, 16, 32, 60]);
-    // New values (a session polled) clear the backoff.
-    h.refresher.observe("acct", "claude", FRESH);
+    // Still stale after a refresh does count, and backs off.
+    h.refresher.observe("acct", "claude", STALE);
+    h.calls.at(-1)!.settle({ via: "live" });
+    await h.flush();
     h.advance(PLAN_USAGE_MIN_GAP_MS);
     const before = h.calls.length;
-    h.refresher.observe("acct", "claude", { stale: true, readings: "new" });
+    h.refresher.observe("acct", "claude", STALE);
+    assert.equal(h.calls.length, before, "judged a failure: the gap doubled");
+    h.advance(PLAN_USAGE_MIN_GAP_MS);
+    h.refresher.observe("acct", "claude", STALE);
     assert.equal(h.calls.length, before + 1);
     h.calls.at(-1)!.settle({ via: "live" });
   } finally {
@@ -364,13 +361,20 @@ test("the store calls refreshable windows stale when missing, expired, untimed a
     poll("unknown", { ts: at, utilization: 10, resetsAt: at + 60 * MIN });
     stream("unknown", { ts: at + MIN, window: "five_hour", resetsAt: at + 120 * MIN });
     assert.equal(stale("unknown", at + 2 * MIN), true);
-    // Untimed with a utilization: fresh for thirty minutes, and shown as long.
+    // Untimed with a utilization: fresh for thirty minutes, shown for longer,
+    // so the refresh that confirms it lands before it would disappear.
     poll("untimed", { ts: at, utilization: 0 });
     assert.equal(stale("untimed", at + 6 * MIN), false);
     assert.equal(stale("untimed", at + 29 * MIN), false);
     assert.ok(s.accountUsage("untimed", at + 29 * MIN).five_hour);
     assert.equal(stale("untimed", at + 31 * MIN), true);
-    assert.equal(s.accountUsage("untimed", at + 31 * MIN).five_hour, undefined);
+    assert.ok(s.accountUsage("untimed", at + 31 * MIN).five_hour, "still shown");
+    assert.equal(s.accountUsage("untimed", at + 61 * MIN).five_hour, undefined);
+    // A refresh that reads the same value again refreshes when it was seen.
+    poll("untimed", { ts: at + 32 * MIN, utilization: 0 });
+    assert.equal(stale("untimed", at + 33 * MIN), false);
+    assert.equal(s.accountUsage("untimed", at + 33 * MIN).five_hour?.observedAt, at + 32 * MIN);
+    assert.ok(s.accountUsage("untimed", at + 61 * MIN).five_hour, "confirmed, still shown");
   } finally {
     db.close();
   }

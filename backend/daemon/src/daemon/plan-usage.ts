@@ -16,8 +16,9 @@
  *
  * Per account scope: at most one refresh in flight, at most one every
  * {@link PLAN_USAGE_MIN_GAP_MS}, and a refresh that fails — or that came back
- * without making the windows fresh, or that read the same values again —
- * doubles the gap, up to {@link PLAN_USAGE_MAX_GAP_MS}.
+ * without making the windows fresh — doubles the gap, up to
+ * {@link PLAN_USAGE_MAX_GAP_MS}. One that read the same values again but made
+ * them fresh helped: an untimed window has nothing else to show it is current.
  */
 import type { PlanWindow } from "@loom/core/events";
 
@@ -69,8 +70,8 @@ export const refreshPlanUsage = async (
 export interface PlanUsageView {
   /** A refreshable window is missing, expired, aged out or without a utilization. */
   stale: boolean;
-  /** Those windows' values (not when they were read), to tell a refresh that
-   *  changed something from one that read the same again. */
+  /** Those windows' values (not when they were read), to tell readings that
+   *  changed some other way (a session's own poll). */
   readings: string;
 }
 
@@ -78,8 +79,7 @@ interface ScopeState {
   running: boolean;
   /** Epoch ms the last refresh started. */
   lastAt: number;
-  /** Consecutive refreshes that failed, left the windows stale, or changed
-   *  nothing. */
+  /** Consecutive refreshes that failed or left the windows stale. */
   failures: number;
   /** The readings as the last refresh started, while its outcome is still to
    *  be judged (on the first look once it is due again); null once judged. */
@@ -123,9 +123,9 @@ export class PlanUsageRefresher {
   /**
    * A client is being shown `scope`'s windows. Stale ones start a background
    * refresh when the throttle allows. A refresh helped once the windows are
-   * fresh and read differently from before it, which clears the backoff; if
-   * they do not by the time it is due again — still stale, or the same values
-   * read again — the gap doubles. Fresh readings that changed some other way
+   * fresh — the same values confirmed again included — which clears the
+   * backoff; if they are still stale by the time it is due again, the gap
+   * doubles. Fresh readings that changed some other way
    * (a session's own poll) clear it too. Never blocks and never throws.
    */
   observe(scope: string, provider: string, view: PlanUsageView): void {
@@ -143,7 +143,10 @@ export class PlanUsageRefresher {
     const now = this.#now();
     const due = () => now >= st.lastAt + this.#gap(st.failures);
     if (st.before !== null) {
-      if (!view.stale && view.readings !== st.before) st.failures = 0;
+      // Fresh again is a refresh that helped, whether or not the values
+      // moved: an untimed window confirmed at the same utilization is a
+      // success, not a failure to back off from.
+      if (!view.stale) st.failures = 0;
       // Its readings have had until it is due again to land.
       else if (due()) st.failures++;
       else return;

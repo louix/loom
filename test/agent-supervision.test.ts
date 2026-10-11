@@ -90,10 +90,13 @@ const stub = (rows: SessionSnapshot[], dirty = false, events: AgentHost["events"
   const holds = new Map<string, QueueHoldCause>();
   const answers: AgentCallResult[] = [];
   const byId = new Map(rows.map((r) => [r.id, r]));
+  /** Settled-turn identities by session (`AgentHost.turn`). */
+  const turns = new Map<string, number>();
   const host: AgentHost = {
     agents: () => AGENTS,
     get: (id) => byId.get(id),
     status: (id) => byId.get(id)?.status,
+    turn: (id) => turns.get(id) ?? 0,
     children: (id) => [...byId.values()].filter((r) => r.supervisorId === id),
     settledTitle: settledTitle((id) => byId.get(id)),
     providerKnown: (id) => ["claude", "codex"].includes(id),
@@ -142,7 +145,7 @@ const stub = (rows: SessionSnapshot[], dirty = false, events: AgentHost["events"
     });
     return answers.at(-1)!;
   };
-  return { starts, queued, holds, call, byId, sup };
+  return { starts, queued, holds, call, byId, sup, turns };
 };
 
 test("a VM supervisor's child runs in a VM, in a worktree off the supervisor's branch", async () => {
@@ -377,4 +380,51 @@ test("agent_wait settles on a child's status change, and ends with its caller's 
   // The supervisor's turn failed (a crash, a close): its wait goes with it.
   s.sup.observe("lead", stateError("the worker crashed"));
   assert.match((await quick(ended)).text, /^Stopped waiting/);
+});
+
+test("a child's turn is reported once per settled turn, by its identity, with its own final message", async () => {
+  let log: string[] = [];
+  const events: AgentHost["events"] = () =>
+    log.map((text, i) => ({
+      id: i + 1,
+      event: { type: "assistant_text", sessionId: "kid", ts: 0, text } as HarnessEvent,
+    }));
+  const kid = row({ id: "kid", supervisorId: "lead", title: "Kid" });
+  const s = stub([row({ id: "lead" }), kid], false, events);
+  const notes = () => s.queued.filter((q) => q.author === "agent:kid").map((q) => q.text);
+  const slow = () => Promise.withResolvers<null>();
+
+  // Turn A settles idle; its facts are slow to read.
+  s.turns.set("kid", 1);
+  log = ["answer A"];
+  const facts = slow();
+  const a = s.sup.notify(kid, stateIdle, { turn: 1, git: facts.promise });
+  // The same settled turn written again: still one report.
+  await s.sup.notify(kid, stateIdle, { turn: 1 });
+  facts.resolve(null);
+  await a;
+  assert.equal(notes().length, 1);
+  assert.match(notes()[0]!, /It finished a turn\.[\s\S]*answer A$/);
+
+  // Turn B, also idle: a report of its own, with its own final message.
+  s.turns.set("kid", 3);
+  log = ["answer B"];
+  await s.sup.notify(kid, stateIdle, { turn: 3 });
+  assert.equal(notes().length, 2);
+  assert.match(notes()[1]!, /answer B$/);
+
+  // Turn C settles, but the child moves on while its facts are read: not
+  // reported here (its next turn's end is), and never with that turn's text.
+  s.turns.set("kid", 5);
+  log = ["answer C"];
+  const late = slow();
+  const c = s.sup.notify(kid, stateIdle, { turn: 5, git: late.promise });
+  s.turns.set("kid", 6);
+  log = ["answer C", "answer D"];
+  late.resolve(null);
+  await c;
+  assert.equal(notes().length, 2);
+  // A report for a turn already gone is dropped at once.
+  await s.sup.notify(kid, stateIdle, { turn: 5 });
+  assert.equal(notes().length, 2);
 });

@@ -1,6 +1,6 @@
 import type { SessionState } from "@loom/core/events";
 import type { Logger } from "@loom/core/logger";
-import { stateDone } from "@loom/core/session-state";
+import { sameSessionState, stateDone } from "@loom/core/session-state";
 import type { SessionSnapshot } from "@loom/core/wire";
 import {
   SessionStore,
@@ -23,6 +23,8 @@ export class Registry {
   #store: SessionStore;
   readonly #log: Logger | undefined;
   readonly #statusListeners = new Set<StatusListener>();
+  /** Per session, its state as last written and its {@link statusEpoch}. */
+  readonly #epochs = new Map<string, { state: SessionState; epoch: number }>();
 
   constructor(db: Db, log?: Logger) {
     this.#store = new SessionStore(db);
@@ -64,9 +66,23 @@ export class Registry {
 
   setStatus(id: string, state: SessionState, note: string | null = null): SessionSnapshot {
     this.#store.setStatus(id, state, note);
+    const was = this.#epochs.get(id);
+    if (!was || !sameSessionState(was.state, state))
+      this.#epochs.set(id, { state, epoch: was ? was.epoch + 1 : 1 });
     const snap = this.mustGet(id);
     this.#statusChanged(id, state);
     return snap;
+  }
+
+  /**
+   * Which spell in a state `id` is in: bumped by every status write that
+   * changes the state (in this process; a write of the same state again
+   * does not), so a turn that settles has an identity its next turn — which
+   * leaves the settled state first — does not share, and neither does a
+   * second failure. 0 before any write.
+   */
+  statusEpoch(id: string): number {
+    return this.#epochs.get(id)?.epoch ?? 0;
   }
 
   /**

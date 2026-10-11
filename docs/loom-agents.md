@@ -127,7 +127,10 @@ children inside the supervisor's VM is a later shared-VM feature.
 - Up: event-driven, never streamed output. The supervisor gets a short
   notification when a child calls `report`, finishes a turn (its final message,
   cut to about 2 KB with a pointer to `agent_read`; no model-written summary;
-  and its workspace's state), or fails or is interrupted. It is queued as an end-of-turn entry labelled as
+  and its workspace's state), or fails or is interrupted — once per settled
+  turn, identified by the turn rather than the state it settled in, with that
+  turn's own final message; a turn the child has already moved on from is
+  reported when the one it moved on to ends. It is queued as an end-of-turn entry labelled as
   coming from the child: a busy supervisor is not interrupted, an idle one is
   woken (a cold one revived), and one the user stopped stays stopped. A user's
   stop — an interrupt, an archive, a VM stop — always holds the supervisor's
