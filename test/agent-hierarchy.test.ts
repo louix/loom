@@ -87,3 +87,23 @@ test("supervision depth counts from the root and stops at a loop", () => {
   assert.equal(supervisionCycle("new", "c", lookup), false);
   assert.equal(supervisionCycle("z", "x", lookup), false);
 });
+
+test("the store refuses a supervisor that would close a loop", () => {
+  withStore((store) => {
+    store.create({ id: "lead", provider: "fake" });
+    store.create({ id: "child", provider: "fake", supervisorId: "lead" });
+    store.create({ id: "grandchild", provider: "fake", supervisorId: "child" });
+    assert.throws(() => store.setFields("lead", { supervisorId: "grandchild" }), /would loop/);
+    assert.throws(() => store.setFields("child", { supervisorId: "child" }), /would loop/);
+    assert.throws(
+      () => store.create({ id: "self", provider: "fake", supervisorId: "self" }),
+      /would loop/,
+    );
+    assert.equal(store.get("lead")!.supervisorId, undefined, "nothing was written");
+    assert.equal(store.get("self"), null);
+    // A move that keeps the tree a tree is fine.
+    store.create({ id: "other", provider: "fake" });
+    store.setFields("grandchild", { supervisorId: "other" });
+    assert.equal(store.get("grandchild")!.supervisorId, "other");
+  });
+});

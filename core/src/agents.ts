@@ -52,7 +52,8 @@ export const supervisionDepth = (
 };
 
 /** Would `supervisor` supervising `child` close a loop — is it `child` itself,
- *  or one of the sessions `child` already supervises, however deep? */
+ *  or one of the sessions `child` already supervises, however deep? The
+ *  daemon's session store refuses every such supervisor write. */
 export const supervisionCycle = (
   child: string,
   supervisor: string,

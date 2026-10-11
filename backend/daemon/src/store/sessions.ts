@@ -12,6 +12,7 @@ import {
   sessionStateDetail,
 } from "@loom/core/session-state";
 import type { ModelUsage, SessionSnapshot } from "@loom/core/wire";
+import { supervisionCycle } from "@loom/core/agents";
 import { type Db, withTransaction } from "./db.ts";
 
 // ---------------------------------------------------------------------------
@@ -140,7 +141,24 @@ export class SessionStore {
     this.#db = db;
   }
 
+  /**
+   * Every write of a supervisor passes here: a session may not supervise
+   * itself or anything that (however deep) supervises it, so the tree never
+   * loops (docs/loom-agents.md).
+   */
+  #assertNoCycle(id: string, supervisorId: string): void {
+    const lookup = (at: string) => {
+      const row = this.#db
+        .prepare("SELECT id, supervisor_id FROM sessions WHERE id = ?")
+        .get(at) as { id: string; supervisor_id: string | null } | undefined;
+      return row ? { id: row.id, supervisorId: row.supervisor_id ?? undefined } : undefined;
+    };
+    if (supervisionCycle(id, supervisorId, lookup))
+      throw new Error(`session ${supervisorId} cannot supervise ${id}: the tree would loop`);
+  }
+
   create(s: NewSession): void {
+    if (s.supervisorId) this.#assertNoCycle(s.id, s.supervisorId);
     const now = Date.now();
     // One transaction: an interrupted `create` must not leave a session row
     // without its `usage` row / opening history entry.
@@ -258,10 +276,12 @@ export class SessionStore {
       forkKind: "native" | "handoff" | null;
       forkHandoff: string | null;
       worktreeOwner: string | null;
-      /** Detaching a child clears it; nothing ever sets another supervisor. */
-      supervisorId: null;
+      /** Detaching a child clears it; setting one (a reparent) is refused
+       *  when it would close a loop. */
+      supervisorId: string | null;
     }>,
   ): void {
+    if (fields.supervisorId) this.#assertNoCycle(id, fields.supervisorId);
     const cols: string[] = [];
     const vals: Array<string | number | null> = [];
     const map: Record<string, string> = {
