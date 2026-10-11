@@ -119,9 +119,12 @@ children inside the supervisor's VM is a later shared-VM feature.
 - Up: event-driven, never streamed output. The supervisor gets a short
   notification when a child calls `report`, finishes a turn (its final message,
   cut to about 2 KB with a pointer to `agent_read`; no model-written summary),
-  is waiting for input, or fails or is interrupted. It is queued as an
-  end-of-turn entry labelled as coming from the child: a busy supervisor is not
-  interrupted, an idle one is woken.
+  or fails or is interrupted. It is queued as an end-of-turn entry labelled as
+  coming from the child: a busy supervisor is not interrupted, an idle one is
+  woken. A child waiting for input (a permission or a question) is not
+  notified: both go to the user, so the supervisor could not act on it, and the
+  fleet already shows the child waiting. Waits stay unnotified until supervisor
+  question handling is designed.
 - Recommended pattern: start children, end the turn, be woken by
   notifications; `agent_wait` exists for short waits.
 - Questions and permissions: tool permissions always go to the user. Until a

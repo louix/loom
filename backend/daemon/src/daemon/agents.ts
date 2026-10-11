@@ -478,7 +478,7 @@ export class AgentSupervision {
       child.branch
         ? `It works on branch ${child.branch}${child.worktree ? ` in ${child.worktree}` : ""}, from ${child.baseBranch ?? base}.`
         : `It branches from ${child.baseBranch ?? base}.`,
-      "You are notified when it finishes a turn, waits for input, fails or is interrupted: end your turn to wait for it.",
+      "You are notified when it finishes a turn, fails or is interrupted (not when it waits on the user): end your turn to wait for it.",
       ...(dirty
         ? [
             `Warning: you have uncommitted changes, and they do not carry over — the child starts from the last commit on ${base}. Commit first if it needs them.`,
@@ -636,10 +636,12 @@ export class AgentSupervision {
 
   /**
    * Tell `child`'s supervisor that its turn stopped in `state`: a finished
-   * turn, a wait for input, a failure or an interrupt. Queued as an
-   * end-of-turn entry labelled as the child's, so a busy supervisor is not
-   * interrupted and an idle one is woken; never streamed output. A supervisor
-   * that is archived or gone is not told.
+   * turn, a failure or an interrupt. Queued as an end-of-turn entry labelled
+   * as the child's, so a busy supervisor is not interrupted and an idle one is
+   * woken; never streamed output. A supervisor that is archived or gone is not
+   * told. A wait for input is not reported: permissions, and for now a
+   * child's questions, go to the user, so the supervisor could not act on it
+   * (the fleet shows the child waiting).
    */
   async notify(child: SessionSnapshot, state: SessionState): Promise<void> {
     if (!child.supervisorId) return;
@@ -649,9 +651,6 @@ export class AgentSupervision {
     switch (state.kind) {
       case "idle":
         event = "finished a turn";
-        break;
-      case "awaiting_input":
-        event = `is waiting for input (${state.on}); the user answers it`;
         break;
       case "error":
         event = `failed: ${state.message}`;

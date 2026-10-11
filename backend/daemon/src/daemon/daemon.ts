@@ -2653,7 +2653,8 @@ export class Daemon {
    */
   #fireStatusHooks(snap: SessionSnapshot, state: SessionState): void {
     const current = this.#registry.get(snap.id) ?? snap;
-    // A Loom agent's supervisor hears of the same moments, through its queue.
+    // A Loom agent's supervisor hears of a finished, failed or interrupted
+    // turn through its queue; not of a wait, which the user answers.
     if (current.supervisorId && !this.#stopping) void this.#agents.notify(current, state);
     if (this.#hooks.empty) return;
     const session = hookSessionOf(current);

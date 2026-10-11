@@ -263,14 +263,16 @@ describe("loom agents", { concurrency: 4 }, () => {
     assert.match(note, new RegExp(`cut at 2 KB; agent_read with id ${child.id}`));
   });
 
-  test("waiting for input and failures are reported too", async (env) => {
+  test("a wait for input is not reported; failures are", async (env) => {
     const lead = await idleSession(env);
     const child = await startChild(env, lead.fs);
+    const sendsBefore = lead.fs.sends.length;
     child.fs.emit({ type: "permission_request", id: "p1", tool: "Bash", input: { command: "rm" } });
-    await waitFor(() => lead.fs.sends.some((s) => /is waiting for input \(permission\)/.test(s)));
-    // The report woke the supervisor; its turn ends before the next one.
-    lead.fs.finishTurn();
-    await waitFor(async () => (await get(env.c, lead.id)).status.kind === "idle");
+    await waitFor(async () => (await get(env.c, child.id)).status.kind === "awaiting_input");
+    // The user answers permissions, so the supervisor is not woken for one.
+    await delay(50);
+    assert.equal(lead.fs.sends.length, sendsBefore, "no notification for a wait");
+    assert.equal((await get(env.c, lead.id)).status.kind, "idle");
     await env.c.request("session.respondPermission", {
       id: child.id,
       requestId: "p1",

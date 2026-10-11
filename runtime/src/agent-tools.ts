@@ -49,7 +49,7 @@ export const AGENT_TOOLS = {
       "Start a child session — a Loom sub-agent — on a profile, with a task. It works in its own " +
       "worktree from your last commit (uncommitted changes do not carry over: commit first), " +
       "runs on its own, and the user can see and steer it. Returns its id at once; you are " +
-      "notified when it finishes a turn, waits for input, fails or is interrupted, so the usual " +
+      "notified when it finishes a turn, fails or is interrupted, so the usual " +
       "pattern is to start children and end your turn.",
     shape: {
       profile: z.string().describe("A profile name from agents_profiles; `self` for your own."),
