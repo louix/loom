@@ -190,6 +190,7 @@ to the request panel with the answers kept, and `a` resumes where you left off.
 | `⌥x` | clear the session's queued messages, after a confirm _(send prompt only)_                                                                                                                  |
 | `⌥i` | interrupt the session you're messaging; the draft stays _(send prompt)_ · switch the new session between Local and VM isolation _(new prompt)_                                             |
 | `⌥w` | cycle the new session's workspace: worktree → clone (a VM's private clone; brings VM isolation) → in-place (the repo checkout itself) _(new prompt only)_                                  |
+| `⌥b` | switch what the new session branches from: the checked-out branch (or detached commit) ↔ the default branch; the session keeps it _(new prompt only)_                                      |
 
 `⇧⏎` / `⌥⏎` insert a newline inline; `⌥e` hands the whole thing to `$EDITOR`
 for heavier multi-line editing.

@@ -596,7 +596,8 @@ test("loadConfig merges an exact repo override from the user file and ignores re
     assert.deepEqual(other.mcp, []);
     // A parent repo entry is not a prefix grant to nested repositories/worktrees.
     assert.equal(loadConfig(join(dir, "child"), user).baseBranch, "trunk");
-    assert.equal(loadConfig(dir, join(dir, "missing.jsonc")).baseBranch, "main");
+    // Unset unless configured: sessions then start from what is checked out.
+    assert.equal(loadConfig(dir, join(dir, "missing.jsonc")).baseBranch, undefined);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

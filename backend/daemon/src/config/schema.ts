@@ -245,7 +245,13 @@ export const createConfigSchema = (d: LoomConfig, events: readonly HookEvent[]) 
   return section({
     ...toolSettingsSchema.shape,
     $schema: z.string().optional(),
-    base_branch: text(d.baseBranch),
+    base_branch: z
+      .string()
+      .optional()
+      .catch(undefined)
+      .describe(
+        "The repository's default branch for new sessions: the alternative the new-session prompt's base toggle (Alt+B) offers to the checked-out branch, and the base of sessions created without one (loom run). Unset: the toggle offers the remote's default branch, else init.defaultBranch, else main, and a session created without a base starts from the checked-out branch (HEAD's commit when detached). Each session keeps the base it was created with. Restart to apply.",
+      ),
     worktree_dir: text(d.worktreeDir).describe(
       "Exact worktree directory (absolute, ~/ or relative to the repository). Empty uses $XDG_DATA_HOME/loom/worktrees/<repo>-<hash>, defaulting to ~/.local/share. Existing sessions keep their paths. Restart to apply.",
     ),

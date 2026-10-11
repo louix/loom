@@ -218,6 +218,20 @@ export type Frame = z.infer<typeof frameSchema>;
 export const workspaceModeSchema = z.enum(["worktree", "clone", "in-place"]);
 export type WorkspaceMode = z.infer<typeof workspaceModeSchema>;
 
+/**
+ * `session.baseChoices` — what a new session can branch from, read from the
+ * repository when asked: the checked-out branch (or HEAD's commit when
+ * detached) and the default branch. A session keeps the one it starts from.
+ */
+export const baseChoicesSchema = z.object({
+  /** The checked-out branch, else HEAD's full commit. Absent before the first commit. */
+  current: z.object({ ref: z.string(), detached: z.boolean() }).optional(),
+  /** `base_branch` when configured, else the remote's default branch, else
+   *  `init.defaultBranch`, else `main`; with why it cannot be used here. */
+  default: z.object({ ref: z.string(), unavailableReason: z.string().optional() }),
+});
+export type BaseChoices = z.infer<typeof baseChoicesSchema>;
+
 export const gitFactsSchema = z.object({
   branch: z.union([z.string(), z.null()]),
   commits: z.number(),

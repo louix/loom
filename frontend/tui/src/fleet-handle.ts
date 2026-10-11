@@ -39,6 +39,7 @@ import { foldInteraction, type SessionInteraction } from "@loom/core/interaction
 import { isAmbiguousFailure, type ClientState } from "@loom/client";
 import { makeLogger } from "@loom/core/logger";
 import type {
+  BaseChoices,
   DaemonInfo,
   DoctorReport,
   HistoryPage,
@@ -148,7 +149,14 @@ import {
   startFork,
   startingForkOf,
 } from "./fork-flow.ts";
-import { cycleWorkspace, toggleIsolation, type SettingsStep } from "./new-workspace.ts";
+import {
+  cycleWorkspace,
+  newBase,
+  toggleBase,
+  toggleIsolation,
+  type SettingsStep,
+} from "./new-workspace.ts";
+import { loadableFailed, loadableLoaded, loadablePending } from "@loom/core/loadable";
 
 /** How much of each log file the `logs` command pulls into `$EDITOR`. */
 const LOG_TAIL_BYTES = 256 * 1024;
@@ -1302,6 +1310,23 @@ export const mkFleetHandle = ({
       });
   };
 
+  /** Read what a new session can branch from, afresh: the checked-out branch
+   *  may have moved since the last prompt. */
+  const loadBases = (): void => {
+    dispatch({ t: "basesLoaded", bases: loadablePending });
+    client.request<BaseChoices>("session.baseChoices").then(
+      (bases) => dispatch({ t: "basesLoaded", bases: loadableLoaded(bases) }),
+      (e: unknown) =>
+        dispatch({
+          t: "basesLoaded",
+          bases: loadableFailed(
+            (e as { code?: unknown }).code === "method_not_found"
+              ? "This daemon cannot choose a base; restart it (R) to update it."
+              : `Could not read the repository's branches: ${e instanceof Error ? e.message : String(e)}`,
+          ),
+        }),
+    );
+  };
   /** The provider a `new` prompt's settings start on. */
   const newProvider = (settings: NewSessionSettings): ProviderInfo | null =>
     providerInfo(state, settings.provider ?? defaultProviderId(state));
@@ -1375,14 +1400,20 @@ export const mkFleetHandle = ({
         });
       }
       case "new":
-        return void show({
+        show({
           t: "prompt",
           prompt: newPrompt(newSettings(state, null, null, null), state.drafts.last),
         });
+        return loadBases();
       case "newWorkspace": {
         const p = openPrompt(state.overlay);
         if (p?.t !== "new") return;
         return showNewStep(p, cycleWorkspace(newProvider(p.settings), p.settings));
+      }
+      case "newBase": {
+        const p = openPrompt(state.overlay);
+        if (p?.t !== "new") return;
+        return showNewStep(p, toggleBase(state.bases, p.settings));
       }
       case "find":
         // The fleet filter — an inline single-line query on the FLEET pane, not a
@@ -2006,11 +2037,14 @@ export const mkFleetHandle = ({
     const run = async (): Promise<string> => {
       switch (p.t) {
         case "new": {
+          // As shown: unread (an older daemon), the daemon picks its default.
+          const base = newBase(state.bases, p.settings);
           const r = await client.request<SessionSnapshot>("session.create", {
             prompt: text,
             by,
             ...(p.settings.isolation ? { isolation: p.settings.isolation } : {}),
             ...(p.settings.workspace ? { workspace: p.settings.workspace } : {}),
+            ...(base ? { base: base.ref } : {}),
             ...(p.settings.mode !== "default" ? { mode: p.settings.mode } : {}),
             ...(p.settings.provider ? { provider: p.settings.provider } : {}),
             ...(p.settings.model ? { model: p.settings.model } : {}),

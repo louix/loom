@@ -23,7 +23,7 @@ import type { KeyLike } from "./editor.ts";
 import { liveQNav, questionsOf } from "./interactions.ts";
 import { nextThemeMode } from "./theme.ts";
 import { startingForkOf } from "./fork-flow.ts";
-import { cycleWorkspace, newWorkspace } from "./new-workspace.ts";
+import { cycleWorkspace, newBase, newWorkspace, toggleBase } from "./new-workspace.ts";
 import { openPrompt } from "./overlay.ts";
 import {
   childrenOf,
@@ -326,6 +326,13 @@ const COMMANDS = {
     label: "workspace",
     description:
       "Cycle where the new session works: its own worktree, a private clone (VM only) or in place in the repository checkout.",
+  },
+  newBase: {
+    scope: "app",
+    newSession: "⌥b",
+    label: "base",
+    description:
+      "Switch what the new session branches from: the checked-out branch (or commit) or the repository's default branch. The session keeps it.",
   },
   find: {
     scope: "app",
@@ -856,6 +863,13 @@ const otherAvailability = (
       const step = cycleWorkspace(provider, p.settings);
       if ("disabled" in step) return { disabled: step.disabled };
       return { label: `workspace → ${newWorkspace(provider, step.settings)}` };
+    }
+    case "newBase": {
+      const p = openPrompt(ctx.overlay);
+      if (p?.t !== "new") return null;
+      const step = toggleBase(ctx.bases, p.settings);
+      if ("disabled" in step) return { disabled: step.disabled };
+      return { label: `base → ${newBase(ctx.bases, step.settings)?.label ?? "default"}` };
     }
     case "theme":
       return { label: `switch to ${nextThemeMode(ctx.theme)} theme` };

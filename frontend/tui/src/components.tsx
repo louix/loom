@@ -54,7 +54,7 @@ import {
 import { parseAskUserQuestions, type AskUserQuestionItem } from "./interactions.ts";
 import { pendingMode } from "./mode-control.ts";
 import { forkIsolationLocked } from "./fork-flow.ts";
-import { newIsolation, newWorkspace } from "./new-workspace.ts";
+import { newBase, newIsolation, newWorkspace } from "./new-workspace.ts";
 import {
   openPrompt,
   pickerCurrent,
@@ -1125,6 +1125,8 @@ export const NewSessionModal = ({
   const model = p.settings.model || prov?.defaultModel || "auto";
   const isolation = newIsolation(prov, p.settings) === "vm" ? "VM" : "Local";
   const workspace = newWorkspace(prov, p.settings);
+  const base = newBase(state.bases, p.settings);
+  const facts = [isolation, workspace, ...(base ? [`from ${base.label}`] : [])].join(" · ");
   return (
     <FloatingLayer left={g.left} top={g.top} width={g.width} height={g.height}>
       <Box
@@ -1153,9 +1155,8 @@ export const NewSessionModal = ({
         </Line>
         <Box gap={1}>
           <Box flexShrink={0}>{modeChip(p.settings.mode, null, hover)}</Box>
-          <Line tone="dim">
-            {`[${isolation} · ${workspace}]  ⇧⇥ mode · ⌥i isolation · ⌥w workspace`}
-          </Line>
+          {/* ⌥i ⌥w ⌥b change the facts in the order shown. */}
+          <Line tone="dim">{`[${facts}]  ⇧⇥ mode · ⌥i ⌥w ⌥b change`}</Line>
         </Box>
         {!g.compact && <Box height={1} flexShrink={0} />}
         <InputLine

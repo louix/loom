@@ -51,6 +51,7 @@ import { runtimeMcpDiagnostic } from "./mcp-runtime-diagnostics.ts";
 import { preflightTools } from "./tool-preflight.ts";
 import {
   claudeProfileId,
+  legacyBaseBranch,
   lintConfig,
   removedConfigWarnings,
   loadConfig,
@@ -76,6 +77,7 @@ import {
 } from "@loom/core/session-state";
 import {
   PROTOCOL_VERSION,
+  type BaseChoices,
   type DaemonInfo,
   type DoctorMcpServer,
   type DoctorReport,
@@ -400,7 +402,7 @@ export class Daemon {
       repoRoot: opts.repoRoot,
       treesDir: this.paths.trees,
       hooksDir: join(this.paths.dir, "hooks"),
-      baseBranch: this.config.baseBranch,
+      baseBranch: legacyBaseBranch(this.config),
       cloneRoot: sessionCloneRoot(opts.repoRoot),
       log: this.#log.child("worktrees"),
     });
@@ -426,7 +428,7 @@ export class Daemon {
           const checkout = this.config.isolation.checkout;
           return {
             branch: row.branch,
-            base: row.baseBranch ?? this.config.baseBranch,
+            base: row.baseBranch ?? legacyBaseBranch(this.config),
             visible: checkout?.visibleRefs ?? [],
             // Only the clone config's default; the session's resolved identity replaces it.
             identity: commitIdentity(row.model || row.provider),
@@ -1349,6 +1351,37 @@ export class Daemon {
       : undefined;
   }
 
+  /** What a new session can branch from, read from the repository now. */
+  #baseChoices(): BaseChoices {
+    const configured = this.config.baseBranch;
+    const ref = this.#worktrees.defaultBranch(configured);
+    // A configured base may be any ref, as it always could; a derived one
+    // must be a branch that exists here.
+    let unavailableReason: string | undefined;
+    if (configured && !this.#worktrees.resolves(ref))
+      unavailableReason = `base_branch "${ref}" does not resolve in this repository.`;
+    else if (!configured && !this.#worktrees.isBranch(ref))
+      unavailableReason = `The default branch "${ref}" does not exist in this repository.`;
+    const current = this.#worktrees.currentBase();
+    return {
+      ...(current ? { current } : {}),
+      default: { ref, ...(unavailableReason ? { unavailableReason } : {}) },
+    };
+  }
+
+  /**
+   * The base a new session gets when it names none: a configured, present
+   * `base_branch` (as before), else the checked-out branch — or, for a clone,
+   * which needs a branch, the default branch when HEAD is detached.
+   */
+  #defaultBase(workspace: WorkspaceMode): string | undefined {
+    const { current, default: def } = this.#baseChoices();
+    const usable = def.unavailableReason ? undefined : def.ref;
+    if (this.config.baseBranch && usable) return usable;
+    if (workspace === "clone" && current?.detached) return usable;
+    return current?.ref ?? usable;
+  }
+
   /** `ProviderInfo`'s workspace fields — not per-provider, so the same on every entry. */
   #workspaceInfo(): Pick<ProviderInfo, "defaultWorkspace" | "inPlaceUnavailableReason"> {
     const inPlace = this.#inPlaceUnavailableReason();
@@ -1659,7 +1692,7 @@ export class Daemon {
           const inherited =
             parent.baseBranch && this.#worktrees.branchHead(parent.baseBranch)
               ? parent.baseBranch
-              : this.config.baseBranch;
+              : this.#worktrees.defaultBranch(this.config.baseBranch);
           const made = this.#worktrees.createBranch(newId, baseRef ? { baseRef } : {});
           wt = {
             path: await this.#clonePath(newId, providerId),
@@ -1972,10 +2005,22 @@ export class Daemon {
     /** A legacy per-session `worktree` flag, over `session.worktree`. */
     worktree?: boolean;
     isolation?: "vm" | "local";
+    /** What it branches from; absent takes {@link #defaultBase}. */
+    base?: string;
     by: string | undefined;
   }): Promise<SessionSnapshot> {
     const isolation = o.isolation ?? this.#providers.defaultIsolation(o.providerId);
     const workspace = o.workspace ?? this.#defaultWorkspace(isolation, o.worktree);
+    if (o.base !== undefined && !this.#worktrees.resolves(o.base))
+      throw new RpcError("bad_request", `base "${o.base}" does not resolve in this repository`);
+    // Resolved once, here: the session keeps it whatever HEAD does later.
+    const base = o.base ?? this.#defaultBase(workspace);
+    // The relay serves a clone its base by name.
+    if (workspace === "clone" && base !== undefined && !this.#worktrees.isBranch(base))
+      throw new RpcError(
+        "bad_request",
+        `A private clone needs a branch to start from; "${base}" is not one. Choose the default branch or another workspace.`,
+      );
     if (workspace === "in-place" && this.#inPlaceUnavailableReason()) {
       throw new RpcError(
         "bad_request",
@@ -2019,7 +2064,7 @@ export class Daemon {
         title: o.prompt.slice(0, 200),
         worktree: null,
         branch: null,
-        baseBranch: this.config.baseBranch,
+        baseBranch: base ?? legacyBaseBranch(this.config),
         inPlace: !wantWorktree,
         isolation,
         // Every ChatGPT session created from here on runs on Codex's app-server
@@ -2064,7 +2109,7 @@ export class Daemon {
 
         if (workspace === "clone") {
           try {
-            const made = this.#worktrees.createBranch(id);
+            const made = this.#worktrees.createBranch(id, base ? { baseRef: base } : {});
             clonePath = await this.#clonePath(id, o.providerId);
             this.#registry.setFields(id, {
               worktree: clonePath,
@@ -2081,7 +2126,7 @@ export class Daemon {
           }
         } else if (wantWorktree) {
           try {
-            wt = this.#worktrees.create(id);
+            wt = this.#worktrees.create(id, base ? { baseRef: base } : {});
           } catch (cause) {
             throw new RpcError(
               "worktree_error",
@@ -2765,7 +2810,7 @@ export class Daemon {
     const row = this.#registry.get(id);
     if (row?.checkout !== "clone" || !row.branch) return;
     const directory = sessionVmDirectory(this.repoRoot, id);
-    const base = row.baseBranch ?? this.config.baseBranch;
+    const base = row.baseBranch ?? legacyBaseBranch(this.config);
     await writeGitPolicy(directory, {
       branch: row.branch,
       base,
@@ -3679,9 +3724,12 @@ export class Daemon {
         ...(p.workspace ? { workspace: p.workspace } : {}),
         ...(p.worktree !== undefined ? { worktree: p.worktree } : {}),
         ...(p.isolation ? { isolation: p.isolation } : {}),
+        ...(p.base ? { base: p.base } : {}),
         by: params.by,
       });
     });
+
+    d.register("session.baseChoices", () => this.#baseChoices());
 
     d.register("session.resume", async (params) => {
       const id = params.id;
@@ -4165,6 +4213,10 @@ export class Daemon {
           mode: runMode,
           parentId: id,
           ...(parent.isolation ? { isolation: parent.isolation } : {}),
+          // The plan was made against the planning session's base branch.
+          ...(parent.baseBranch && this.#worktrees.isBranch(parent.baseBranch)
+            ? { base: parent.baseBranch }
+            : {}),
           by: params.by,
         });
         await this.#sessions.respondToPlan(id, requestId, { action: "handoff" });

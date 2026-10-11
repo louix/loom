@@ -23,6 +23,7 @@ import { resolveGitIdentity, sessionGitIdentity } from "../config/git-identity.t
  */
 import {
   claudeProfileId,
+  legacyBaseBranch,
   resolveApiKey,
   type ClaudeProfile,
   type LoomConfig,
@@ -391,7 +392,8 @@ export class ProviderRegistry {
   #contextFor(id: string): ConnectorContext {
     const logger = makeLogger("connector").child(id);
     const search = this.#resolveSearch();
-    const baseBranch = this.#config.baseBranch;
+    // Provider-wide, so not any one session's own base.
+    const baseBranch = legacyBaseBranch(this.#config);
     if (id === "fake" || id === "mock" || id === "echo") {
       return { id, config: {}, logger, baseBranch, ...(search ? { search } : {}) };
     }

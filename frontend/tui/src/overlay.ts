@@ -40,6 +40,9 @@ export interface NewSessionSettings {
   isolation?: "vm" | "local";
   /** Omitted uses the daemon's default for the isolation (⌥w cycles it). */
   workspace?: WorkspaceMode;
+  /** What it branches from (⌥b): the checked-out branch, or the default
+   *  branch. Omitted is the checked-out branch. */
+  base?: "current" | "default";
 }
 
 /** Prompts that act on a session as a whole. */

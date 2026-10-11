@@ -240,7 +240,14 @@ export interface LoomConfig {
     /** How new VM sessions reach the repository. Absent means mount. */
     checkout?: { mode: "mount" | "clone"; visibleRefs: string[]; maxPushBytes: number };
   };
-  baseBranch: string;
+  /**
+   * `base_branch`, when set (globally or by a matching `repos[]` entry): the
+   * default branch new sessions branch from. Unset, a new session starts from
+   * the checked-out branch (HEAD's commit when detached), and the default
+   * branch is the remote's default branch, else `init.defaultBranch`, else
+   * `main`. See {@link legacyBaseBranch} for sessions stored without a base.
+   */
+  baseBranch?: string;
   worktreeDir: string;
   /**
    * Claude config directories to expose as providers. Always non-empty —
@@ -375,10 +382,17 @@ export interface LoomConfig {
   };
 }
 
+/**
+ * The base for what predates a per-session one — a session stored without a
+ * base, and the agents' own `status` tool: the configured branch, else `main`,
+ * as before `base_branch` became optional.
+ */
+export const legacyBaseBranch = (config: Pick<LoomConfig, "baseBranch">): string =>
+  config.baseBranch ?? "main";
+
 export const DEFAULT_CONFIG: LoomConfig = {
   autoNix: false,
   tui: { includeEventLogInEditor: false },
-  baseBranch: "main",
   worktreeDir: "",
   providerAccess: { disabled: [] },
   isolation: { enabled: false, extraAllowedHosts: [] },
@@ -743,7 +757,7 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
     ...(isolation.launcher !== undefined ? { removedKeys: ["session.isolation.launcher"] } : {}),
     autoNix: settings.session.auto_nix,
     tui: { includeEventLogInEditor: settings.tui.include_event_log_in_editor },
-    baseBranch: settings.base_branch,
+    ...(settings.base_branch ? { baseBranch: settings.base_branch } : {}),
     worktreeDir: settings.worktree_dir,
     providerAccess: { ...(only ? { only } : {}), disabled },
     isolation: {

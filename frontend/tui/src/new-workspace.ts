@@ -1,8 +1,8 @@
 /**
  * Where a new session will run and work, as the `new` prompt settles it:
- * isolation (`⌥i`) and workspace (`⌥w`). Pure functions of the prompt's
- * settings and the provider's facts, so the prompt line, the `⌥w` command's
- * description and the submit all read one answer.
+ * isolation (`⌥i`), workspace (`⌥w`) and base (`⌥b`). Pure functions of the
+ * prompt's settings and the daemon's facts, so the prompt line, the commands'
+ * descriptions and the submit all read one answer.
  *
  * The daemon offers three workspaces: a worktree (on the host, or mounted into
  * a VM), a private clone (VM only: the guest reaches the repository through a
@@ -11,7 +11,8 @@
  * VM turns a chosen clone back into a worktree; the prompt says so each time.
  */
 import { absurd } from "@loom/core/absurd";
-import type { ProviderInfo, WorkspaceMode } from "@loom/core/wire";
+import type { Loadable } from "@loom/core/loadable";
+import type { BaseChoices, ProviderInfo, WorkspaceMode } from "@loom/core/wire";
 import type { NewSessionSettings } from "./overlay.ts";
 
 /** `⌥w` order. */
@@ -88,4 +89,48 @@ export const toggleIsolation = (p: Provider, s: NewSessionSettings): SettingsSte
   if (s.workspace === "clone")
     return { settings: { ...s, isolation: "local", workspace: "worktree" }, note: CLONE_LEFT_VM };
   return { settings: { ...s, isolation: "local" } };
+};
+
+// ---------------------------------------------------------------------------
+// base
+// ---------------------------------------------------------------------------
+
+type Bases = Loadable<string, BaseChoices>;
+
+/** The ref the session will branch from and how the prompt names it; null
+ *  until the daemon has said. The checked-out branch unless the default
+ *  branch is chosen, or no commit is checked out to start from. */
+export const newBase = (
+  bases: Bases,
+  s: NewSessionSettings,
+): { readonly ref: string; readonly label: string } | null => {
+  if (bases.tag !== "data") return null;
+  const { current, default: def } = bases.value;
+  if (current && s.base !== "default")
+    return {
+      ref: current.ref,
+      label: current.detached ? `detached ${current.ref.slice(0, 7)}` : current.ref,
+    };
+  return def.unavailableReason ? null : { ref: def.ref, label: def.ref };
+};
+
+/** `⌥b`: the other base, or why there is none to switch to. */
+export const toggleBase = (bases: Bases, s: NewSessionSettings): SettingsStep => {
+  switch (bases.tag) {
+    case "idle":
+    case "pending":
+      return { disabled: "Still reading the repository's branches." };
+    case "error":
+      return { disabled: bases.error };
+    case "data": {
+      const { current, default: def } = bases.value;
+      if (def.unavailableReason) return { disabled: def.unavailableReason };
+      if (!current) return { disabled: "Nothing is checked out yet; the default branch it is." };
+      if (!current.detached && current.ref === def.ref)
+        return { disabled: `The checked-out branch is already the default branch, ${def.ref}.` };
+      return { settings: { ...s, base: s.base === "default" ? "current" : "default" } };
+    }
+    default:
+      return absurd(bases);
+  }
 };

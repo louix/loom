@@ -89,8 +89,13 @@ export const rpcParamsSchemas = {
     /** Overrides the configured workspace; `clone` needs VM isolation. A
      *  `worktree` flag given with it must agree. */
     workspace: workspaceModeSchema.optional(),
+    /** What the session branches from, kept for its life: a branch or a
+     *  commit. Default: `base_branch` when configured and present, else the
+     *  checked-out branch (HEAD's commit when detached). */
+    base: optionalText,
     by,
   }),
+  "session.baseChoices": empty,
   "session.resume": session,
   /** Queue a message. `entryId` (a client UUID) makes a retry idempotent;
    *  `delivery` defaults to the next tool boundary. */

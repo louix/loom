@@ -10,6 +10,7 @@ export { sortSessions };
 import type { BackgroundTaskKind, HarnessEvent, SessionStateKind } from "@loom/core/events";
 import { isClaudeId } from "@loom/core/provider-id";
 import type {
+  BaseChoices,
   DaemonInfo,
   DaemonSnapshot,
   DoctorReport,
@@ -18,7 +19,7 @@ import type {
   SessionSnapshot,
 } from "@loom/core/wire";
 import type { ClientState, ConnectionError } from "@loom/client";
-import { foldLoadable, loadableIdle } from "@loom/core/loadable";
+import { foldLoadable, loadableIdle, type Loadable } from "@loom/core/loadable";
 import type { SessionMode } from "@loom/core/types";
 import { DEFAULT_EFFORT_LEVELS, modelEfforts } from "@loom/core/model-catalogue";
 import { buffer, type Buffer } from "./editor.ts";
@@ -152,6 +153,10 @@ export interface TuiState {
   /** The last `daemon.doctor` snapshot, shown by the doctor overlay. Fetched
    *  on open; kept between opens so a reopen paints immediately. */
   doctor: DoctorReport | null;
+  /** What a new session can branch from, read from the repository each time
+   *  a `new` prompt opens (the checked-out branch moves). An error is why it
+   *  could not be read. */
+  bases: Loadable<string, BaseChoices>;
   /** In-progress answers for a multi-question `AskUserQuestion` — see
    *  {@link QNav}. Persists across the answer sheet opening and closing. */
   qnav: QNav | null;
@@ -174,6 +179,7 @@ export const initialState = (): TuiState => {
     notice: null,
     overlay: browse,
     doctor: null,
+    bases: loadableIdle,
     qnav: null,
     drafts: noDrafts,
   };
@@ -236,7 +242,8 @@ export type Action =
   | { t: "pickerFilter"; buffer: Buffer }
   | { t: "pickerMove"; delta: number }
   | { t: "qnavSet"; nav: QNav | null }
-  | { t: "doctorLoaded"; report: DoctorReport };
+  | { t: "doctorLoaded"; report: DoctorReport }
+  | { t: "basesLoaded"; bases: Loadable<string, BaseChoices> };
 
 /** Replace the prompt of an open prompt overlay, keeping everything the
  *  variant carries (a discuss prompt keeps its review). */
@@ -450,6 +457,9 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
 
     case "doctorLoaded":
       return { ...s, doctor: a.report };
+
+    case "basesLoaded":
+      return { ...s, bases: a.bases };
 
     default:
       return absurd(a);

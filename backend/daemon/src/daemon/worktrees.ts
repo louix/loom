@@ -668,6 +668,51 @@ export class WorktreeManager {
     return this.#gitRead(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]) || null;
   }
 
+  // --- a new session's base ------------------------------------------
+
+  /**
+   * The repository's default branch: `configured` (`base_branch`), else the
+   * remote's default branch, else `init.defaultBranch`, else `main`. Named,
+   * not checked: see {@link resolves} and {@link isBranch}.
+   */
+  defaultBranch(configured?: string): string {
+    if (configured) return configured;
+    const remote = this.#gitRead(["symbolic-ref", "--short", "-q", "refs/remotes/origin/HEAD"]);
+    if (remote.startsWith("origin/") && remote.length > "origin/".length)
+      return remote.slice("origin/".length);
+    return this.#gitRead(["config", "--get", "init.defaultBranch"]) || "main";
+  }
+
+  /** The checked-out branch, else HEAD's full commit when detached; null before
+   *  the first commit. */
+  currentBase(): { ref: string; detached: boolean } | null {
+    const branch = this.#gitRead(["symbolic-ref", "--short", "-q", "HEAD"]);
+    if (branch && this.isBranch(branch)) return { ref: branch, detached: false };
+    const head = this.#gitRead(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]);
+    return head ? { ref: head, detached: true } : null;
+  }
+
+  /** Whether `ref` names a commit here. */
+  resolves(ref: string): boolean {
+    return (
+      !!ref &&
+      !ref.startsWith("-") &&
+      this.#git(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], undefined, {
+        readOnly: true,
+      }).ok
+    );
+  }
+
+  /** Whether `name` is a local branch. */
+  isBranch(name: string): boolean {
+    return (
+      !!name &&
+      this.#git(["show-ref", "--verify", "--quiet", `refs/heads/${name}`], undefined, {
+        readOnly: true,
+      }).ok
+    );
+  }
+
   /**
    * Facts for a clone session from host refs. They describe what the guest has
    * published; `dirty` is unknown on the host and reads false.

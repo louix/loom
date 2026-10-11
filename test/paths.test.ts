@@ -65,7 +65,7 @@ test("repository discovery handles checkouts, linked worktrees, and bare reposit
       );
       for (const launch of [bare, bareLinked, alias])
         assert.equal(loadConfig(launch, config).baseBranch, "shared");
-      assert.equal(loadConfig(independent, config).baseBranch, "main");
+      assert.equal(loadConfig(independent, config).baseBranch, undefined);
     }
     writeFileSync(
       config,

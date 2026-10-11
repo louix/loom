@@ -538,7 +538,7 @@
       "type": "string"
     },
     "base_branch": {
-      "default": "main",
+      "description": "The repository's default branch for new sessions: the alternative the new-session prompt's base toggle (Alt+B) offers to the checked-out branch, and the base of sessions created without one (loom run). Unset: the toggle offers the remote's default branch, else init.defaultBranch, else main, and a session created without a base starts from the checked-out branch (HEAD's commit when detached). Each session keeps the base it was created with. Restart to apply.",
       "type": "string"
     },
     "worktree_dir": {
@@ -1922,7 +1922,7 @@
             "type": "string"
           },
           "base_branch": {
-            "default": "main",
+            "description": "The repository's default branch for new sessions: the alternative the new-session prompt's base toggle (Alt+B) offers to the checked-out branch, and the base of sessions created without one (loom run). Unset: the toggle offers the remote's default branch, else init.defaultBranch, else main, and a session created without a base starts from the checked-out branch (HEAD's commit when detached). Each session keeps the base it was created with. Restart to apply.",
             "type": "string"
           },
           "worktree_dir": {

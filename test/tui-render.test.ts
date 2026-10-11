@@ -19,6 +19,7 @@ import { stateAwaitingInput, stateIdle, stateRunning } from "@loom/core/session-
 import { LOOM_VERSION } from "@loom/core/version";
 import type { SessionInteraction } from "@loom/core/interaction";
 import type {
+  BaseChoices,
   DaemonInfo,
   HistoryCursor,
   HistoryPage,
@@ -3807,7 +3808,7 @@ test("⌥w cycles the new session's workspace, shows it, and sends it", () => {
     handle.handleKey("n", {} as Key);
     handle.handleKey("draft", {} as Key);
     assert.equal(newPromptOf(handle).settings.workspace, undefined);
-    assert.match(newModalText(handle), /\[Local · worktree\][^\n]*⌥w workspace/);
+    assert.match(newModalText(handle), /\[Local · worktree\][^\n]*⌥i ⌥w ⌥b change/);
 
     // A clone runs only in a VM: choosing one brings VM isolation, and says so.
     handle.handleKey("w", { meta: true } as Key);
@@ -3929,6 +3930,116 @@ test("⌥w says an older daemon cannot take a workspace choice", () => {
     assert.equal(p.settings.workspace, undefined);
     assert.match(p.feedback?.text ?? "", /cannot choose a workspace/);
     assert.match(newModalText(handle), /\[Local · worktree\]/);
+  } finally {
+    teardown();
+  }
+});
+
+/** Open a `new` prompt and answer its read of the repository's bases. */
+const openNewWithBases = async (
+  fake: ReturnType<typeof mkFakeClient>,
+  handle: FleetHandle,
+  bases: BaseChoices | { code: string; message: string },
+) => {
+  handle.handleKey("n", {} as Key);
+  const call = fake.of("session.baseChoices").at(-1);
+  assert.ok(call, "opening the prompt reads the bases afresh");
+  if ("code" in bases) call.reject(Object.assign(new Error(bases.message), { code: bases.code }));
+  else call.resolve(bases);
+  await delay(0);
+};
+
+test("⌥b switches the new session between the checked-out branch and the default branch", async () => {
+  const fake = mkFakeClient();
+  const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+  const teardown = handle.effectStart();
+  try {
+    fake.deliver(workspaceFleet());
+    handle.handleKey("n", {} as Key);
+    // Before the daemon answers, nothing is claimed and nothing is sent.
+    assert.doesNotMatch(newModalText(handle), /from /);
+    assert.equal(
+      describeCommand(handle.getView().ui, "newBase", null, "newSession")?.disabled,
+      "Still reading the repository's branches.",
+    );
+    handle.handleKey("", { escape: true } as Key);
+
+    await openNewWithBases(fake, handle, {
+      current: { ref: "feature-x", detached: false },
+      default: { ref: "main" },
+    });
+    assert.match(
+      newModalText(handle),
+      /\[Local · worktree · from feature-x\] {2}⇧⇥ mode · ⌥i ⌥w ⌥b change/,
+    );
+    assert.equal(
+      describeCommand(handle.getView().ui, "newBase", null, "newSession")?.label,
+      "base → main",
+    );
+    handle.handleKey("b", { meta: true } as Key);
+    assert.equal(newPromptOf(handle).settings.base, "default");
+    assert.match(newModalText(handle), /from main\]/);
+    handle.handleKey("b", { meta: true } as Key);
+    assert.match(newModalText(handle), /from feature-x\]/);
+    handle.handleKey("b", { meta: true } as Key);
+    handle.handleKey("go", {} as Key);
+    handle.handleKey("", { return: true } as Key);
+    assert.equal(fake.of("session.create")[0]?.params["base"], "main");
+  } finally {
+    teardown();
+  }
+});
+
+test("⌥b keeps a detached commit whole and says when there is nothing to switch to", async () => {
+  const fake = mkFakeClient();
+  const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+  const teardown = handle.effectStart();
+  const sha = "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b";
+  try {
+    fake.deliver(workspaceFleet());
+    await openNewWithBases(fake, handle, {
+      current: { ref: sha, detached: true },
+      default: { ref: "trunk", unavailableReason: 'The default branch "trunk" does not exist.' },
+    });
+    assert.match(newModalText(handle), /from detached 1a2b3c4\]/);
+    handle.handleKey("b", { meta: true } as Key);
+    let p = newPromptOf(handle);
+    assert.equal(p.settings.base, undefined);
+    assert.equal(p.feedback?.text, 'The default branch "trunk" does not exist.');
+    handle.handleKey("go", {} as Key);
+    handle.handleKey("", { return: true } as Key);
+    assert.equal(fake.of("session.create")[0]?.params["base"], sha);
+
+    // Reopened on the default branch itself: one choice, said so.
+    await openNewWithBases(fake, handle, {
+      current: { ref: "main", detached: false },
+      default: { ref: "main" },
+    });
+    handle.handleKey("b", { meta: true } as Key);
+    p = newPromptOf(handle);
+    assert.equal(p.settings.base, undefined);
+    assert.match(p.feedback?.text ?? "", /already the default branch, main/);
+  } finally {
+    teardown();
+  }
+});
+
+test("⌥b tells an older daemon apart and leaves the base to it", async () => {
+  const fake = mkFakeClient();
+  const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+  const teardown = handle.effectStart();
+  try {
+    fake.deliver(workspaceFleet());
+    await openNewWithBases(fake, handle, {
+      code: "method_not_found",
+      message: "unknown method: session.baseChoices",
+    });
+    assert.doesNotMatch(newModalText(handle), /from /);
+    handle.handleKey("b", { meta: true } as Key);
+    assert.match(newPromptOf(handle).feedback?.text ?? "", /cannot choose a base/);
+    handle.handleKey("go", {} as Key);
+    handle.handleKey("", { return: true } as Key);
+    assert.equal(fake.of("session.create")[0]?.params["base"], undefined);
   } finally {
     teardown();
   }
