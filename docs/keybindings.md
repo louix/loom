@@ -186,7 +186,7 @@ to the request panel with the answers kept, and `a` resumes where you left off.
 | `⌥m` | switch the model — a model step for the new session _(new prompt)_, or a live switch on the one you're messaging _(send prompt, draft kept)_                                               |
 | `⌥t` | switch the thinking-effort level, same shape as `⌥m` — only offered when the current (or chosen) model takes one                                                                           |
 | `⌥p` | pick the provider / model — for the new session, or live on the one you're messaging _(send prompt)_; a model that takes a thinking-effort level asks for one as a third step              |
-| `⌥q` | queue the message for when the agent has finished (background work included); on an idle session, plain send _(send prompt only)_                                                          |
+| `⌥q` | queued send — queue the message for when the agent has finished (background work included); on an idle session, plain send _(send prompt only)_                                            |
 | `⌥x` | clear the session's queued messages, after a confirm _(send prompt only)_                                                                                                                  |
 | `⌥i` | interrupt the session you're messaging; the draft stays _(send prompt only)_                                                                                                               |
 

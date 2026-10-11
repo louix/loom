@@ -315,12 +315,12 @@ running, like every A2 target. Session commands stay hidden on child rows.
 | Command                         | Browse  | Composer | Queue view  | Notes and disabled reasons                                                       |
 | ------------------------------- | ------- | -------- | ----------- | -------------------------------------------------------------------------------- |
 | `send`                          | `⏎`     | `⏎`      |             | On a busy target the label is "queue · next tool boundary".                      |
-| `enqueueEndOfTurn`              |         | `⌥q`     |             | "after it finishes"; a plain send on an idle, unheld target (as today).          |
+| `enqueueEndOfTurn`              |         | `⌥q`     |             | "queued send"; a plain send on an idle, unheld target (as today).                |
 | `queue`                         | `q`     | palette  |             | Bar label "queue 3" / "3 held". "No queued messages."                            |
 | `queueEdit`                     |         |          | `e`         | "Already handed to the agent." · "Loom's own messages can't be edited."          |
 | `queueRemove`                   |         |          | `x`         | "Already handed to the agent."                                                   |
 | `queueMoveUp` / `queueMoveDown` |         |          | `⇧↑` / `⇧↓` | Aliases `K` / `J`. "First in its group." / "Last in its group."                  |
-| `queueToggleDelivery`           |         |          | `t`         | "Already handed to the agent."                                                   |
+| `queueToggleDelivery`           |         |          | `t`         | "queued send" / "next boundary" (its new group). "Already handed to the agent."  |
 | `queueSendNow`                  |         |          | `s`         | "Answer the pending request first." An uncertain entry confirms "may duplicate". |
 | `queueRelease`                  | palette |          | `r`         | "The queue is not held."                                                         |
 | `clearqueue`                    | `⌥x`    | `⌥x`     | `c`         | Confirms "Clear N?" over the IDs shown. "No queued messages."                    |

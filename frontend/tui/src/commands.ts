@@ -105,7 +105,7 @@ const COMMANDS = {
   enqueueEndOfTurn: {
     scope: "session",
     composer: "⌥q",
-    label: "after it finishes",
+    label: "queued send",
     description: "Queue the message for when the agent has finished, background work included.",
   },
   queue: {
@@ -583,7 +583,7 @@ const sessionAvailability = (
       // Mid-turn a message waits in the queue for the next tool boundary;
       // ⌥q waits for the agent to finish (a plain send on an idle target).
       const busy = kind === "running" || kind === "starting" || kind === "awaiting_input";
-      let label = "after it finishes";
+      let label = "queued send";
       if (id === "send") label = busy ? "queue · next tool boundary" : "send";
       return {
         label,
@@ -644,7 +644,7 @@ const sessionAvailability = (
           };
         case "queueToggleDelivery":
           return {
-            label: e.delivery === "next_boundary" ? "after it finishes" : "next boundary",
+            label: e.delivery === "next_boundary" ? "queued send" : "next boundary",
             disabled: first(onChild("edit the queue"), queued),
             bar: true,
           };

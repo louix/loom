@@ -3404,7 +3404,7 @@ test("the queue view's commands act on the selected entry and say why they canno
   assert.equal(q.get("queueMoveUp")?.keys, "⇧↑");
   assert.equal(q.get("queueRelease")?.disabled, "The queue is not held.");
   assert.equal(q.get("clearqueue")?.label, "clear 3 queued", "the uncertain one counts");
-  assert.equal(q.get("queueToggleDelivery")?.label, "after it finishes");
+  assert.equal(q.get("queueToggleDelivery")?.label, "queued send");
   // Handed over: read-only.
   q = queueSurface(queueCtx(entries, null, "b2"));
   for (const id of ["queueEdit", "queueRemove", "queueToggleDelivery", "queueSendNow"] as const)
