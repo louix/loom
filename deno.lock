@@ -6,7 +6,7 @@
     "npm:@ai-sdk/mcp@2.0.66": "2.0.66_zod@4.6.5",
     "npm:@ai-sdk/openai-compatible@3.0.62": "3.0.62_zod@4.6.5",
     "npm:@ai-sdk/provider@4.0.21": "4.0.21",
-    "npm:@anthropic-ai/claude-agent-sdk@0.3.282": "0.3.282_@anthropic-ai+sdk@0.131.0_@modelcontextprotocol+sdk@1.32.0_zod@4.6.5",
+    "npm:@anthropic-ai/claude-agent-sdk@0.3.289": "0.3.289_@anthropic-ai+sdk@0.131.0_@modelcontextprotocol+sdk@1.32.0_zod@4.6.5",
     "npm:@types/react@19.3.0": "19.3.0",
     "npm:ai@7.0.127": "7.0.127_zod@4.6.5",
     "npm:ajv@8.20.0": "8.20.0",
@@ -91,48 +91,48 @@
         "is-fullwidth-code-point"
       ]
     },
-    "@anthropic-ai/claude-agent-sdk-darwin-arm64@0.3.282": {
-      "integrity": "sha512-NwvIIpEOORp16K7NgjWE2lt2Y+VmddvkkRoOpyKXz2H2bRixa5ToV+byp2gUaKVsCixBuAiQ2lL9e79gy5lbNQ==",
+    "@anthropic-ai/claude-agent-sdk-darwin-arm64@0.3.289": {
+      "integrity": "sha512-A1iK70JJgj6GhSkGnaVC02B1hX0aPvWTbn3a1Fp9iKhXt1a6eZwAhkqdP+F/rzAVUcQG24ehG/LBF2Ec8tBL0Q==",
       "os": ["darwin"],
       "cpu": ["arm64"]
     },
-    "@anthropic-ai/claude-agent-sdk-darwin-x64@0.3.282": {
-      "integrity": "sha512-MjVmeojCOIAdqt90j1B9ENfCwLIzMhSyzQJd6+rBn8KDKklduPLbs//rVhvIwR+MJBF67PDkczOb4VXiYPJRxA==",
+    "@anthropic-ai/claude-agent-sdk-darwin-x64@0.3.289": {
+      "integrity": "sha512-8kCv04+eOm26zPta8hym7eNHT/nn44a94Y/XwiR9ExWGGDcBJpNOZkVUxt+ciiKNQN7ujuYqAjdRedIRyD1izw==",
       "os": ["darwin"],
       "cpu": ["x64"]
     },
-    "@anthropic-ai/claude-agent-sdk-linux-arm64-musl@0.3.282": {
-      "integrity": "sha512-2/3EtJKfNQfjn1MtTRh7EpcqlAI/UCEaiHSdlPH+AZPDnQXiHLW6JITJNdsc3MMuwjnbsiL4NJBnDr35qkIb9A==",
+    "@anthropic-ai/claude-agent-sdk-linux-arm64-musl@0.3.289": {
+      "integrity": "sha512-nA1iLmY9R1Da042RWEJbJxz2S+jMVk1KcACeAuW2A9vVBqAUZwHXwWG1tvs9OZOBzxtayOxvKfG1pGIjoyStww==",
       "os": ["linux"],
       "cpu": ["arm64"]
     },
-    "@anthropic-ai/claude-agent-sdk-linux-arm64@0.3.282": {
-      "integrity": "sha512-hL/G7pCQnS9m8RIqxCpljaQsvITKRYdqoNeDsJGIqaFpd79redTwlovRUBtFMeDAtASwtha1wLyh24v+gUb58A==",
+    "@anthropic-ai/claude-agent-sdk-linux-arm64@0.3.289": {
+      "integrity": "sha512-u5GKtkDU5ho9g8fveN4PgInHyWOBQ12wSlZAcssrQJx8WmoYTUYQTz5kH4e6VNYfIJv1K5DXOSxPGuqbcSMr6Q==",
       "os": ["linux"],
       "cpu": ["arm64"]
     },
-    "@anthropic-ai/claude-agent-sdk-linux-x64-musl@0.3.282": {
-      "integrity": "sha512-Q96hallUSHCCvmsMC08aO3YtivTbRIzzrgfdVjJAcOrQ+6tSwN0Ni4yMEwhWRnq3DVZlNDYIssd1/k7H4lS7Og==",
+    "@anthropic-ai/claude-agent-sdk-linux-x64-musl@0.3.289": {
+      "integrity": "sha512-/XpyF/cyWNABbgxvtR+v8xz8bjv1lCZKZfBKdm5b/ROlfmyr27Q37JqNUUY6HR9dGvSYf4tCzkqLstk2tQZ6UQ==",
       "os": ["linux"],
       "cpu": ["x64"]
     },
-    "@anthropic-ai/claude-agent-sdk-linux-x64@0.3.282": {
-      "integrity": "sha512-NxinW4k1Xh3xTCPKpsw+XXV+O3zwLtLQeJnFucc/LKQQ3p4pXJ7/hW/DIiYdmhgIIaMFkP+2xP8G5+Y8swxB2w==",
+    "@anthropic-ai/claude-agent-sdk-linux-x64@0.3.289": {
+      "integrity": "sha512-d/2f7T/DpnEat78nun+mE26HZ0rO9BGEmoGja1i8iIW62IZX1K3T2IXd1h0Wjgtx1JSGDUK3pxMhQJxMyJdycQ==",
       "os": ["linux"],
       "cpu": ["x64"]
     },
-    "@anthropic-ai/claude-agent-sdk-win32-arm64@0.3.282": {
-      "integrity": "sha512-4v9guW9NSDJj+cTP+aND3Wz6gAFV5OU/VP4CFjc79KgdwPpAtwm2fw5BKhneAuoUc21KU9gHWBtLLOdBvONoZw==",
+    "@anthropic-ai/claude-agent-sdk-win32-arm64@0.3.289": {
+      "integrity": "sha512-/99s03mf1X3YB8pqcAsF+yDBo/O6kzZG2A6UU8zAf5Xa0iM/aBgd6kCx5Qz2KozrCkrlnbsWjp3HKEKs0Ls7MA==",
       "os": ["win32"],
       "cpu": ["arm64"]
     },
-    "@anthropic-ai/claude-agent-sdk-win32-x64@0.3.282": {
-      "integrity": "sha512-oOMNLTcLGqPBHvrTVRXNL6q8LK7DL3blkuBBrAgsmkgr+pxi0E74eQEk7XQ5dYwhETa2/ZfNIwNevcYB7LAVtg==",
+    "@anthropic-ai/claude-agent-sdk-win32-x64@0.3.289": {
+      "integrity": "sha512-HBoziJqI6LkEkqZuumOXxXLMZEvnZOQirc3OyZTDJIa7UJcV/pn9EsBXLruMlNztrOWfEqBeYArXSl00H91rjA==",
       "os": ["win32"],
       "cpu": ["x64"]
     },
-    "@anthropic-ai/claude-agent-sdk@0.3.282_@anthropic-ai+sdk@0.131.0_@modelcontextprotocol+sdk@1.32.0_zod@4.6.5": {
-      "integrity": "sha512-6UAerS1udzndLEx+0XW3gQWiICgfu/a+2fx/aLY3gUy+1JUQESbwYkhR40+D6d+yjueCslkLmvkPlZQFZDph6A==",
+    "@anthropic-ai/claude-agent-sdk@0.3.289_@anthropic-ai+sdk@0.131.0_@modelcontextprotocol+sdk@1.32.0_zod@4.6.5": {
+      "integrity": "sha512-fQRvZPhf6zxyzj7gwyItbhixmu5+Oy0HMQOyzYz3Phjhxuhj3TnpGPPy0VBnbSqWqYxT67TAFOiF5OzOFMYPLQ==",
       "dependencies": [
         "@anthropic-ai/sdk",
         "@modelcontextprotocol/sdk",
@@ -1233,7 +1233,7 @@
       "npm:@ai-sdk/mcp@2.0.66",
       "npm:@ai-sdk/openai-compatible@3.0.62",
       "npm:@ai-sdk/provider@4.0.21",
-      "npm:@anthropic-ai/claude-agent-sdk@0.3.282",
+      "npm:@anthropic-ai/claude-agent-sdk@0.3.289",
       "npm:@types/react@19.3.0",
       "npm:ai@7.0.127",
       "npm:entities@8.1.0",
