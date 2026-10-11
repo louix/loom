@@ -226,9 +226,11 @@ messages, interrupts and outcomes are ordinary session events.
 - A child's base is its supervisor's branch. When that branch is renamed
   (auto-titling), the child's stored base follows, and a running child is told
   the new name (`setBase`). A child in a private clone names it
-  `origin/<name>`, which its clone has only once a sync has fetched it: it is
-  told after its next sync and keeps the old name, which still resolves, until
-  then. A child whose row is being made reads its base once, before anything
+  `origin/<name>`, which its clone has only once a fetch has brought it: it is
+  told after its next sync, or once the checkout of its next start or resume
+  (which fetches the stored base) has run, and keeps the old name, which still
+  resolves, until then. Every base an agent is given comes through that one
+  rule. A child whose row is being made reads its base once, before anything
   awaits, so a rename meanwhile is never undone.
 - Closing a supervisor with open agents needs a choice (`children: stop |
 detach` on `session.markDone` / `session.remove`, `--children` in the CLI,

@@ -12,7 +12,8 @@ import { describe, test as nodeTest } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { LoomClient } from "@loom/client";
 import type { SessionSnapshot } from "@loom/core/wire";
-import type { FakeProvider, FakeSession } from "@loom/connector-mock";
+import { FakeProvider, type FakeSession } from "@loom/connector-mock";
+import type { ConnectorContext } from "@loom/core/connector";
 import { makeHarness, type Harness } from "@loom/harness";
 
 const CONFIG = JSON.stringify({
@@ -596,6 +597,59 @@ describe("loom agents", { concurrency: 4 }, () => {
 
     await env.c.request("session.queueRelease", { id: child.id });
     await waitFor(() => child.fs.sends.some((s) => s.includes("go on")));
+  });
+
+  nodeTest("a VM stop holds a supervisor before it closes: a report meanwhile waits", async () => {
+    let lifecycle: NonNullable<ConnectorContext["vmLifecycle"]> | undefined;
+    const provider = new FakeProvider();
+    const h = await makeHarness({
+      config: CONFIG,
+      connectors: {
+        "@loom/connector-mock": async () => ({
+          createProvider: (ctx) => {
+            lifecycle = ctx.vmLifecycle;
+            return provider;
+          },
+        }),
+      },
+    });
+    const c = await LoomClient.connect({
+      repoRoot: h.repoRoot,
+      sockPath: h.sockPath,
+      autospawn: false,
+    });
+    try {
+      const env: Env = { h, c, provider };
+      const lead = await idleSession(env);
+      const child = await startChild(env, lead.fs);
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      let closing = false;
+      const close = lead.fs.close.bind(lead.fs);
+      lead.fs.close = async () => {
+        closing = true;
+        await gate;
+        await close();
+      };
+      assert.ok(lifecycle);
+      const stopping = lifecycle.stop(lead.id, () => true);
+      await waitFor(() => closing);
+      await finish(env, child, "Widget added.");
+      await delay(50);
+      release();
+      await stopping;
+      await waitFor(async () => ((await get(c, lead.id)).queue?.entries.length ?? 0) === 1);
+      await delay(50);
+      const row = await get(c, lead.id);
+      assert.equal(row.status.kind, "interrupted");
+      assert.equal(row.queue?.hold, "interrupt");
+      assert.equal(row.queue?.entries[0]?.author, `agent:${child.id}`);
+      assert.ok(!lead.fs.sends.some((s) => s.startsWith("[from your agent")), "not handed over");
+      assert.ok(!provider.resumes.some((r) => r.sessionId === lead.id), "not revived");
+    } finally {
+      await c.close();
+      await h.cleanup();
+    }
   });
 
   test("a user's interrupt joining the supervisor's own is reported", async (env) => {

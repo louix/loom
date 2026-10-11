@@ -267,7 +267,7 @@ export class Daemon {
   /** Per live session, the base its agent was last told, as its checkout
    *  names it (`#pushAgentBase`). */
   readonly #agentBases = new Map<string, string>();
-  /** Per clone session, the host base branch its last sync fetched. */
+  /** Per clone session, the host base branch its last launch or sync fetched. */
   readonly #cloneFetchedBase = new Map<string, string>();
   /**
    * Per session, the tail of its serialized guest Git probes. Serial so an older
@@ -451,6 +451,8 @@ export class Daemon {
           const row = this.#registry.get(id);
           if (row?.checkout !== "clone" || !row.branch) return;
           const checkout = this.config.isolation.checkout;
+          // The launch's checkout fetches this base: the agent may be told it.
+          if (row.baseBranch) this.#cloneFetchedBase.set(id, row.baseBranch);
           return {
             branch: row.branch,
             base: row.baseBranch ?? legacyBaseBranch(this.config),
@@ -467,9 +469,11 @@ export class Daemon {
           this.#sessions.setKeepWarm(id, false);
           await this.#queue.run(id, async () => {
             if (!isCurrent()) return;
+            // Held before the close awaits, as an interrupt holds before it
+            // stops: a child's report queued meanwhile must not revive it.
+            this.#sessions.holdForStop(id, "user");
             await this.#sessions.close(id, "user_stop", "user");
             this.#vmGenerations.delete(id);
-            this.#sessions.holdForStop(id, "user");
             this.#registry.setStatus(id, stateInterrupted("user"));
             this.#publishState(id);
           });
@@ -1842,7 +1846,7 @@ export class Daemon {
           systemPromptAppend: promptAppend,
           repoInstructions: repoInstructionsFor(this.#instructionsDir(wt.path), this.repoRoot),
           workspaceRoot: wt.path,
-          ...this.#agentBase(newId),
+          ...this.#agentBase(newId, true),
         };
         startup.signal.throwIfAborted();
         if (handoff) {
@@ -2257,7 +2261,7 @@ export class Daemon {
           ...agent,
           disableTools: this.config.providers.claude.disableBuiltin,
           settingSources: this.config.providers.claude.settingSources,
-          ...this.#agentBase(id),
+          ...this.#agentBase(id, true),
           ...(isClaude || isAisdk
             ? {
                 loomServer: true,
@@ -2545,7 +2549,7 @@ export class Daemon {
       this.repoRoot,
       this.#instructionsDir(cwd),
     );
-    const base = this.#agentBase(id);
+    const base = this.#agentBase(id, true);
     try {
       await this.#sessions.resume(await this.#providers.get(row.provider, row.isolation), {
         initHooks: { hooks: [], env: { LOOM_START_REASON: startReason } },
@@ -3036,37 +3040,50 @@ export class Daemon {
   }
 
   /**
-   * The session's stored base as its agent's checkout names it — what the
-   * `status` tool counts ahead/behind against. Empty for a row stored without
-   * a base, which keeps the provider-wide fallback.
+   * The session's base as its agent's checkout names it — what the `status`
+   * tool counts ahead/behind against; every base handed to an agent comes
+   * from here. Empty for a row stored without a base, which keeps the
+   * provider-wide fallback.
+   *
+   * A private clone names the base `origin/<name>`, which it has only once a
+   * fetch brought it (`#cloneFetchedBase`): its launch's checkout, which
+   * fetches the stored base, or a sync. Until its next sync after a rename it
+   * keeps the old name, which still resolves there. `launching`: a start or
+   * resume is about to run, so the stored base is what the clone will have
+   * (the launch records what it actually fetched, and `#pushAgentBase`
+   * corrects a rename in between).
    */
-  #agentBase(id: string): { base?: string } {
+  #agentBase(id: string, launching = false): { base?: string } {
     const row = this.#registry.get(id);
     if (!row?.baseBranch) return {};
-    return { base: checkoutRef(row, row.baseBranch) };
+    if (row.checkout !== "clone" || launching) return { base: checkoutRef(row, row.baseBranch) };
+    const fetched = this.#cloneFetchedBase.get(id);
+    return fetched ? { base: checkoutRef(row, fetched) } : {};
   }
 
   /**
-   * Tell `id`'s running agent its stored base when that is not the one it
-   * was last told (`sent`, what a start or resume just gave it): its
-   * supervisor's branch was renamed after the start read it, or while it
-   * ran. A session not running reads the stored base when it next starts.
-   *
-   * A private clone names the base `origin/<name>`, which it has only once a
-   * sync fetched it: until its next sync after a rename it keeps the old
-   * name, which still resolves there.
+   * Tell `id`'s running agent its base ({@link #agentBase}) when that is not
+   * the one it was last told (`sent`, what a start or resume just gave it):
+   * its supervisor's branch was renamed after the start read it, or while it
+   * ran. A session not running reads its base when it next starts.
    */
   #pushAgentBase(id: string, sent?: string): void {
     if (sent !== undefined) this.#agentBases.set(id, sent);
-    const row = this.#registry.get(id);
-    if (!row?.baseBranch || !this.#sessions.has(id)) return;
-    if (row.checkout === "clone" && this.#cloneFetchedBase.get(id) !== row.baseBranch) return;
-    const base = checkoutRef(row, row.baseBranch);
-    if (this.#agentBases.get(id) === base) return;
+    if (!this.#sessions.has(id)) return;
+    const { base } = this.#agentBase(id);
+    if (!base || this.#agentBases.get(id) === base) return;
     this.#agentBases.set(id, base);
     void this.#sessions.setBase(id, base).catch((err) => {
       this.#log.warn("could not update a session's base", { id, err: String(err) });
     });
+  }
+
+  /** Drop the per-session memory a removed or archived session leaves. */
+  #forgetSessionCaches(id: string): void {
+    this.#lastSend.delete(id);
+    this.#cacheTtlSeen.delete(id);
+    this.#agentBases.delete(id);
+    this.#cloneFetchedBase.delete(id);
   }
 
   /** A session's `GIT_AUTHOR_*` / `GIT_COMMITTER_*`, for commits the daemon makes on its behalf. */
@@ -3869,10 +3886,7 @@ export class Daemon {
         this.#messageQueue.setHold(id, "interrupt");
       return await withStoppedSessionVm(this.repoRoot, id, async () => {
         if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
-        this.#lastSend.delete(id);
-        this.#cacheTtlSeen.delete(id);
-        this.#agentBases.delete(id);
-        this.#cloneFetchedBase.delete(id);
+        this.#forgetSessionCaches(id);
         if (borrowed && row.worktree) this.#registry.setFields(id, { worktree: null });
         else if (row.worktree && !row.inPlace) {
           try {
@@ -4349,8 +4363,12 @@ export class Daemon {
       if (this.#messageQueue.hold(id) === null) throw refused();
       // What the release lets go goes to the agent: a cold session (a stop, a
       // restart, a crash) comes back for it as it would for a send. Still
-      // held meanwhile, so a failed revival leaves the queue as it was.
-      if (this.#messageQueue.slots(id).some((e) => e.state === "queued" && !e.uncertain))
+      // held meanwhile, so a failed revival leaves the queue as it was. A
+      // live one just releases and its queue pumps, whatever else holds its
+      // commands (a clone's sync).
+      const live =
+        this.#sessions.has(id) && !this.#sessions.isEnded(id) && !this.#lifecycles.has(id);
+      if (!live && this.#messageQueue.slots(id).some((e) => e.state === "queued" && !e.uncertain))
         await this.#reviveForQueue(id);
       if (!this.#sessions.releaseQueue(id)) throw refused();
       return this.#enrich(this.#registry.mustGet(id), false);
@@ -4989,10 +5007,7 @@ export class Daemon {
         this.#hooks.forget(id);
         if (this.#sessions.has(id)) await this.#sessions.close(id, "user_stop");
         return await withStoppedSessionVm(this.repoRoot, id, async () => {
-          this.#lastSend.delete(id);
-          this.#cacheTtlSeen.delete(id);
-          this.#agentBases.delete(id);
-          this.#cloneFetchedBase.delete(id);
+          this.#forgetSessionCaches(id);
           if (s.worktree && !borrowed) {
             try {
               this.#removeWorkdir(s.worktree, true);
