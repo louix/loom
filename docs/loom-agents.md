@@ -121,7 +121,7 @@ children inside the supervisor's VM is a later shared-VM feature.
   hold the supervisor's message lifts, going first as the user's send would:
   one its own stop (`agent_interrupt`) set, and Loom's own (a crash, a
   restart, a doubtful hand-over), reviving a cold child to recover it. The
-  hold records whose it is ([message-queue.md](message-queue.md#hold-causes));
+  hold records whose it is ([message-queue.md](message-queue.md#holds));
   `agent_message`'s answer names the hold it found and whether the message
   waits behind it.
 - Up: event-driven, never streamed output. The supervisor gets a short

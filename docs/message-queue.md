@@ -90,12 +90,8 @@ type QueueHoldBy = "user" | "supervisor"; // whose stop; absent for Loom's own
   It records its cause: the reason (`interrupt`, `restart`, `crash`,
   `rejected`) and, for a stop, whose it is (`by`: the user's, or a Loom
   supervisor's on its child). Loom's own holds (a crash, a restart, a doubtful
-  hand-over, an interrupt that only cancelled a compaction) are no one's. A
-  hold already set keeps its reason, but a user's stop landing on it makes it
-  the user's.
-- Who lifts a hold, by who sends ([hold causes](#hold-causes)): the user's send
-  or release lifts any; a Loom supervisor's message to its child lifts any but
-  the user's; a child's notification to its supervisor lifts none.
+  hand-over) are no one's. Who sets, lifts and combines holds is defined in
+  one place, [Holds](#holds).
 - Any client may act on any entry (single user). Authors render as you or
   another client. Loom's own messages (hook feedback, nudges) bypass the queue
   ([decision 3](#decisions)).
@@ -119,8 +115,8 @@ gate (`#enqueue`).
 
 1. Nothing is dispatched while held; while `starting`, restructuring (compact,
    rewind, provider switch), stopping or cancellation `failed`; while
-   `awaiting_input` (permission, question, plan review); or while a handover is
-   outstanding.
+   `awaiting_input` (permission, question, plan review); while a clone's
+   guest Git runs ([busy](#holds), H7); or while a handover is outstanding.
 2. **Boundary window.** While a live root turn has a root tool call in flight (a
    `tool_call` without `agentId` and without its `tool_result`, not blocked on a
    permission), every queued `next_boundary` entry is handed over in order. All
@@ -199,7 +195,8 @@ The keys (`i`, ⌥i) and `session.interrupt` are unchanged. In
    interrupting a session still starting, and for stopping its VM. A user's
    interrupt joining one already under way sets the hold too. An interrupt
    that only cancels a compaction on a settled session stops no turn: it
-   holds only if entries wait, like a supervisor's.
+   holds only if entries wait, like a supervisor's, and the hold is the
+   stopper's ([Holds](#holds), H1).
 2. The adapter reports what the stop discarded as an `input_discarded` event
    (`2930534f`), which may land just before or after `interrupt()` settles:
    Claude reports drained `#inbox` IDs plus the receipt's `cancelled`; AISDK
@@ -220,32 +217,13 @@ are not released with it and each needs send now or delete. A cold session
 (stopped, crashed, restarted) with entries to release is revived first, as a
 send would revive it, and released once it is back, so a failed revival leaves
 the hold in place; released with nothing queued, the hold is simply gone. A
-live clone whose guest Git (its turn-end sync, a rebase) holds its commands
-refuses the release as `busy`, as it refuses a send, so no turn starts under
-it. Send now on one
-entry delivers it and leaves the rest held. A new message typed while held is
-sent first and alone — a new turn, or a hand-over to a live one — not queued
-behind the held entries, and sending it releases the hold as `r` would: the
-held entries then follow the ordinary rules relative to the turn it started,
-so a held `end_of_turn` entry goes at that turn's end ([decision 2](#decisions)).
-
-### Hold causes
-
-What a Loom agent enqueues (`SessionManager.enqueue`'s `respect`,
-[loom-agents.md](loom-agents.md#communication)) lifts a hold or waits behind
-it by the hold's cause:
-
-| Hold                                | User's send / `r` | Supervisor's `agent_message` | Child's notification |
-| ----------------------------------- | ----------------- | ---------------------------- | -------------------- |
-| `interrupt` by the user             | lifts             | waits                        | waits                |
-| `interrupt` by the supervisor       | lifts             | lifts                        | waits                |
-| `crash`, `restart`, `rejected`, own | lifts             | lifts (reviving the child)   | waits                |
-
-A message that lifts a hold goes as the user's send does: first and alone,
-reviving a cold session. One that waits joins the held entries at the back
-and wakes nothing, a cold session included. The enqueue itself decides, so a
-hold set while a cold session came back still counts. `agent_message`'s
-answer names the hold it found and whether it waits.
+clone whose guest Git is under way refuses the release as `busy`, as it
+refuses a send ([Holds](#holds), H7). Send now on one entry delivers it and
+leaves the rest held. A new message typed while held is sent first and alone
+— a new turn, or a hand-over to a live one — not queued behind the held
+entries, and sending it releases the hold as `r` would: the held entries then
+follow the ordinary rules relative to the turn it started, so a held
+`end_of_turn` entry goes at that turn's end ([decision 2](#decisions)).
 
 - **Daemon restart:** queued entries persist; delivering ones become `uncertain`
   with hold `restart`. Auto-resume (`#autoResumeInterrupted`) bypasses the queue
@@ -257,8 +235,65 @@ answer names the hold it found and whether it waits.
   alone. **Archive** is a stop like an interrupt, by whoever archives: the
   hold is set in `SessionManager.close(by)` before the close awaits anything,
   as for a VM stop, so nothing queued during the close (a child's report)
-  reaches the closing adapter or revives it. **Delete**
-  cascades. **Forks** start with an empty queue.
+  reaches the closing adapter or revives it (H6). **Delete** cascades.
+  **Forks** start with an empty queue.
+
+## Holds
+
+A hold is a cause: a reason and whose it is (`by`: `user`, `supervisor`, or
+none for Loom's own). Every write of it goes through one function,
+`MessageQueueStore.applyHold`, which applies the combine rule (H1) to the hold
+as it is, in one step. `SessionManager` reaches it through `#applyHold`, which
+also drops a pending forced entry (H3); the restart recovery calls it inside
+the store. Nothing else writes the hold, and `hold()` is read off
+`holdCause()`.
+
+| Cause                    | Set by                                                                                                                                                                                                   | Lifted by                                            | A child's notification behind it | A supervisor's `agent_message` behind it | Arriving on an existing hold (H1)                    |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- | -------------------------------- | ---------------------------------------- | ---------------------------------------------------- |
+| `interrupt` · user       | The user's stop — `session.interrupt` (joining one under way, or of a session still starting), a VM stop, an archive — even with nothing queued; the user stopping a compaction, only while entries wait | The user's send or release (`r`)                     | waits                            | waits                                    | Keeps the existing reason; makes the hold the user's |
+| `interrupt` · supervisor | `agent_interrupt`, `agent_stop`, the supervisor stopping a compaction — only while entries wait                                                                                                          | The user's send or release; the supervisor's message | waits                            | lifts it and goes first                  | Changes nothing                                      |
+| `interrupt` · Loom's own | Input the adapter discarded with no one's stop under way, put back in the queue                                                                                                                          | The user's send or release; the supervisor's message | waits                            | lifts it and goes first                  | Changes nothing                                      |
+| `crash`                  | A fatal root error, or the stream ending unexpectedly, while entries wait                                                                                                                                | The user's send or release; the supervisor's message | waits                            | lifts it and goes first, reviving        | Changes nothing                                      |
+| `restart`                | The daemon starting with entries left `delivering` (`recoverAfterRestart`)                                                                                                                               | The user's send or release; the supervisor's message | waits                            | lifts it and goes first, reviving        | Changes nothing                                      |
+| `rejected`               | A hand-over whose outcome is unknown (`DeliveryUncertainError`): the entry turns `uncertain`                                                                                                             | The user's send or release; the supervisor's message | waits                            | lifts it and goes first, reviving        | Changes nothing                                      |
+
+- **H1 Combine.** A hold already set keeps its reason. Only a user's stop
+  changes anything about it: it becomes the user's. Everything else that
+  would set a hold — a supervisor's stop, a crash, a restart, a doubtful
+  hand-over, a requeued discard, a close not the user's — leaves an existing
+  hold exactly as it is. So a user's hold is never downgraded, overwritten or
+  re-attributed by any path but the user lifting it (or H5 and H6 undoing a
+  hold that never took effect).
+- **H2 Wait or lift** is decided once, by `SessionManager.enqueue`, as the
+  message is queued: the user's send lifts any hold; a supervisor's message
+  any but the user's; a child's notification none. A message that lifts goes
+  first and alone (at the head, forced); one that waits joins the held
+  entries at the back and wakes nothing, a cold session included. The
+  enqueue answers whether the session must be revived for the message (it is
+  cold, and the message does not wait); the daemon revives only then and
+  decides nothing itself.
+- **H3 A hold beats a forced entry not yet handed over.** A message that
+  lifted a hold, or one sent now, goes alone whatever the hold; but a hold
+  applied before it is handed over (a stop while a cold session comes back
+  for it) drops that, and the entry waits at the head, held.
+- **H4 Send now** delivers one entry through any hold and leaves the hold.
+- **H5 A revival that fails** for a message withdraws the message and puts
+  back the hold it lifted, unless the hold was written since: as if it was
+  never sent, and the sender is told.
+- **H6 A stop that does not complete.** A close by someone
+  (`SessionManager.close(by)`: an archive, a VM stop) applies its stop
+  before it awaits anything. If the close fails, or the archive around it
+  does (a worktree that will not go), the hold goes back to what it was,
+  unless it was written since: no user's hold outlives an archive that did
+  not happen.
+- **H7 Busy.** While a clone's guest Git runs for the daemon — its turn-end
+  sync, a rebase, republishing a renamed branch — the daemon marks the
+  session busy in `SessionManager` (`setBusy`). Dispatch reads it with the
+  rest of rule 1, so it stops every path alike: the pump, a send, a release,
+  send now, notifications and agents' messages. Only the user's
+  `session.send` and `session.queueRelease` are refused as `busy` meanwhile
+  (their contract); everything else is queued as usual and goes when the
+  operation ends, which re-evaluates the queue.
 
 ## Interactions
 
