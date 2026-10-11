@@ -1,4 +1,5 @@
 import type { SessionState } from "@loom/core/events";
+import type { Logger } from "@loom/core/logger";
 import { stateDone } from "@loom/core/session-state";
 import type { SessionSnapshot } from "@loom/core/wire";
 import {
@@ -12,15 +13,20 @@ import type { Db } from "../store/db.ts";
 import { sortSessions as sortSnapshots } from "@loom/core/session-order";
 export { sortSnapshots };
 
+type StatusListener = (id: string, state: SessionState) => void;
+
 /**
  * Owns session state: a thin, write-through layer over SessionStore that adds
  * the fleet-view sort. Adapters attach live run state here.
  */
 export class Registry {
   #store: SessionStore;
+  readonly #log: Logger | undefined;
+  readonly #statusListeners = new Set<StatusListener>();
 
-  constructor(db: Db) {
+  constructor(db: Db, log?: Logger) {
     this.#store = new SessionStore(db);
+    this.#log = log;
   }
 
   get store(): SessionStore {
@@ -51,19 +57,39 @@ export class Registry {
     return sortSnapshots(this.#store.list());
   }
 
+  /** The sessions `supervisorId` supervises, in fleet-view order. */
+  children(supervisorId: string): SessionSnapshot[] {
+    return sortSnapshots(this.#store.children(supervisorId));
+  }
+
   setStatus(id: string, state: SessionState, note: string | null = null): SessionSnapshot {
     this.#store.setStatus(id, state, note);
     const snap = this.mustGet(id);
-    this.#onStatus?.(id, state);
+    this.#statusChanged(id, state);
     return snap;
   }
 
-  #onStatus: ((id: string, state: SessionState) => void) | undefined;
+  /**
+   * Hear of every status write, whichever path made it, and of a removal (as
+   * `done`), once it is committed. Returns the unsubscribe.
+   */
+  watchStatus(fn: StatusListener): () => void {
+    this.#statusListeners.add(fn);
+    return () => this.#statusListeners.delete(fn);
+  }
 
-  /** Hear of every status write, whichever path made it, and of a removal
-   *  (as `done`). One listener. */
-  watchStatus(fn: (id: string, state: SessionState) => void): void {
-    this.#onStatus = fn;
+  /** Tell every listener. One that throws is logged, the rest still hear,
+   *  and the write it heard of stands. */
+  #statusChanged(id: string, state: SessionState): void {
+    for (const fn of this.#statusListeners)
+      try {
+        fn(id, state);
+      } catch (err) {
+        this.#log?.warn("status listener failed", {
+          id,
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
   }
 
   addUsage(id: string, d: UsageDelta): SessionSnapshot {
@@ -100,6 +126,6 @@ export class Registry {
   remove(id: string): void {
     this.#store.delete(id);
     // Gone is as ended as archived, to whoever was watching it.
-    this.#onStatus?.(id, stateDone);
+    this.#statusChanged(id, stateDone);
   }
 }

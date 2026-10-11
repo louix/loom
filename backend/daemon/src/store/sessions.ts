@@ -222,6 +222,16 @@ export class SessionStore {
     return rows.map((r) => toSnapshot(r, byId.get(r.id)));
   }
 
+  /** The sessions `supervisorId` supervises (`sessions_supervisor_idx`). */
+  children(supervisorId: string): SessionSnapshot[] {
+    const rows = this.#db
+      .prepare("SELECT * FROM sessions WHERE supervisor_id = ?")
+      .all(supervisorId) as unknown as SessionRow[];
+    if (rows.length === 0) return [];
+    const usage = this.#db.prepare("SELECT * FROM usage WHERE session_id = ?");
+    return rows.map((r) => toSnapshot(r, usage.get(r.id) as unknown as UsageRow | undefined));
+  }
+
   setStatus(id: string, state: SessionState, note: string | null = null): void {
     const now = Date.now();
     const res = this.#db
