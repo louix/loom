@@ -98,6 +98,10 @@ test("bare repo and linked launches share sessions, base HEAD, config, and CLI r
         /Bare repositories require worktrees/,
       );
     }
+    await assert.rejects(
+      client.request("session.create", { prompt: "in place", workspace: "in-place" }),
+      /Bare repositories require worktrees/,
+    );
     assert.deepEqual(await client.request("session.list"), []);
     const session = await client.request<SessionSnapshot>("session.create", {
       prompt: "shared bare session",

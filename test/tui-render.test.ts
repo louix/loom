@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { createElement } from "react";
 import { stripVTControlCharacters } from "node:util";
-import { render, renderToString, type Key } from "ink";
+import { Box, render, renderToString, type Key } from "ink";
 import { LoomClient } from "@loom/client";
 import { RepositoryMenu } from "@loom/tui/run";
 import type { ClientState } from "@loom/client";
@@ -22,14 +22,17 @@ import type {
   DaemonInfo,
   HistoryCursor,
   HistoryPage,
+  ProviderInfo,
   PushFrame,
   SessionSnapshot,
 } from "@loom/core/wire";
 import { App } from "@loom/tui/app";
+import { describeCommand } from "@loom/tui/commands";
 import {
   askQuestionLines,
   Detail,
   FooterArea,
+  NewSessionModal,
   PromptPane,
   promptPaneRows,
   promptRows,
@@ -3750,6 +3753,182 @@ test("unavailable VM choice explains why and leaves the local session draft inta
     assert.equal(p.buffer.text, "draft");
     assert.equal(p.feedback?.text, "No VM runtime is configured");
     assert.equal(p.feedback?.pending, false);
+  } finally {
+    teardown();
+  }
+});
+
+/** One provider with the daemon's workspace facts; `over` adjusts them. */
+const workspaceFleet = (over: Partial<ProviderInfo> = {}): ClientState =>
+  loadableLoaded({
+    daemon: testDaemon,
+    sessions: [],
+    providers: [
+      {
+        id: "claude",
+        models: ["fixture"],
+        defaultModel: "fixture",
+        defaultEffort: "",
+        defaultMode: "default",
+        defaultIsolation: "local",
+        defaultWorkspace: { local: "worktree", vm: "worktree" },
+        tag: "Claude",
+        color: "",
+        isDefault: true,
+        ...over,
+      },
+    ],
+  });
+
+const newPromptOf = (handle: FleetHandle) => {
+  const p = openPrompt(handle.getView().ui.overlay);
+  assert(p?.t === "new");
+  return p;
+};
+
+const newModalText = (handle: FleetHandle): string =>
+  stripVTControlCharacters(
+    renderToString(
+      createElement(
+        Box,
+        { width: 120, height: 40 },
+        createElement(NewSessionModal, { state: handle.getView().ui, cols: 120, rows: 40 }),
+      ),
+      { columns: 120 },
+    ),
+  );
+
+test("⌥w cycles the new session's workspace, shows it, and sends it", () => {
+  const fake = mkFakeClient();
+  const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+  const teardown = handle.effectStart();
+  try {
+    fake.deliver(workspaceFleet());
+    handle.handleKey("n", {} as Key);
+    handle.handleKey("draft", {} as Key);
+    assert.equal(newPromptOf(handle).settings.workspace, undefined);
+    assert.match(newModalText(handle), /\[Local · worktree\][^\n]*⌥w workspace/);
+
+    // A clone runs only in a VM: choosing one brings VM isolation, and says so.
+    handle.handleKey("w", { meta: true } as Key);
+    let p = newPromptOf(handle);
+    assert.equal(p.settings.workspace, "clone");
+    assert.equal(p.settings.isolation, "vm");
+    assert.match(p.feedback?.text ?? "", /isolation is now VM/);
+    assert.equal(p.buffer.text, "draft");
+    assert.match(newModalText(handle), /\[VM · clone\]/);
+
+    handle.handleKey("w", { meta: true } as Key);
+    p = newPromptOf(handle);
+    assert.equal(p.settings.workspace, "in-place");
+    assert.equal(p.feedback, undefined);
+    assert.match(newModalText(handle), /\[VM · in-place\]/);
+
+    handle.handleKey("w", { meta: true } as Key);
+    assert.equal(newPromptOf(handle).settings.workspace, "worktree");
+    handle.handleKey("w", { meta: true } as Key);
+    // Leaving the VM turns a chosen clone back into a worktree.
+    handle.handleKey("i", { meta: true } as Key);
+    p = newPromptOf(handle);
+    assert.equal(p.settings.isolation, "local");
+    assert.equal(p.settings.workspace, "worktree");
+    assert.match(p.feedback?.text ?? "", /workspace is now worktree/);
+
+    handle.handleKey("w", { meta: true } as Key);
+    handle.handleKey("w", { meta: true } as Key);
+    assert.equal(newPromptOf(handle).settings.workspace, "in-place");
+    handle.handleKey("", { return: true } as Key);
+    const sent = fake.of("session.create")[0]?.params;
+    assert.equal(sent?.["workspace"], "in-place");
+    assert.equal(sent?.["isolation"], "vm");
+  } finally {
+    teardown();
+  }
+});
+
+test("the new prompt shows the daemon's default workspace and sends none unless one is chosen", () => {
+  const fake = mkFakeClient();
+  const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+  const teardown = handle.effectStart();
+  try {
+    fake.deliver(
+      workspaceFleet({
+        defaultIsolation: "vm",
+        defaultWorkspace: { local: "in-place", vm: "clone" },
+      }),
+    );
+    handle.handleKey("n", {} as Key);
+    assert.match(newModalText(handle), /\[VM · clone\]/);
+    // The default follows the isolation; nothing explicit is recorded.
+    handle.handleKey("i", { meta: true } as Key);
+    assert.equal(newPromptOf(handle).settings.workspace, undefined);
+    assert.match(newModalText(handle), /\[Local · in-place\]/);
+    handle.handleKey("go", {} as Key);
+    handle.handleKey("", { return: true } as Key);
+    const sent = fake.of("session.create")[0]?.params;
+    assert.equal(sent?.["workspace"], undefined);
+    assert.equal(sent?.["worktree"], undefined);
+  } finally {
+    teardown();
+  }
+});
+
+test("⌥w passes over workspaces this repository cannot take and says why", () => {
+  const fake = mkFakeClient();
+  const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+  const teardown = handle.effectStart();
+  try {
+    fake.deliver(
+      workspaceFleet({
+        vmUnavailableReason: "No VM runtime is configured",
+        inPlaceUnavailableReason: "Bare repositories require worktrees.",
+      }),
+    );
+    handle.handleKey("n", {} as Key);
+    const command = describeCommand(handle.getView().ui, "newWorkspace", null, "newSession");
+    assert.equal(
+      command?.disabled,
+      "A private clone runs only in a VM: No VM runtime is configured Bare repositories require worktrees.",
+    );
+    handle.handleKey("w", { meta: true } as Key);
+    const p = newPromptOf(handle);
+    assert.equal(p.settings.workspace, undefined);
+    assert.match(p.feedback?.text ?? "", /private clone runs only in a VM: No VM runtime/);
+    assert.equal(p.feedback?.pending, false);
+
+    // With in place possible, the cycle skips the clone and names why.
+    fake.deliver(workspaceFleet({ vmUnavailableReason: "No VM runtime is configured" }));
+    assert.equal(
+      describeCommand(handle.getView().ui, "newWorkspace", null, "newSession")?.label,
+      "workspace → in-place",
+    );
+    handle.handleKey("w", { meta: true } as Key);
+    const q = newPromptOf(handle);
+    assert.equal(q.settings.workspace, "in-place");
+    assert.equal(q.settings.isolation, undefined);
+    assert.match(q.feedback?.text ?? "", /No VM runtime/);
+    // Not a fleet command: the palette never offers it.
+    assert.equal(describeCommand(handle.getView().ui, "newWorkspace", null), null);
+  } finally {
+    teardown();
+  }
+});
+
+test("⌥w says an older daemon cannot take a workspace choice", () => {
+  const fake = mkFakeClient();
+  const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+  const teardown = handle.effectStart();
+  try {
+    const { defaultWorkspace: _, ...old } = (
+      workspaceFleet() as { value: { providers: ProviderInfo[] } }
+    ).value.providers[0]!;
+    fake.deliver(loadableLoaded({ daemon: testDaemon, sessions: [], providers: [old] }));
+    handle.handleKey("n", {} as Key);
+    handle.handleKey("w", { meta: true } as Key);
+    const p = newPromptOf(handle);
+    assert.equal(p.settings.workspace, undefined);
+    assert.match(p.feedback?.text ?? "", /cannot choose a workspace/);
+    assert.match(newModalText(handle), /\[Local · worktree\]/);
   } finally {
     teardown();
   }

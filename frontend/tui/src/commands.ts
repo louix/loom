@@ -23,6 +23,8 @@ import type { KeyLike } from "./editor.ts";
 import { liveQNav, questionsOf } from "./interactions.ts";
 import { nextThemeMode } from "./theme.ts";
 import { startingForkOf } from "./fork-flow.ts";
+import { cycleWorkspace, newWorkspace } from "./new-workspace.ts";
+import { openPrompt } from "./overlay.ts";
 import {
   childrenOf,
   defaultProviderId,
@@ -52,6 +54,8 @@ interface CommandSpec {
   readonly composer?: string;
   /** Its key in the target's queue view; absent: not offered there. */
   readonly queue?: string;
+  /** Its key in the new-session prompt; absent: not offered there. */
+  readonly newSession?: string;
   readonly label: string;
   readonly description: string;
 }
@@ -316,6 +320,13 @@ const COMMANDS = {
       "Rediscover the selected session's provider's models (the default provider's with none selected); ⌥r in a model picker.",
   },
   new: { scope: "app", keys: "n", label: "new", description: "Start a new session." },
+  newWorkspace: {
+    scope: "app",
+    newSession: "⌥w",
+    label: "workspace",
+    description:
+      "Cycle where the new session works: its own worktree, a private clone (VM only) or in place in the repository checkout.",
+  },
   find: {
     scope: "app",
     keys: "/",
@@ -413,9 +424,9 @@ export interface CommandAction {
   readonly bar: boolean;
 }
 
-/** Where the actions are offered: the fleet, an open send composer, or the
- *  target's queue view. */
-export type CommandSurface = "browse" | "composer" | "queue";
+/** Where the actions are offered: the fleet, an open send composer, the
+ *  target's queue view, or the new-session prompt. */
+export type CommandSurface = "browse" | "composer" | "queue" | "newSession";
 
 /** The queue entry the queue view has selected for `sessionId` — the one its
  *  entry commands act on — or null when none is (or the view is not open). */
@@ -838,6 +849,14 @@ const otherAvailability = (
     case "quit":
     case "palette":
       return { bar: true };
+    case "newWorkspace": {
+      const p = openPrompt(ctx.overlay);
+      if (p?.t !== "new") return null;
+      const provider = providerInfo(ctx, p.settings.provider ?? defaultProviderId(ctx));
+      const step = cycleWorkspace(provider, p.settings);
+      if ("disabled" in step) return { disabled: step.disabled };
+      return { label: `workspace → ${newWorkspace(provider, step.settings)}` };
+    }
     case "theme":
       return { label: `switch to ${nextThemeMode(ctx.theme)} theme` };
     case "prepareEnvironment":
@@ -887,7 +906,12 @@ export const describeCommands = (
   const out: CommandAction[] = [];
   for (const id of ORDER) {
     const spec: CommandSpec = COMMANDS[id];
-    const keys = { browse: spec.keys, composer: spec.composer, queue: spec.queue }[surface];
+    const keys = {
+      browse: spec.keys,
+      composer: spec.composer,
+      queue: spec.queue,
+      newSession: spec.newSession,
+    }[surface];
     if (keys === undefined) continue;
     let a: Availability;
     if (spec.scope !== "session") a = otherAvailability(ctx, id, target);

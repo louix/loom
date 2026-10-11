@@ -210,6 +210,14 @@ export type Frame = z.infer<typeof frameSchema>;
 // Snapshots
 // ---------------------------------------------------------------------------
 
+/**
+ * Where a new session works: its own `worktree` + branch, a `clone` (a VM's
+ * private clone published through a host relay; VM isolation only), or
+ * `in-place` in the repository checkout itself.
+ */
+export const workspaceModeSchema = z.enum(["worktree", "clone", "in-place"]);
+export type WorkspaceMode = z.infer<typeof workspaceModeSchema>;
+
 export const gitFactsSchema = z.object({
   branch: z.union([z.string(), z.null()]),
   commits: z.number(),
@@ -504,6 +512,15 @@ export const providerInfoSchema = z.object({
   modes: z.array(sessionModeSchema).optional(),
   defaultIsolation: z.enum(["vm", "local"]).optional(),
   vmUnavailableReason: z.string().optional(),
+  /**
+   * Workspace a new session gets when none is chosen, by isolation: in place
+   * with `session.worktree` off, a private clone on a VM with
+   * `session.isolation.checkout.mode = "clone"`, else a worktree. Same value
+   * on every entry. Absent from daemons that cannot take a chosen workspace.
+   */
+  defaultWorkspace: z.object({ local: workspaceModeSchema, vm: workspaceModeSchema }).optional(),
+  /** Why a new session cannot work in place here (a bare repository). */
+  inPlaceUnavailableReason: z.string().optional(),
   /** Short label (Detail pane, `loom ls`). */
   tag: z.string(),
   /** Fleet-row id colour — an Ink colour name, or "" for the plain default. */

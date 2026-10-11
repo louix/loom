@@ -84,6 +84,7 @@ import {
   type SearchResult,
   type SessionSnapshot,
   type StatePush,
+  type WorkspaceMode,
 } from "@loom/core/wire";
 import { checkpoint, openDb, type Db } from "../store/db.ts";
 import {
@@ -1323,10 +1324,48 @@ export class Daemon {
     };
   }
 
+  /**
+   * The workspace a new session on `isolation` gets unless it names one: in
+   * place when worktrees are off (`session.worktree`, or a caller's
+   * `worktree: false`), a private clone on a VM under
+   * `session.isolation.checkout.mode = "clone"`, else a worktree.
+   */
+  #defaultWorkspace(
+    isolation: "vm" | "local",
+    worktree = this.config.worktree.enabled,
+  ): WorkspaceMode {
+    if (!worktree) return "in-place";
+    return isolation === "vm" && this.config.isolation.checkout?.mode === "clone"
+      ? "clone"
+      : "worktree";
+  }
+
+  #bare: boolean | undefined;
+  /** Why a new session cannot work in place: a bare repository has no checkout. */
+  #inPlaceUnavailableReason(): string | undefined {
+    this.#bare ??= this.#worktrees.isBareRepository();
+    return this.#bare
+      ? "Bare repositories require worktrees; in-place sessions are unavailable."
+      : undefined;
+  }
+
+  /** `ProviderInfo`'s workspace fields — not per-provider, so the same on every entry. */
+  #workspaceInfo(): Pick<ProviderInfo, "defaultWorkspace" | "inPlaceUnavailableReason"> {
+    const inPlace = this.#inPlaceUnavailableReason();
+    return {
+      defaultWorkspace: {
+        local: this.#defaultWorkspace("local"),
+        vm: this.#defaultWorkspace("vm"),
+      },
+      ...(inPlace ? { inPlaceUnavailableReason: inPlace } : {}),
+    };
+  }
+
   /** Configured providers for the TUI's creation flow / model switcher. */
   #providerList(): ProviderInfo[] {
     const def = this.#defaultProviderId();
     const mode = this.#defaultMode();
+    const workspace = this.#workspaceInfo();
     const claude = this.config.providers.claude;
 
     // Any provider without an explicit colour gets one hashed from its id
@@ -1352,6 +1391,7 @@ export class Daemon {
           ...(this.#providers.vmUnavailableReason(id)
             ? { vmUnavailableReason: this.#providers.vmUnavailableReason(id)! }
             : {}),
+          ...workspace,
           tag: profile.tag ?? (profile.name || "Claude"),
           color: id === "claude" ? profile.color : providerColor(id, profile.color),
           isDefault: def === id,
@@ -1385,6 +1425,7 @@ export class Daemon {
         ...(this.#providers.vmUnavailableReason(id)
           ? { vmUnavailableReason: this.#providers.vmUnavailableReason(id)! }
           : {}),
+        ...workspace,
         tag: p.tag,
         color: providerColor(id, p.color),
         isDefault: def === id,
@@ -1400,6 +1441,7 @@ export class Daemon {
         defaultMode: mode,
         defaultIsolation: "local",
         vmUnavailableReason: this.#providers.vmUnavailableReason("echo")!,
+        ...workspace,
         tag: "Echo",
         color: "",
         isDefault: def === "echo",
@@ -1595,8 +1637,15 @@ export class Daemon {
     const parentClone = parent.checkout === "clone";
     const parentDir = parent.inPlace ? this.repoRoot : parent.worktree;
     const source = parentClone ? null : parentDir;
+    // A copy onto a VM keeps a VM source's own kind of checkout — a clone
+    // stays a clone, a mounted worktree a worktree, whatever the config says
+    // now; any other source takes the configured default.
     const childClone =
-      !share && isolation === "vm" && this.config.isolation.checkout?.mode === "clone";
+      !share &&
+      isolation === "vm" &&
+      (parent.isolation === "vm" && !parent.inPlace
+        ? parentClone
+        : this.#defaultWorkspace("vm", true) === "clone");
     let wt: { path: string; branch: string | null; baseRef: string | null };
     if (share) {
       wt = { path: parent.worktree!, branch: parent.branch, baseRef: parent.baseBranch };
@@ -1918,17 +1967,28 @@ export class Daemon {
     effort: string | null;
     mode: SessionMode;
     parentId: string | null;
-    wantWorktree: boolean;
+    /** The caller's choice; absent takes {@link #defaultWorkspace}. */
+    workspace?: WorkspaceMode;
+    /** A legacy per-session `worktree` flag, over `session.worktree`. */
+    worktree?: boolean;
     isolation?: "vm" | "local";
     by: string | undefined;
   }): Promise<SessionSnapshot> {
-    if (!o.wantWorktree && this.#worktrees.isBareRepository()) {
+    const isolation = o.isolation ?? this.#providers.defaultIsolation(o.providerId);
+    const workspace = o.workspace ?? this.#defaultWorkspace(isolation, o.worktree);
+    if (workspace === "in-place" && this.#inPlaceUnavailableReason()) {
       throw new RpcError(
         "bad_request",
         "Bare repositories require worktrees; in-place sessions are unavailable. Enable worktrees to start a session.",
       );
     }
-    const isolation = o.isolation ?? this.#providers.defaultIsolation(o.providerId);
+    // A private clone is reached through the VM's relay; the host has no such mode.
+    if (workspace === "clone" && isolation !== "vm")
+      throw new RpcError(
+        "bad_request",
+        "A private clone runs only in a VM; choose VM isolation or another workspace.",
+      );
+    const wantWorktree = workspace !== "in-place";
     await this.#preflightTools(o.providerId, isolation);
     const id = randomUUID();
     this.#log.info("session_start", { sessionId: id, providerId: o.providerId });
@@ -1960,7 +2020,7 @@ export class Daemon {
         worktree: null,
         branch: null,
         baseBranch: this.config.baseBranch,
-        inPlace: !o.wantWorktree,
+        inPlace: !wantWorktree,
         isolation,
         // Every ChatGPT session created from here on runs on Codex's app-server
         // (a provider-owned thread) — explicit so a future `grep` for
@@ -2002,11 +2062,7 @@ export class Daemon {
         this.#providerDefaults.rememberProvider(o.providerId);
         this.#providerDefaults.rememberMode(o.mode);
 
-        if (
-          o.wantWorktree &&
-          isolation === "vm" &&
-          this.config.isolation.checkout?.mode === "clone"
-        ) {
+        if (workspace === "clone") {
           try {
             const made = this.#worktrees.createBranch(id);
             clonePath = await this.#clonePath(id, o.providerId);
@@ -2023,7 +2079,7 @@ export class Daemon {
               `could not create the session branch: ${cause instanceof Error ? cause.message : cause}`,
             );
           }
-        } else if (o.wantWorktree) {
+        } else if (wantWorktree) {
           try {
             wt = this.#worktrees.create(id);
           } catch (cause) {
@@ -3601,8 +3657,17 @@ export class Daemon {
       // By default each session gets its own worktree + branch off the
       // configured base. `[worktree] enabled = false` (or a per-session
       // `worktree: false`) runs it in the repo working dir instead — no branch
-      // isolation, concurrent sessions can collide, hard-fork unavailable.
-      const wantWorktree = p.worktree ?? this.config.worktree.enabled;
+      // isolation, concurrent sessions can collide, hard-fork unavailable. A
+      // `workspace` names the placement outright, over both.
+      if (
+        p.workspace !== undefined &&
+        p.worktree !== undefined &&
+        p.worktree !== (p.workspace !== "in-place")
+      )
+        throw new RpcError(
+          "bad_request",
+          `worktree: ${p.worktree} contradicts workspace: "${p.workspace}"`,
+        );
 
       return this.#startSession({
         prompt,
@@ -3611,7 +3676,8 @@ export class Daemon {
         effort,
         mode,
         parentId,
-        wantWorktree,
+        ...(p.workspace ? { workspace: p.workspace } : {}),
+        ...(p.worktree !== undefined ? { worktree: p.worktree } : {}),
         ...(p.isolation ? { isolation: p.isolation } : {}),
         by: params.by,
       });
@@ -4098,7 +4164,6 @@ export class Daemon {
           effort: retargetEffort ?? (this.#defaultEffortFor(retargetProvider) || null),
           mode: runMode,
           parentId: id,
-          wantWorktree: this.config.worktree.enabled,
           ...(parent.isolation ? { isolation: parent.isolation } : {}),
           by: params.by,
         });

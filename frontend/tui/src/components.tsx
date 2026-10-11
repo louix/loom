@@ -54,6 +54,7 @@ import {
 import { parseAskUserQuestions, type AskUserQuestionItem } from "./interactions.ts";
 import { pendingMode } from "./mode-control.ts";
 import { forkIsolationLocked } from "./fork-flow.ts";
+import { newIsolation, newWorkspace } from "./new-workspace.ts";
 import {
   openPrompt,
   pickerCurrent,
@@ -1122,7 +1123,8 @@ export const NewSessionModal = ({
   const g = newSessionLayout(p, cols, rows);
   const prov = providerInfo(state, p.settings.provider ?? "");
   const model = p.settings.model || prov?.defaultModel || "auto";
-  const isolation = (p.settings.isolation ?? prov?.defaultIsolation) === "vm" ? "VM" : "Local";
+  const isolation = newIsolation(prov, p.settings) === "vm" ? "VM" : "Local";
+  const workspace = newWorkspace(prov, p.settings);
   return (
     <FloatingLayer left={g.left} top={g.top} width={g.width} height={g.height}>
       <Box
@@ -1151,7 +1153,9 @@ export const NewSessionModal = ({
         </Line>
         <Box gap={1}>
           <Box flexShrink={0}>{modeChip(p.settings.mode, null, hover)}</Box>
-          <Line tone="dim">{`[${isolation}]  ⇧⇥ mode · ⌥i isolation`}</Line>
+          <Line tone="dim">
+            {`[${isolation} · ${workspace}]  ⇧⇥ mode · ⌥i isolation · ⌥w workspace`}
+          </Line>
         </Box>
         {!g.compact && <Box height={1} flexShrink={0} />}
         <InputLine

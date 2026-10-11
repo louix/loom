@@ -9,6 +9,7 @@
  * re-aimed at whatever replaced it.
  */
 import type { SessionMode } from "@loom/core/types";
+import type { WorkspaceMode } from "@loom/core/wire";
 import { buffer, type Buffer } from "./editor.ts";
 
 /** The editor fields every prompt shares — the text and its ↑/↓ history walk. */
@@ -37,6 +38,8 @@ export interface NewSessionSettings {
   effort: string | null;
   /** Omitted uses the selected provider default. */
   isolation?: "vm" | "local";
+  /** Omitted uses the daemon's default for the isolation (⌥w cycles it). */
+  workspace?: WorkspaceMode;
 }
 
 /** Prompts that act on a session as a whole. */

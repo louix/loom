@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { harnessEventSchema } from "./events.ts";
-import { historyCursorSchema, helloParamsSchema } from "./wire.ts";
+import { historyCursorSchema, helloParamsSchema, workspaceModeSchema } from "./wire.ts";
 import { sessionModeSchema, planDecisionSchema, permissionDecisionSchema } from "./types.ts";
 import { sessionStateSchema } from "./session-state.ts";
 import { queueDeliverySchema } from "./message-queue.ts";
@@ -86,6 +86,9 @@ export const rpcParamsSchemas = {
     mode: mode.optional().catch(undefined),
     worktree: z.boolean().optional(),
     isolation: z.enum(["vm", "local"]).optional(),
+    /** Overrides the configured workspace; `clone` needs VM isolation. A
+     *  `worktree` flag given with it must agree. */
+    workspace: workspaceModeSchema.optional(),
     by,
   }),
   "session.resume": session,

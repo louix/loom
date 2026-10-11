@@ -42,6 +42,7 @@ import type {
   DaemonInfo,
   DoctorReport,
   HistoryPage,
+  ProviderInfo,
   PushFrame,
   SearchResult,
   SessionSnapshot,
@@ -147,6 +148,7 @@ import {
   startFork,
   startingForkOf,
 } from "./fork-flow.ts";
+import { cycleWorkspace, toggleIsolation, type SettingsStep } from "./new-workspace.ts";
 
 /** How much of each log file the `logs` command pulls into `$EDITOR`. */
 const LOG_TAIL_BYTES = 256 * 1024;
@@ -1300,6 +1302,28 @@ export const mkFleetHandle = ({
       });
   };
 
+  /** The provider a `new` prompt's settings start on. */
+  const newProvider = (settings: NewSessionSettings): ProviderInfo | null =>
+    providerInfo(state, settings.provider ?? defaultProviderId(state));
+  /** Apply a step to a `new` prompt's settings, saying what else it changed —
+   *  or leave them, saying why not. The typed text stays either way. */
+  const showNewStep = (p: Extract<Prompt, { t: "new" }>, step: SettingsStep): void => {
+    if ("disabled" in step)
+      return void show({
+        t: "prompt",
+        prompt: { ...p, feedback: { pending: false, text: step.disabled } },
+      });
+    const { feedback: _, ...rest } = p;
+    show({
+      t: "prompt",
+      prompt: {
+        ...rest,
+        settings: step.settings,
+        ...(step.note ? { feedback: { pending: false, text: step.note } } : {}),
+      },
+    });
+  };
+
   /**
    * Carry out a command for `target`. Availability is not decided here: every
    * caller goes through {@link execute} or a description it just made, so a
@@ -1355,6 +1379,11 @@ export const mkFleetHandle = ({
           t: "prompt",
           prompt: newPrompt(newSettings(state, null, null, null), state.drafts.last),
         });
+      case "newWorkspace": {
+        const p = openPrompt(state.overlay);
+        if (p?.t !== "new") return;
+        return showNewStep(p, cycleWorkspace(newProvider(p.settings), p.settings));
+      }
       case "find":
         // The fleet filter — an inline single-line query on the FLEET pane, not a
         // modal. `/` toggles it; esc clears; ⏎ accepts (keeping enter's meaning).
@@ -1678,6 +1707,7 @@ export const mkFleetHandle = ({
             ...newSettings(state, provider, selection.model, effort),
             mode: dest.settings.mode,
             ...(dest.settings.isolation ? { isolation: dest.settings.isolation } : {}),
+            ...(dest.settings.workspace ? { workspace: dest.settings.workspace } : {}),
           },
           dest.draft,
         ),
@@ -1980,6 +2010,7 @@ export const mkFleetHandle = ({
             prompt: text,
             by,
             ...(p.settings.isolation ? { isolation: p.settings.isolation } : {}),
+            ...(p.settings.workspace ? { workspace: p.settings.workspace } : {}),
             ...(p.settings.mode !== "default" ? { mode: p.settings.mode } : {}),
             ...(p.settings.provider ? { provider: p.settings.provider } : {}),
             ...(p.settings.model ? { model: p.settings.model } : {}),
@@ -2518,25 +2549,18 @@ export const mkFleetHandle = ({
         if (p.t === "new") return void dispatch({ t: "promptCycleMode" });
         return;
       }
-      if (key.meta && input === "i" && p.t === "new") {
-        const provider = fleetProviders(state).find(
-          (x) => x.id === (p.settings.provider ?? defaultProviderId(state)),
+      // The new prompt's own commands (⌥w workspace), by the same descriptions.
+      if (p.t === "new" && key.meta) {
+        const a = keyAction(
+          describeCommands(commandCtx(), { target: null, surface: "newSession" }),
+          input,
+          key,
         );
-        const current = p.settings.isolation ?? provider?.defaultIsolation ?? "local";
-        if (current === "local" && provider?.vmUnavailableReason)
-          return void show({
-            t: "prompt",
-            prompt: { ...p, feedback: { pending: false, text: provider.vmUnavailableReason } },
-          });
-        show({
-          t: "prompt",
-          prompt: {
-            ...p,
-            settings: { ...p.settings, isolation: current === "vm" ? "local" : "vm" },
-          },
-        });
-        return;
+        if (a)
+          return void (a.disabled ? showNewStep(p, { disabled: a.disabled }) : runAct(a.id, null));
       }
+      if (key.meta && input === "i" && p.t === "new")
+        return void showNewStep(p, toggleIsolation(newProvider(p.settings), p.settings));
       // ⌥m swaps the model without leaving the prompt.
       if (key.meta && input === "m") {
         if (p.t === "new") {
