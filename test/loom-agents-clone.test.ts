@@ -196,6 +196,8 @@ test("a clone child resumed as its supervisor's branch is renamed is told the na
     // Its adapter goes away: the kid is cold.
     first.endStream();
     await until(() => !h.daemon.sessions.has(kid.id) || h.daemon.sessions.isEnded(kid.id), "cold");
+    // Its turn-end sync is done: the user's send is not refused as busy.
+    await until(() => !h.daemon.sessions.isBusy(kid.id), "turn-end sync done");
 
     // The supervisor's branch is renamed while the kid's resume launches,
     // after the resume read its base and before its checkout fetched.

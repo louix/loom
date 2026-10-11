@@ -121,7 +121,6 @@ import {
   type HoldRespect,
   type QueueDelivery,
   type QueueHoldCause,
-  waitsBehind,
 } from "@loom/core/message-queue";
 import { SessionShells } from "./session-shell.ts";
 import { mkSessionQueue, type SessionQueue } from "./session-queue.ts";
@@ -2363,10 +2362,9 @@ export class Daemon {
    * its queue goes once it runs. A refresh reports its own failure; the session
    * then stays as the refresh left it. False when the session is live or nothing
    * needs building; the caller then revives as usual. A revival refused outright
-   * (no such session, nothing to resume) still throws here, as does
-   * `beforeStart`, which runs just before a revival this call begins.
+   * (no such session, nothing to resume) still throws here.
    */
-  async #reviveDetached(id: string, beforeStart?: () => void): Promise<boolean> {
+  async #reviveDetached(id: string): Promise<boolean> {
     const cold = () => !this.#sessions.has(id) || this.#sessions.isEnded(id);
     if (!cold() && !this.#lifecycles.has(id)) return false;
     const row = this.#registry.get(id);
@@ -2376,7 +2374,6 @@ export class Daemon {
     let revival: Promise<SessionSnapshot> | undefined;
     if (!(await this.#lifecycleSettled(id, { stopAt: ["start", "refresh"] }))) {
       if (!cold()) return false;
-      beforeStart?.();
       revival = this.#reviveSession(id);
       if (this.#lifecycles.get(id)?.operation !== revival) await revival;
     }
@@ -2674,31 +2671,29 @@ export class Daemon {
     }
     const nudges = !snap.supervisorId;
     if (state.kind === "idle" && snap.checkout === "clone") {
-      void this.#queue
-        .run(id, async () => {
-          const ended = () =>
-            !this.#stopping &&
-            this.#registry.get(id)?.status.kind === "idle" &&
-            this.#registry.get(id)?.turns === snap.turns;
+      void this.#cloneGitOp(id, async () => {
+        const ended = () =>
+          !this.#stopping &&
+          this.#registry.get(id)?.status.kind === "idle" &&
+          this.#registry.get(id)?.turns === snap.turns;
+        if (!ended()) return;
+        try {
+          await this.#refreshGitFacts(id);
+          // A slow guest probe can outlast the idle spell: facts read during a
+          // later turn are that turn's business, and its own end handles them.
           if (!ended()) return;
-          try {
-            await this.#refreshGitFacts(id);
-            // A slow guest probe can outlast the idle spell: facts read during a
-            // later turn are that turn's business, and its own end handles them.
-            if (!ended()) return;
-            const nudged =
-              this.config.autoRebase.enabled && this.#cloneCanSync(id)
-                ? (await this.#syncClone(id, nudges)).nudged
-                : false;
-            if (!nudged && nudges) this.#maybeCommitNudge(id);
-          } catch (error) {
-            this.#emitNotice(String(error), "warn");
-          }
-          this.#fireStatusHooks(snap, state);
-        })
-        .catch((error) =>
-          this.#log.warn("clone turn-end Git failed", { id, error: String(error) }),
-        );
+          const nudged =
+            this.config.autoRebase.enabled && this.#cloneCanSync(id)
+              ? (await this.#syncClone(id, nudges)).nudged
+              : false;
+          if (!nudged && nudges) this.#maybeCommitNudge(id);
+        } catch (error) {
+          this.#emitNotice(String(error), "warn");
+        }
+        this.#fireStatusHooks(snap, state);
+      }).catch((error) =>
+        this.#log.warn("clone turn-end Git failed", { id, error: String(error) }),
+      );
       return;
     }
     if (state.kind === "idle" && !this.#maybeAutoRebase(id, nudges) && nudges)
@@ -2979,20 +2974,18 @@ export class Daemon {
           this.#registry.setFields(kid.id, { baseBranch: branch });
           // A clone fetches its base through the relay, by name.
           if (kid.checkout === "clone")
-            void this.#queue
-              .run(kid.id, () => this.#publishCloneBranch(kid.id))
-              .catch((err) =>
-                this.#log.warn("could not republish a clone's base", {
-                  id: kid.id,
-                  err: String(err),
-                }),
-              );
+            void this.#cloneGitOp(kid.id, () => this.#publishCloneBranch(kid.id)).catch((err) =>
+              this.#log.warn("could not republish a clone's base", {
+                id: kid.id,
+                err: String(err),
+              }),
+            );
           this.#pushAgentBase(kid.id);
         }
       if (snap.checkout === "clone") await this.#publishCloneBranch(id);
     };
     // A guest sync must finish publishing before its relay branch policy changes.
-    if (this.#registry.get(id)?.checkout === "clone") await this.#queue.run(id, rename);
+    if (this.#registry.get(id)?.checkout === "clone") await this.#cloneGitOp(id, rename);
     else await rename();
   }
 
@@ -3772,12 +3765,16 @@ export class Daemon {
 
   /**
    * Put a message in `id`'s queue (`docs/message-queue.md`), bringing a cold
-   * session back first: `session.send`, and Loom agents messaging each other.
-   * `respect` (what a Loom agent sends; `SessionManager.enqueue`): a hold
-   * the message waits behind stays — the message joins the held entries and
-   * wakes nothing, a cold session included; one it lifts revives the session
-   * as the user's send does. Whether it waits is decided by the enqueue
-   * itself, so a hold set while the session came back still counts.
+   * session back for it: `session.send`, and Loom agents messaging each
+   * other. Whether it waits behind a hold or lifts it is the enqueue's
+   * decision (`respect`, "Holds" H2), and so is whether the session is to be
+   * brought back for it: one that waits wakes nothing, a cold session
+   * included. A revival that fails takes the message back (H5).
+   *
+   * A compaction, a rewind or a stop in progress does not refuse the
+   * message, and neither does a clone's guest Git for a Loom agent's: it
+   * waits in the queue until the session can take it (H7). Only the user's
+   * own send keeps its `busy` answer.
    */
   async #enqueueMessage(
     id: string,
@@ -3789,35 +3786,56 @@ export class Daemon {
   ): Promise<{ entryId: string; state: string; hold: QueueHoldCause | null; waited: boolean }> {
     const entryId = requestedId ?? randomUUID();
     this.#registry.mustGet(id);
-    if (!waitsBehind(this.#messageQueue.holdCause(id), opts.respect ?? "none"))
-      await this.#reviveForQueue(id);
-    // A compaction, a rewind or a stop in progress no longer refuses the
-    // message: it waits in the queue until the session can take it.
-    const {
-      result: r,
-      hold,
-      waited,
-    } = await this.#sessions.enqueue(id, { entryId, text, author, delivery }, opts);
+    if ((opts.respect ?? "none") === "none") this.#refuseBusy(id);
+    const queued = this.#sessions.enqueue(id, { entryId, text, author, delivery }, opts);
+    const r = queued.result;
     if (!r.ok) throw new RpcError(r.code, r.message, { sessionId: id });
+    if (queued.revive) {
+      try {
+        await this.#reviveForQueue(id);
+      } catch (error) {
+        queued.undo();
+        throw error;
+      }
+      // Settles once a hand-over it triggered has run, so the answer says
+      // how far the message got.
+      await this.#sessions.dispatch(id);
+    }
     return {
       entryId,
       state: this.#messageQueue.entry(id, entryId)?.state ?? r.value.state,
-      hold,
-      waited,
+      hold: queued.hold,
+      waited: queued.waited,
     };
   }
 
   /**
-   * A clone's Git operations (its turn-end sync, a rebase) run in the guest
-   * and hold its command queue: a turn must not start under them. Refused
-   * as `busy` while one runs.
+   * The user's send and release answer `busy` while a clone's guest Git runs
+   * for the daemon (docs/message-queue.md, "Holds", H7) — their contract;
+   * the gate itself is the session manager's, and stops every dispatch.
    */
-  #refuseBusyClone(id: string): void {
-    if (this.#registry.get(id)?.checkout === "clone" && this.#queue.activeKeys.includes(id))
+  #refuseBusy(id: string): void {
+    if (this.#sessions.isBusy(id))
       throw new RpcError(
         "busy",
         "The session is completing a workspace operation; retry in a moment.",
       );
+  }
+
+  /**
+   * Run `op` — a clone's guest Git (a turn-end sync, a rebase, a renamed
+   * branch's republish) — on `id`'s command queue, the session busy
+   * meanwhile: nothing is dispatched to it until `op` ends (H7).
+   */
+  #cloneGitOp<T>(id: string, op: () => Promise<T>): Promise<T> {
+    return this.#queue.run(id, async () => {
+      this.#sessions.setBusy(id, true);
+      try {
+        return await op();
+      } finally {
+        this.#sessions.setBusy(id, false);
+      }
+    });
   }
 
   /**
@@ -3826,12 +3844,10 @@ export class Daemon {
    * thrown.
    */
   async #reviveForQueue(id: string): Promise<void> {
-    const refuseBusyClone = () => this.#refuseBusyClone(id);
     try {
       // A start that first builds the VM runtime outlasts any client: then the
-      // message waits in the queue and goes once the session runs. Joining a
-      // start already under way skips the check: the start holds the queue.
-      if (!(await this.#reviveDetached(id, refuseBusyClone))) {
+      // message waits in the queue and goes once the session runs.
+      if (!(await this.#reviveDetached(id))) {
         await this.#lifecycleSettled(id);
         // A cold session (daemon restarted, or a turn that ended) is brought back
         // transparently — `send` is the one verb for "talk to this session", it
@@ -3845,10 +3861,8 @@ export class Daemon {
           this.#onActivityChange("session-resumed");
         }
         await this.#lifecycleSettled(id);
-        refuseBusyClone();
       }
     } catch (error) {
-      if (error instanceof RpcError && error.code === "busy") throw error;
       const message = error instanceof Error ? error.message : String(error);
       this.emitEvent({ type: "error", sessionId: id, ts: Date.now(), message, fatal: false });
       this.#publishState(id);
@@ -3960,8 +3974,9 @@ export class Daemon {
       }
       this.#hooks.forget(id);
       // Archiving is `by`'s stop: what the closing turn ends in is theirs, and
-      // the queue holds for it before the close awaits (a cold session's too).
-      await this.#sessions.close(id, "user_stop", by);
+      // the queue holds for it before the close awaits (a cold session's too)
+      // — and only if the archive completes (H6).
+      const unhold = await this.#sessions.close(id, "user_stop", by);
       return await withStoppedSessionVm(this.repoRoot, id, async () => {
         if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
         this.#forgetSessionCaches(id);
@@ -3990,6 +4005,10 @@ export class Daemon {
         this.#publishState(snap.id);
         this.#onActivityChange("marked-done");
         return this.#enrich(snap);
+      }).catch((error: unknown) => {
+        unhold();
+        this.#publishState(id);
+        throw error;
       });
     });
     if (children) await this.#releaseChildren(kids, children);
@@ -4440,16 +4459,15 @@ export class Daemon {
       this.#registry.mustGet(id);
       const refused = () => new RpcError("refused", "The queue is not held.", { sessionId: id });
       if (this.#messageQueue.hold(id) === null) throw refused();
+      // Refused as a send would be while a clone's guest Git runs (H7).
+      this.#refuseBusy(id);
       // What the release lets go goes to the agent: a cold session (a stop, a
       // restart, a crash) comes back for it as it would for a send. Still
       // held meanwhile, so a failed revival leaves the queue as it was. A
-      // live one just releases and its queue pumps — unless it is a clone
-      // whose guest Git (a turn-end sync or rebase) is under way, refused as
-      // a send would be, so the release cannot start a turn under it.
+      // live one just releases and its queue pumps.
       const live =
         this.#sessions.has(id) && !this.#sessions.isEnded(id) && !this.#lifecycles.has(id);
-      if (live) this.#refuseBusyClone(id);
-      else if (this.#messageQueue.slots(id).some((e) => e.state === "queued" && !e.uncertain))
+      if (!live && this.#messageQueue.slots(id).some((e) => e.state === "queued" && !e.uncertain))
         await this.#reviveForQueue(id);
       if (!this.#sessions.releaseQueue(id)) throw refused();
       return this.#enrich(this.#registry.mustGet(id), false);
@@ -4678,7 +4696,7 @@ export class Daemon {
         throw new RpcError("bad_request", "session runs in place — no branch to rebase");
       if (snap.checkout === "clone") {
         await this.#ensureSessionLoaded(id);
-        return this.#queue.run(id, async () => {
+        return this.#cloneGitOp(id, async () => {
           if (!this.#cloneCanSync(id))
             throw new RpcError(
               "busy",

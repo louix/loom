@@ -644,6 +644,34 @@ describe("loom agents", { concurrency: 4 }, () => {
     assert.ok(!child.fs.sends.some((s) => s.includes("go on")));
   });
 
+  test("H7: a child's report to a busy supervisor is queued, not lost, and goes once it is not", async (env) => {
+    const lead = await idleSession(env);
+    const child = await startChild(env, lead.fs);
+    const notes = () => lead.fs.sends.filter((s) => s.startsWith("[from your agent"));
+    // As while a clone supervisor's guest Git runs (a turn-end sync).
+    env.h.daemon.sessions.setBusy(lead.id, true);
+    await finish(env, child, "Widget added.");
+    await waitFor(async () => ((await get(env.c, lead.id)).queue?.entries.length ?? 0) === 1);
+    await delay(50);
+    assert.deepEqual(notes(), [], "nothing goes while busy");
+    env.h.daemon.sessions.setBusy(lead.id, false);
+    await waitFor(() => notes().length === 1);
+    assert.match(notes()[0]!, /Widget added\./);
+  });
+
+  test("H7: a supervisor's message to a busy child waits instead of failing", async (env) => {
+    const lead = await idleSession(env);
+    const child = await startChild(env, lead.fs);
+    await finish(env, child, "Done.");
+    env.h.daemon.sessions.setBusy(child.id, true);
+    const sent = await lead.fs.callAgentTool("agent_message", { id: child.id, text: "go on" });
+    assert.equal(sent.ok, true, sent.text);
+    await delay(50);
+    assert.ok(!child.fs.sends.some((s) => s.includes("go on")));
+    env.h.daemon.sessions.setBusy(child.id, false);
+    await waitFor(() => child.fs.sends.some((s) => s.includes("go on")));
+  });
+
   test("a supervisor's message recovers a crashed child: it lifts the crash hold and revives it", async (env) => {
     const lead = await idleSession(env);
     const child = await startChild(env, lead.fs);

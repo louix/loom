@@ -57,6 +57,9 @@ import { RpcError } from "./rpc.ts";
 import { dequeueHints, nextAction, type DispatchView } from "./message-queue.ts";
 import type {
   Enqueued,
+  HoldApplied,
+  HoldChange,
+  HoldTicket,
   MessageQueueStore,
   QueueResult,
   QueueTarget,
@@ -243,6 +246,9 @@ export class SessionManager {
    * restart forgets the request and the entry waits under the ordinary rules.
    */
   readonly #forced = new Map<string, string>();
+  /** Sessions whose clone's guest Git runs for the daemon: nothing is
+   *  dispatched to them meanwhile ({@link setBusy}). */
+  readonly #busy = new Set<string>();
 
   constructor(hooks: ManagerHooks) {
     this.#hooks = hooks;
@@ -519,7 +525,7 @@ export class SessionManager {
           // A tool starting, a turn ending: the queue may have something to
           // hand over now. Only an event that moved what the policy reads can
           // change its answer — a text delta never does, and skips the store.
-          if (this.#dispatchKey(run) !== run.evaluated) void this.#pumpQueue(id);
+          if (this.#dispatchKey(id, run) !== run.evaluated) void this.#pumpQueue(id);
         } catch (err) {
           this.#hooks.log.error("event hook threw; continuing drain", {
             id,
@@ -534,7 +540,7 @@ export class SessionManager {
       // it; one Loom closed (a swap, an idle suspension, teardown) did not.
       const deliberate = run.ended || run.closing;
       run.ended = true;
-      if (!deliberate) this.#holdQueue(id, "crash");
+      if (!deliberate) this.#holdQueue(id);
       // Whatever was still outstanding can no longer be answered — the adapter
       // session is gone. Drop it so a late respondTo* doesn't forward to a
       // dead session (interrupt() does the same).
@@ -549,7 +555,7 @@ export class SessionManager {
         this.#hooks.onOverlay(id);
       }
     } catch (err) {
-      if (!run.ended && !run.closing) this.#holdQueue(id, "crash");
+      if (!run.ended && !run.closing) this.#holdQueue(id);
       run.ended = true;
       this.#clearOverlays(run);
       const message = err instanceof Error ? err.message : String(err);
@@ -841,7 +847,7 @@ export class SessionManager {
   /** A fatal root error may have taken handed-over input with it. */
   #trackCrash(id: string, ev: HarnessEvent): boolean {
     return ev.type === "error" && ev.fatal && ev.agentId === undefined
-      ? this.#holdQueue(id, "crash")
+      ? this.#holdQueue(id)
       : false;
   }
 
@@ -853,13 +859,13 @@ export class SessionManager {
 
   /** The part of the dispatch view the policy decides on (`handingOver`
    *  aside: the pump never evaluates while one runs). */
-  #dispatchKey(run: Running): string {
-    const v = this.#dispatchView(run);
-    return `${v.attached}|${v.state.kind}|${v.restructuring}|${v.cancelling}|${v.backoff}|${v.rootTool !== null}`;
+  #dispatchKey(id: string, run: Running): string {
+    const v = this.#dispatchView(id, run);
+    return `${v.attached}|${v.state.kind}|${v.restructuring}|${v.cancelling}|${v.backoff}|${v.busy}|${v.rootTool !== null}`;
   }
 
-  /** What the dispatch policy reads off the session's run. */
-  #dispatchView(run: Running | undefined): DispatchView {
+  /** What the dispatch policy reads off the session and its run. */
+  #dispatchView(id: string, run: Running | undefined): DispatchView {
     return {
       attached: run !== undefined && !run.ended,
       state: run?.state ?? stateIdle,
@@ -868,23 +874,62 @@ export class SessionManager {
       handingOver: run?.handingOver ?? false,
       rootTool: run ? ([...run.rootTools.values()][0] ?? null) : null,
       backoff: run?.backoff ?? false,
+      busy: this.#busy.has(id),
     };
+  }
+
+  /**
+   * The daemon runs (`busy`) or has finished running a clone's guest Git for
+   * `id` (docs/message-queue.md, "Holds", H7). Dispatch reads it with the
+   * rest of its gates, so nothing is handed over by any path meanwhile —
+   * the pump, a send, a release, send now, a notification — and what waited
+   * is looked at again as it ends. Works on a cold session too.
+   */
+  setBusy(id: string, busy: boolean): void {
+    if (busy) {
+      this.#busy.add(id);
+      return;
+    }
+    if (this.#busy.delete(id)) void this.#pumpQueue(id);
+  }
+
+  /** Whether a clone's guest Git runs for `id` ({@link setBusy}). */
+  isBusy(id: string): boolean {
+    return this.#busy.has(id);
+  }
+
+  /**
+   * Every hold write the manager makes (docs/message-queue.md, "Holds"):
+   * the store combines `change` with the hold as it is (H1, H2), and a hold
+   * that is set after it drops a forced entry not yet handed over, which
+   * then waits at the head with the rest (H3). Null without a queue.
+   */
+  #applyHold(id: string, change: HoldChange): HoldApplied | null {
+    const q = this.#hooks.queue;
+    if (!q) return null;
+    const applied = q.applyHold(id, change);
+    if (applied.after !== null && change.t !== "lift") this.#forced.delete(id);
+    if (applied.changed) {
+      const run = this.#running.get(id);
+      if (run) run.evaluated = null;
+    }
+    return applied;
   }
 
   /**
    * Stop the queue after something that may have lost handed-over input — a
    * crash, a fatal error: delivering entries become uncertain and the queue
-   * waits for the user. A hold already set stays (its reason came first).
-   * Returns whether anything changed.
+   * waits for the user (`crash`, unless a hold is already set). Returns
+   * whether anything changed.
    */
-  #holdQueue(id: string, hold: "crash" | "interrupt"): boolean {
+  #holdQueue(id: string): boolean {
     const q = this.#hooks.queue;
     if (!q || q.slots(id).length === 0) return false;
     q.markUncertain(id);
     this.#forced.delete(id);
     const run = this.#running.get(id);
     if (run) run.evaluated = null;
-    if (q.hold(id) === null) q.setHold(id, hold);
+    this.#applyHold(id, { t: "loom", reason: "crash" });
     return true;
   }
 
@@ -914,7 +959,7 @@ export class SessionManager {
     let back = 0;
     for (const item of items) if (item.ref !== undefined && q.requeue(id, item.ref)) back++;
     if (back === 0) return;
-    if (q.hold(id) === null) q.setHold(id, "interrupt", this.#running.get(id)?.stopBy ?? null);
+    this.#applyHold(id, { t: "stop", by: this.#running.get(id)?.stopBy ?? null, empty: true });
     this.#hooks.onOverlay(id);
   }
 
@@ -927,11 +972,11 @@ export class SessionManager {
     const q = this.#hooks.queue;
     const run = this.#running.get(id);
     if (!q || !run || run.ended || run.handingOver) return undefined;
-    run.evaluated = this.#dispatchKey(run);
+    run.evaluated = this.#dispatchKey(id, run);
     const action = nextAction(
       q.slots(id),
       q.hold(id),
-      this.#dispatchView(run),
+      this.#dispatchView(id, run),
       this.#forced.get(id) ?? null,
     );
     if (action.t === "none") return undefined;
@@ -957,11 +1002,10 @@ export class SessionManager {
     const action = nextAction(
       q.slots(id),
       q.hold(id),
-      { ...this.#dispatchView(run), handingOver: false },
+      { ...this.#dispatchView(id, run), handingOver: false },
       forced,
     );
     if (action.t !== "handover") return;
-    if (forced !== null && action.ids.includes(forced)) this.#forced.delete(id);
     const entries = action.ids.flatMap((entryId) => q.entry(id, entryId) ?? []);
     // Recorded before the provider is called, so a crash in between leaves
     // them delivering — uncertain after a restart, never silently re-sent.
@@ -973,8 +1017,12 @@ export class SessionManager {
     for (const [i, entry] of entries.entries()) {
       // The first of a fresh batch starts the turn; the rest join it.
       const midTurn = !action.fresh || i > 0;
-      if (await this.#deliver(id, run, entry, midTurn)) continue;
-      if (entry.id === forced) this.#forced.set(id, forced);
+      // A forced entry stays forced until it has gone: refused, it goes
+      // first again, unless a hold applied meanwhile dropped it (H3).
+      if (await this.#deliver(id, run, entry, midTurn)) {
+        if (entry.id === forced && this.#forced.get(id) === forced) this.#forced.delete(id);
+        continue;
+      }
       for (const rest of entries.slice(i + 1)) q.requeue(id, rest.id);
       break;
     }
@@ -1002,7 +1050,7 @@ export class SessionManager {
       if (uncertain) {
         // It may have arrived: never retried by itself — the user decides.
         q.markUncertain(id, [entry.id]);
-        q.setHold(id, "rejected");
+        this.#applyHold(id, { t: "loom", reason: "rejected" });
         this.#hooks.emitEvent({
           type: "error",
           sessionId: id,
@@ -1050,47 +1098,76 @@ export class SessionManager {
    * and alone, and sending it releases the hold; the held entries then follow
    * the ordinary rules relative to the turn it starts.
    *
-   * `respect` is for what is not the user speaking (docs/message-queue.md):
-   * a Loom supervisor's message (`user`) waits behind the user's stop only,
-   * and lifts any other hold as the user's send does — its own stop, a crash,
-   * a restart; a child's notification (`any`) waits behind every hold. A
-   * message that waits joins the held queue at the back and leaves the hold.
+   * `respect` is for what is not the user speaking (docs/message-queue.md,
+   * "Holds"): a Loom supervisor's message (`user`) waits behind the user's
+   * stop only, and lifts any other hold as the user's send does — its own
+   * stop, a crash, a restart; a child's notification (`any`) waits behind
+   * every hold. A message that waits joins the held queue at the back and
+   * leaves the hold.
    *
-   * `hold` is the hold the message found, and `waited` whether it stays.
+   * This is where wait-or-lift is decided, once (H2). `hold` is the hold the
+   * message found, and `waited` whether it stays. `revive`: the message goes,
+   * so the caller brings a cold session back (or waits out its start or
+   * stop) and then {@link dispatch}es; nothing is handed over before that.
+   * `undo` takes the message back and restores the hold it lifted, unless
+   * the hold was written since — for a revival that failed (H5).
    */
-  async enqueue(
+  enqueue(
     id: string,
     e: { entryId: string; text: string; author: string; delivery: QueueEntry["delivery"] },
     opts: { respect?: HoldRespect } = {},
-  ): Promise<{ result: QueueResult<Enqueued>; hold: QueueHoldCause | null; waited: boolean }> {
+  ): {
+    result: QueueResult<Enqueued>;
+    hold: QueueHoldCause | null;
+    waited: boolean;
+    revive: boolean;
+    undo: () => void;
+  } {
     const q = this.#hooks.queue;
     if (!q) throw new Error("this daemon has no message queue");
+    const respect = opts.respect ?? "none";
     const hold = q.holdCause(id);
-    const waited = waitsBehind(hold, opts.respect ?? "none");
+    const waited = waitsBehind(hold, respect);
     const lifts = hold !== null && !waited;
     const result = q.enqueue(
       id,
       { id: e.entryId, text: e.text, author: e.author, delivery: e.delivery },
       { head: lifts },
     );
-    if (!result.ok || !result.value.created) return { result, hold, waited };
+    const nothing = () => {};
+    if (!result.ok) return { result, hold, waited, revive: false, undo: nothing };
+    const revive = !waited && result.value.state === "queued";
+    if (!result.value.created) return { result, hold, waited, revive, undo: nothing };
+    let ticket: HoldTicket | null = null;
     if (lifts) {
+      ticket = this.#applyHold(id, { t: "lift", respect })?.ticket ?? null;
       this.#forced.set(id, e.entryId);
-      q.setHold(id, null);
     }
     this.#retry(id);
     this.#hooks.onOverlay(id);
-    // Settles once a hand-over this triggered has run (or straight away when
-    // the message waits), so the caller reports how far it got.
+    const undo = () => {
+      q.withdraw(id, e.entryId);
+      if (this.#forced.get(id) === e.entryId) this.#forced.delete(id);
+      if (ticket) this.#applyHold(id, { t: "restore", ticket });
+      this.#hooks.onOverlay(id);
+    };
+    return { result, hold, waited, revive, undo };
+  }
+
+  /**
+   * Evaluate the queue now and hand over what it says. Settles once a
+   * hand-over this triggered has run, so a sender can report how far its
+   * message got.
+   */
+  async dispatch(id: string): Promise<void> {
+    this.#retry(id);
+    this.#hooks.onOverlay(id);
     await this.#pumpQueue(id);
-    return { result, hold, waited };
   }
 
   /** The queue changed outside the manager (a client edit): publish, re-evaluate. */
   queueChanged(id: string): void {
-    this.#retry(id);
-    this.#hooks.onOverlay(id);
-    void this.#pumpQueue(id);
+    void this.dispatch(id);
   }
 
   /** The user acted on the queue: a refused hand-over may be tried again. */
@@ -1125,9 +1202,7 @@ export class SessionManager {
 
   /** Clear the hold; uncertain entries stay where they are. False when unheld. */
   releaseQueue(id: string): boolean {
-    const q = this.#hooks.queue;
-    if (!q || q.hold(id) === null) return false;
-    q.setHold(id, null);
+    if (!this.#applyHold(id, { t: "lift", respect: "none" })?.changed) return false;
     this.queueChanged(id);
     return true;
   }
@@ -1140,7 +1215,7 @@ export class SessionManager {
     const cause = q.holdCause(id);
     const hold = cause?.reason ?? null;
     if (entries.length === 0 && hold === null) return null;
-    const hints = dequeueHints(entries, hold, this.#dispatchView(this.#running.get(id)));
+    const hints = dequeueHints(entries, hold, this.#dispatchView(id, this.#running.get(id)));
     return {
       hold,
       ...(cause?.by ? { holdBy: cause.by } : {}),
@@ -1329,35 +1404,27 @@ export class SessionManager {
   }
 
   /**
-   * Hold the queue for a stop while entries wait; `empty`, even without. A
-   * hold already set keeps its reason (it came first), but a user's stop
-   * makes it the user's: no agent lifts it after that.
+   * Hold the queue for `by`'s stop while entries wait; `empty`, even
+   * without. A hold already set keeps its reason (it came first), but a
+   * user's stop makes it the user's: no agent lifts it after that (H1).
+   * Returns the change, to undo a stop that did not complete (H6).
    */
-  #holdForStop(id: string, empty: boolean, by: StopCause | null): void {
-    const q = this.#hooks.queue;
-    if (!q) return;
-    const held = q.holdCause(id);
-    if (held !== null) {
-      if (by === "user" && held.by !== "user") {
-        q.setHold(id, held.reason, "user");
-        this.#hooks.onOverlay(id);
-      }
-      return;
-    }
-    if (!empty && q.live(id).length === 0) return;
-    q.setHold(id, "interrupt", by);
-    this.#hooks.onOverlay(id);
+  #holdForStop(id: string, empty: boolean, by: StopCause): HoldApplied | null {
+    const applied = this.#applyHold(id, { t: "stop", by, empty });
+    if (applied?.changed) this.#hooks.onOverlay(id);
+    return applied;
   }
 
   /**
    * `by` asked `run` to stop: the turn's end is theirs (the user's over a
    * supervisor's), and the queue holds for it. A stop that only cancels a
-   * compaction on a settled session stops no turn: it is no one's, and holds
-   * only what already waits.
+   * compaction on a settled session stops no turn: it holds only what
+   * already waits — but the hold is still `by`'s, and a user's makes one
+   * already set the user's (H1).
    */
   #askedToStop(id: string, run: Running, by: StopCause): void {
     if (run.restructuring === "compact" && !isLiveState(run.state)) {
-      this.#holdForStop(id, false, null);
+      this.#holdForStop(id, false, by);
       return;
     }
     if (run.stopBy !== "user") run.stopBy = by;
@@ -1742,14 +1809,32 @@ export class SessionManager {
    * for an interrupt ({@link holdForStop}), cold session included. The hold
    * is set before the close awaits anything, so nothing queued meanwhile (a
    * child's report) is handed to the closing adapter or revives it.
+   *
+   * The hold sticks only if the stop completes (H6): a close that fails puts
+   * the hold back as it was (unless it was written since), and so does the
+   * returned undo, for a caller whose own work around the close (an archive)
+   * fails after it.
    */
-  async close(id: string, reason: HostStopReason = "session_close", by?: StopCause): Promise<void> {
-    if (by) this.#holdForStop(id, by === "user", by);
+  async close(
+    id: string,
+    reason: HostStopReason = "session_close",
+    by?: StopCause,
+  ): Promise<() => void> {
+    const held = by ? this.#holdForStop(id, by === "user", by) : null;
+    const undo = () => {
+      if (held && this.#applyHold(id, { t: "restore", ticket: held.ticket })?.changed)
+        this.#hooks.onOverlay(id);
+    };
     const run = this.#running.get(id);
-    if (!run) return;
+    if (!run) return undo;
     run.closing = true;
     if (by && run.stopBy !== "user") run.stopBy = by;
-    await run.session.close(reason);
+    try {
+      await run.session.close(reason);
+    } catch (err) {
+      undo();
+      throw err;
+    }
     this.#running.delete(id);
     this.#keepWarm.delete(id);
     this.#warmPings.delete(id);
@@ -1758,6 +1843,7 @@ export class SessionManager {
     // after teardown.
     await run.gate.catch(() => {});
     await run.pump.catch(() => {});
+    return undo;
   }
 
   async shutdown(): Promise<void> {

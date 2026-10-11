@@ -35,6 +35,7 @@ const view = (over: Partial<DispatchView> = {}): DispatchView => ({
   handingOver: false,
   rootTool: null,
   backoff: false,
+  busy: false,
   ...over,
 });
 
@@ -54,6 +55,20 @@ test("rule 1: nothing goes while held, cold, starting, awaiting input, restructu
   assert.deepEqual(nextAction(queue, null, view({ cancelling: true })), NONE);
   assert.deepEqual(nextAction(queue, null, view({ handingOver: true })), NONE);
   assert.deepEqual(nextAction(queue, null, view({ backoff: true })), NONE);
+});
+
+test("H7: while busy nothing goes, a forced entry included", () => {
+  assert.deepEqual(nextAction(queue, null, view({ busy: true }), "b2"), NONE);
+  assert.deepEqual(
+    nextAction(queue, null, view({ busy: true, state: stateRunning, rootTool: "Bash" })),
+    NONE,
+  );
+  assert.deepEqual(nextAction(queue, "interrupt", view({ busy: true }), "e1"), NONE);
+  assert.deepEqual(nextAction(queue, null, view(), "b2"), {
+    t: "handover",
+    ids: ["b2"],
+    fresh: true,
+  });
 });
 
 test("rule 2: a root tool in flight opens the boundary window for every next_boundary entry", () => {

@@ -510,3 +510,188 @@ nodeTest("text deltas never query the queue; a tool boundary and a turn's end st
     );
   }),
 );
+
+/** The hold as the snapshot carries it: reason and whose. */
+const holdOf = async (c: LoomClient, id: string) => {
+  const q = (await get(c, id)).queue;
+  return q ? { hold: q.hold, by: q.holdBy ?? null } : { hold: null, by: null };
+};
+
+/** A session whose turn is running with `text` queued behind it. */
+const queuedBehind = async (env: Env, text: string) => {
+  const s = await runningSession(env);
+  await send(env.c, s.id, text);
+  return s;
+};
+
+// docs/message-queue.md, "Holds": the rules as the daemon applies them.
+describe("holds", { concurrency: 4 }, () => {
+  test("H1: a doubtful hand-over on the user's hold leaves it the user's", async (env) => {
+    const { c } = env;
+    const { id, fs } = await queuedBehind(env, "m1");
+    await c.request("session.interrupt", { id });
+    assert.deepEqual(await holdOf(c, id), { hold: "interrupt", by: "user" });
+    // Send now goes through the hold; its hand-over may not have arrived.
+    fs.failNextSend = new DeliveryUncertainError("worker exited");
+    const view = (await entries(c, id))[0]!;
+    await c.request("session.queueSendNow", { id, entryId: view.id, revision: view.revision });
+    await waitFor(async () => (await entries(c, id))[0]?.uncertain === true);
+    assert.deepEqual(await holdOf(c, id), { hold: "interrupt", by: "user" }, "not `rejected`");
+    // So a supervisor's message still waits behind it.
+    const sup = env.h.daemon.sessions.enqueue(
+      id,
+      { entryId: "sup", text: "from above", author: "supervisor:x", delivery: "next_boundary" },
+      { respect: "user" },
+    );
+    assert.equal(sup.waited, true);
+    assert.equal(sup.revive, false);
+  });
+
+  test("H1: the user stopping a compaction holds what waits as the user's", async (env) => {
+    const { c } = env;
+    const { id, fs } = await idleSession(env);
+    const release = fs.blockCompact();
+    const compacting = c.request("session.compact", { id }).catch(() => {});
+    await waitFor(() => fs.compacts.length === 1);
+    assert.equal((await send(c, id, "after")).state, "queued");
+    await c.request("session.interrupt", { id });
+    assert.deepEqual(await holdOf(c, id), { hold: "interrupt", by: "user" }, "not no one's");
+    release();
+    await compacting;
+    await delay(30);
+    assert.deepEqual(fs.sends, [], "held for the user");
+  });
+
+  test("H1: the user stopping a compaction makes a supervisor's hold the user's", async (env) => {
+    const { c, h } = env;
+    const { id, fs } = await idleSession(env);
+    const release = fs.blockCompact();
+    const compacting = c.request("session.compact", { id }).catch(() => {});
+    await waitFor(() => fs.compacts.length === 1);
+    await send(c, id, "after");
+    h.daemon.sessions.holdForStop(id, "supervisor");
+    assert.deepEqual(await holdOf(c, id), { hold: "interrupt", by: "supervisor" });
+    await c.request("session.interrupt", { id });
+    assert.deepEqual(await holdOf(c, id), { hold: "interrupt", by: "user" });
+    release();
+    await compacting;
+  });
+
+  test("H3: a stop while a cold session comes back holds the message that lifted the hold", async (env) => {
+    const { c, h, provider } = env;
+    const { id, fs } = await queuedBehind(env, "later");
+    // The adapter goes away by itself, a message waiting: a crash hold.
+    fs.endStream();
+    await waitFor(async () => (await holdOf(c, id)).hold === "crash");
+    const unblock = provider.blockResume();
+    const sending = send(c, id, "go on");
+    await waitFor(() => provider.resumes.some((r) => r.sessionId === id));
+    // The user stops it while it is coming back for the message.
+    h.daemon.sessions.holdForStop(id, "user");
+    unblock();
+    await sending;
+    await delay(50);
+    assert.deepEqual(provider.session(id)!.sends, [], "the stop held it");
+    assert.deepEqual(await holdOf(c, id), { hold: "interrupt", by: "user" });
+    assert.deepEqual(
+      (await entries(c, id)).map((e) => e.preview),
+      ["go on", "later"],
+      "first in line, held",
+    );
+  });
+
+  test("H5: a send whose revival fails is taken back and the hold it lifted restored", async (env) => {
+    const { c, provider } = env;
+    const { id, fs } = await queuedBehind(env, "later");
+    fs.endStream();
+    await waitFor(async () => (await holdOf(c, id)).hold === "crash");
+    // Shadowed on the provider itself (the registry's wrapper calls it).
+    provider.resumeSession = () => Promise.reject(new Error("no VM today"));
+    const entryId = crypto.randomUUID();
+    await assert.rejects(
+      c.request("session.send", { id, text: "go on", entryId, by: "client-a" }),
+      /no VM today/,
+    );
+    assert.deepEqual(await holdOf(c, id), { hold: "crash", by: null });
+    assert.deepEqual(
+      (await entries(c, id)).map((e) => e.preview),
+      ["later"],
+    );
+    // The same message again, once the session can come back, is new.
+    Reflect.deleteProperty(provider, "resumeSession");
+    const again = await c.request<Sent>("session.send", {
+      id,
+      text: "go on",
+      entryId,
+      by: "client-a",
+    });
+    assert.equal(again.entryId, entryId);
+    await waitFor(() => provider.session(id)?.sends.includes("go on") ?? false);
+  });
+
+  test("H6: an archive whose worktree will not go leaves the hold as it was", async (env) => {
+    const { c, h } = env;
+    const { id } = await queuedBehind(env, "later");
+    h.daemon.sessions.holdForStop(id, "supervisor");
+    assert.deepEqual(await holdOf(c, id), { hold: "interrupt", by: "supervisor" });
+    const worktree = (await get(c, id)).worktree!;
+    const lock = (verb: "lock" | "unlock") =>
+      new Deno.Command("git", { args: ["-C", h.repoRoot, "worktree", verb, worktree] }).output();
+    await lock("lock");
+    try {
+      await assert.rejects(
+        c.request("session.markDone", { id, force: true }),
+        /could not remove the worktree/,
+      );
+    } finally {
+      await lock("unlock");
+    }
+    assert.notEqual((await get(c, id)).status.kind, "done");
+    assert.deepEqual(
+      await holdOf(c, id),
+      { hold: "interrupt", by: "supervisor" },
+      "no user's hold left by an archive that did not happen",
+    );
+  });
+
+  test("H6: a close that fails puts back the hold it set", async (env) => {
+    const { c } = env;
+    const { id, fs } = await idleSession(env);
+    const close = fs.close.bind(fs);
+    fs.close = () => Promise.reject(new Error("stuck"));
+    try {
+      await assert.rejects(c.request("session.markDone", { id }), /stuck/);
+      assert.deepEqual(await holdOf(c, id), { hold: null, by: null });
+    } finally {
+      // Teardown closes it for real.
+      fs.close = close;
+    }
+  });
+
+  test("H7: while busy nothing goes, by any path; the user's send and release answer busy", async (env) => {
+    const { c, h } = env;
+    const { id, fs } = await queuedBehind(env, "m1");
+    await c.request("session.interrupt", { id });
+    h.daemon.sessions.setBusy(id, true);
+    await assert.rejects(send(c, id, "now"), /workspace operation/);
+    await assert.rejects(c.request("session.queueRelease", { id }), /workspace operation/);
+    // Send now is not refused, but waits.
+    const view = (await entries(c, id))[0]!;
+    await c.request("session.queueSendNow", { id, entryId: view.id, revision: view.revision });
+    // A Loom agent's message is queued, not refused.
+    const sup = h.daemon.sessions.enqueue(
+      id,
+      { entryId: "sup", text: "from above", author: "supervisor:x", delivery: "end_of_turn" },
+      { respect: "any" },
+    );
+    assert.equal(sup.result.ok, true);
+    await h.daemon.sessions.dispatch(id);
+    await delay(50);
+    assert.deepEqual(fs.sends, [], "nothing went while busy");
+    // The operation ends: what waited goes, by its own rules.
+    h.daemon.sessions.setBusy(id, false);
+    await waitFor(() => fs.sends.includes("m1"));
+    assert.deepEqual(fs.sends, ["m1"], "send now's entry alone; the hold stays");
+    assert.equal((await holdOf(c, id)).hold, "interrupt");
+  });
+});

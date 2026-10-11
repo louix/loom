@@ -24,6 +24,9 @@ export interface DispatchView {
   /** The provider refused a hand-over and the state has not moved since: a
    *  retry now would be refused the same way. */
   readonly backoff: boolean;
+  /** A clone's guest Git runs for the daemon (docs/message-queue.md,
+   *  "Holds", H7): nothing goes, by any path, until it ends. */
+  readonly busy: boolean;
 }
 
 export type QueueAction =
@@ -50,6 +53,7 @@ const blocked = (v: DispatchView): boolean =>
   v.restructuring ||
   v.cancelling ||
   v.backoff ||
+  v.busy ||
   v.state.kind === "starting" ||
   v.state.kind === "awaiting_input";
 
