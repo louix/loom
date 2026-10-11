@@ -313,6 +313,9 @@ the store. Nothing else writes the hold, and `hold()` is read off
   (their contract); everything else is queued as usual and goes when the
   operation ends, which re-evaluates the queue.
 
+These rules were reached race by race; the planned refactor into a single
+state transition is under Known issues in `docs/loom-agents.md`.
+
 ## Interactions
 
 | Concern              | Rule                                                                                                                                       |

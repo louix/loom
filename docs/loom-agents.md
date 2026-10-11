@@ -248,6 +248,26 @@ detach` on `session.markDone` / `session.remove`, `--children` in the CLI,
   `c` in the TUI confirm, detach by default). Stopping a child with
   uncommitted changes keeps it, stopped.
 
+## Known issues
+
+- Live acceptance (2026-10-11, at `10e9622b`; `agents-claude`, `agents-codex`,
+  `queue-claude`, `queue-codex` in `scripts/test-live-daemon-acceptance.ts`):
+  all pass; nothing open from them.
+- Codex models with `multi_agent_version` v2 still list Codex's built-in
+  sub-agent tools (`spawn_agent`, `wait_agent`, …) with both feature flags
+  off; only the developer instructions keep the model from using them
+  (upstream openai/codex#50880; see Open).
+- Supervisor question handling is not designed: a child's question does not
+  reach its supervisor, which has no tool to answer or escalate it.
+- Clone children (a worktree off the supervisor's clone) are stage 2, not
+  built.
+- Hold and supervision races (the queue's holds, notifications, agents'
+  messages, stops, revivals) found across six review rounds were each fixed
+  on their own (`docs/message-queue.md`, Holds, H1–H7). A refactor is
+  planned: queue holds and supervision as one closed tagged-union state with
+  a single total, pure, tested `step(state, event)` transition, so the
+  remaining illegal combinations cannot be represented.
+
 ## Open
 
 - Codex's switch for disabling its native sub-agents: `features.multi_agent`
