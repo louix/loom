@@ -81,6 +81,7 @@ import {
   type DaemonInfo,
   type DoctorMcpServer,
   type DoctorReport,
+  type GitFacts,
   type HelloResult,
   type ProviderInfo,
   type SearchResult,
@@ -641,6 +642,7 @@ export class Daemon {
         const row = this.#registry.get(id);
         return row ? this.#enrich(row, false) : undefined;
       },
+      status: (id) => this.#registry.get(id)?.status,
       children: (id) => this.#registry.children(id).map((s) => this.#enrich(s, false)),
       settledTitle: (id) => this.#settledTitle(id),
       providerKnown: (id) => this.#providers.has(id),
@@ -651,8 +653,9 @@ export class Daemon {
       repoRoot: this.repoRoot,
       dirty: (path) => this.#worktrees.isDirty(path),
       start: (child) => this.#startChild(child),
-      enqueue: (id, text, author, delivery, opts) =>
-        this.#enqueueMessage(id, text, author, delivery, undefined, opts),
+      // An agent never lifts a user's stop: its messages wait behind a hold.
+      enqueue: (id, text, author, delivery) =>
+        this.#enqueueMessage(id, text, author, delivery, undefined, { behindHold: true }),
       interrupt: async (id) => {
         await this.#interruptSession(id, "supervisor");
       },
@@ -2628,9 +2631,6 @@ export class Daemon {
    *  `cause`, who asked for the stop a turn ended in. */
   #onDerivedStatus(id: string, state: SessionState, note?: string, cause?: StopCause): void {
     if (this.#stopping) return;
-    // A turn end decides on a nudge below: until it has, a Loom agent's
-    // supervisor does not count this idle as the turn settled.
-    if (state.kind === "idle") this.#agents.turnEnding(id);
     const snap = this.#registry.setStatus(id, state, note ?? null);
     this.emitEvent({
       type: "status_changed",
@@ -2645,7 +2645,9 @@ export class Daemon {
     // A turn just ended (this hook only fires for event-stream-derived
     // transitions — not rewind / fork, which set idle directly). Good moment to
     // pull the branch up to its base and, failing that, to flag a worktree the
-    // agent left with uncommitted changes.
+    // agent left with uncommitted changes. A Loom agent's child is never
+    // nudged: its turn end is its own, and its supervisor, told what its
+    // workspace holds, decides (docs/loom-agents.md).
     // A clone publishes its branch just before its turn-end event, so the cached
     // ref facts are stale exactly now.
     if (state.kind === "idle") {
@@ -2653,9 +2655,8 @@ export class Daemon {
       if (ended?.checkout === "clone" && ended.branch)
         this.#worktrees.invalidateFacts(`ref:${ended.branch}`);
     }
+    const nudges = !snap.supervisorId;
     if (state.kind === "idle" && snap.checkout === "clone") {
-      let nudged = false;
-      let fired = false;
       void this.#queue
         .run(id, async () => {
           const ended = () =>
@@ -2668,28 +2669,25 @@ export class Daemon {
             // A slow guest probe can outlast the idle spell: facts read during a
             // later turn are that turn's business, and its own end handles them.
             if (!ended()) return;
-            nudged =
+            const nudged =
               this.config.autoRebase.enabled && this.#cloneCanSync(id)
-                ? (await this.#syncClone(id, true)).nudged
+                ? (await this.#syncClone(id, nudges)).nudged
                 : false;
-            if (!nudged) nudged = this.#maybeCommitNudge(id);
+            if (!nudged && nudges) this.#maybeCommitNudge(id);
           } catch (error) {
             this.#emitNotice(String(error), "warn");
           }
-          fired = true;
-          this.#fireStatusHooks(snap, state, nudged);
+          this.#fireStatusHooks(snap, state);
         })
-        .catch((error) => this.#log.warn("clone turn-end Git failed", { id, error: String(error) }))
-        // A turn end overtaken by the next turn is that turn's to report.
-        .finally(() => {
-          if (!fired) this.#agents.turnEnded(id);
-        });
+        .catch((error) =>
+          this.#log.warn("clone turn-end Git failed", { id, error: String(error) }),
+        );
       return;
     }
-    const nudged =
-      state.kind === "idle" && (this.#maybeAutoRebase(id) || this.#maybeCommitNudge(id));
+    if (state.kind === "idle" && !this.#maybeAutoRebase(id, nudges) && nudges)
+      this.#maybeCommitNudge(id);
 
-    this.#fireStatusHooks(snap, state, nudged, cause);
+    this.#fireStatusHooks(snap, state, cause);
   }
 
   /**
@@ -2702,19 +2700,10 @@ export class Daemon {
    * Deliberately *after* the auto-rebase / commit nudge above: those can send
    * the agent a message, which moves the session back to `running`, and a
    * notifier should be told the state the session actually settled in.
-   * `nudged`: they did, so the turn did not settle — a Loom agent's
-   * supervisor hears of it, with the reply to the nudge, when the turn the
-   * nudge started ends.
    */
-  #fireStatusHooks(
-    snap: SessionSnapshot,
-    state: SessionState,
-    nudged = false,
-    cause?: StopCause,
-  ): void {
+  #fireStatusHooks(snap: SessionSnapshot, state: SessionState, cause?: StopCause): void {
     const current = this.#registry.get(snap.id) ?? snap;
-    if (!nudged) this.#notifySupervisor(current, state, cause);
-    this.#agents.turnEnded(snap.id);
+    this.#notifySupervisor(current, state, cause);
     if (this.#hooks.empty) return;
     const session = hookSessionOf(current);
     switch (state.kind) {
@@ -2737,33 +2726,42 @@ export class Daemon {
 
   /** A Loom agent's supervisor hears of a finished, failed or interrupted
    *  turn through its queue (`AgentSupervision.notify`); not of a wait, which
-   *  the user answers, nor of a stop it asked for itself (`cause`). */
+   *  the user answers, nor of a stop it asked for itself (`cause`). A
+   *  finished turn carries its workspace's facts, read now: the supervisor,
+   *  not a nudge, decides what an uncommitted change needs. */
   #notifySupervisor(row: SessionSnapshot, state: SessionState, cause?: StopCause): void {
-    if (!this.#stopping) void this.#agents.notify(row, state, cause);
+    if (this.#stopping || !row.supervisorId) return;
+    const git = state.kind === "idle" ? this.#turnEndGit(row) : null;
+    void this.#agents.notify(git ? { ...row, git } : row, state, cause);
   }
 
-  /** A turn-end nudge that never reached the agent: the turn did settle after
-   *  all, so its supervisor hears of it now. */
-  #nudgeFailed(id: string): void {
-    const row = this.#registry.get(id);
-    if (row?.status.kind === "idle") this.#notifySupervisor(row, row.status);
+  /**
+   * `row`'s Git facts as its turn ends: a clone's, which its turn-end probe
+   * just refreshed; a worktree's, probed afresh.
+   */
+  #turnEndGit(row: SessionSnapshot): GitFacts | null {
+    if (row.checkout === "clone") return this.#cloneFacts.get(row.id)?.git ?? null;
+    const path = this.#gitKey(row);
+    if (!path) return null;
+    this.#worktrees.invalidateFacts(path);
+    return this.#worktrees.facts(path, row.baseBranch);
   }
 
   /**
    * Keep a session's branch current with its base (`[auto_rebase]`) when a turn
    * ends. Returns true when it messaged the agent (asked it to integrate the
    * base itself) — the caller then skips the commit reminder so a dirty branch
-   * doesn't get two nudges in one breath. Runs synchronously: the `git`
-   * shell-out blocks the loop, which is also what keeps it from racing an
-   * incoming `session.send`.
+   * doesn't get two nudges in one breath; never without `nudge`. Runs
+   * synchronously: the `git` shell-out blocks the loop, which is also what
+   * keeps it from racing an incoming `session.send`.
    */
-  #maybeAutoRebase(id: string): boolean {
+  #maybeAutoRebase(id: string, nudge: boolean): boolean {
     if (this.#stopping || !this.config.autoRebase.enabled) return false;
     const snap = this.#registry.get(id);
     if (!snap?.worktree) return false; // in-place sessions have no branch to move
     // A clone's branch is moved only by its guest; syncing it is a guest operation.
     if (snap.checkout === "clone") return false;
-    return this.#syncOntoBase(id, true).nudged;
+    return this.#syncOntoBase(id, nudge).nudged;
   }
 
   /**
@@ -2835,14 +2833,11 @@ export class Daemon {
       `[loom] The base branch \`${base}\` advanced by ${res.behind} commit(s) and ${why}. ` +
       `When you're at a clean stopping point, ${verb} \`${base}\` into this branch ` +
       `and resolve any conflicts.`;
-    // Before the nudge enters the log: the turn's answer is what precedes it.
-    this.#agents.nudging(id, "rebase");
     // Mirror the `session.send` RPC's echo, minus `#lastSend`: this nudge is
     // Loom's, so it shouldn't seed the undo picker or the next auto-title.
     this.emitEvent({ type: "user_message", sessionId: id, ts: Date.now(), text, injected: false });
     void this.#sessions.send(id, text, { automated: true }).catch((err) => {
       this.#log.warn("auto-rebase nudge failed", { id, err: String(err) });
-      this.#nudgeFailed(id);
     });
     return { outcome: res, nudged: true };
   }
@@ -2879,13 +2874,11 @@ export class Daemon {
       "[loom] This turn ended with uncommitted changes in your worktree. If that " +
       "work is done, commit it (the `commit` tool, or `git commit`). If you left it " +
       "uncommitted on purpose, ignore this — you won't be reminded again until you commit.";
-    this.#agents.nudging(id, "commit");
     // Loom's own message, like the auto-rebase nudge: keep it out of `#lastSend`
     // so it seeds neither the undo picker nor the auto-title.
     this.emitEvent({ type: "user_message", sessionId: id, ts: Date.now(), text, injected: false });
     void this.#sessions.send(id, text, { automated: true }).catch((err) => {
       this.#log.warn("commit reminder failed", { id, err: String(err) });
-      this.#nudgeFailed(id);
     });
     return true;
   }
@@ -3700,7 +3693,7 @@ export class Daemon {
   /**
    * Put a message in `id`'s queue (`docs/message-queue.md`), bringing a cold
    * session back first: `session.send`, and Loom agents messaging each other.
-   * `behindHold` (a child's notification): a held queue stays held — the
+   * `behindHold` (whatever a Loom agent sends): a held queue stays held — the
    * message waits behind the held entries and wakes nothing, a cold session
    * included. Whether it is held is decided by the enqueue itself, so a hold
    * set while the session came back still counts.

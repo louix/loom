@@ -1044,9 +1044,9 @@ export class SessionManager {
    * and alone, and sending it releases the hold; the held entries then follow
    * the ordinary rules relative to the turn it starts.
    *
-   * `behindHold` is for what is not the user speaking (a Loom agent's
-   * notification): it joins a held queue at the back and leaves the hold —
-   * only the user, sending or releasing, lifts a stop.
+   * `behindHold` is for what is not the user speaking (a Loom supervisor's
+   * message, a child's notification): it joins a held queue at the back and
+   * leaves the hold — only the user, sending or releasing, lifts a stop.
    */
   async enqueue(
     id: string,

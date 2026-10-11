@@ -236,6 +236,7 @@ describe("loom agents", { concurrency: 4 }, () => {
     const note = lead.fs.sends.at(-1)!;
     assert.match(note, new RegExp(`^\\[from your agent ${child.id.slice(0, 8)} "Widget"`));
     assert.match(note, /It finished a turn\./);
+    assert.match(note, /Its workspace: 0 commits ahead of its base, nothing uncommitted\./);
     assert.match(note, /Widget added; tests pass\./);
     assert.doesNotMatch(note, /cut at 2 KB/);
   });
@@ -479,36 +480,34 @@ describe("loom agents", { concurrency: 4 }, () => {
     assert.equal(lead.fs.sends[sendsBefore], "then this");
   });
 
-  test("a turn the commit reminder carries on is reported once, with its answer, when it ends", async (env) => {
+  test("a child is never nudged: its turn end reports its uncommitted work, once; a root is reminded", async (env) => {
     const lead = await idleSession(env);
     const child = await startChild(env, lead.fs);
     const notes = () => lead.fs.sends.filter((s) => s.startsWith("[from your agent"));
+    const reminded = (fs: FakeSession) =>
+      fs.sends.some((s) => /uncommitted changes in your worktree/.test(s));
     writeFileSync(join((await get(env.c, child.id)).worktree!, "wip.txt"), "uncommitted\n");
-    // A wait made before the turn ends is not settled by the idle the
-    // reminder carries on from.
     let waited: string | null = null;
     void lead.fs
       .callAgentTool("agent_wait", { ids: [child.id], timeout: 30 })
       .then((r) => (waited = r.text));
     await delay(20);
-    child.fs.emit({ type: "assistant_text", text: "Widget added; tests pass." });
-    child.fs.finishTurn();
-    await waitFor(() => child.fs.sends.some((s) => /uncommitted changes in your worktree/.test(s)));
-    await delay(50);
-    assert.deepEqual(notes(), [], "the nudged turn has not settled");
-    assert.equal(waited, null, "nor has the wait");
-
-    child.fs.emit({ type: "assistant_text", text: "Committed it." });
-    child.fs.finishTurn();
+    await finish(env, child, "Widget added; tests pass.");
     await waitFor(() => notes().length > 0 && waited !== null);
     await delay(50);
     assert.match(waited!, /^All settled\./);
+    assert.equal(reminded(child.fs), false, "no commit reminder for a child");
+    assert.equal((await get(env.c, child.id)).status.kind, "idle");
     assert.equal(notes().length, 1);
-    // The task's answer, and the reply to the reminder after it.
     assert.match(
       notes()[0]!,
-      /It finished a turn\.\n\nFinal message:\nWidget added; tests pass\.\n\nLoom then sent it a reminder to commit its work; its reply:\nCommitted it\.$/,
+      /It finished a turn\.\nIts workspace: 0 commits ahead of its base, uncommitted changes\.\n\nFinal message:\nWidget added; tests pass\.$/,
     );
+
+    // The supervisor, a root session, is still reminded of its own.
+    writeFileSync(join((await get(env.c, lead.id)).worktree!, "wip.txt"), "uncommitted\n");
+    lead.fs.finishTurn();
+    await waitFor(() => reminded(lead.fs));
   });
 
   test("a user's stop holds a supervisor with nothing queued: a child's report waits for release", async (env) => {
@@ -573,6 +572,30 @@ describe("loom agents", { concurrency: 4 }, () => {
     const queue = (await get(env.c, lead.id)).queue!;
     assert.equal(queue.hold, "interrupt", "the report did not release it");
     assert.deepEqual(env.provider.session(lead.id)!.sends, [], "no turn started");
+  });
+
+  test("a supervisor's message waits behind a hold the user set on its child", async (env) => {
+    const lead = await idleSession(env);
+    const child = await startChild(env, lead.fs);
+    child.fs.emit({ type: "assistant_text", text: "busy" });
+    await waitFor(async () => (await get(env.c, child.id)).status.kind === "running");
+    await env.c.request("session.interrupt", { id: child.id });
+    assert.equal((await get(env.c, child.id)).queue?.hold, "interrupt");
+
+    const sent = await lead.fs.callAgentTool("agent_message", { id: child.id, text: "go on" });
+    assert.equal(sent.ok, true, sent.text);
+    assert.match(sent.text, /Its queue is held/);
+    await delay(50);
+    const queue = (await get(env.c, child.id)).queue!;
+    assert.equal(queue.hold, "interrupt", "the supervisor did not lift the user's stop");
+    assert.deepEqual(
+      queue.entries.map((e) => e.author),
+      [`supervisor:${lead.id}`],
+    );
+    assert.ok(!child.fs.sends.some((s) => s.includes("go on")), "no turn started");
+
+    await env.c.request("session.queueRelease", { id: child.id });
+    await waitFor(() => child.fs.sends.some((s) => s.includes("go on")));
   });
 
   test("a user's interrupt joining the supervisor's own is reported", async (env) => {

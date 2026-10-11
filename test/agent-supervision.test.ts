@@ -90,6 +90,7 @@ const stub = (rows: SessionSnapshot[], dirty = false, events: AgentHost["events"
   const host: AgentHost = {
     agents: () => AGENTS,
     get: (id) => byId.get(id),
+    status: (id) => byId.get(id)?.status,
     children: (id) => [...byId.values()].filter((r) => r.supervisorId === id),
     settledTitle: settledTitle((id) => byId.get(id)),
     providerKnown: (id) => ["claude", "codex"].includes(id),

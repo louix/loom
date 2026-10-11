@@ -115,11 +115,13 @@ children inside the supervisor's VM is a later shared-VM feature.
 ## Communication
 
 - Down: the supervisor's messages enter the child's queue (A9), labelled as
-  coming from the supervisor. The user can message a child directly too.
+  coming from the supervisor. The user can message a child directly too. A
+  child the user stopped stays stopped: the supervisor's message waits behind
+  its hold, and only the user's send or release lifts it.
 - Up: event-driven, never streamed output. The supervisor gets a short
   notification when a child calls `report`, finishes a turn (its final message,
-  cut to about 2 KB with a pointer to `agent_read`; no model-written summary),
-  or fails or is interrupted. It is queued as an end-of-turn entry labelled as
+  cut to about 2 KB with a pointer to `agent_read`; no model-written summary;
+  and its workspace's state), or fails or is interrupted. It is queued as an end-of-turn entry labelled as
   coming from the child: a busy supervisor is not interrupted, an idle one is
   woken (a cold one revived), and one the user stopped stays stopped. A user's
   stop always holds the supervisor's queue, empty or not
@@ -140,10 +142,14 @@ children inside the supervisor's VM is a later shared-VM feature.
   attributed to the supervisor too, until the child's next turn starts. A
   user's stop is reported, including one that joins the supervisor's while
   it is under way; so are crashes and failures.
-- A turn a commit or rebase nudge carries on has not settled: neither a
-  notification nor `agent_wait` counts the idle the nudge interrupts. When the
-  child settles, one notification carries the task turn's final message (the
-  last one before the nudge) and the reply to the nudge.
+- A child gets no automatic commit reminder (`[commit_reminder]`) or
+  auto-rebase nudge (`[auto_rebase]`): its turn end is simply its turn end, so
+  a notification and `agent_wait` see it at once. A clean auto-rebase still
+  moves its branch; a dirty or conflicted one leaves it alone, unannounced.
+  Instead, the finished-turn notification says what the child's workspace
+  holds — commits ahead of and behind its base, and whether it has
+  uncommitted changes — and the supervisor decides whether to ask for a
+  commit or a rebase. Top-level sessions keep both nudges.
 - Recommended pattern: start children, end the turn, be woken by
   notifications; `agent_wait` exists for short waits.
 - Questions and permissions: tool permissions always go to the user. Until a
