@@ -9,7 +9,12 @@ const effortLevelSchema = z.string();
  * vendor SDK; adapters normalize to the one `HarnessEvent` union and this pair
  * of interfaces. The Claude adapter ships in V1; ADK is a designed-for second.
  */
-import { providerTotalSchema, tokenUsageSchema, type HarnessEvent } from "./events.ts";
+import {
+  providerTotalSchema,
+  tokenUsageSchema,
+  type HarnessEvent,
+  type PlanWindow,
+} from "./events.ts";
 import { sessionStateSchema } from "./session-state.ts";
 import type { SendOptions } from "./message-queue.ts";
 
@@ -362,6 +367,12 @@ export interface AgentSession {
    */
   setBase?(base: string): Promise<void>;
   /**
+   * Read the account's plan windows now, past the adapter's own throttle.
+   * Starts the read and resolves without waiting for it: the windows arrive as
+   * `rate_limit` events. Absent on adapters with no subscription plan.
+   */
+  refreshPlanUsage?(): Promise<void>;
+  /**
    * Stop the current turn. Together with {@link close}, this MUST cancel any
    * in-flight long-running operation — a turn, a compaction, a sub-agent, a
    * fork — and settle promptly (do not wait out a multi-minute summarise).
@@ -408,6 +419,14 @@ export interface AgentProvider {
    * implementation that runs a subprocess must stop that process on abort.
    */
   listModels?(signal?: AbortSignal): Promise<DiscoveredModel[]>;
+  /**
+   * The account's subscription plan windows, read without a session — the
+   * fallback when no live session on the account can poll them. Metadata only,
+   * like {@link listModels}: no conversation, no transcript, credentials used
+   * in place. Empty when the account has no plan (an API key). `signal`
+   * cancels it, stopping any subprocess.
+   */
+  readPlanUsage?(signal?: AbortSignal): Promise<PlanWindow[]>;
 }
 
 export const discoveredModelSchema = z.object({

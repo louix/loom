@@ -1503,6 +1503,15 @@ export class SessionManager {
     return true;
   }
 
+  /** Ask a live session to read its account's plan windows now; false when
+   *  none is running or its adapter has no plan to read. */
+  async refreshPlanUsage(id: string): Promise<boolean> {
+    const run = this.#running.get(id);
+    if (!run || run.ended || !run.session.refreshPlanUsage) return false;
+    await run.session.refreshPlanUsage();
+    return true;
+  }
+
   async respondToPlan(
     id: string,
     requestId: string,

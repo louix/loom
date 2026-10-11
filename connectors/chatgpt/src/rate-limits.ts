@@ -1,4 +1,4 @@
-import type { HarnessEvent } from "@loom/core/events";
+import type { HarnessEvent, PlanWindow } from "@loom/core/events";
 
 const record = (value: unknown): Record<string, unknown> | undefined =>
   typeof value === "object" && value !== null && !Array.isArray(value)
@@ -6,18 +6,14 @@ const record = (value: unknown): Record<string, unknown> | undefined =>
     : undefined;
 
 /** Account reads contain all buckets; rolling notifications contain one sparse bucket. */
-export const rateLimitEvents = (
-  payload: unknown,
-  sessionId: string,
-  ts: number,
-): HarnessEvent[] => {
+export const rateLimitWindows = (payload: unknown, ts: number): PlanWindow[] => {
   const response = record(payload);
   const buckets = record(response?.["rateLimitsByLimitId"]);
   const entries =
     buckets && Object.keys(buckets).length
       ? Object.entries(buckets)
       : [["codex", response?.["rateLimits"]] as const];
-  const events: HarnessEvent[] = [];
+  const windows: PlanWindow[] = [];
   for (const [key, value] of entries) {
     const snapshot = record(value);
     if (!snapshot) continue;
@@ -39,9 +35,7 @@ export const rateLimitEvents = (
       if (used >= 100) status = "rejected";
       else if (used >= 80) status = "allowed_warning";
       const reset = window?.["resetsAt"];
-      events.push({
-        type: "rate_limit",
-        sessionId,
+      windows.push({
         ts,
         window: `${label} ${duration}`,
         utilization: used,
@@ -52,5 +46,9 @@ export const rateLimitEvents = (
       });
     }
   }
-  return events;
+  return windows;
 };
+
+/** {@link rateLimitWindows} as a session's `rate_limit` events. */
+export const rateLimitEvents = (payload: unknown, sessionId: string, ts: number): HarnessEvent[] =>
+  rateLimitWindows(payload, ts).map((w) => ({ type: "rate_limit", sessionId, ...w }));

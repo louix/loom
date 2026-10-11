@@ -27,13 +27,14 @@ import type {
   BackgroundTaskInfo,
   DiscardedInput,
   HarnessEvent,
+  PlanWindow,
   ProviderTotal,
 } from "@loom/core/events";
 import { stateRunning } from "@loom/core/session-state";
 import { makeLogger, type Logger } from "@loom/core/logger";
 import { AsyncChannel } from "@loom/core/channel";
 import { WorkerDiagnostic } from "@loom/core/worker";
-import { ClaudeEventMapper, baselineOf, type SdkGetUsageResponse } from "./map.ts";
+import { ClaudeEventMapper, baselineOf, planWindows, type SdkGetUsageResponse } from "./map.ts";
 import { resolveClaudeCli } from "./cli.ts";
 import { buildAgentsMcpServer, buildLoomMcpServer, type LoomToolDeps } from "./loom-mcp.ts";
 import { PendingInteractions } from "@loom/runtime/pending";
@@ -1225,6 +1226,14 @@ class ClaudeSession implements AgentSession {
     if (this.#loomDeps) this.#loomDeps.base = base;
   }
 
+  /** The daemon wants the plan windows now (a client is showing stale ones):
+   *  poll past the per-turn throttle. Not awaited — the windows arrive as
+   *  `rate_limit` events, and a slow `/usage` must not hold the request. */
+  async refreshPlanUsage(): Promise<void> {
+    if (this.#closing) return;
+    void this.#pollPlanUsage();
+  }
+
   async respondToPlan(id: string, decision: PlanDecision): Promise<void> {
     if (!this.#pending.hasPlan(id)) return; // already resolved / unknown — first writer won
 
@@ -1830,7 +1839,25 @@ export class ClaudeProvider implements AgentProvider {
     }
   }
 
-  async #discoverModels(cli: string | undefined): Promise<DiscoveredModel[]> {
+  /**
+   * The account's plan windows, read by a throwaway `query()` like
+   * {@link listModels}: the handshake, one `get_usage` control request, close.
+   * No turn runs and nothing is persisted. Empty for an API-key account or a
+   * CLI without the (experimental) request.
+   */
+  async readPlanUsage(): Promise<PlanWindow[]> {
+    return await this.#probe(this.#resolveCli(), "readPlanUsage", async (q) => {
+      await q.initializationResult();
+      const fn = q.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET;
+      if (typeof fn !== "function") return [];
+      const resp = (await fn.call(q)) as SdkGetUsageResponse;
+      return planWindows(resp, Date.now());
+    });
+  }
+
+  /** Run `read` against a metadata-only `query()` whose prompt never yields,
+   *  bounded by {@link LIST_MODELS_TIMEOUT_MS}; the query is always closed. */
+  async #probe<T>(cli: string | undefined, label: string, read: (q: Query) => Promise<T>) {
     const env = queryEnv({ configDir: this.#configDir });
     const q = sdk.query({
       prompt: (async function* (): AsyncGenerator<SDKUserMessage> {})(),
@@ -1845,21 +1872,30 @@ export class ClaudeProvider implements AgentProvider {
         settings: { disableAllHooks: true },
         ...(cli ? { pathToClaudeCodeExecutable: cli } : {}),
         env,
-        stderr: (data) => log.debug("listModels cli stderr", { data: data.slice(0, 500) }),
+        stderr: (data) => log.debug(`${label} cli stderr`, { data: data.slice(0, 500) }),
       },
     });
     let timer: NodeJS.Timeout | undefined;
     try {
-      const init = await Promise.race([
-        q.initializationResult(),
+      return await Promise.race([
+        read(q),
         new Promise<never>((_, rej) => {
           timer = setTimeout(
-            () => rej(new Error("timed out waiting for the Claude CLI handshake")),
+            () => rej(new Error("timed out waiting for the Claude CLI")),
             LIST_MODELS_TIMEOUT_MS,
           );
           timer.unref();
         }),
       ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+      await Promise.resolve(q.close?.()).catch(() => {});
+    }
+  }
+
+  async #discoverModels(cli: string | undefined): Promise<DiscoveredModel[]> {
+    return await this.#probe(cli, "listModels", async (q) => {
+      const init = await q.initializationResult();
       const seen = new Set<string>();
       const out: DiscoveredModel[] = [];
       for (const m of init.models) {
@@ -1881,9 +1917,6 @@ export class ClaudeProvider implements AgentProvider {
         });
       }
       return out;
-    } finally {
-      if (timer) clearTimeout(timer);
-      await Promise.resolve(q.close?.()).catch(() => {});
-    }
+    });
   }
 }

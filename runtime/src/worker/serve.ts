@@ -170,13 +170,25 @@ export const serveWorker = async (
       stop.abort();
       return;
     }
-    if (r.method === "listModels" || r.method === "listPersistedSessions") {
-      if (started || binding.role !== (r.method === "listModels" ? "discovery" : "enumeration"))
+    if (
+      r.method === "listModels" ||
+      r.method === "listPersistedSessions" ||
+      r.method === "readPlanUsage"
+    ) {
+      const roles = {
+        listModels: "discovery",
+        listPersistedSessions: "enumeration",
+        readPlanUsage: "usage",
+      } as const;
+      if (started || binding.role !== roles[r.method])
         throw new Error("invalid utility worker role");
       started = true;
       if (r.method === "listModels") {
         const models = (await provider.listModels?.()) ?? [];
         if (!closing) await writer.send({ kind: "models", id: r.id, models });
+      } else if (r.method === "readPlanUsage") {
+        const windows = (await provider.readPlanUsage?.()) ?? [];
+        if (!closing) await writer.send({ kind: "planUsage", id: r.id, windows });
       } else {
         const sessions = await provider.listPersistedSessions();
         if (!closing) await writer.send({ kind: "sessions", id: r.id, sessions });
@@ -217,6 +229,9 @@ export const serveWorker = async (
         break;
       case "setBase":
         await session.setBase?.(...r.args);
+        break;
+      case "refreshPlanUsage":
+        await session.refreshPlanUsage?.();
         break;
       case "interrupt":
         await session.interrupt();

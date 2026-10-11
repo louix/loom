@@ -12,7 +12,11 @@ import { spawn } from "node:child_process";
 import { createProvider, codeModeInstructions } from "@loom/connector-chatgpt";
 import { ChatGPTCatalog } from "@loom/connector-chatgpt/catalog";
 import { resolveCodexHome } from "@loom/connector-chatgpt/codex-home";
-import { CODEX_MODEL_PAGES, discoverCodexModels } from "@loom/connector-chatgpt/discovery";
+import {
+  CODEX_MODEL_PAGES,
+  discoverCodexModels,
+  readCodexRateLimits,
+} from "@loom/connector-chatgpt/discovery";
 import { catalogueFromDiscovered } from "@loom/core/model-catalogue";
 import { CodexRpcClient } from "@loom/connector-chatgpt/rpc";
 import { makeLogger } from "@loom/core/logger";
@@ -1941,6 +1945,67 @@ test("ChatGPT sessions still start when account limits are unavailable", async (
     await s.close();
   } finally {
     Deno.env.delete("LOOM_TEST_LIMITS_ERROR");
+  }
+});
+
+const codexLimits = {
+  limitId: "codex",
+  primary: { usedPercent: 30, windowDurationMins: 300, resetsAt: 2_000_000_000 },
+  secondary: { usedPercent: 60, windowDurationMins: 10080, resetsAt: 2_000_000_000 },
+};
+
+test("readCodexRateLimits reads the account's plan windows from a throwaway app-server", async () => {
+  Deno.env.set("LOOM_TEST_LIMITS", JSON.stringify({ rateLimits: codexLimits }));
+  const launched: CodexLaunchSpec[] = [];
+  const launch: CodexLauncher = (spec) => {
+    launched.push(spec);
+    return spawnCodex(spec);
+  };
+  try {
+    const windows = await readCodexRateLimits({
+      cliPath: FAKE_CODEX,
+      codexHome: { dir: "/tmp/loom-limits", authJsonPath: "/tmp/loom-limits/auth.json" },
+      launch,
+    });
+    assert.deepEqual(
+      windows.map((w) => [w.window, w.utilization, w.status, w.resetsAt]),
+      [
+        ["codex 5h", 30, "allowed", 2_000_000_000_000],
+        ["codex 7d", 60, "allowed", 2_000_000_000_000],
+      ],
+    );
+    // Metadata only: the user's MCP servers stay off, as for model discovery.
+    assert.ok(launched[0]?.args.includes("mcp_servers={}"));
+  } finally {
+    Deno.env.delete("LOOM_TEST_LIMITS");
+  }
+});
+
+test("a live ChatGPT session re-reads its plan windows on refreshPlanUsage", async () => {
+  Deno.env.set("LOOM_TEST_LIMITS", JSON.stringify({ rateLimits: codexLimits }));
+  try {
+    const s = await CodexAppServerSession.start(
+      { sessionId: "limits", cwd: "/tmp", prompt: "", mode: "default", mcpServers: [] },
+      { dir: "/tmp/loom-limits", authJsonPath: "/tmp/loom-limits/auth.json" },
+      FAKE_CODEX,
+    );
+    const deadline = setTimeout(() => void s.close(), 5000);
+    try {
+      const windows: string[] = [];
+      for await (const event of s.events()) {
+        if (event.type !== "rate_limit") continue;
+        windows.push(event.window!);
+        // The start-up read, then the on-demand one.
+        if (windows.length === 2) await s.refreshPlanUsage();
+        if (windows.length === 4) break;
+      }
+      assert.deepEqual(windows, ["codex 5h", "codex 7d", "codex 5h", "codex 7d"]);
+    } finally {
+      clearTimeout(deadline);
+      await s.close();
+    }
+  } finally {
+    Deno.env.delete("LOOM_TEST_LIMITS");
   }
 });
 

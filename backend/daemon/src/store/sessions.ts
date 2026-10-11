@@ -3,6 +3,7 @@ import {
   providerTotalSchema,
   type ProviderTotal,
   type TokenUsage,
+  type PlanWindow,
   type RateLimitEvent,
 } from "@loom/core/events";
 import {
@@ -14,6 +15,9 @@ import {
 import type { ModelUsage, SessionSnapshot } from "@loom/core/wire";
 import { supervisionCycle } from "@loom/core/agents";
 import { type Db, withTransaction } from "./db.ts";
+
+/** How long a plan window with no reset time is shown after it was read. */
+const UNTIMED_WINDOW_MS = 5 * 60_000;
 
 // ---------------------------------------------------------------------------
 // Row shapes (snake_case, straight from SQLite)
@@ -463,9 +467,11 @@ export class SessionStore {
    * may have cached from an already-ended window — so it must not erase a
    * fuller `get_usage` snapshot: a missing utilization keeps the stored one
    * while the window is the same, and a reset time already past when observed
-   * never replaces one still ahead.
+   * never replaces one still ahead. A full reading with no reset time, taken
+   * after the stored reset passed, is a window that has not restarted: the
+   * stale reset goes, so the reading shows rather than being filtered out.
    */
-  recordAccountUsage(scope: string, ev: RateLimitEvent): void {
+  recordAccountUsage(scope: string, ev: PlanWindow | RateLimitEvent): void {
     this.#db
       .prepare(`INSERT INTO account_usage
       (scope, window, status, utilization, resets_at, observed_at) VALUES (?, ?, ?, ?, ?, ?)
@@ -478,6 +484,8 @@ export class SessionStore {
             THEN account_usage.utilization
           ELSE NULL END,
         resets_at = CASE
+          WHEN excluded.resets_at IS NULL AND excluded.utilization IS NOT NULL
+            AND account_usage.resets_at <= excluded.observed_at THEN NULL
           WHEN excluded.resets_at IS NULL THEN account_usage.resets_at
           WHEN excluded.resets_at <= excluded.observed_at
             AND account_usage.resets_at > excluded.observed_at THEN account_usage.resets_at
@@ -498,7 +506,7 @@ export class SessionStore {
     const rows = this.#db
       .prepare(`SELECT * FROM account_usage WHERE scope = ?
       AND (resets_at > ? OR (resets_at IS NULL AND observed_at > ?))`)
-      .all(scope, now, now - 5 * 60_000);
+      .all(scope, now, now - UNTIMED_WINDOW_MS);
     return Object.fromEntries(
       rows.map((r) => [
         String(r["window"]),
@@ -510,6 +518,28 @@ export class SessionStore {
         },
       ]),
     );
+  }
+
+  /**
+   * Whether `scope`'s plan windows need a fresh read before a client is shown
+   * them: none was ever read, one is hidden by {@link accountUsage} (its reset
+   * passed, or an untimed reading aged out), or one shows without a
+   * utilization. Readings untouched for a month are forgotten rather than
+   * chased — a window the provider stopped reporting.
+   */
+  accountUsageStale(scope: string, now = Date.now()): boolean {
+    const rows = this.#db
+      .prepare(
+        "SELECT utilization, resets_at, observed_at FROM account_usage WHERE scope = ? AND observed_at > ?",
+      )
+      .all(scope, now - 31 * 24 * 60 * 60_000);
+    if (rows.length === 0) return true;
+    return rows.some((r) => {
+      const resetsAt = r["resets_at"] === null ? null : Number(r["resets_at"]);
+      const shown =
+        resetsAt === null ? Number(r["observed_at"]) > now - UNTIMED_WINDOW_MS : resetsAt > now;
+      return !shown || r["utilization"] === null;
+    });
   }
 
   /**

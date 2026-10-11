@@ -57,11 +57,17 @@ class ScriptedSession extends FakeSession {
     this.#release?.();
     await super.close();
   }
+  async refreshPlanUsage() {
+    this.emit({ type: "rate_limit", status: "allowed", window: "five_hour", utilization: 7 });
+  }
 }
 class ScriptedProvider extends FakeProvider {
   override async createSession(opts: CreateSessionOptions) {
     if (opts.prompt === "fail-create") throw new Error("fixture create failure");
     return new ScriptedSession(opts.sessionId, opts);
+  }
+  async readPlanUsage() {
+    return [{ ts: 1, status: "allowed" as const, window: "seven_day", utilization: 3 }];
   }
 }
 await serveWorker(

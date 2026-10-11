@@ -1,8 +1,8 @@
 /**
  * Short-lived `codex app-server` discovery: list models and their reasoning
- * efforts through the same subprocess mechanism (and the same resolved
- * `CODEX_HOME`) session startup uses, rather than a separate REST credential
- * path. See `docs/connectors.md#codex-subscription`.
+ * efforts, or read the account's plan windows, through the same subprocess
+ * mechanism (and the same resolved `CODEX_HOME`) session startup uses, rather
+ * than a separate REST credential path. See `docs/connectors.md#codex-subscription`.
  *
  * Metadata only: no thread is started, so nothing reaches the user's history,
  * and the user's own MCP servers are switched off for the probe. The real
@@ -11,6 +11,8 @@
  * to a throwaway copy would sign the user out.
  */
 import type { DiscoveredModel } from "@loom/core/types";
+import type { PlanWindow } from "@loom/core/events";
+import { rateLimitWindows } from "./rate-limits.ts";
 import { CodexRpcClient } from "./rpc.ts";
 import { verifyChatGptAccount } from "./account.ts";
 import type { CodexHome } from "./codex-home.ts";
@@ -44,27 +46,8 @@ export interface DiscoveredCodexModel extends DiscoveredModel {
  *  bounded by {@link CODEX_MODEL_PAGES}), and always closes the process — on
  *  success or failure — so a discovery error never leaves a process or a
  *  pending request behind. */
-export const discoverCodexModels = async (opts: {
-  cliPath: string;
-  codexHome: CodexHome;
-  launch?: CodexLauncher;
-}): Promise<DiscoveredCodexModel[]> => {
-  const launch = opts.launch ?? spawnCodex;
-  const proc = launch({
-    cliPath: opts.cliPath,
-    args: ["app-server", "-c", 'cli_auth_credentials_store="file"', "-c", "mcp_servers={}"],
-    cwd: Deno.cwd(),
-    env: { ...Deno.env.toObject(), CODEX_HOME: opts.codexHome.dir },
-    codexHome: opts.codexHome,
-  });
-  const rpc = new CodexRpcClient(proc);
-  try {
-    await rpc.requestStartup("initialize", {
-      clientInfo: { name: "loom", title: "Loom", version: "0.0.1" },
-      capabilities: { experimentalApi: true },
-    });
-    rpc.notify("initialized", {});
-    await verifyChatGptAccount(rpc);
+export const discoverCodexModels = (opts: CodexProbeOptions): Promise<DiscoveredCodexModel[]> =>
+  withCodexProbe(opts, async (rpc) => {
     const models: DiscoveredCodexModel[] = [];
     const seen = new Set<string>();
     let cursor: string | undefined;
@@ -104,6 +87,47 @@ export const discoverCodexModels = async (opts: {
       cursor = result.nextCursor;
     }
     return models;
+  });
+
+/** The account's plan windows (`account/rateLimits/read`) from a throwaway
+ *  app-server — the same metadata-only process as model discovery. */
+export const readCodexRateLimits = (opts: CodexProbeOptions): Promise<PlanWindow[]> =>
+  withCodexProbe(opts, async (rpc) =>
+    rateLimitWindows(
+      await rpc.request("account/rateLimits/read", {}, { timeoutMs: 10_000 }),
+      Date.now(),
+    ),
+  );
+
+interface CodexProbeOptions {
+  cliPath: string;
+  codexHome: CodexHome;
+  launch?: CodexLauncher;
+}
+
+/** Spawn a throwaway app-server with the user's MCP servers off, initialize
+ *  it, confirm the ChatGPT account, run `read`, and always close the process. */
+const withCodexProbe = async <T>(
+  opts: CodexProbeOptions,
+  read: (rpc: CodexRpcClient) => Promise<T>,
+): Promise<T> => {
+  const launch = opts.launch ?? spawnCodex;
+  const proc = launch({
+    cliPath: opts.cliPath,
+    args: ["app-server", "-c", 'cli_auth_credentials_store="file"', "-c", "mcp_servers={}"],
+    cwd: Deno.cwd(),
+    env: { ...Deno.env.toObject(), CODEX_HOME: opts.codexHome.dir },
+    codexHome: opts.codexHome,
+  });
+  const rpc = new CodexRpcClient(proc);
+  try {
+    await rpc.requestStartup("initialize", {
+      clientInfo: { name: "loom", title: "Loom", version: "0.0.1" },
+      capabilities: { experimentalApi: true },
+    });
+    rpc.notify("initialized", {});
+    await verifyChatGptAccount(rpc);
+    return await read(rpc);
   } finally {
     rpc.close();
   }

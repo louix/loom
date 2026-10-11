@@ -104,6 +104,7 @@ import { estimateTokens, knownContextLimit } from "@loom/core/tokens";
 import { probeOpenAiModels } from "./model-catalog.ts";
 import { ModelCatalogueCache } from "./model-catalogue-cache.ts";
 import { CatalogueCancelled, ModelCatalogues } from "./model-catalogues.ts";
+import { PlanUsageRefresher, type PlanUsageRoute, refreshPlanUsage } from "./plan-usage.ts";
 import { modelEfforts, type ModelCatalogue } from "@loom/core/model-catalogue";
 import { resolveCodexHome } from "../../../../connectors/chatgpt/src/codex-home.ts";
 import { readCodexAccess } from "./codex-auth.ts";
@@ -306,6 +307,16 @@ export class Daemon {
   /** Providers whose start-up discovery has not begun yet — reported as
    *  loading, so a client that connects first shows a loader, not a stub list. */
   readonly #catalogueStartup = new Set<string>();
+  /** Refreshes an account's plan windows when a snapshot would show them stale. */
+  readonly #planUsage = new PlanUsageRefresher({
+    refresh: (scope, provider, signal) =>
+      refreshPlanUsage(this.#planUsageRoute(scope, provider), signal),
+    onError: (scope, error) =>
+      this.#log.debug("plan usage refresh failed", {
+        scope: scope.slice(0, 8),
+        err: error instanceof Error ? error.message : String(error),
+      }),
+  });
   /** Last text sent to each live session — the undo picker's turn snippets. */
   readonly #lastSend = new Map<string, string>();
   /** Prompt-cache TTL last *observed* per session, in minutes — the dedupe key
@@ -824,6 +835,7 @@ export class Daemon {
       await settledWithin(drained, SHUTDOWN_GRACE_MS);
       // Discovery probes first: their utility workers belong to the providers.
       await this.#catalogues.close();
+      await this.#planUsage.close();
       await this.#providers.close().catch((error) => {
         this.#log.warn("provider shutdown failed", { error: String(error) });
       });
@@ -1109,8 +1121,10 @@ export class Daemon {
     if (subs.length > 0) out = { ...out, subagents: subs };
     const bgTasks = this.#sessions.backgroundTasksOf(s.id);
     if (bgTasks.length > 0) out = { ...out, backgroundTasks: bgTasks };
-    const rateLimits = this.#registry.store.accountUsage(this.#accountScope(s.provider));
+    const scope = this.#accountScope(s.provider);
+    const rateLimits = this.#registry.store.accountUsage(scope);
     if (Object.keys(rateLimits).length > 0) out = { ...out, rateLimits };
+    this.#notePlanUsage(scope, s.provider);
     // A compaction holds the op gate for its whole (multi-minute) run; surface
     // it on the snapshot so a freshly attached client (reopened TUI, second
     // window) still shows "compacting…" — `compact_progress` beats are not
@@ -3160,6 +3174,54 @@ export class Daemon {
     else if (profile) identity = ["claude-profile", profile.dir, account?.loginMethod];
     else if (p) identity = [p.sdk, p.baseUrl, p.configDir || provider, resolveApiKey(p)];
     return createHash("sha256").update(JSON.stringify(identity)).digest("hex");
+  }
+
+  /** Whether `provider` bills a subscription plan whose windows Loom shows:
+   *  a Claude profile, or a Codex (ChatGPT) account. */
+  #hasPlan(provider: string): boolean {
+    return (
+      this.config.claudeProfiles.some((p) => claudeProfileId(p) === provider) ||
+      this.config.providers.aisdk[provider]?.sdk === "chatgpt"
+    );
+  }
+
+  /** A snapshot is showing `scope`'s plan windows: refresh them in the
+   *  background when they are stale. Never blocks the caller. */
+  #notePlanUsage(scope: string, provider: string): void {
+    if (this.#stopping || !this.#hasPlan(provider)) return;
+    this.#planUsage.observe(scope, provider, this.#registry.store.accountUsageStale(scope));
+  }
+
+  /** Where `scope`'s plan windows can be read now: a live session on the
+   *  account, else a metadata probe through `provider` on the host. */
+  #planUsageRoute(scope: string, provider: string): PlanUsageRoute {
+    const live = this.#sessions.ids().filter((id) => {
+      const snap = this.#registry.get(id);
+      return (
+        !!snap &&
+        !this.#sessions.isEnded(id) &&
+        this.#hasPlan(snap.provider) &&
+        this.#accountScope(snap.provider) === scope
+      );
+    });
+    return {
+      live,
+      refreshLive: (id) => this.#sessions.refreshPlanUsage(id),
+      // Standalone (test / embedded) daemons never spawn a provider CLI unasked.
+      ...(this.#standalone
+        ? {}
+        : {
+            probe: async (signal: AbortSignal) => {
+              const p = await this.#providers.get(provider);
+              return p.readPlanUsage ? await p.readPlanUsage(signal) : [];
+            },
+          }),
+      record: (windows) => {
+        if (this.#stopping) return;
+        for (const w of windows) this.#registry.store.recordAccountUsage(scope, w);
+        this.#publishState();
+      },
+    };
   }
 
   /** Whether `providerId`'s adapter can `undo` — its real `capabilities.rewind`

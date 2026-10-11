@@ -8,7 +8,7 @@ import {
 } from "./local-environment.ts";
 import { sessionGitIdentity, type SessionGitIdentity } from "../config/git-identity.ts";
 import type { TranscriptStore } from "../../../../core/src/transcript.ts";
-import type { HarnessEvent } from "../../../../core/src/events.ts";
+import type { HarnessEvent, PlanWindow } from "../../../../core/src/events.ts";
 import { DeliveryUncertainError, type SendOptions } from "../../../../core/src/message-queue.ts";
 import type {
   AdapterSnapshot,
@@ -280,6 +280,9 @@ export class RemoteWorkerSession implements AgentSession {
   async setBase(base: string): Promise<void> {
     await this.#request({ method: "setBase", args: [base] });
   }
+  async refreshPlanUsage(): Promise<void> {
+    await this.#request({ method: "refreshPlanUsage", args: [] });
+  }
   async interrupt(): Promise<void> {
     await this.#request({ method: "interrupt", args: [] });
   }
@@ -299,6 +302,11 @@ export class RemoteWorkerSession implements AgentSession {
     const frame = await this.#request({ method: "listPersistedSessions", args: [] }, 20_000);
     if (frame.kind !== "sessions") throw new Error("invalid enumeration response");
     return frame.sessions;
+  }
+  async readPlanUsage(): Promise<PlanWindow[]> {
+    const frame = await this.#request({ method: "readPlanUsage", args: [] }, 20_000);
+    if (frame.kind !== "planUsage") throw new Error("invalid plan usage response");
+    return frame.windows;
   }
 
   close(reason: HostStopReason = "session_close"): Promise<void> {
@@ -363,6 +371,7 @@ export class RemoteWorkerSession implements AgentSession {
       initialize: "ready",
       listModels: "models",
       listPersistedSessions: "sessions",
+      readPlanUsage: "planUsage",
     };
     const expected = kinds[command.method] ?? "response";
     this.#pending.set(id, { resolve: d.resolve, reject: d.reject, timer, expected });
@@ -399,6 +408,7 @@ export class RemoteWorkerSession implements AgentSession {
         case "ready":
         case "models":
         case "sessions":
+        case "planUsage":
         case "response": {
           const p = this.#pending.get(f.id);
           if (!p) throw new Error("unexpected worker response");
@@ -554,6 +564,10 @@ export class WorkerProvider implements AgentProvider {
   async listModels(signal?: AbortSignal): Promise<DiscoveredModel[]> {
     return this.#utility("discovery", (s) => s.listModels(), signal);
   }
+  /** The account's plan windows, from a utility worker like {@link listModels}. */
+  async readPlanUsage(signal?: AbortSignal): Promise<PlanWindow[]> {
+    return this.#utility("usage", (s) => s.readPlanUsage(), signal);
+  }
   async #utility<T>(
     role: WorkerRole,
     run: (session: RemoteWorkerSession) => Promise<T>,
@@ -570,7 +584,7 @@ export class WorkerProvider implements AgentProvider {
       role,
     );
     const cancelled = () =>
-      signal?.reason instanceof Error ? signal.reason : new Error("Model discovery cancelled.");
+      signal?.reason instanceof Error ? signal.reason : new Error(`Worker ${role} cancelled.`);
     const abort = () => session.abort(cancelled());
     signal?.addEventListener("abort", abort, { once: true });
     try {

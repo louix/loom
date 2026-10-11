@@ -437,6 +437,19 @@ export const rateLimitEventSchema = harnessEventBaseSchema.extend({
 export type RateLimitEvent = z.infer<typeof rateLimitEventSchema>;
 
 /**
+ * One plan window read outside any session — an account probe's answer. The
+ * reading a `rate_limit` event carries, without the session it came through.
+ */
+export const planWindowSchema = rateLimitEventSchema.pick({
+  ts: true,
+  status: true,
+  window: true,
+  utilization: true,
+  resetsAt: true,
+});
+export type PlanWindow = z.infer<typeof planWindowSchema>;
+
+/**
  * The agent called one of Loom's agent tools (`loom-agents`: start a child,
  * message it, read it, …). Only the daemon can act on its fleet, so the
  * adapter parks the tool call and the daemon answers it through

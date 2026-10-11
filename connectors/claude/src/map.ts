@@ -17,6 +17,7 @@ import type {
   BackgroundTaskInfo,
   BackgroundTaskKind,
   HarnessEvent,
+  PlanWindow,
   TokenUsage,
 } from "@loom/core/events";
 
@@ -140,6 +141,32 @@ const planStatus = (utilization: number): "allowed" | "allowed_warning" | "rejec
   if (utilization >= 100) return "rejected";
   if (utilization >= 80) return "allowed_warning";
   return "allowed";
+};
+
+/**
+ * The plan windows in a structured `/usage` (`get_usage`) response, read at
+ * `ts`. Empty when plan limits don't apply (`rate_limits_available: false`).
+ */
+export const planWindows = (
+  resp: SdkGetUsageResponse | null | undefined,
+  ts: number,
+): PlanWindow[] => {
+  const rl = resp?.rate_limits;
+  if (!resp?.rate_limits_available || !rl) return [];
+  const out: PlanWindow[] = [];
+  for (const window of PLAN_WINDOWS) {
+    const w = rl[window];
+    if (!w || typeof w.utilization !== "number") continue;
+    const resetsAt = w.resets_at ? Date.parse(w.resets_at) : Number.NaN;
+    out.push({
+      ts,
+      status: planStatus(w.utilization),
+      window,
+      utilization: w.utilization,
+      ...(Number.isFinite(resetsAt) ? { resetsAt } : {}),
+    });
+  }
+  return out;
 };
 
 // --- accounting state ------------------------------------------------------
@@ -459,23 +486,8 @@ export class ClaudeEventMapper {
    * authoritative `rejected` / `allowed_warning` the moment the cap bites.
    */
   mapPlanUsage(resp: SdkGetUsageResponse | null | undefined): HarnessEvent[] {
-    const rl = resp?.rate_limits;
-    if (!resp?.rate_limits_available || !rl) return [];
-    const out: HarnessEvent[] = [];
-    for (const window of PLAN_WINDOWS) {
-      const w = rl[window];
-      if (!w || typeof w.utilization !== "number") continue;
-      const resetsAt = w.resets_at ? Date.parse(w.resets_at) : Number.NaN;
-      out.push({
-        type: "rate_limit",
-        ...this.#base(null),
-        status: planStatus(w.utilization),
-        window,
-        utilization: w.utilization,
-        ...(Number.isFinite(resetsAt) ? { resetsAt } : {}),
-      });
-    }
-    return out;
+    const base = this.#base(null);
+    return planWindows(resp, base.ts).map((w) => ({ type: "rate_limit", ...base, ...w }));
   }
 
   #compactBoundary(m: SdkMsgLite): HarnessEvent[] {

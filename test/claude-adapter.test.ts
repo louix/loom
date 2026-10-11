@@ -1297,3 +1297,88 @@ test("every Claude session runs without the native sub-agent tool, created or re
     await resumed.close();
   }
 });
+
+const usageReport = (utilization: number) => ({
+  rate_limits_available: true,
+  rate_limits: {
+    five_hour: { utilization, resets_at: "2030-01-01T00:00:00Z" },
+    seven_day: { utilization: 3, resets_at: null },
+  },
+});
+
+test("readPlanUsage reads the plan windows through a metadata-only query and closes it", async () => {
+  let options: Record<string, unknown> | undefined;
+  let closed = false;
+  __setClaudeSdk({
+    query: (args) => {
+      options = args.options as Record<string, unknown>;
+      return Object.assign(fakeQuery(), {
+        close: () => {
+          closed = true;
+        },
+        usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET: async () => usageReport(42),
+      }) as never;
+    },
+  });
+  const windows = await new ClaudeProvider().readPlanUsage();
+  assert.deepEqual(
+    windows.map((w) => [w.window, w.utilization, w.status, w.resetsAt]),
+    [
+      ["five_hour", 42, "allowed", Date.parse("2030-01-01T00:00:00Z")],
+      ["seven_day", 3, "allowed", undefined],
+    ],
+  );
+  assert.equal(options?.persistSession, false);
+  assert.deepEqual(options?.settings, { disableAllHooks: true });
+  assert.deepEqual(options?.mcpServers, {});
+  assert.ok(closed);
+});
+
+test("readPlanUsage is empty for an account without a plan", async () => {
+  __setClaudeSdk({
+    query: () =>
+      Object.assign(fakeQuery(), {
+        usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET: async () => ({
+          rate_limits_available: false,
+          rate_limits: null,
+        }),
+      }) as never,
+  });
+  assert.deepEqual(await new ClaudeProvider().readPlanUsage(), []);
+});
+
+test("refreshPlanUsage polls a live session's plan windows past the per-turn throttle", async () => {
+  let polls = 0;
+  __setClaudeSdk({
+    query: () =>
+      Object.assign(fakeQuery(), {
+        usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET: async () =>
+          usageReport(++polls * 10),
+      }) as never,
+  });
+  const session = await new ClaudeProvider().createSession({
+    sessionId: "plan-refresh",
+    cwd: "/tmp",
+    prompt: "",
+    mode: "default",
+    mcpServers: [],
+  });
+  try {
+    const events = session.events()[Symbol.asyncIterator]();
+    const nextFiveHour = async () => {
+      for (;;) {
+        const { value, done } = await events.next();
+        if (done) throw new Error("stream ended");
+        if (value.type === "rate_limit" && value.window === "five_hour") return value;
+      }
+    };
+    // The start-up poll, then an on-demand one well inside the 60 s throttle.
+    const seen = [(await nextFiveHour()).utilization];
+    await session.refreshPlanUsage!();
+    seen.push((await nextFiveHour()).utilization);
+    assert.deepEqual(seen, [10, 20]);
+    assert.equal(polls, 2);
+  } finally {
+    await session.close();
+  }
+});

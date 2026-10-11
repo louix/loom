@@ -13,7 +13,8 @@ import { ChatGPTCatalog } from "./catalog.ts";
 import { CodexAppServerSession } from "./app-server.ts";
 import { CODEX_PERMISSION_MODES } from "./agent-modes.ts";
 import { resolveCodexHome, type CodexHome } from "./codex-home.ts";
-import { discoverCodexModels } from "./discovery.ts";
+import { discoverCodexModels, readCodexRateLimits } from "./discovery.ts";
+import type { PlanWindow } from "@loom/core/events";
 import { spawnCodex, type CodexLauncher } from "./launch.ts";
 import { localToolDispatcher, type ToolDispatcher } from "./tool-dispatch.ts";
 
@@ -231,6 +232,13 @@ class ChatGPTProvider implements AgentProvider {
   }
   listModels(): Promise<DiscoveredModel[]> {
     return this.#listModelsImpl(this.#launch);
+  }
+  readPlanUsage(): Promise<PlanWindow[]> {
+    return readCodexRateLimits({
+      cliPath: this.#codexCliPath,
+      codexHome: this.#codexHome,
+      launch: this.#launch,
+    });
   }
 }
 

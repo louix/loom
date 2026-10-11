@@ -366,6 +366,28 @@ test(
 );
 
 test(
+  "plan windows cross the worker: a usage probe answers, a live session polls",
+  { timeout: 15_000 },
+  async () => {
+    const provider = await WorkerProvider.create("fake", scripted);
+    assert.deepEqual(await provider.readPlanUsage(), [
+      { ts: 1, status: "allowed", window: "seven_day", utilization: 3 },
+    ]);
+    const s = await provider.createSession(opts("plan-usage"));
+    const it = s.events()[Symbol.asyncIterator]();
+    try {
+      await s.refreshPlanUsage!();
+      const ev = await next(it);
+      assert.equal(ev.type, "rate_limit");
+      if (ev.type === "rate_limit") assert.deepEqual([ev.window, ev.utilization], ["five_hour", 7]);
+    } finally {
+      await s.close();
+      await it.return?.();
+    }
+  },
+);
+
+test(
   "worker crash fails its session while its peer keeps running",
   { timeout: 15_000 },
   async () => {

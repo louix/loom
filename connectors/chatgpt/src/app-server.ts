@@ -740,6 +740,18 @@ export class CodexAppServerSession implements AgentSession {
     // Read per dynamic tool call.
     this.#base = base;
   }
+  /** Re-read the account's plan windows; they arrive as `rate_limit` events.
+   *  Not awaited: a slow usage endpoint must not hold the request. */
+  async refreshPlanUsage(): Promise<void> {
+    void this.#rpc
+      .request("account/rateLimits/read", {}, { timeoutMs: 10_000 })
+      .then((limits) => {
+        for (const event of rateLimitEvents(limits, this.id, now())) this.#events.push(event);
+      })
+      .catch(() => {
+        // Optional telemetry, as at start-up.
+      });
+  }
   /** loom `commit` handler for the case `@loom/runtime/policy`'s `policy()`
    *  says "ask" rather than "allow": raise a real `permission_request` and
    *  block on a human decision, the same as a native command/file approval,

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { transcriptMessageSchema } from "./transcript.ts";
-import { harnessEventSchema } from "./events.ts";
+import { harnessEventSchema, planWindowSchema } from "./events.ts";
 import { connectorWireConfigSchema } from "./connector.ts";
 import { decode } from "./schema.ts";
 import { sendOptionsSchema } from "./message-queue.ts";
@@ -21,7 +21,9 @@ import {
 // v4: `send` takes the queued input's `{ inputId, midTurn }`.
 // v5: `respondToAgentCall` answers a `loom-agents` tool call.
 // v6: `setBase` renames a live session's base.
-export const WORKER_VERSION = 6;
+// v7: `refreshPlanUsage` polls a live session's plan windows; a `usage`
+//     utility worker answers `readPlanUsage` with a `planUsage` frame.
+export const WORKER_VERSION = 7;
 export const MAX_FRAME_BYTES = 1024 * 1024;
 export const MAX_PENDING = 128;
 
@@ -52,6 +54,7 @@ export const workerRoleSchema = z.enum([
   "discovery",
   "enumeration",
   "capabilities",
+  "usage",
 ]);
 export type WorkerRole = z.infer<typeof workerRoleSchema>;
 export const workerBindingSchema = z.object({
@@ -95,10 +98,12 @@ export const workerCommandSchema = z.discriminatedUnion("method", [
   command("respondToPlan", z.tuple([z.string(), planDecisionSchema])),
   command("respondToAgentCall", z.tuple([z.string(), agentCallResultSchema])),
   command("setBase", z.tuple([z.string()])),
+  command("refreshPlanUsage", z.tuple([])),
   command("interrupt", z.tuple([])),
   command("close", z.tuple([])),
   command("listModels", z.tuple([])),
   command("listPersistedSessions", z.tuple([])),
+  command("readPlanUsage", z.tuple([])),
 ]);
 export type WorkerCommand = z.infer<typeof workerCommandSchema>;
 export const workerRequestSchema = workerCommandSchema.and(
@@ -138,6 +143,11 @@ export const workerFrameSchema = z.discriminatedUnion("kind", [
     models: z.array(discoveredModelSchema),
   }),
   z.object({ kind: z.literal("sessions"), id: z.int().positive(), sessions: z.array(resume) }),
+  z.object({
+    kind: z.literal("planUsage"),
+    id: z.int().positive(),
+    windows: z.array(planWindowSchema),
+  }),
   z.object({ kind: z.literal("end") }),
 ]);
 export type WorkerFrame = z.infer<typeof workerFrameSchema>;
