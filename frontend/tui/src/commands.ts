@@ -280,7 +280,7 @@ const COMMANDS = {
   viewlog: {
     scope: "view",
     keys: "o",
-    label: "view the active tab / pending request in $EDITOR",
+    label: "open in $EDITOR",
     description: "Open the active tab or the pending request in $EDITOR, read-only.",
   },
   chat: { scope: "view", keys: "1", label: "chat tab", description: "Show the session's chat." },
@@ -338,14 +338,15 @@ const COMMANDS = {
   doctor: {
     scope: "app",
     keys: "",
-    label: "doctor — tools, connectors, daemon",
+    label: "doctor",
     description: "Show the tools, connectors and daemon vitals a new session gets.",
   },
   prepareEnvironment: {
     scope: "app",
     keys: "",
-    label: "Prepare repo environment — warm dependency cache for future sessions",
-    description: "Run `loom vm prepare` with live output.",
+    label: "Prepare repo environment",
+    description:
+      "Warm the dependency cache for future sessions: runs `loom vm prepare` with live output.",
   },
   switchRepository: {
     scope: "app",
@@ -356,13 +357,13 @@ const COMMANDS = {
   logs: {
     scope: "app",
     keys: "",
-    label: "view the daemon + TUI logs in $EDITOR",
-    description: "Open the tail of both process logs, read-only.",
+    label: "view logs",
+    description: "Open the tail of the daemon and TUI logs in $EDITOR, read-only.",
   },
   gc: {
     scope: "app",
     keys: "",
-    label: "gc — remove worktrees of done sessions",
+    label: "gc worktrees",
     description: "Remove the worktrees of archived sessions; rows and branches stay.",
   },
   restart: {

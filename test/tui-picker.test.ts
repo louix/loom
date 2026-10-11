@@ -5,13 +5,15 @@ import { renderToString } from "ink";
 import { Picker } from "@loom/tui/components";
 import { makePicker } from "@loom/tui/overlay";
 
+// A list picker: a label with its hint at the right. The command palette
+// draws columns instead (see the palette tests in tui-render).
 const draw = (width: number, label: string, hint?: string): string =>
   renderToString(
     createElement(Picker, {
       picker: makePicker({
-        step: "command",
-        title: "commands",
-        dest: { t: "command", target: null },
+        step: "repository",
+        title: "repositories",
+        dest: { t: "repository" },
         items: [{ id: "example", label, ...(hint ? { hint } : {}) }],
       }),
       width,

@@ -1,9 +1,10 @@
 # Loom TUI — keybindings
 
 A small, consistent grammar. Learn the five rules and the keys fall out of them.
-Press `Space` for the command palette: every command, fuzzy-searchable, with
-its key. A command that can't run right now is still listed, dimmed, with the
-reason; Enter on it does nothing. Pressing a key whose command can't run shows
+Press `Space` for the command palette: every command, fuzzy-searchable by
+name, one row each in aligned columns — its key, its name, what it does. A
+command that can't run right now is still listed, after the rest, dimmed, with
+the reason in place of the description; Enter on it does nothing. Pressing a key whose command can't run shows
 the same reason as a notice. The palette, the footer, the keys and clicks on
 the footer all read one description per command, so they never disagree.
 

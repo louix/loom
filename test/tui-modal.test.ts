@@ -34,7 +34,8 @@ test("every picker floats over the fleet with the selected row and actions in vi
       );
       const lines = frame.split("\n");
       assert.equal(lines.length, rows);
-      assert.match(frame, /▍ choice 19/);
+      // The command palette puts a KEY column before the name.
+      assert.match(frame, step === "command" ? /▍ +choice 19/ : /▍ choice 19/);
       assert.match(frame, /enter pick · esc cancel/);
       const top = lines.findIndex((line) => line.includes("╭"));
       const bottom = lines.findIndex((line) => line.includes("╰"));

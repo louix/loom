@@ -209,7 +209,7 @@ describe("tui-render", { concurrency: 4 }, () => {
       assert.match(stdout.last, /interrupt/);
       stdin.feed("approve");
       await settle();
-      assert.match(stdout.last, /approve +a · No permission request pending/);
+      assert.match(stdout.last, /a +approve +No permission request pending/);
     } finally {
       app.unmount();
     }
@@ -3159,10 +3159,12 @@ test("the palette fits short and narrow viewports and keeps the last command rea
     id: a.id,
     label: a.label,
     hint: a.keys,
+    description: a.description,
     ...(a.disabled ? { disabled: a.disabled } : {}),
   }));
   for (const [width, height] of [
     [96, 38],
+    [50, 20],
     [28, 12],
   ]) {
     const at = (index: number) =>
@@ -3182,14 +3184,29 @@ test("the palette fits short and narrow viewports and keeps the last command rea
           { columns: width! },
         ),
       );
-    assert.ok(at(0).split("\n").length <= height!);
-    assert.match(at(0), /COMMANDS/);
+    const first = at(0);
+    assert.ok(first.split("\n").length <= height!);
+    assert.match(first, /COMMANDS/);
     const last = items.at(-1)!;
     const end = at(items.length - 1);
     assert.ok(end.split("\n").length <= height!);
     assert.match(end, new RegExp(last.label.slice(0, 8)));
-    // The highlighted row's reason replaces the key hints when it can't run.
-    if (last.disabled && width! > 40) assert.match(end, new RegExp(last.disabled.slice(0, 12)));
+    if (width! >= 50) {
+      // KEY, COMMAND, DESCRIPTION in aligned columns; a disabled row gives
+      // its reason where an available one describes itself.
+      const lines = first.split("\n");
+      const head = lines.find((l) => /KEY +COMMAND +DESCRIPTION/.test(l))!;
+      const row = lines.find((l) => /▍ i +interrupt +Stop the current turn/.test(l))!;
+      assert.ok(head && row, first);
+      assert.equal(row.indexOf("interrupt"), head.indexOf("COMMAND"));
+      assert.equal(row.indexOf("Stop"), head.indexOf("DESCRIPTION"));
+      assert.ok(last.disabled);
+      assert.match(end, new RegExp(`${last.label} +${last.disabled.slice(0, 12)}`));
+    } else {
+      // Too narrow for a description: the name gets the row.
+      assert.doesNotMatch(first, /DESCRIPTION|Stop the/);
+      assert.match(first, /▍ i +interrupt/);
+    }
   }
 });
 

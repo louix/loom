@@ -876,6 +876,7 @@ export const mkFleetHandle = ({
       id: a.id,
       label: a.label,
       ...(a.keys ? { hint: a.keys } : {}),
+      description: a.description,
       ...(a.disabled ? { disabled: a.disabled } : {}),
     }));
 

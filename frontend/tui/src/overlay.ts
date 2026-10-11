@@ -206,6 +206,8 @@ export interface PickItem {
   hint?: string;
   /** Extra text folded into the fuzzy match (a turn's user text for `undo`). */
   blob?: string;
+  /** What the item does — the command palette's DESCRIPTION column. */
+  description?: string;
   /** Why the item cannot be chosen now; shown, but Enter does nothing. */
   disabled?: string;
 }

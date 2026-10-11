@@ -7,6 +7,7 @@ import type { SessionTab } from "../../../core/src/session-inspection.ts";
  * pure projection of the narrow view its pane is handed — see `views.ts`.
  */
 import { memo, useMemo, type ReactNode } from "react";
+import stringWidth from "string-width";
 import { Box } from "ink";
 import {
   FloatingLayer,
@@ -59,6 +60,7 @@ import {
   pickerVisible,
   promptKind,
   type Confirm as ConfirmState,
+  type PickItem,
   type Picker as PickerState,
   type Prompt,
   type PromptKind,
@@ -1702,6 +1704,75 @@ const rowTone = (it: { disabled?: string }, on: boolean): ThemeColor => {
   return on ? "text" : "dim";
 };
 
+interface PaletteColumns {
+  /** Spaces after the KEY and COMMAND cells. */
+  gap: number;
+  keyW: number;
+  nameW: number;
+  /** Whether the row has room for a DESCRIPTION after the name. */
+  described: boolean;
+}
+
+/** Column widths from every row, not just the matches, so typing a filter
+ *  never shifts a column. COMMAND fits the longest name up to a cap; a narrow
+ *  palette gives the name the whole row and drops the description. */
+const paletteColumns = (items: readonly PickItem[], room: number): PaletteColumns => {
+  const gap = room < 56 ? 1 : 2;
+  const keyW = Math.max(3, ...items.map((it) => stringWidth(it.hint ?? "")));
+  const body = Math.max(1, room - 2 - keyW - gap);
+  const cap = Math.max(7, Math.min(26, Math.floor(body * 0.4)));
+  const nameW = Math.min(cap, Math.max(7, ...items.map((it) => stringWidth(it.label))));
+  const described = body - nameW - gap >= 16;
+  return { gap, keyW, nameW: described ? nameW : Math.max(1, body - gap), described };
+};
+
+const PaletteCell = ({
+  width,
+  gap,
+  children,
+}: {
+  width: number;
+  gap: number;
+  children: ReactNode;
+}): ReactNode => (
+  <Box width={width} marginRight={gap} flexShrink={0} overflow="hidden">
+    {children}
+  </Box>
+);
+
+/** One command: its key, its name, then what it does — or, while it cannot
+ *  run, why not: the line that explains a faint row. */
+const PaletteRow = ({
+  item,
+  on,
+  columns,
+}: {
+  item: PickItem;
+  on: boolean;
+  columns: PaletteColumns;
+}): ReactNode => (
+  <Box>
+    <Box flexShrink={0}>
+      <Text tone={on ? "accent" : "faint"}>{on ? "▍ " : "  "}</Text>
+    </Box>
+    <PaletteCell width={columns.keyW} gap={columns.gap}>
+      <Line tone={on && !item.disabled ? "accent" : "faint"}>{item.hint ?? ""}</Line>
+    </PaletteCell>
+    <PaletteCell width={columns.nameW} gap={columns.gap}>
+      <Line tone={rowTone(item, on)} bold={on}>
+        {item.label}
+      </Line>
+    </PaletteCell>
+    {columns.described ? (
+      <Box flexGrow={1} flexShrink={1} minWidth={0}>
+        <Line tone={item.disabled ? "faint" : "dim"}>
+          {item.disabled ?? item.description ?? ""}
+        </Line>
+      </Box>
+    ) : null}
+  </Box>
+);
+
 export const Picker = ({
   picker,
   width,
@@ -1716,7 +1787,10 @@ export const Picker = ({
   const room = Math.max(1, width - 2 - padding * 2);
   const vis = pickerVisible(picker);
   const current = pickerCurrent(picker);
-  const rows = Math.max(1, height - (compact ? 9 : 11));
+  // The command palette reads as a table: KEY, COMMAND, DESCRIPTION.
+  const columns = picker.step === "command" ? paletteColumns(picker.items, room) : null;
+  const header = columns !== null && !compact;
+  const rows = Math.max(1, height - (compact ? 9 : 11) - (header ? 1 : 0));
   const start = Math.max(
     0,
     Math.min(Math.max(0, vis.length - rows), picker.index - Math.floor(rows / 2)),
@@ -1749,6 +1823,18 @@ export const Picker = ({
           : `${vis.length}/${picker.items.length} match${vis.length === 1 ? "" : "es"}`}
       </Line>
       <Box height={1} />
+      {header ? (
+        <Box flexShrink={0}>
+          <Box width={2} flexShrink={0} />
+          <PaletteCell width={columns.keyW} gap={columns.gap}>
+            <Line tone="faint">KEY</Line>
+          </PaletteCell>
+          <PaletteCell width={columns.nameW} gap={columns.gap}>
+            <Line tone="faint">COMMAND</Line>
+          </PaletteCell>
+          {columns.described ? <Line tone="faint">DESCRIPTION</Line> : null}
+        </Box>
+      ) : null}
       <Box flexDirection="column" height={rows} flexShrink={0} overflow="hidden">
         {shown.length === 0
           ? [
@@ -1765,6 +1851,7 @@ export const Picker = ({
             ]
           : shown.map((it, i) => {
               const on = start + i === picker.index;
+              if (columns) return <PaletteRow key={it.id} item={it} on={on} columns={columns} />;
               return (
                 <Box key={it.id}>
                   <Box flexShrink={0}>
@@ -1930,7 +2017,11 @@ export const SelectionModal = ({
   const available = Math.max(1, rows - (rows >= 14 ? 2 : 0));
   const height =
     o.t === "picker"
-      ? Math.min(available, 11 + Math.max(1, Math.min(8, o.picker.items.length)))
+      ? Math.min(
+          available,
+          // The command palette's column header takes a row of its own.
+          (o.picker.step === "command" ? 12 : 11) + Math.max(1, Math.min(8, o.picker.items.length)),
+        )
       : Math.min(
           available,
           o.confirm.action === "deleteSession"
