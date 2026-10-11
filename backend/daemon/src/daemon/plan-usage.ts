@@ -9,10 +9,15 @@
  * refresh here, in the background; the fresh readings reach clients through the
  * normal snapshot publish.
  *
+ * Only windows a refresh can read again count (`SessionStore.planUsageState`),
+ * and the daemon judges staleness once per account per client-facing snapshot
+ * build (a state publish, `session.list`, `session.get`) — never for its own
+ * reads.
+ *
  * Per account scope: at most one refresh in flight, at most one every
  * {@link PLAN_USAGE_MIN_GAP_MS}, and a refresh that fails — or that came back
- * without making the windows fresh — doubles the gap, up to
- * {@link PLAN_USAGE_MAX_GAP_MS}.
+ * without making the windows fresh, or that read the same values again —
+ * doubles the gap, up to {@link PLAN_USAGE_MAX_GAP_MS}.
  */
 import type { PlanWindow } from "@loom/core/events";
 
@@ -60,14 +65,27 @@ export const refreshPlanUsage = async (
   return { via: "probe", windows: windows.length };
 };
 
+/** What a snapshot shows of an account's refreshable windows. */
+export interface PlanUsageView {
+  /** A refreshable window is missing, expired, aged out or without a utilization. */
+  stale: boolean;
+  /** Those windows' values (not when they were read), to tell a refresh that
+   *  changed something from one that read the same again. */
+  readings: string;
+}
+
 interface ScopeState {
   running: boolean;
   /** Epoch ms the last refresh started. */
   lastAt: number;
-  /** Consecutive refreshes that failed or left the windows stale. */
+  /** Consecutive refreshes that failed, left the windows stale, or changed
+   *  nothing. */
   failures: number;
-  /** The last refresh resolved; whether it helped shows on the next look. */
-  unconfirmed: boolean;
+  /** The readings as the last refresh started, while its outcome is still to
+   *  be judged (on the first look once it is due again); null once judged. */
+  before: string | null;
+  /** The readings last judged; fresh ones that differ came some other way. */
+  seen: string;
 }
 
 export class PlanUsageRefresher {
@@ -104,30 +122,39 @@ export class PlanUsageRefresher {
 
   /**
    * A client is being shown `scope`'s windows. Stale ones start a background
-   * refresh when the throttle allows; fresh ones clear the backoff. Never
-   * blocks and never throws.
+   * refresh when the throttle allows. A refresh helped once the windows are
+   * fresh and read differently from before it, which clears the backoff; if
+   * they do not by the time it is due again — still stale, or the same values
+   * read again — the gap doubles. Fresh readings that changed some other way
+   * (a session's own poll) clear it too. Never blocks and never throws.
    */
-  observe(scope: string, provider: string, stale: boolean): void {
-    let st = this.#scopes.get(scope);
-    if (!st) {
-      if (!stale) return;
-      st = { running: false, lastAt: -Infinity, failures: 0, unconfirmed: false };
-      this.#scopes.set(scope, st);
-    }
-    if (!stale) {
-      st.failures = 0;
-      st.unconfirmed = false;
-      return;
-    }
+  observe(scope: string, provider: string, view: PlanUsageView): void {
+    const known = this.#scopes.get(scope);
+    if (!known && !view.stale) return;
+    const st: ScopeState = known ?? {
+      running: false,
+      lastAt: -Infinity,
+      failures: 0,
+      before: null,
+      seen: view.readings,
+    };
+    this.#scopes.set(scope, st);
     if (st.running || this.#closing.signal.aborted) return;
     const now = this.#now();
-    // Due again and still stale: the last refresh did not help.
-    if (st.unconfirmed && now >= st.lastAt + this.#gap(st.failures)) {
-      st.unconfirmed = false;
-      st.failures++;
+    const due = () => now >= st.lastAt + this.#gap(st.failures);
+    if (st.before !== null) {
+      if (!view.stale && view.readings !== st.before) st.failures = 0;
+      // Its readings have had until it is due again to land.
+      else if (due()) st.failures++;
+      else return;
+      st.before = null;
+      st.seen = view.readings;
+    } else if (!view.stale && view.readings !== st.seen) {
+      st.failures = 0;
+      st.seen = view.readings;
     }
-    if (now < st.lastAt + this.#gap(st.failures)) return;
-    this.#start(scope, provider, st, now);
+    if (!view.stale || !due()) return;
+    this.#start(scope, provider, st, now, view.readings);
   }
 
   /** Whether a refresh of `scope` is running. */
@@ -145,10 +172,10 @@ export class PlanUsageRefresher {
     return Math.min(this.#minGapMs * 2 ** Math.min(failures, 30), this.#maxGapMs);
   }
 
-  #start(scope: string, provider: string, st: ScopeState, now: number): void {
+  #start(scope: string, provider: string, st: ScopeState, now: number, readings: string): void {
     st.running = true;
     st.lastAt = now;
-    st.unconfirmed = false;
+    st.before = null;
     const signal = AbortSignal.any([this.#closing.signal, AbortSignal.timeout(this.#timeoutMs)]);
     // Shutdown waits for the source itself (a probe's subprocess) to settle.
     const work = (async () => await this.#refresh(scope, provider, signal))();
@@ -170,7 +197,7 @@ export class PlanUsageRefresher {
               st.failures,
               Math.ceil(Math.log2(this.#maxGapMs / this.#minGapMs)),
             );
-          } else st.unconfirmed = true;
+          } else st.before = readings;
         } catch (error) {
           st.failures++;
           if (!this.#closing.signal.aborted) this.#onError(scope, error);

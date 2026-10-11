@@ -456,4 +456,11 @@ export const MIGRATIONS: string[] = [
     CHECK (queue_hold_by IN ('user', 'supervisor'));
   UPDATE sessions SET queue_hold_by = 'user' WHERE queue_hold = 'interrupt';
   `,
+  // 35 — a plan window a full on-demand reading has reported (Claude's
+  // `get_usage`, Codex's account read): one a refresh can read again. Only
+  // these count when deciding whether an account's windows need a refresh;
+  // a streamed-only row (`default`, a sparse notification) never does.
+  /* sql */ `
+  ALTER TABLE account_usage ADD COLUMN polled INTEGER NOT NULL DEFAULT 0;
+  `,
 ];

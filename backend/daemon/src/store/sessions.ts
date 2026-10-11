@@ -16,8 +16,12 @@ import type { ModelUsage, SessionSnapshot } from "@loom/core/wire";
 import { supervisionCycle } from "@loom/core/agents";
 import { type Db, withTransaction } from "./db.ts";
 
-/** How long a plan window with no reset time is shown after it was read. */
-const UNTIMED_WINDOW_MS = 5 * 60_000;
+/** How long a plan window with no reset time and no utilization (a streamed
+ *  status) is shown after it was read. */
+const UNTIMED_STATUS_MS = 5 * 60_000;
+/** How long a plan window with no reset time but a utilization is shown, and
+ *  counts as fresh, after it was read: nothing says when it moves on. */
+export const UNTIMED_READING_MS = 30 * 60_000;
 
 // ---------------------------------------------------------------------------
 // Row shapes (snake_case, straight from SQLite)
@@ -474,8 +478,10 @@ export class SessionStore {
   recordAccountUsage(scope: string, ev: PlanWindow | RateLimitEvent): void {
     this.#db
       .prepare(`INSERT INTO account_usage
-      (scope, window, status, utilization, resets_at, observed_at) VALUES (?, ?, ?, ?, ?, ?)
+      (scope, window, status, utilization, resets_at, observed_at, polled)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(scope, window) DO UPDATE SET status = excluded.status,
+        polled = MAX(account_usage.polled, excluded.polled),
         utilization = CASE
           WHEN excluded.utilization IS NOT NULL THEN excluded.utilization
           WHEN excluded.resets_at IS NULL OR excluded.resets_at = account_usage.resets_at
@@ -499,14 +505,16 @@ export class SessionStore {
         ev.utilization ?? null,
         ev.resetsAt ?? null,
         ev.ts,
+        ev.polled ? 1 : 0,
       );
   }
 
   accountUsage(scope: string, now = Date.now()): SessionSnapshot["rateLimits"] {
     const rows = this.#db
       .prepare(`SELECT * FROM account_usage WHERE scope = ?
-      AND (resets_at > ? OR (resets_at IS NULL AND observed_at > ?))`)
-      .all(scope, now, now - UNTIMED_WINDOW_MS);
+      AND (resets_at > ? OR (resets_at IS NULL AND observed_at >
+        CASE WHEN utilization IS NULL THEN ? ELSE ? END))`)
+      .all(scope, now, now - UNTIMED_STATUS_MS, now - UNTIMED_READING_MS);
     return Object.fromEntries(
       rows.map((r) => [
         String(r["window"]),
@@ -522,24 +530,38 @@ export class SessionStore {
 
   /**
    * Whether `scope`'s plan windows need a fresh read before a client is shown
-   * them: none was ever read, one is hidden by {@link accountUsage} (its reset
-   * passed, or an untimed reading aged out), or one shows without a
-   * utilization. Readings untouched for a month are forgotten rather than
-   * chased — a window the provider stopped reporting.
+   * them, and what they read now. Only windows a refresh can read again count
+   * (`polled`: a full on-demand reading has reported them); a streamed-only
+   * row — `default`, a sparse notification's bucket — never makes the account
+   * stale, as no refresh could fill it. Stale: no such window was ever read,
+   * one is hidden by {@link accountUsage} (its reset passed, or an untimed
+   * reading aged out), or one shows without a utilization. Readings untouched
+   * for a month are forgotten rather than chased — a window the provider
+   * stopped reporting.
+   *
+   * `readings` fingerprints those windows' values (not when they were read),
+   * so a refresher can tell a refresh that changed something from one that
+   * only read the same again.
    */
-  accountUsageStale(scope: string, now = Date.now()): boolean {
+  planUsageState(scope: string, now = Date.now()): { stale: boolean; readings: string } {
     const rows = this.#db
       .prepare(
-        "SELECT utilization, resets_at, observed_at FROM account_usage WHERE scope = ? AND observed_at > ?",
+        "SELECT window, status, utilization, resets_at, observed_at FROM account_usage " +
+          "WHERE scope = ? AND polled = 1 AND observed_at > ? ORDER BY window",
       )
       .all(scope, now - 31 * 24 * 60 * 60_000);
-    if (rows.length === 0) return true;
-    return rows.some((r) => {
+    const readings = JSON.stringify(
+      rows.map((r) => [r["window"], r["status"], r["utilization"], r["resets_at"]]),
+    );
+    if (rows.length === 0) return { stale: true, readings };
+    const stale = rows.some((r) => {
       const resetsAt = r["resets_at"] === null ? null : Number(r["resets_at"]);
-      const shown =
-        resetsAt === null ? Number(r["observed_at"]) > now - UNTIMED_WINDOW_MS : resetsAt > now;
-      return !shown || r["utilization"] === null;
+      if (r["utilization"] === null) return true;
+      return resetsAt === null
+        ? Number(r["observed_at"]) <= now - UNTIMED_READING_MS
+        : resetsAt <= now;
     });
+    return { stale, readings };
   }
 
   /**

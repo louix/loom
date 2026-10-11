@@ -744,6 +744,55 @@ describe("loom agents", { concurrency: 4 }, () => {
     }
   });
 
+  nodeTest(
+    "plan windows are judged once per account per client snapshot build, never for an agent's reads",
+    async () => {
+      const provider = new FakeProvider();
+      const h = await makeHarness({
+        config: CONFIG,
+        connectors: {
+          "@loom/connector-claude": async () => ({ createProvider: () => provider }),
+        },
+      });
+      const c = await LoomClient.connect({
+        repoRoot: h.repoRoot,
+        sockPath: h.sockPath,
+        autospawn: false,
+      });
+      try {
+        const env: Env = { h, c, provider };
+        const lead = await idleSession(env, { provider: "claude" });
+        const child = await startChild(env, lead.fs);
+        assert.equal((await get(c, child.id)).provider, "claude", "one account for both");
+        const store = h.daemon.registry.store;
+        const judged: string[] = [];
+        const real = store.planUsageState.bind(store);
+        store.planUsageState = (scope, now) => {
+          judged.push(scope);
+          return real(scope, now);
+        };
+        await delay(50);
+        judged.length = 0;
+        // Two sessions on one account: one judgement per build.
+        await c.request("session.list", {});
+        assert.equal(judged.length, 1);
+        await get(c, lead.id);
+        assert.equal(judged.length, 2);
+        // A supervisor reading its children is the daemon's own read.
+        judged.length = 0;
+        const status = await lead.fs.callAgentTool("agent_status");
+        assert.equal(status.ok, true, status.text);
+        assert.deepEqual(judged, [], "agent_status judges nothing");
+        const read = await lead.fs.callAgentTool("agent_read", { id: child.id });
+        assert.equal(read.ok, true, read.text);
+        assert.deepEqual(judged, [], "agent reads judge nothing");
+      } finally {
+        await c.close();
+        await h.cleanup();
+      }
+    },
+  );
+
   test("a user's interrupt joining the supervisor's own is reported", async (env) => {
     const lead = await idleSession(env);
     const child = await startChild(env, lead.fs);

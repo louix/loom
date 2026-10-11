@@ -1913,13 +1913,14 @@ test("ChatGPT plan limits are read on start/resume and refreshed by account noti
           if (event.type === "rate_limit") events.push(event);
           if (events.length === 4) break;
         }
+        // The account read's windows are polled; the update's are not.
         assert.deepEqual(
-          events.map((e) => [e.window, e.utilization, e.status, e.resetsAt]),
+          events.map((e) => [e.window, e.utilization, e.status, e.resetsAt, e.polled ?? false]),
           [
-            ["codex 5h", 20, "allowed", 2_000_000_000_000],
-            ["codex 7d", 85, "allowed_warning", 2_000_000_000_000],
-            ["gpt-6-astra 5h", 45, "allowed", 2_000_000_000_000],
-            ["gpt-6-astra 5h", 100, "rejected", 2_000_000_000_000],
+            ["codex 5h", 20, "allowed", 2_000_000_000_000, true],
+            ["codex 7d", 85, "allowed_warning", 2_000_000_000_000, true],
+            ["gpt-6-astra 5h", 45, "allowed", 2_000_000_000_000, true],
+            ["gpt-6-astra 5h", 100, "rejected", 2_000_000_000_000, false],
           ],
         );
         assert.ok(events.every((e) => e.sessionId === "limits"));
@@ -2011,8 +2012,11 @@ test("a live ChatGPT session re-reads its plan windows on refreshPlanUsage", asy
 
 test("ChatGPT legacy limits preserve percentages and ignore malformed or absent windows", async () => {
   const { rateLimitEvents } = await import("../connectors/chatgpt/src/rate-limits.ts");
-  assert.deepEqual(rateLimitEvents(null, "s", 1), []);
-  assert.deepEqual(rateLimitEvents({ rateLimits: { primary: { usedPercent: "50" } } }, "s", 1), []);
+  assert.deepEqual(rateLimitEvents(null, "s", 1, "update"), []);
+  assert.deepEqual(
+    rateLimitEvents({ rateLimits: { primary: { usedPercent: "50" } } }, "s", 1, "update"),
+    [],
+  );
   assert.deepEqual(
     rateLimitEvents(
       {
@@ -2023,6 +2027,7 @@ test("ChatGPT legacy limits preserve percentages and ignore malformed or absent 
       },
       "s",
       1,
+      "read",
     ),
     [
       {
@@ -2032,6 +2037,7 @@ test("ChatGPT legacy limits preserve percentages and ignore malformed or absent 
         window: "codex primary",
         utilization: 0,
         status: "allowed",
+        polled: true,
       },
     ],
   );

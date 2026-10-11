@@ -949,13 +949,15 @@ export class Daemon {
    */
   #stateFrame(refreshGitFor?: string): StatePush {
     if (refreshGitFor !== undefined) void this.#refreshGitFacts(refreshGitFor);
+    const rows = this.#registry.listSorted();
+    this.#notePlanUsage(rows);
     return {
       kind: "push",
       type: "state",
       state: {
         daemon: this.#daemonInfo(),
         providers: this.#providerList(),
-        sessions: this.#registry.listSorted().map((s) => this.#enrich(s, false)),
+        sessions: rows.map((s) => this.#enrich(s, false)),
         agentProfiles: profileInfos(this.config.agents),
       },
     };
@@ -1135,7 +1137,6 @@ export class Daemon {
     const scope = this.#accountScope(s.provider);
     const rateLimits = this.#registry.store.accountUsage(scope);
     if (Object.keys(rateLimits).length > 0) out = { ...out, rateLimits };
-    this.#notePlanUsage(scope, s.provider);
     // A compaction holds the op gate for its whole (multi-minute) run; surface
     // it on the snapshot so a freshly attached client (reopened TUI, second
     // window) still shows "compacting…" — `compact_progress` beats are not
@@ -2631,7 +2632,9 @@ export class Daemon {
     }
   }
 
+  /** Client-facing snapshots of `list` (`session.list`). */
   #enrichAll(list: SessionSnapshot[]): SessionSnapshot[] {
+    this.#notePlanUsage(list);
     return list.map((s) => this.#enrich(s));
   }
 
@@ -3199,11 +3202,23 @@ export class Daemon {
     );
   }
 
-  /** A snapshot is showing `scope`'s plan windows: refresh them in the
-   *  background when they are stale. Never blocks the caller. */
-  #notePlanUsage(scope: string, provider: string): void {
-    if (this.#stopping || !this.#hasPlan(provider)) return;
-    this.#planUsage.observe(scope, provider, this.#registry.store.accountUsageStale(scope));
+  /**
+   * Client-facing snapshots of `rows` are being built: refresh the plan
+   * windows they show, in the background, where they are stale. Judged once
+   * per account, however many sessions share it; the daemon's own reads (a
+   * Loom agent's view of its children, keep-warm) never call this. Never
+   * blocks the caller.
+   */
+  #notePlanUsage(rows: Iterable<SessionSnapshot>): void {
+    if (this.#stopping) return;
+    const scopes = new Map<string, string>();
+    for (const row of rows) {
+      if (!this.#hasPlan(row.provider)) continue;
+      const scope = this.#accountScope(row.provider);
+      if (!scopes.has(scope)) scopes.set(scope, row.provider);
+    }
+    for (const [scope, provider] of scopes)
+      this.#planUsage.observe(scope, provider, this.#registry.store.planUsageState(scope));
   }
 
   /** Where `scope`'s plan windows can be read now: a live session on the
@@ -4153,6 +4168,7 @@ export class Daemon {
       const id = params.id;
       const s = this.#registry.get(id);
       if (!s) throw new RpcError("not_found", `no such session: ${id}`);
+      this.#notePlanUsage([s]);
       return this.#enrich(s);
     });
 

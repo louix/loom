@@ -5,8 +5,20 @@ const record = (value: unknown): Record<string, unknown> | undefined =>
     ? (value as Record<string, unknown>)
     : undefined;
 
+/**
+ * Where a payload came from: an `account/rateLimits/read` answer (`read`)
+ * holds every bucket, and an on-demand refresh can repeat it, so its windows
+ * are `polled`; an `account/rateLimits/updated` notification (`update`) holds
+ * one sparse bucket.
+ */
+export type RateLimitSource = "read" | "update";
+
 /** Account reads contain all buckets; rolling notifications contain one sparse bucket. */
-export const rateLimitWindows = (payload: unknown, ts: number): PlanWindow[] => {
+export const rateLimitWindows = (
+  payload: unknown,
+  ts: number,
+  source: RateLimitSource,
+): PlanWindow[] => {
   const response = record(payload);
   const buckets = record(response?.["rateLimitsByLimitId"]);
   const entries =
@@ -43,6 +55,7 @@ export const rateLimitWindows = (payload: unknown, ts: number): PlanWindow[] => 
         ...(typeof reset === "number" && Number.isFinite(reset) && reset > 0
           ? { resetsAt: reset * 1000 }
           : {}),
+        ...(source === "read" ? { polled: true as const } : {}),
       });
     }
   }
@@ -50,5 +63,10 @@ export const rateLimitWindows = (payload: unknown, ts: number): PlanWindow[] => 
 };
 
 /** {@link rateLimitWindows} as a session's `rate_limit` events. */
-export const rateLimitEvents = (payload: unknown, sessionId: string, ts: number): HarnessEvent[] =>
-  rateLimitWindows(payload, ts).map((w) => ({ type: "rate_limit", sessionId, ...w }));
+export const rateLimitEvents = (
+  payload: unknown,
+  sessionId: string,
+  ts: number,
+  source: RateLimitSource,
+): HarnessEvent[] =>
+  rateLimitWindows(payload, ts, source).map((w) => ({ type: "rate_limit", sessionId, ...w }));

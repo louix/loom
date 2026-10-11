@@ -573,7 +573,7 @@ export class CodexAppServerSession implements AgentSession {
     // Limits are optional telemetry: unavailable usage must not prevent a session.
     try {
       const limits = await this.#rpc.request("account/rateLimits/read", {}, { timeoutMs: 3000 });
-      for (const event of rateLimitEvents(limits, this.id, now())) this.#events.push(event);
+      for (const event of rateLimitEvents(limits, this.id, now(), "read")) this.#events.push(event);
     } catch {
       // Older servers and temporarily unavailable usage endpoints still support chat.
     }
@@ -746,7 +746,8 @@ export class CodexAppServerSession implements AgentSession {
     void this.#rpc
       .request("account/rateLimits/read", {}, { timeoutMs: 10_000 })
       .then((limits) => {
-        for (const event of rateLimitEvents(limits, this.id, now())) this.#events.push(event);
+        for (const event of rateLimitEvents(limits, this.id, now(), "read"))
+          this.#events.push(event);
       })
       .catch(() => {
         // Optional telemetry, as at start-up.
@@ -1294,7 +1295,7 @@ export class CodexAppServerSession implements AgentSession {
   }
   #notification(method: string, p: Record<string, unknown>): void {
     if (method === "account/rateLimits/updated") {
-      for (const event of rateLimitEvents(p, this.id, now())) this.#events.push(event);
+      for (const event of rateLimitEvents(p, this.id, now(), "update")) this.#events.push(event);
       return;
     }
     if (method === "thread/tokenUsage/updated") {

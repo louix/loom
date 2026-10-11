@@ -164,6 +164,7 @@ export const planWindows = (
       window,
       utilization: w.utilization,
       ...(Number.isFinite(resetsAt) ? { resetsAt } : {}),
+      polled: true,
     });
   }
   return out;

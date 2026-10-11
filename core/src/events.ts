@@ -433,6 +433,12 @@ export const rateLimitEventSchema = harnessEventBaseSchema.extend({
   utilization: z.number().optional(),
   /** When the window resets (epoch ms). */
   resetsAt: z.number().optional(),
+  /**
+   * A full on-demand reading of a plan window (Claude's `get_usage`, Codex's
+   * `account/rateLimits/read`): one an on-demand refresh can repeat. Absent on
+   * a streamed change-notification.
+   */
+  polled: z.literal(true).optional(),
 });
 export type RateLimitEvent = z.infer<typeof rateLimitEventSchema>;
 
@@ -446,6 +452,7 @@ export const planWindowSchema = rateLimitEventSchema.pick({
   window: true,
   utilization: true,
   resetsAt: true,
+  polled: true,
 });
 export type PlanWindow = z.infer<typeof planWindowSchema>;
 

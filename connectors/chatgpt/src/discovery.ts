@@ -96,6 +96,7 @@ export const readCodexRateLimits = (opts: CodexProbeOptions): Promise<PlanWindow
     rateLimitWindows(
       await rpc.request("account/rateLimits/read", {}, { timeoutMs: 10_000 }),
       Date.now(),
+      "read",
     ),
   );
 
