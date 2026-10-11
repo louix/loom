@@ -9,7 +9,8 @@
 import { commitInWorktree } from "@loom/core/commit";
 import { statusInWorktree } from "@loom/core/status";
 import { policy } from "@loom/runtime/policy";
-import type { PermissionDecision, SessionMode } from "@loom/core/types";
+import { isAgentTool } from "@loom/runtime/agent-tools";
+import type { AgentCallResult, PermissionDecision, SessionMode } from "@loom/core/types";
 
 export interface ToolDispatchContext {
   mode: SessionMode;
@@ -32,6 +33,9 @@ export interface ToolDispatchContext {
    *  machinery available, so `policy() === "ask"` falls back to an outright
    *  deny (see `localToolDispatcher`'s `commit` branch). */
   requestApproval?: (tool: string, args: Record<string, unknown>) => Promise<PermissionDecision>;
+  /** Hand a `loom-agents` call to the daemon (`agent_call`). Supplied by
+   *  `CodexAppServerSession`; omitted means the agent tools are unavailable. */
+  agentCall?: (tool: string, args: Record<string, unknown>) => Promise<AgentCallResult>;
 }
 
 export interface ToolDispatchResult {
@@ -88,6 +92,20 @@ export type ToolDispatcher = (
 export const localToolDispatcher: ToolDispatcher = async (tool, args, ctx) => {
   if (ctx.signal?.aborted) {
     return { ok: false, text: "cancelled: the turn was interrupted before this tool ran" };
+  }
+  // The agent tools act on the fleet, which only the daemon can: gated like
+  // `commit` when they change something, then handed over.
+  if (isAgentTool(tool)) {
+    if (!ctx.agentCall) return { ok: false, text: `${tool} is not available in this session` };
+    if (policy(ctx.mode, tool) !== "allow") {
+      if (!ctx.requestApproval)
+        return { ok: false, text: `${tool} needs approval in ${ctx.mode} mode` };
+      const decision = await ctx.requestApproval(tool, args);
+      if (decision.behavior !== "allow")
+        return { ok: false, text: decision.message ?? `${tool} was denied.` };
+      if (ctx.signal?.aborted) return { ok: false, text: "cancelled: the turn was interrupted" };
+    }
+    return await ctx.agentCall(tool, args);
   }
   if (tool === "commit" && policy(ctx.mode, tool) !== "allow") {
     if (!ctx.requestApproval) {

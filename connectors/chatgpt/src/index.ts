@@ -72,6 +72,8 @@ export const codeModeInstructions = (
   askUserMounted: boolean,
   repoInstructions: string | null,
   toolPreferences = "",
+  /** An agent profile's prompt (`loom-agents`), last. */
+  agentPrompt = "",
 ): string =>
   [
     toolSteer(workspaceRoot, {
@@ -81,6 +83,7 @@ export const codeModeInstructions = (
     }),
     toolPreferences,
     repoInstructions,
+    agentPrompt,
   ]
     .filter((part): part is string => part !== null && part.length > 0)
     .join("\n\n");
@@ -164,6 +167,7 @@ class ChatGPTProvider implements AgentProvider {
               mounted,
               opts.repoInstructions ?? null,
               mcpToolPreferences(opts.mcpServers),
+              opts.agentPrompt,
             ),
       },
       this.#codexHome,
@@ -192,6 +196,7 @@ class ChatGPTProvider implements AgentProvider {
           false,
           ref.repoInstructions ?? null,
           mcpToolPreferences(ref.mcpServers ?? []),
+          ref.agentPrompt,
         ),
       },
       this.#codexHome,

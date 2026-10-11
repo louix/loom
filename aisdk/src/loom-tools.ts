@@ -25,8 +25,33 @@ import {
   STATUS_DESC,
   statusShape,
 } from "@loom/runtime/loom-tools";
+import { AGENT_TOOL_NAMES, AGENT_TOOLS, type AgentToolName } from "@loom/runtime/agent-tools";
+import type { AgentCallResult } from "@loom/core/types";
 
 export type { LoomToolDeps };
+
+/**
+ * The `loom-agents` tools: each hands its call to `call`, which the session
+ * routes to the daemon as an `agent_call` event. A failed call throws, so the
+ * model sees an errored tool result rather than a plain one.
+ */
+export const buildAgentTools = (
+  call: (tool: AgentToolName, input: Record<string, unknown>) => Promise<AgentCallResult>,
+): ToolSet =>
+  Object.fromEntries(
+    AGENT_TOOL_NAMES.map((name) => [
+      name,
+      tool({
+        description: AGENT_TOOLS[name].description,
+        inputSchema: z.object(AGENT_TOOLS[name].shape),
+        execute: async (input) => {
+          const res = await call(name, input as Record<string, unknown>);
+          if (!res.ok) throw new Error(res.text);
+          return res.text;
+        },
+      }),
+    ]),
+  );
 
 export const buildLoomTools = (deps: LoomToolDeps): ToolSet => {
   return {

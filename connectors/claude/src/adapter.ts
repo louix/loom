@@ -35,10 +35,13 @@ import { AsyncChannel } from "@loom/core/channel";
 import { WorkerDiagnostic } from "@loom/core/worker";
 import { ClaudeEventMapper, baselineOf, type SdkGetUsageResponse } from "./map.ts";
 import { resolveClaudeCli } from "./cli.ts";
-import { buildLoomMcpServer } from "./loom-mcp.ts";
+import { buildAgentsMcpServer, buildLoomMcpServer } from "./loom-mcp.ts";
 import { PendingInteractions } from "@loom/runtime/pending";
+import { AgentCalls } from "@loom/runtime/agent-tools";
+import { LOOM_AGENTS_SERVER } from "@loom/core/agents";
 import type {
   AdapterSnapshot,
+  AgentCallResult,
   AgentProvider,
   AgentSession,
   CreateSessionOptions,
@@ -444,6 +447,7 @@ class ClaudeSession implements AgentSession {
   /** Normalized events out: SDK messages + permission prompts, merged. */
   #outbox = new AsyncChannel<HarnessEvent>();
   #pending = new PendingInteractions<PermissionResult | null, PermissionResult | null>();
+  readonly #agentCalls = new AgentCalls();
   #plans = new Map<string, string>();
   #interruptEpoch = 0;
   #contextPollEpoch = 0;
@@ -531,6 +535,13 @@ class ClaudeSession implements AgentSession {
     }
     opts = { ...opts };
     delete opts.initHooks;
+    // Folded in once, here: a restarted query (rewind, plan) reuses these opts.
+    if (opts.agentPrompt) {
+      opts.systemPromptAppend = [opts.systemPromptAppend, opts.agentPrompt]
+        .filter(Boolean)
+        .join("\n\n");
+      delete opts.agentPrompt;
+    }
     this.#taskIds.clear();
     this.#finishedTaskIds.clear();
     this.#backgroundTaskIds.clear();
@@ -638,6 +649,10 @@ class ClaudeSession implements AgentSession {
         askUser: (question, context) => this.#askUser(question, context),
       });
     }
+    if (opts.agentTools && !opts.oneShot)
+      mcpServers[LOOM_AGENTS_SERVER] = buildAgentsMcpServer((tool, input) =>
+        this.#agentCall(tool, input),
+      );
 
     const env = queryEnv({ promptCacheTtl, configDir });
     const queryEffort = opts.effort ? asQueryEffort(opts.effort) : undefined;
@@ -665,7 +680,16 @@ class ClaudeSession implements AgentSession {
       ...(opts.model ? { model: opts.model } : {}),
       ...(queryEffort ? { effort: queryEffort } : {}),
       ...(resume ? { resume } : {}),
-      disallowedTools: [...new Set([...NATIVE_SUBAGENT_TOOLS, ...(opts.disableTools ?? [])])],
+      disallowedTools: [
+        ...new Set([
+          ...NATIVE_SUBAGENT_TOOLS,
+          ...(opts.disableTools ?? []),
+          ...(opts.denyTools ?? []),
+        ]),
+      ],
+      // An agent profile's allow list narrows the built-in tools; MCP stays.
+      ...(opts.allowTools && !opts.oneShot ? { tools: opts.allowTools } : {}),
+      ...(opts.skills && !opts.oneShot ? { skills: opts.skills } : {}),
       ...(opts.settingSources && !opts.oneShot
         ? { settingSources: opts.settingSources as NonNullable<Options["settingSources"]> }
         : {}),
@@ -944,6 +968,7 @@ class ClaudeSession implements AgentSession {
       behavior: "deny",
       message: reason,
     });
+    this.#agentCalls.failAll(`(${reason})`);
     // An in-flight compaction is pending on the same process: interrupt /
     // stream-end / close all abandon it. The error event is what clients use
     // to clear the "compacting…" indicator (trackCompacting in the TUI model).
@@ -1168,6 +1193,26 @@ class ClaudeSession implements AgentSession {
   async answerQuestion(id: string, text: string): Promise<void> {
     if (!this.#pending.resolveQuestion(id, text)) return;
     this.#outbox.push({ type: "answer", sessionId: this.id, ts: Date.now(), id, text });
+  }
+
+  /** `loom-agents` handler: hand the call to the daemon, block until answered. */
+  #agentCall(tool: string, input: Record<string, unknown>): Promise<AgentCallResult> {
+    if (this.#interrupted || this.#closing)
+      return Promise.resolve({ ok: false, text: "The session was interrupted." });
+    return this.#agentCalls.call((id) =>
+      this.#outbox.push({
+        type: "agent_call",
+        sessionId: this.id,
+        ts: Date.now(),
+        id,
+        tool,
+        input,
+      }),
+    );
+  }
+
+  async respondToAgentCall(id: string, result: AgentCallResult): Promise<void> {
+    this.#agentCalls.resolve(id, result);
   }
 
   async respondToPlan(id: string, decision: PlanDecision): Promise<void> {
@@ -1731,6 +1776,11 @@ export class ClaudeProvider implements AgentProvider {
       ...(ref.model ? { model: ref.model } : {}),
       ...(ref.effort ? { effort: ref.effort } : {}),
       ...(ref.systemPromptAppend ? { systemPromptAppend: ref.systemPromptAppend } : {}),
+      ...(ref.agentTools ? { agentTools: true } : {}),
+      ...(ref.agentPrompt ? { agentPrompt: ref.agentPrompt } : {}),
+      ...(ref.skills ? { skills: ref.skills } : {}),
+      ...(ref.allowTools ? { allowTools: ref.allowTools } : {}),
+      ...(ref.denyTools ? { denyTools: ref.denyTools } : {}),
     };
     // A native history fork resumes a full copy of the source session. The
     // source's observed totals describe the source, never the copy, and the

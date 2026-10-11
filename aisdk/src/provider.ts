@@ -16,7 +16,7 @@ import type {
   ProviderCapabilities,
   SessionRef,
 } from "@loom/core/types";
-import { AisdkSession } from "./session.ts";
+import { AisdkSession, type AisdkSessionOptions } from "./session.ts";
 import { dropDanglingToolCalls } from "./transcript.ts";
 
 export { dropDanglingToolCalls, repairMalformedToolInputs } from "./transcript.ts";
@@ -61,6 +61,19 @@ export interface AisdkProviderOptions {
   /** Optional authenticated catalog, e.g. Codex's subscription `/models` endpoint. */
   listModels?: () => Promise<DiscoveredModel[]>;
 }
+
+/** An agent profile's prompt goes after the daemon's own steering. */
+const withAgentPrompt = (system: string | undefined, prompt: string | undefined) =>
+  [system, prompt].filter(Boolean).join("\n\n") || undefined;
+
+/** What a session's agent profile and supervision tree give it (`loom-agents`). */
+const agentOptions = (
+  o: Pick<CreateSessionOptions, "agentTools" | "allowTools" | "denyTools">,
+): Pick<AisdkSessionOptions, "agentTools" | "allowTools" | "denyTools"> => ({
+  ...(o.agentTools ? { agentTools: true } : {}),
+  ...(o.allowTools ? { allowTools: o.allowTools } : {}),
+  ...(o.denyTools ? { denyTools: o.denyTools } : {}),
+});
 
 export class AisdkProvider implements AgentProvider {
   readonly supportsAsyncInit = true;
@@ -149,12 +162,13 @@ export class AisdkProvider implements AgentProvider {
       ...(this.#cacheControl ? { cacheControl: this.#cacheControl } : {}),
       ...(this.#modelContext ? { modelContext: this.#modelContext } : {}),
       makeModel: this.#makeModel,
-      system: opts.systemPromptAppend,
+      system: withAgentPrompt(opts.systemPromptAppend, opts.agentPrompt),
       messages,
       mode: opts.mode,
       cwd: opts.cwd,
       mcpHandles: opts.mcpServers,
       loomServer: opts.loomServer ?? false,
+      ...agentOptions(opts),
       ...this.#baseOf(opts.base),
       ...(this.#search ? { search: this.#search } : {}),
       ...(this.#maxSteps != null ? { maxSteps: this.#maxSteps } : {}),
@@ -182,12 +196,13 @@ export class AisdkProvider implements AgentProvider {
       ...(this.#cacheControl ? { cacheControl: this.#cacheControl } : {}),
       ...(this.#modelContext ? { modelContext: this.#modelContext } : {}),
       makeModel: this.#makeModel,
-      system: ref.systemPromptAppend,
+      system: withAgentPrompt(ref.systemPromptAppend, ref.agentPrompt),
       messages,
       mode: ref.mode ?? "default",
       cwd: ref.cwd,
       mcpHandles: ref.mcpServers ?? [],
       loomServer: true,
+      ...agentOptions(ref),
       ...this.#baseOf(ref.base),
       ...(this.#search ? { search: this.#search } : {}),
       ...(this.#maxSteps != null ? { maxSteps: this.#maxSteps } : {}),

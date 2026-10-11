@@ -123,6 +123,30 @@ export type AgentDefinitionSpec = z.infer<typeof agentDefinitionSpecSchema>;
 // Shared with the VM runtime, which must not import session types.
 export { initHookSchema, type InitHook } from "./init-hook.ts";
 
+/**
+ * Loom agents (`docs/loom-agents.md`): what a session gets from its agent
+ * profile and its place in the supervision tree. The daemon recomputes them
+ * for every start, resume included.
+ */
+const agentSessionFields = {
+  /** Mount the `loom-agents` tools: the session may start and manage children. */
+  agentTools: z.boolean().optional(),
+  /** The profile's prompt (and, for a child, a note on its supervisor),
+   *  appended to the agent's own system prompt — developer instructions for
+   *  Codex, which builds its own. */
+  agentPrompt: z.string().optional(),
+  /** Claude skills to enable; absent keeps the CLI's own. */
+  skills: z.array(z.string()).optional(),
+  /** Built-in tools the agent may use; absent allows them all. */
+  allowTools: z.array(z.string()).optional(),
+  /** Built-in tools withheld from the agent. */
+  denyTools: z.array(z.string()).optional(),
+};
+
+/** The daemon's answer to an `agent_call`: the tool's text result. */
+export const agentCallResultSchema = z.object({ ok: z.boolean(), text: z.string() });
+export type AgentCallResult = z.infer<typeof agentCallResultSchema>;
+
 export const createSessionOptionsSchema = z.object({
   /** Trusted workspace_start commands, consumed once per worker start, including resume. */
   initHooks: z
@@ -164,6 +188,7 @@ export const createSessionOptionsSchema = z.object({
   mcpServers: z.array(mcpServerHandleSchema),
   /** Mount the in-process `loom` MCP server (ask_user, commit) in this session. */
   loomServer: z.boolean().optional(),
+  ...agentSessionFields,
   subagents: z.array(agentDefinitionSpecSchema).optional(),
   /** Built-in tools to disable (e.g. Grep / Glob — fff replaces them). */
   disableTools: z.array(z.string()).optional(),
@@ -199,6 +224,7 @@ export const sessionRefSchema = z.object({
   workspaceRoot: z.string().optional(),
   /** See {@link CreateSessionOptions.base}. */
   base: z.string().optional(),
+  ...agentSessionFields,
   /**
    * The provider's running totals for `providerRef` as Loom last observed
    * them. An adapter whose provider restores its totals on resume seeds its
@@ -322,6 +348,12 @@ export interface AgentSession {
   answerQuestion(id: string, text: string): Promise<void>;
   /** Resolve an outstanding `plan_review` with the user's decision. */
   respondToPlan(id: string, decision: PlanDecision): Promise<void>;
+  /**
+   * Answer an `agent_call` the session emitted. An unknown or already-settled
+   * id (the turn was interrupted meanwhile) is a no-op. Absent on adapters
+   * that never mount the agent tools.
+   */
+  respondToAgentCall?(id: string, result: AgentCallResult): Promise<void>;
   /**
    * Stop the current turn. Together with {@link close}, this MUST cancel any
    * in-flight long-running operation — a turn, a compaction, a sub-agent, a

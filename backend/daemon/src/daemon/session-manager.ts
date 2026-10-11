@@ -9,7 +9,12 @@
  */
 import { VmTerminationError, type HostStopReason } from "../../../../core/src/vm-termination.ts";
 import { signalOf } from "./startup.ts";
-import type { BackgroundTaskInfo, DiscardedInput, HarnessEvent } from "@loom/core/events";
+import type {
+  AgentCallEvent,
+  BackgroundTaskInfo,
+  DiscardedInput,
+  HarnessEvent,
+} from "@loom/core/events";
 import { interactionFor, type SessionInteraction } from "@loom/core/interaction";
 import {
   isLiveState,
@@ -27,6 +32,7 @@ import type { Logger } from "@loom/core/logger";
 import type { UsageDelta } from "../store/sessions.ts";
 import type {
   AdapterSnapshot,
+  AgentCallResult,
   AgentProvider,
   AgentSession,
   CreateSessionOptions,
@@ -107,6 +113,12 @@ export interface ManagerHooks {
    * a live turn, nor for Loom's own sends.
    */
   onFreshTurn?(sessionId: string, text: string): void;
+  /**
+   * The agent called a `loom-agents` tool. The handler answers it with
+   * {@link SessionManager.respondToAgentCall}, whenever it is done; nothing
+   * waits for it here.
+   */
+  onAgentCall?(sessionId: string, call: AgentCallEvent): void;
   /**
    * The sessions' message queues (`docs/message-queue.md`). Without one,
    * {@link SessionManager.enqueue} refuses and only direct sends work.
@@ -410,6 +422,19 @@ export class SessionManager {
             this.#hooks.onInputDiscarded?.(id, ev.items);
           } catch (err) {
             this.#hooks.log.error("input-discarded hook threw; continuing drain", {
+              id,
+              err: err instanceof Error ? err.message : String(err),
+            });
+          }
+          continue;
+        }
+        // A `loom-agents` call is the daemon's to run; the tool call and its
+        // result reach the transcript as the adapter's own events.
+        if (ev.type === "agent_call") {
+          try {
+            this.#hooks.onAgentCall?.(id, ev);
+          } catch (err) {
+            this.#hooks.log.error("agent-call hook threw; continuing drain", {
               id,
               err: err instanceof Error ? err.message : String(err),
             });
@@ -1404,6 +1429,17 @@ export class SessionManager {
     // running; set it now so a client sees the change without waiting.
     this.#resumeAfterAnswer(id, run);
     return { ok: true, alreadyResolved: false };
+  }
+
+  /**
+   * Answer a `loom-agents` call. A session that has gone away meanwhile (an
+   * interrupt or close already drained the call) has nothing to answer: false.
+   */
+  async respondToAgentCall(id: string, callId: string, result: AgentCallResult): Promise<boolean> {
+    const run = this.#running.get(id);
+    if (!run || run.ended || !run.session.respondToAgentCall) return false;
+    await run.session.respondToAgentCall(callId, result);
+    return true;
   }
 
   async respondToPlan(

@@ -21,6 +21,11 @@ export const READONLY_EXACT = new Set([
   "list_directory_with_sizes",
   "status", // git status/diff via @loom/core/status — read-only
   "background_output", // reads a background task's output buffer
+  // loom-agents tools that only look (`@loom/runtime/agent-tools`).
+  "agents_profiles",
+  "agent_status",
+  "agent_read",
+  "agent_wait",
 ]);
 // Match a verb as any underscore-delimited segment of the name (`get_or_create`,
 // `search_and_replace`, `mcp__fs__search_files`), not just the leading one.

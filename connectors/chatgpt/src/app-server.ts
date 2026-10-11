@@ -13,8 +13,15 @@ import type { SearchConfig } from "@loom/core/connector";
 import { stateIdle, stateRunning } from "@loom/core/session-state";
 import { ASK_USER_DESC, COMMIT_DESC, STATUS_DESC } from "@loom/runtime/loom-tools";
 import { PendingInteractions } from "@loom/runtime/pending";
+import {
+  AGENT_TOOL_NAMES,
+  AGENT_TOOLS,
+  AgentCalls,
+  agentToolJsonSchema,
+} from "@loom/runtime/agent-tools";
 import type {
   AdapterSnapshot,
+  AgentCallResult,
   AgentSession,
   CreateSessionOptions,
   EffortLevel,
@@ -156,6 +163,19 @@ const launchOptions = (
  * created before this keep their registered `exit_plan`; the dispatcher
  * redirects such calls to the native flow.
  */
+/**
+ * The `loom-agents` tools, for a session that may start children. Like the
+ * rest, registered only at `thread/start`: a thread started without them
+ * never gains them on resume.
+ */
+const agentDynamicTools = (): Record<string, unknown>[] =>
+  AGENT_TOOL_NAMES.map((name) => ({
+    type: "function",
+    name,
+    description: AGENT_TOOLS[name].description,
+    inputSchema: agentToolJsonSchema(name),
+  }));
+
 const loomDynamicTools = (): Record<string, unknown>[] => [
   {
     type: "function",
@@ -229,6 +249,7 @@ export class CodexAppServerSession implements AgentSession {
   readonly #rpc: CodexRpcClient;
   #events = new AsyncChannel<HarnessEvent>();
   readonly #pending = new PendingInteractions<PermissionDecision, PlanDecision>();
+  readonly #agentCalls = new AgentCalls();
   // Dispatch owns both execution and transcript state for locally handled tools.
   // Provider item notifications are only mirrors, never a second completion source.
   readonly #dynamicCalls = new Map<
@@ -365,6 +386,7 @@ export class CodexAppServerSession implements AgentSession {
         "(the provider connection closed before this was answered)",
         { action: "discuss", message: "the provider connection closed" },
       );
+      this.#agentCalls.failAll("(the provider connection closed before this was answered)");
       if (!this.#closing)
         this.#events.push({
           type: "error",
@@ -433,7 +455,14 @@ export class CodexAppServerSession implements AgentSession {
               ...(opts.systemPromptAppend
                 ? { developerInstructions: opts.systemPromptAppend }
                 : {}),
-              ...(opts.loomServer ? { dynamicTools: loomDynamicTools() } : {}),
+              ...(opts.loomServer
+                ? {
+                    dynamicTools: [
+                      ...loomDynamicTools(),
+                      ...(opts.agentTools ? agentDynamicTools() : []),
+                    ],
+                  }
+                : {}),
             }),
       });
       s.#threadId = (started as any)?.thread?.id ?? null;
@@ -688,6 +717,22 @@ export class CodexAppServerSession implements AgentSession {
     if (!this.#pending.resolveQuestion(id, text)) return;
     this.#events.push({ type: "answer", sessionId: this.id, ts: now(), id, text });
   }
+  /** `loom-agents` handler: hand the call to the daemon, block until answered.
+   *  `signal`: see `#askUser`'s doc comment. */
+  #agentCall(
+    tool: string,
+    input: Record<string, unknown>,
+    signal: AbortSignal | undefined,
+  ): Promise<AgentCallResult> {
+    if (signal?.aborted || this.#closing)
+      return Promise.resolve({ ok: false, text: "(the turn was interrupted)" });
+    return this.#agentCalls.call((id) =>
+      this.#events.push({ type: "agent_call", sessionId: this.id, ts: now(), id, tool, input }),
+    );
+  }
+  async respondToAgentCall(id: string, result: AgentCallResult): Promise<void> {
+    this.#agentCalls.resolve(id, result);
+  }
   /** loom `commit` handler for the case `@loom/runtime/policy`'s `policy()`
    *  says "ask" rather than "allow": raise a real `permission_request` and
    *  block on a human decision, the same as a native command/file approval,
@@ -829,6 +874,7 @@ export class CodexAppServerSession implements AgentSession {
         "(the turn was interrupted)",
         { action: "discuss", message: "the turn was interrupted" },
       );
+      this.#agentCalls.failAll("(the turn was interrupted)");
       this.#idle();
     }
   }
@@ -921,6 +967,7 @@ export class CodexAppServerSession implements AgentSession {
       "(the session was closed before this was answered)",
       { action: "discuss", message: "the session was closed before this was answered" },
     );
+    this.#agentCalls.failAll("(the session was closed before this was answered)");
     this.#rpc.close();
     this.#events.close();
   }
@@ -1220,6 +1267,7 @@ export class CodexAppServerSession implements AgentSession {
       ...(signal ? { signal } : {}),
       askUser: (q, c) => this.#askUser(q, c, callId, signal),
       requestApproval: (t, a) => this.#requestApproval(t, a, callId, signal),
+      agentCall: (t, a) => this.#agentCall(t, a, signal),
     }).then(
       (res) => respond(res.text, res.ok),
       (err: unknown) => respond(err instanceof Error ? err.message : String(err), false),
@@ -1362,6 +1410,7 @@ export class CodexAppServerSession implements AgentSession {
         "(the turn ended before this was answered)",
         { action: "discuss", message: "the turn ended before this was answered" },
       );
+      this.#agentCalls.failAll("(the turn ended before this was answered)");
       this.#turns++;
       if (turn?.status === "failed")
         this.#events.push({

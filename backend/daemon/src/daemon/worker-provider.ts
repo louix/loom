@@ -18,6 +18,7 @@ import type {
   EffortLevel,
   PermissionDecision,
   PlanDecision,
+  AgentCallResult,
   ProviderCapabilities,
   SessionMode,
   SessionRef,
@@ -272,6 +273,9 @@ export class RemoteWorkerSession implements AgentSession {
   }
   async respondToPlan(id: string, decision: PlanDecision): Promise<void> {
     await this.#request({ method: "respondToPlan", args: [id, decision] });
+  }
+  async respondToAgentCall(id: string, result: AgentCallResult): Promise<void> {
+    await this.#request({ method: "respondToAgentCall", args: [id, result] });
   }
   async interrupt(): Promise<void> {
     await this.#request({ method: "interrupt", args: [] });

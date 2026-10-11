@@ -212,6 +212,9 @@ export const serveWorker = async (
       case "respondToPlan":
         await session.respondToPlan(...r.args);
         break;
+      case "respondToAgentCall":
+        await session.respondToAgentCall?.(...r.args);
+        break;
       case "interrupt":
         await session.interrupt();
         break;

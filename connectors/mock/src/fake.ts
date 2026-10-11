@@ -12,8 +12,10 @@ import type { HarnessEvent, TokenUsage } from "@loom/core/events";
 import type { SendOptions } from "@loom/core/message-queue";
 import { stateError, stateIdle, stateRunning, stateStarting } from "@loom/core/session-state";
 import { AsyncChannel } from "@loom/core/channel";
+import { AgentCalls } from "@loom/runtime/agent-tools";
 import type {
   AdapterSnapshot,
+  AgentCallResult,
   AgentProvider,
   AgentSession,
   CreateSessionOptions,
@@ -236,6 +238,16 @@ export class FakeSession implements AgentSession {
 
   async answerQuestion(id: string, text: string): Promise<void> {
     this.questionAnswers.push({ id, text });
+  }
+
+  readonly #agentCalls = new AgentCalls();
+  /** Call a `loom-agents` tool as the agent would; resolves with the daemon's answer. */
+  callAgentTool(tool: string, input: Record<string, unknown> = {}): Promise<AgentCallResult> {
+    return this.#agentCalls.call((id) => this.emit({ type: "agent_call", id, tool, input }));
+  }
+
+  async respondToAgentCall(id: string, result: AgentCallResult): Promise<void> {
+    this.#agentCalls.resolve(id, result);
   }
 
   async respondToPlan(id: string, decision: PlanDecision): Promise<void> {

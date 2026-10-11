@@ -436,6 +436,24 @@ export const rateLimitEventSchema = harnessEventBaseSchema.extend({
 });
 export type RateLimitEvent = z.infer<typeof rateLimitEventSchema>;
 
+/**
+ * The agent called one of Loom's agent tools (`loom-agents`: start a child,
+ * message it, read it, …). Only the daemon can act on its fleet, so the
+ * adapter parks the tool call and the daemon answers it through
+ * `AgentSession.respondToAgentCall` under the same `id`.
+ *
+ * Consumed by the session manager; not transcript, not persisted — the tool
+ * call and its result are, as the adapter's ordinary tool events.
+ */
+export const agentCallEventSchema = harnessEventBaseSchema.extend({
+  type: z.literal("agent_call"),
+  id: z.string(),
+  /** The tool's bare name, e.g. `agent_start`. */
+  tool: z.string(),
+  input: opaqueSchema,
+});
+export type AgentCallEvent = z.infer<typeof agentCallEventSchema>;
+
 export const harnessEventSchema = z.discriminatedUnion("type", [
   assistantTextEventSchema,
   thinkingEventSchema,
@@ -462,6 +480,7 @@ export const harnessEventSchema = z.discriminatedUnion("type", [
   inputDiscardedEventSchema,
   inputConsumedEventSchema,
   rateLimitEventSchema,
+  agentCallEventSchema,
 ]);
 export type HarnessEvent = z.infer<typeof harnessEventSchema>;
 

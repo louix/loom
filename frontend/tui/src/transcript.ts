@@ -114,6 +114,7 @@ export const NON_TRANSCRIPT: ReadonlySet<string> = new Set([
   "rate_limit",
   "input_discarded",
   "input_consumed",
+  "agent_call",
 ]);
 
 // ---------------------------------------------------------------------------
@@ -387,6 +388,9 @@ export const formatEvent = (ev: HarnessEvent, toolName?: string): EventFormat =>
     case "input_consumed":
       // Like `input_discarded`: the manager keeps it; here for exhaustiveness.
       return { glyph: "·", text: "input taken up", tone: "dim" };
+    case "agent_call":
+      // The daemon runs it; the log shows the tool call itself.
+      return { glyph: "·", text: `agent tool ${ev.tool}`, tone: "dim" };
     case "input_discarded":
       // Never reaches the log (the daemon does not forward it); here for
       // exhaustiveness.
@@ -1083,6 +1087,7 @@ const transcriptHeader = (l: LogLine): string | null => {
     case "background_tasks":
     case "input_discarded":
     case "input_consumed":
+    case "agent_call":
       return null;
     default:
       return absurd(l.kind);

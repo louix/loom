@@ -28,6 +28,15 @@ import {
   statusShape,
 } from "@loom/runtime/loom-tools";
 
+import {
+  AGENT_TOOL_NAMES,
+  AGENT_TOOLS,
+  type AgentToolName,
+  READONLY_AGENT_TOOLS,
+} from "@loom/runtime/agent-tools";
+import { LOOM_AGENTS_SERVER } from "@loom/core/agents";
+import type { AgentCallResult } from "@loom/core/types";
+
 // Re-exported for the tests that still import it from here.
 export { commitInWorktree, type CommitResult };
 export type { LoomToolDeps };
@@ -63,4 +72,28 @@ export const buildLoomMcpServer = (deps: LoomToolDeps): McpSdkServerConfigWithIn
     alwaysLoad: true,
     tools: [askUser, commit, status],
   });
+};
+
+/**
+ * The in-process `loom-agents` server: every tool hands its call to `call`,
+ * which the adapter routes to the daemon as an `agent_call` event.
+ */
+export const buildAgentsMcpServer = (
+  call: (tool: AgentToolName, input: Record<string, unknown>) => Promise<AgentCallResult>,
+): McpSdkServerConfigWithInstance => {
+  const tools = AGENT_TOOL_NAMES.map((name) =>
+    tool(
+      name,
+      AGENT_TOOLS[name].description,
+      AGENT_TOOLS[name].shape,
+      async (args) => {
+        const res = await call(name, args as Record<string, unknown>);
+        return res.ok
+          ? { content: [{ type: "text" as const, text: res.text }] }
+          : { content: [{ type: "text" as const, text: res.text }], isError: true };
+      },
+      { annotations: { readOnlyHint: READONLY_AGENT_TOOLS.has(name) } },
+    ),
+  );
+  return createSdkMcpServer({ name: LOOM_AGENTS_SERVER, version: "1", alwaysLoad: true, tools });
 };

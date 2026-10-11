@@ -25,6 +25,7 @@ import { AsyncChannel } from "@loom/core/channel";
 import { makeLogger, type Logger } from "@loom/core/logger";
 import type {
   AdapterSnapshot,
+  AgentCallResult,
   CreateSessionOptions,
   AgentSession,
   EffortLevel,
@@ -39,7 +40,8 @@ import { AisdkEventMapper } from "./map.ts";
 import { runTurn, type VendorOptions } from "./loop.ts";
 import { dropDanglingToolCalls } from "./transcript.ts";
 import { McpHub } from "./mcp.ts";
-import { buildLoomTools } from "./loom-tools.ts";
+import { buildAgentTools, buildLoomTools } from "./loom-tools.ts";
+import { AgentCalls } from "@loom/runtime/agent-tools";
 import { BuiltinTools } from "./tools/builtins.ts";
 import type { SearchConfig } from "@loom/core/connector";
 import { isReadonly, wrapToolSet } from "./gate.ts";
@@ -107,6 +109,12 @@ export interface AisdkSessionOptions {
   mcpHandles: McpServerHandle[];
   /** Mount the `loom` tools + first-party Bash/Edit/Grep + the plan tool. */
   loomServer: boolean;
+  /** Mount the `loom-agents` tools (with `loomServer`). */
+  agentTools?: boolean;
+  /** An agent profile's built-in tool allow list; absent allows them all. */
+  allowTools?: string[];
+  /** Tools withheld from the session, by name. */
+  denyTools?: string[];
   /** Resolved `web_search` config, when configured. */
   search?: SearchConfig;
   /** The repo's base branch, for the `status` tool's ahead/behind counts. */
@@ -190,8 +198,15 @@ export class AisdkSession implements AgentSession {
   #builtins: BuiltinTools | null = null;
   #baseToolsPromise: Promise<ToolSet> | null = null;
   readonly #pending = new PendingInteractions<{ allow: boolean; message?: string }, PlanDecision>();
+  readonly #agentCalls = new AgentCalls();
+  readonly #agentTools: boolean;
+  readonly #allowTools: ReadonlySet<string> | null;
+  readonly #denyTools: ReadonlySet<string>;
 
   constructor(opts: AisdkSessionOptions) {
+    this.#agentTools = opts.agentTools ?? false;
+    this.#allowTools = opts.allowTools ? new Set(opts.allowTools) : null;
+    this.#denyTools = new Set(opts.denyTools ?? []);
     this.id = opts.sessionId;
     this.#modelContext = opts.modelContext ?? {};
     this.#providerOptionsName = opts.providerOptionsName;
@@ -397,6 +412,19 @@ export class AisdkSession implements AgentSession {
     this.#emit({ type: "answer", sessionId: this.id, ts: Date.now(), id, text });
   }
 
+  async respondToAgentCall(id: string, result: AgentCallResult): Promise<void> {
+    this.#agentCalls.resolve(id, result);
+  }
+
+  /** `loom-agents` handler: hand the call to the daemon, block until answered. */
+  #agentCall(tool: string, input: Record<string, unknown>): Promise<AgentCallResult> {
+    if (this.#interrupted || this.#closing)
+      return Promise.resolve({ ok: false, text: "The session was interrupted." });
+    return this.#agentCalls.call((id) =>
+      this.#emit({ type: "agent_call", sessionId: this.id, ts: Date.now(), id, tool, input }),
+    );
+  }
+
   async respondToPlan(id: string, decision: PlanDecision): Promise<void> {
     // An implementing decision picks the mode the implementation runs in. Apply
     // it now, not when the exploration turn unwinds into the chained implement
@@ -525,6 +553,7 @@ export class AisdkSession implements AgentSession {
       action: "discuss",
       message: why,
     });
+    this.#agentCalls.failAll(`(${why})`);
   }
 
   /**
@@ -578,16 +607,23 @@ export class AisdkSession implements AgentSession {
             }),
           );
           Object.assign(base, this.#planTools());
-          // Builtins fill only the names no MCP server claimed.
+          if (this.#agentTools)
+            Object.assign(
+              base,
+              buildAgentTools((name, input) => this.#agentCall(name, input)),
+            );
+          // Builtins fill only the names no MCP server claimed, and only those
+          // an agent profile's allow list keeps.
           this.#builtins ??= new BuiltinTools(this.#cwd, this.#search);
           for (const [name, t] of Object.entries(this.#builtins.tools)) {
-            if (!(name in base)) base[name] = t;
+            if (!(name in base) && (this.#allowTools?.has(name) ?? true)) base[name] = t;
           }
         }
         if (this.#builtins && hasInitTasks) {
           const { background_output, background_kill } = this.#builtins.tools;
           Object.assign(base, { background_output, background_kill });
         }
+        for (const name of this.#denyTools) delete base[name];
         // Annotate the mounted set with the servers' readOnlyHint declarations,
         // dropping any whose name a first-party tool replaced.
         if (this.#hub) {
