@@ -6,6 +6,7 @@ import { sessionInteractionSchema } from "./interaction.ts";
 import { sessionModeSchema } from "./types.ts";
 import { modelChoiceSchema } from "./model-catalogue.ts";
 import { sessionQueueSchema } from "./message-queue.ts";
+import { agentProfileInfoSchema } from "./agents.ts";
 
 /**
  * Loom's client<->daemon wire protocol: newline-delimited JSON over a Unix
@@ -258,6 +259,9 @@ export const daemonSnapshotSchema = z.object({
   daemon: daemonInfoSchema,
   providers: z.array(z.lazy(() => providerInfoSchema)),
   sessions: z.array(z.lazy(() => sessionSnapshotSchema)),
+  /** The configured agent profiles (`agents.profiles`), for the new-session
+   *  prompt's profile toggle. Absent from a daemon that predates them. */
+  agentProfiles: z.array(agentProfileInfoSchema).optional(),
 });
 export type DaemonSnapshot = z.infer<typeof daemonSnapshotSchema>;
 
@@ -278,6 +282,13 @@ export const sessionSnapshotSchema = z.object({
    *  it cannot; absent when a native fork onto its own provider is possible.
    *  A portable handoff is always possible. Runtime-only. */
   nativeForkBlockedReason: z.string().optional(),
+  /** Loom agents: the session supervising this one (`loom-agents`), separate
+   *  from the fork lineage in `parentId`. Absent for a session nobody supervises. */
+  supervisorId: z.string().optional(),
+  /** The agent profile it was started with: `self` or a configured name. */
+  agentProfile: z.string().optional(),
+  /** The supervisor's id for the task this run belongs to. */
+  taskId: z.string().optional(),
   provider: z.string(),
   model: z.union([z.string(), z.null()]),
   effort: z.union([z.string(), z.null()]),

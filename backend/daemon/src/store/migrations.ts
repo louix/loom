@@ -437,4 +437,14 @@ export const MIGRATIONS: string[] = [
   );
   CREATE INDEX session_queue_seen_settled ON session_queue_seen(session_id, settled_seq);
   `,
+  // 33 — Loom agents (docs/loom-agents.md): the session supervising this one,
+  // separate from `parent_id` (fork lineage); the profile it was started with
+  // (`self` or a configured name); and the caller's id grouping the runs of
+  // one task. All NULL for a session nobody supervises.
+  /* sql */ `
+  ALTER TABLE sessions ADD COLUMN supervisor_id TEXT REFERENCES sessions(id) ON DELETE SET NULL;
+  ALTER TABLE sessions ADD COLUMN agent_profile TEXT;
+  ALTER TABLE sessions ADD COLUMN task_id TEXT;
+  CREATE INDEX sessions_supervisor_idx ON sessions(supervisor_id);
+  `,
 ];

@@ -26,6 +26,48 @@ export const agentProfileInfoSchema = z.object({
 });
 export type AgentProfileInfo = z.infer<typeof agentProfileInfoSchema>;
 
+/** A session as the supervision tree sees it. */
+export interface Supervised {
+  readonly id: string;
+  readonly supervisorId?: string | undefined;
+}
+
+/**
+ * How deep `id` sits in its supervision tree: 1 for a session nobody
+ * supervises, 2 for its children, and so on. A chain that loops (which
+ * {@link supervisionCycle} keeps from ever being written) stops counting where
+ * it would repeat.
+ */
+export const supervisionDepth = (
+  id: string,
+  lookup: (id: string) => Supervised | undefined,
+): number => {
+  const seen = new Set<string>();
+  let depth = 0;
+  for (let at: string | undefined = id; at !== undefined && !seen.has(at); depth++) {
+    seen.add(at);
+    at = lookup(at)?.supervisorId;
+  }
+  return depth;
+};
+
+/** Would `supervisor` supervising `child` close a loop — is it `child` itself,
+ *  or one of the sessions `child` already supervises, however deep? */
+export const supervisionCycle = (
+  child: string,
+  supervisor: string,
+  lookup: (id: string) => Supervised | undefined,
+): boolean => {
+  const seen = new Set<string>();
+  for (let at: string | undefined = supervisor; at !== undefined;) {
+    if (at === child) return true;
+    if (seen.has(at)) return false;
+    seen.add(at);
+    at = lookup(at)?.supervisorId;
+  }
+  return false;
+};
+
 /** What a supervisor does with its children when it is archived or deleted. */
 export const childrenOnCloseSchema = z.enum(["stop", "detach"]);
 export type ChildrenOnClose = z.infer<typeof childrenOnCloseSchema>;

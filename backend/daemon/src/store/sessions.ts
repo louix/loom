@@ -40,6 +40,9 @@ interface SessionRow {
   fork_turn: number | null;
   fork_kind: "native" | "handoff" | null;
   worktree_owner: string | null;
+  supervisor_id: string | null;
+  agent_profile: string | null;
+  task_id: string | null;
   created_at: number;
   updated_at: number;
   turn_completed_at: number | null;
@@ -84,6 +87,10 @@ export interface NewSession {
    *  provider's own native thread; `'aisdk'` = a legacy Loom-owned
    *  transcript, chatgpt-only, immutable after create). See migration 20. */
   historyBackend?: string;
+  /** Loom agents: the supervising session, the profile and the caller's task id. */
+  supervisorId?: string | null;
+  agentProfile?: string | null;
+  taskId?: string | null;
 }
 
 export interface UsageDelta {
@@ -143,8 +150,8 @@ export class SessionStore {
           `INSERT INTO sessions
              (id, parent_id, provider, model, effort, mode, status, title, worktree, branch,
               base_branch, in_place, provider_ref, history_backend, created_at, updated_at, isolation,
-              checkout)
-           VALUES (?, ?, ?, ?, ?, ?, 'starting', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              checkout, supervisor_id, agent_profile, task_id)
+           VALUES (?, ?, ?, ?, ?, ?, 'starting', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           s.id,
@@ -164,6 +171,9 @@ export class SessionStore {
           now,
           s.isolation ?? null,
           s.checkout ?? null,
+          s.supervisorId ?? null,
+          s.agentProfile ?? null,
+          s.taskId ?? null,
         );
       this.#db.prepare("INSERT INTO usage (session_id, updated_at) VALUES (?, ?)").run(s.id, now);
       this.#appendHistory(s.id, "starting", null, now);
@@ -248,6 +258,8 @@ export class SessionStore {
       forkKind: "native" | "handoff" | null;
       forkHandoff: string | null;
       worktreeOwner: string | null;
+      /** Detaching a child clears it; nothing ever sets another supervisor. */
+      supervisorId: null;
     }>,
   ): void {
     const cols: string[] = [];
@@ -270,6 +282,7 @@ export class SessionStore {
       forkKind: "fork_kind",
       forkHandoff: "fork_handoff",
       worktreeOwner: "worktree_owner",
+      supervisorId: "supervisor_id",
     };
     for (const [k, col] of Object.entries(map)) {
       if (k in fields) {
@@ -939,6 +952,9 @@ const toSnapshot = (row: SessionRow, usage: UsageRow | undefined): SessionSnapsh
     forkTurn: row.fork_turn,
     ...(row.fork_kind ? { forkKind: row.fork_kind } : {}),
     ...(row.worktree_owner ? { worktreeOwner: row.worktree_owner } : {}),
+    ...(row.supervisor_id ? { supervisorId: row.supervisor_id } : {}),
+    ...(row.agent_profile ? { agentProfile: row.agent_profile } : {}),
+    ...(row.task_id ? { taskId: row.task_id } : {}),
     provider: row.provider,
     model: row.model,
     effort: row.effort,
