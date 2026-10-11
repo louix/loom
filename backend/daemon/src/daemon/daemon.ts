@@ -167,6 +167,10 @@ const settledWithin = async (promise: Promise<unknown>, ms: number): Promise<voi
     clearTimeout(timer);
   }
 };
+/** Host branch `branch` as `row`'s agent names it from its checkout: a private
+ *  clone sees the host's branches only as `origin/*`. */
+const checkoutRef = (row: Pick<SessionSnapshot, "checkout">, branch: string): string =>
+  (row.checkout === "clone" ? "origin/" : "") + branch;
 /** Re-prime once the prompt cache has this little of its TTL left — the TUI's "red" band. */
 const KEEP_WARM_RED_FRACTION = 0.08;
 /**
@@ -620,6 +624,8 @@ export class Daemon {
         const row = this.#registry.get(id);
         return row ? this.#enrich(row, false) : undefined;
       },
+      row: (id) => this.#registry.get(id) ?? undefined,
+      children: (id) => this.#registry.listSorted().filter((s) => s.supervisorId === id),
       list: () => this.#registry.listSorted().map((s) => this.#enrich(s, false)),
       settledTitle: (id) => this.#settledTitle(id),
       providerKnown: (id) => this.#providers.has(id),
@@ -630,7 +636,8 @@ export class Daemon {
       repoRoot: this.repoRoot,
       dirty: (path) => this.#worktrees.isDirty(path),
       start: (child) => this.#startChild(child),
-      enqueue: (id, text, author, delivery) => this.#enqueueMessage(id, text, author, delivery),
+      enqueue: (id, text, author, delivery, opts) =>
+        this.#enqueueMessage(id, text, author, delivery, undefined, opts),
       interrupt: async (id) => {
         await this.#interruptSession(id);
       },
@@ -644,6 +651,9 @@ export class Daemon {
       respond: (id, callId, result) => this.#sessions.respondToAgentCall(id, callId, result),
       log: this.#log.child("agents"),
     });
+    // `agent_wait` settles on the status writes themselves, whatever path
+    // made them, and ends with the turn that made it.
+    this.#registry.watchStatus((id, state) => this.#agents.observe(id, state));
     this.#idle = new IdleTimer(this.config.daemon.idleShutdownMinutes, () => {
       this.#log.info("idle shutdown");
       void this.stop("idle");
@@ -2056,7 +2066,7 @@ export class Daemon {
     taskId?: string;
     /** A title to keep, rather than one derived from the prompt. */
     title?: string;
-    /** The base as it stands when the worktree is made, over `base`. */
+    /** The base as it stands when the row and its worktree are made, over `base`. */
     baseOf?: () => string | undefined;
   }): Promise<SessionSnapshot> {
     const isolation = o.isolation ?? this.#providers.defaultIsolation(o.providerId);
@@ -2104,6 +2114,10 @@ export class Daemon {
     // nothing to reconcile it. Queued, such a command simply waits and then finds
     // a live session to apply itself to.
     const starting = this.#queue.run(id, async () => {
+      // Read once, as the row is made: a supervisor's branch may have been
+      // renamed (auto-titled) since `base` was, and the row, the tree and the
+      // agent must all name the same one.
+      const from = o.baseOf?.() ?? base;
       this.#registry.create({
         id,
         provider: o.providerId,
@@ -2114,7 +2128,7 @@ export class Daemon {
         title: (o.title ?? o.prompt).slice(0, 200),
         worktree: null,
         branch: null,
-        baseBranch: base ?? legacyBaseBranch(this.config),
+        baseBranch: from ?? legacyBaseBranch(this.config),
         inPlace: !wantWorktree,
         isolation,
         // Every ChatGPT session created from here on runs on Codex's app-server
@@ -2169,7 +2183,7 @@ export class Daemon {
 
         if (workspace === "clone") {
           try {
-            const made = this.#worktrees.createBranch(id, base ? { baseRef: base } : {});
+            const made = this.#worktrees.createBranch(id, from ? { baseRef: from } : {});
             clonePath = await this.#clonePath(id, o.providerId);
             this.#registry.setFields(id, {
               worktree: clonePath,
@@ -2186,8 +2200,6 @@ export class Daemon {
           }
         } else if (wantWorktree) {
           try {
-            // A supervisor's branch may have been renamed (auto-titled) since.
-            const from = o.baseOf?.() ?? base;
             wt = this.#worktrees.create(id, from ? { baseRef: from } : {});
           } catch (cause) {
             throw new RpcError(
@@ -2240,6 +2252,8 @@ export class Daemon {
         startup.signal.throwIfAborted();
         Object.assign(opts, { [startupSignal]: startup.signal });
         await this.#sessions.create(provider, opts);
+        // A supervisor's rename while the provider started missed this agent.
+        this.#pushAgentBase(id, opts.base);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         // Init may have changed files before the provider failed. Preserve those
@@ -2258,7 +2272,10 @@ export class Daemon {
           return;
         }
         const failure = `could not start session: ${message}`;
-        this.#registry.setStatus(id, stateError(failure));
+        const failed = this.#registry.setStatus(id, stateError(failure));
+        // Detached, the failure reaches no caller: a Loom agent's supervisor
+        // (already told the agent started) hears of it like any other.
+        if (detached) this.#notifySupervisor(failed, failed.status);
         this.emitEvent({
           type: "error",
           sessionId: id,
@@ -2502,6 +2519,7 @@ export class Daemon {
       this.repoRoot,
       this.#instructionsDir(cwd),
     );
+    const base = this.#agentBase(id);
     try {
       await this.#sessions.resume(await this.#providers.get(row.provider, row.isolation), {
         initHooks: { hooks: [], env: { LOOM_START_REASON: startReason } },
@@ -2513,7 +2531,7 @@ export class Daemon {
         ...(model ? { model } : {}),
         ...(row.effort ? { effort: row.effort } : {}),
         ...(usageBaseline ? { usageBaseline } : {}),
-        ...this.#agentBase(id),
+        ...base,
         ...(isClaude || isAisdk
           ? {
               systemPromptAppend: promptAppend,
@@ -2526,6 +2544,7 @@ export class Daemon {
       const message = err instanceof Error ? err.message : String(err);
       throw new RpcError("provider_error", `could not resume session: ${message}`);
     }
+    this.#pushAgentBase(id, base.base);
     // Truthfully idle: a resume re-mounts the adapter with no turn in flight
     // (the manager seeds its tracked state `idle` too — see SessionManager.resume).
     return this.#registry.setStatus(id, stateIdle, "resumed");
@@ -2608,6 +2627,7 @@ export class Daemon {
         this.#worktrees.invalidateFacts(`ref:${ended.branch}`);
     }
     if (state.kind === "idle" && snap.checkout === "clone") {
+      let nudged = false;
       void this.#queue
         .run(id, async () => {
           const ended = () =>
@@ -2620,24 +2640,25 @@ export class Daemon {
             // A slow guest probe can outlast the idle spell: facts read during a
             // later turn are that turn's business, and its own end handles them.
             if (!ended()) return;
-            const nudged =
+            nudged =
               this.config.autoRebase.enabled && this.#cloneCanSync(id)
                 ? (await this.#syncClone(id, true)).nudged
                 : false;
-            if (!nudged) this.#maybeCommitNudge(id);
+            if (!nudged) nudged = this.#maybeCommitNudge(id);
           } catch (error) {
             this.#emitNotice(String(error), "warn");
           }
-          this.#fireStatusHooks(snap, state);
+          this.#fireStatusHooks(snap, state, nudged);
         })
         .catch((error) =>
           this.#log.warn("clone turn-end Git failed", { id, error: String(error) }),
         );
       return;
     }
-    if (state.kind === "idle" && !this.#maybeAutoRebase(id)) this.#maybeCommitNudge(id);
+    const nudged =
+      state.kind === "idle" && (this.#maybeAutoRebase(id) || this.#maybeCommitNudge(id));
 
-    this.#fireStatusHooks(snap, state);
+    this.#fireStatusHooks(snap, state, nudged);
   }
 
   /**
@@ -2650,12 +2671,12 @@ export class Daemon {
    * Deliberately *after* the auto-rebase / commit nudge above: those can send
    * the agent a message, which moves the session back to `running`, and a
    * notifier should be told the state the session actually settled in.
+   * `nudged`: they did, so the turn did not settle — a Loom agent's
+   * supervisor hears of the turn the nudge started when that one ends.
    */
-  #fireStatusHooks(snap: SessionSnapshot, state: SessionState): void {
+  #fireStatusHooks(snap: SessionSnapshot, state: SessionState, nudged = false): void {
     const current = this.#registry.get(snap.id) ?? snap;
-    // A Loom agent's supervisor hears of a finished, failed or interrupted
-    // turn through its queue; not of a wait, which the user answers.
-    if (current.supervisorId && !this.#stopping) void this.#agents.notify(current, state);
+    if (!nudged) this.#notifySupervisor(current, state);
     if (this.#hooks.empty) return;
     const session = hookSessionOf(current);
     switch (state.kind) {
@@ -2674,6 +2695,20 @@ export class Daemon {
       default:
         return;
     }
+  }
+
+  /** A Loom agent's supervisor hears of a finished, failed or interrupted
+   *  turn through its queue (`AgentSupervision.notify`); not of a wait, which
+   *  the user answers. */
+  #notifySupervisor(row: SessionSnapshot, state: SessionState): void {
+    if (row.supervisorId && !this.#stopping) void this.#agents.notify(row, state);
+  }
+
+  /** A turn-end nudge that never reached the agent: the turn did settle after
+   *  all, so its supervisor hears of it now. */
+  #nudgeFailed(id: string): void {
+    const row = this.#registry.get(id);
+    if (row?.status.kind === "idle") this.#notifySupervisor(row, row.status);
   }
 
   /**
@@ -2757,8 +2792,7 @@ export class Daemon {
       res.outcome === "dirty"
         ? "your worktree has uncommitted changes, so it was left alone"
         : `an automatic ${verb} hit conflicts, so your branch is unchanged`;
-    // Named as the agent's checkout resolves it — see `#agentBase`.
-    const base = (snap.checkout === "clone" ? "origin/" : "") + res.base;
+    const base = checkoutRef(snap, res.base);
     const text =
       `[loom] The base branch \`${base}\` advanced by ${res.behind} commit(s) and ${why}. ` +
       `When you're at a clean stopping point, ${verb} \`${base}\` into this branch ` +
@@ -2768,6 +2802,7 @@ export class Daemon {
     this.emitEvent({ type: "user_message", sessionId: id, ts: Date.now(), text, injected: false });
     void this.#sessions.send(id, text, { automated: true }).catch((err) => {
       this.#log.warn("auto-rebase nudge failed", { id, err: String(err) });
+      this.#nudgeFailed(id);
     });
     return { outcome: res, nudged: true };
   }
@@ -2779,25 +2814,25 @@ export class Daemon {
    * HEAD doesn't move the reminder stays quiet, so an agent that left the tree
    * dirty on purpose isn't nagged. Once it commits, HEAD advances and a later
    * batch of uncommitted work earns one fresh reminder; a clean tree clears the
-   * record. Never commits anything itself.
+   * record. Never commits anything itself. True when it messaged the agent.
    */
-  #maybeCommitNudge(id: string): void {
-    if (this.#stopping || !this.config.commitReminder.enabled) return;
+  #maybeCommitNudge(id: string): boolean {
+    if (this.#stopping || !this.config.commitReminder.enabled) return false;
     const snap = this.#registry.get(id);
-    if (!snap?.worktree) return; // in-place sessions have no isolated tree
+    if (!snap?.worktree) return false; // in-place sessions have no isolated tree
     const clone = snap.checkout === "clone" ? this.#cloneFacts.get(id) : undefined;
-    if (snap.checkout === "clone" && !clone) return;
+    if (snap.checkout === "clone" && !clone) return false;
     const store = this.#registry.store;
     if (!(clone ? clone.git.dirty : this.#worktrees.isDirty(snap.worktree))) {
       if (store.commitNudgedSha(id) !== "") store.setCommitNudgedSha(id, "");
-      return;
+      return false;
     }
     // A paused rebase / merge / cherry-pick reads as "dirty" too, but "commit
     // this" is the wrong advice mid-operation — leave it alone.
-    if (clone ? clone.operation : this.#worktrees.pendingGitOp(snap.worktree)) return;
+    if (clone ? clone.operation : this.#worktrees.pendingGitOp(snap.worktree)) return false;
 
     const head = clone ? clone.head : (this.#worktrees.headSha(snap.worktree) ?? "");
-    if (head !== "" && store.commitNudgedSha(id) === head) return; // already nudged since the last commit
+    if (head !== "" && store.commitNudgedSha(id) === head) return false; // already nudged since the last commit
     store.setCommitNudgedSha(id, head);
 
     const text =
@@ -2809,7 +2844,9 @@ export class Daemon {
     this.emitEvent({ type: "user_message", sessionId: id, ts: Date.now(), text, injected: false });
     void this.#sessions.send(id, text, { automated: true }).catch((err) => {
       this.#log.warn("commit reminder failed", { id, err: String(err) });
+      this.#nudgeFailed(id);
     });
+    return true;
   }
 
   /** `id`'s title once set by hand or generated; null while it is still the
@@ -2872,10 +2909,13 @@ export class Daemon {
       const branch = this.#worktrees.renameBranch(snap.title, snap.branch);
       if (branch === snap.branch) return;
       this.#registry.setFields(id, { branch });
-      // Its agents branched from it, and count ahead / behind against it.
+      // Its agents branched from it, and count ahead / behind against it:
+      // stored for their next start, and told now if they are running.
       for (const kid of this.#registry.listSorted())
-        if (kid.supervisorId === id && kid.baseBranch === snap.branch)
+        if (kid.supervisorId === id && kid.baseBranch === snap.branch) {
           this.#registry.setFields(kid.id, { baseBranch: branch });
+          this.#pushAgentBase(kid.id);
+        }
       if (snap.checkout === "clone") await this.#publishCloneBranch(id);
     };
     // A guest sync must finish publishing before its relay branch policy changes.
@@ -2908,12 +2948,6 @@ export class Daemon {
     });
   }
 
-  /**
-   * The session's stored base as its agent's checkout names it — what the
-   * `status` tool counts ahead/behind against. A private clone sees the host's
-   * branches only as `origin/*`. Empty for a row stored without a base, which
-   * keeps the provider-wide fallback.
-   */
   /**
    * What `id` runs with as a Loom agent (`agents.ts#agentSessionPlan`): the
    * MCP servers its profile keeps, `loom-agents` unless its profile leaves it
@@ -2955,10 +2989,29 @@ export class Daemon {
     });
   }
 
+  /**
+   * The session's stored base as its agent's checkout names it — what the
+   * `status` tool counts ahead/behind against. Empty for a row stored without
+   * a base, which keeps the provider-wide fallback.
+   */
   #agentBase(id: string): { base?: string } {
     const row = this.#registry.get(id);
     if (!row?.baseBranch) return {};
-    return { base: (row.checkout === "clone" ? "origin/" : "") + row.baseBranch };
+    return { base: checkoutRef(row, row.baseBranch) };
+  }
+
+  /**
+   * Tell `id`'s running agent its stored base when that is not `sent`, the
+   * one it was started with: its supervisor's branch was renamed after the
+   * start read it, or while it ran. A session not running reads the stored
+   * base when it next starts.
+   */
+  #pushAgentBase(id: string, sent?: string): void {
+    const { base } = this.#agentBase(id);
+    if (!base || base === sent || !this.#sessions.has(id)) return;
+    void this.#sessions.setBase(id, base).catch((err) => {
+      this.#log.warn("could not update a session's base", { id, err: String(err) });
+    });
   }
 
   /** A session's `GIT_AUTHOR_*` / `GIT_COMMITTER_*`, for commits the daemon makes on its behalf. */
@@ -3537,6 +3590,8 @@ export class Daemon {
   /**
    * Put a message in `id`'s queue (`docs/message-queue.md`), bringing a cold
    * session back first: `session.send`, and Loom agents messaging each other.
+   * `behindHold` (a child's notification): a held queue stays held — the
+   * message waits behind the held entries and wakes nothing.
    */
   async #enqueueMessage(
     id: string,
@@ -3544,9 +3599,15 @@ export class Daemon {
     author: string,
     delivery: QueueDelivery,
     requestedId?: string,
+    opts: { behindHold?: boolean } = {},
   ): Promise<{ entryId: string; state: string }> {
     const entryId = requestedId ?? randomUUID();
     this.#registry.mustGet(id);
+    if (opts.behindHold && this.#messageQueue.hold(id) !== null) {
+      const r = await this.#sessions.enqueue(id, { entryId, text, author, delivery }, opts);
+      if (!r.ok) throw new RpcError(r.code, r.message, { sessionId: id });
+      return { entryId, state: this.#messageQueue.entry(id, entryId)?.state ?? r.value.state };
+    }
     // A clone's Git operations (a sync, a rebase) hold the command queue.
     const refuseBusyClone = () => {
       if (this.#registry.get(id)?.checkout === "clone" && this.#queue.activeKeys.includes(id))
@@ -3601,7 +3662,9 @@ export class Daemon {
     if (startup && !this.#sessions.has(id)) {
       startup.abort();
       this.#hooks.forget(id);
-      this.#registry.setStatus(id, stateInterrupted("user"));
+      const stopped = this.#registry.setStatus(id, stateInterrupted("user"));
+      // No stream will report this stop; a supervisor hears of it here.
+      this.#notifySupervisor(stopped, stopped.status);
       this.#publishState(id);
       return this.#registry.mustGet(id);
     }
@@ -3619,10 +3682,6 @@ export class Daemon {
     return this.#registry.mustGet(id);
   }
 
-  /**
-   * Archive `id` (`session.markDone`, `agent_stop`). A supervisor with agents
-   * still open needs `children`: stop (archive) them too, or detach them.
-   */
   /**
    * The agents `id` supervises that are still open. Closing a supervisor
    * that has any is a choice the caller must make (`children`), never a
@@ -3666,6 +3725,10 @@ export class Daemon {
     this.#publishState();
   }
 
+  /**
+   * Archive `id` (`session.markDone`, `agent_stop`). A supervisor with agents
+   * still open needs `children`: stop (archive) them too, or detach them.
+   */
   async #archive(id: string, force: boolean, children?: ChildrenOnClose): Promise<SessionSnapshot> {
     const kids = this.#openChildren(id, children);
     this.#agents.cancel(id);

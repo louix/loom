@@ -121,10 +121,14 @@ children inside the supervisor's VM is a later shared-VM feature.
   cut to about 2 KB with a pointer to `agent_read`; no model-written summary),
   or fails or is interrupted. It is queued as an end-of-turn entry labelled as
   coming from the child: a busy supervisor is not interrupted, an idle one is
-  woken. A child waiting for input (a permission or a question) is not
-  notified: both go to the user, so the supervisor could not act on it, and the
-  fleet already shows the child waiting. Waits stay unnotified until supervisor
-  question handling is designed.
+  woken, and one the user stopped stays stopped (the notification waits behind
+  the held queue; only the user releases it). A child waiting for input (a
+  permission or a question) is not notified: both go to the user, so the
+  supervisor could not act on it, and the fleet already shows the child
+  waiting. Waits stay unnotified until supervisor question handling is
+  designed. Nor is a stop the supervisor made itself (`agent_interrupt`,
+  `agent_stop`): the tool's answer already says so. A turn a commit or rebase
+  nudge carries on is reported once, when the turn it continues into ends.
 - Recommended pattern: start children, end the turn, be woken by
   notifications; `agent_wait` exists for short waits.
 - Questions and permissions: tool permissions always go to the user. Until a

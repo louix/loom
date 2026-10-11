@@ -9,7 +9,7 @@ import { test } from "node:test";
 import type { SessionSnapshot, TranscriptEntry } from "@loom/core/wire";
 import type { HarnessEvent } from "@loom/core/events";
 import type { AgentCallResult, McpServerHandle } from "@loom/core/types";
-import { stateIdle } from "@loom/core/session-state";
+import { stateError, stateIdle } from "@loom/core/session-state";
 import { makeLogger, setLogLevel } from "@loom/core/logger";
 import {
   AgentSupervision,
@@ -82,7 +82,7 @@ const settledTitle =
   (id: string): string | null =>
     SETTLED.has(id) ? (lookup(id)?.title ?? null) : null;
 
-const stub = (rows: SessionSnapshot[], dirty = false) => {
+const stub = (rows: SessionSnapshot[], dirty = false, events: AgentHost["events"] = () => []) => {
   const starts: ChildStart[] = [];
   const queued: Array<{ id: string; text: string; author: string }> = [];
   const answers: AgentCallResult[] = [];
@@ -90,6 +90,8 @@ const stub = (rows: SessionSnapshot[], dirty = false) => {
   const host: AgentHost = {
     agents: () => AGENTS,
     get: (id) => byId.get(id),
+    row: (id) => byId.get(id),
+    children: (id) => [...byId.values()].filter((r) => r.supervisorId === id),
     list: () => [...byId.values()],
     settledTitle: settledTitle((id) => byId.get(id)),
     providerKnown: (id) => ["claude", "codex"].includes(id),
@@ -117,14 +119,15 @@ const stub = (rows: SessionSnapshot[], dirty = false) => {
     },
     interrupt: async () => {},
     archive: async () => {},
-    events: () => [],
+    events,
     respond: async (_id, _call, result) => {
       answers.push(result);
     },
     log: makeLogger("test"),
   };
+  const sup = new AgentSupervision(host);
   const call = async (caller: string, tool: string, input: Record<string, unknown> = {}) => {
-    await new AgentSupervision(host).call(caller, {
+    await sup.call(caller, {
       type: "agent_call",
       sessionId: caller,
       ts: 0,
@@ -134,7 +137,7 @@ const stub = (rows: SessionSnapshot[], dirty = false) => {
     });
     return answers.at(-1)!;
   };
-  return { starts, queued, call, byId };
+  return { starts, queued, call, byId, sup };
 };
 
 test("a VM supervisor's child runs in a VM, in a worktree off the supervisor's branch", async () => {
@@ -307,4 +310,40 @@ test("final message, excerpt bounds and byte cuts", () => {
   assert.equal(tight.cursor, 2, "continues after the last entry shown");
   assert.deepEqual(cutBytes("héllo", 2), { text: "h", cut: true });
   assert.deepEqual(cutBytes("hello", 10), { text: "hello", cut: false });
+});
+
+test("agent_read reports more behind a full page, even one with nothing to show", async () => {
+  // A child whose log runs on past one fetch, every entry one the excerpt skips.
+  const endless: AgentHost["events"] = (_id, { after = 0, limit }) =>
+    Array.from({ length: limit }, (_, i) => ({
+      id: after + i + 1,
+      event: { type: "thinking", sessionId: "kid", ts: 0, text: "hm" } as HarnessEvent,
+    }));
+  const s = stub([row({ id: "lead" }), row({ id: "kid", supervisorId: "lead" })], false, endless);
+  const res = await s.call("lead", "agent_read", { id: "kid", since: 0 });
+  assert.match(res.text, /^\(nothing new\)/);
+  assert.match(res.text, /cursor: 1000 — more follows; agent_read with since: 1000/);
+});
+
+test("agent_wait settles on a child's status change, and ends with its caller's turn", async () => {
+  const running = { kind: "running" } as const;
+  const s = stub([row({ id: "lead" }), row({ id: "kid", supervisorId: "lead", status: running })]);
+  const quick = (p: Promise<AgentCallResult>) =>
+    Promise.race([
+      p,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("still waiting")), 1000)),
+    ]);
+
+  const settled = s.call("lead", "agent_wait", { ids: ["kid"], timeout: 30 });
+  await new Promise((r) => setTimeout(r, 10));
+  s.byId.set("kid", row({ id: "kid", supervisorId: "lead", status: stateIdle }));
+  s.sup.observe("kid", stateIdle);
+  assert.match((await quick(settled)).text, /^All settled\.\nkid: idle/);
+
+  s.byId.set("kid", row({ id: "kid", supervisorId: "lead", status: running }));
+  const ended = s.call("lead", "agent_wait", { ids: ["kid"], timeout: 30 });
+  await new Promise((r) => setTimeout(r, 10));
+  // The supervisor's turn failed (a crash, a close): its wait goes with it.
+  s.sup.observe("lead", stateError("the worker crashed"));
+  assert.match((await quick(ended)).text, /^Stopped waiting/);
 });

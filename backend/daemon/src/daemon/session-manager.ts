@@ -1028,14 +1028,19 @@ export class SessionManager {
    * Queue a user message (`session.send`). Sent to a held queue it goes first
    * and alone, and sending it releases the hold; the held entries then follow
    * the ordinary rules relative to the turn it starts.
+   *
+   * `behindHold` is for what is not the user speaking (a Loom agent's
+   * notification): it joins a held queue at the back and leaves the hold —
+   * only the user, sending or releasing, lifts a stop.
    */
   async enqueue(
     id: string,
     e: { entryId: string; text: string; author: string; delivery: QueueEntry["delivery"] },
+    opts: { behindHold?: boolean } = {},
   ): Promise<QueueResult<Enqueued>> {
     const q = this.#hooks.queue;
     if (!q) throw new Error("this daemon has no message queue");
-    const held = q.hold(id) !== null;
+    const held = q.hold(id) !== null && !opts.behindHold;
     const r = q.enqueue(
       id,
       { id: e.entryId, text: e.text, author: e.author, delivery: e.delivery },
@@ -1439,6 +1444,15 @@ export class SessionManager {
     const run = this.#running.get(id);
     if (!run || run.ended || !run.session.respondToAgentCall) return false;
     await run.session.respondToAgentCall(callId, result);
+    return true;
+  }
+
+  /** Tell a live session its base's new name; false when none is running
+   *  (a later start or resume reads the stored base anyway). */
+  async setBase(id: string, base: string): Promise<boolean> {
+    const run = this.#running.get(id);
+    if (!run || run.ended || !run.session.setBase) return false;
+    await run.session.setBase(base);
     return true;
   }
 

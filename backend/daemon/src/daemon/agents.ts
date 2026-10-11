@@ -33,7 +33,8 @@ export const READ_BUDGET_BYTES = 16 * 1024;
 const FINAL_BUDGET_BYTES = 32 * 1024;
 const WAIT_DEFAULT_S = 60;
 const WAIT_MAX_S = 600;
-const WAIT_POLL_MS = 200;
+/** `agent_read` with a cursor fetches at most this many entries per call. */
+const READ_FETCH = 1000;
 
 const short = (id: string): string => id.slice(0, 8);
 
@@ -248,6 +249,11 @@ export interface AgentHost {
   agents(): LoomConfig["agents"];
   /** A session with its git facts, or undefined. */
   get(id: string): SessionSnapshot | undefined;
+  /** A session's stored row — status, supervisor, branch — without the git
+   *  probe {@link get} pays for; what the frequent checks read. */
+  row(id: string): SessionSnapshot | undefined;
+  /** The stored rows of the sessions `supervisorId` supervises. */
+  children(supervisorId: string): SessionSnapshot[];
   /**
    * A session's title once it is a real one (set by hand or generated), else
    * null. Until then a title is the head of the first prompt, which a child
@@ -264,12 +270,17 @@ export interface AgentHost {
   repoRoot: string;
   dirty(path: string): boolean;
   start(child: ChildStart): Promise<SessionSnapshot>;
-  /** Put a message in a session's queue (reviving it when it is cold). */
+  /**
+   * Put a message in a session's queue (reviving it when it is cold). With
+   * `behindHold`, a held queue keeps its hold: the message waits behind the
+   * held entries, and nothing starts until the user releases them.
+   */
   enqueue(
     id: string,
     text: string,
     author: string,
     delivery: QueueDelivery,
+    opts?: { behindHold?: boolean },
   ): Promise<{ entryId: string; state: string }>;
   interrupt(id: string): Promise<void>;
   /** Archive; refuses uncommitted changes unless `force`. */
@@ -293,11 +304,34 @@ const str = (input: Record<string, unknown>, key: string): string | undefined =>
   return typeof v === "string" && v.trim() ? v.trim() : undefined;
 };
 
+/** An `agent_wait` in flight: re-checked when a session it waits on changes. */
+interface Waiter {
+  readonly ids: readonly string[];
+  /** Something it waits on changed: settle if the condition now holds. */
+  wake(): void;
+  /** Its caller's turn ended: stop waiting. */
+  cancel(): void;
+}
+
+/** States that end a turn: a wait the turn made cannot outlive them. */
+const TURN_ENDED: ReadonlySet<SessionState["kind"]> = new Set([
+  "idle",
+  "error",
+  "interrupted",
+  "done",
+]);
+
 /** The agent tools, the profile rules and the notifications up. */
 export class AgentSupervision {
   readonly #host: AgentHost;
-  /** `agent_wait` calls in flight, per caller, so an interrupt can end them. */
-  readonly #waits = new Map<string, Set<AbortController>>();
+  /** `agent_wait` calls in flight, per caller. */
+  readonly #waits = new Map<string, Set<Waiter>>();
+  /**
+   * Children whose stop or interrupt their own supervisor asked for, while
+   * the call runs: the supervisor caused that turn end, so it is not woken
+   * for it. A user's stop, a crash or a failure is still reported.
+   */
+  readonly #stopping = new Set<string>();
 
   constructor(host: AgentHost) {
     this.#host = host;
@@ -334,8 +368,22 @@ export class AgentSupervision {
 
   /** End `callerId`'s blocking waits: its turn was interrupted or it stopped. */
   cancel(callerId: string): void {
-    for (const wait of this.#waits.get(callerId) ?? []) wait.abort();
+    const waits = this.#waits.get(callerId);
     this.#waits.delete(callerId);
+    for (const wait of waits ?? []) wait.cancel();
+  }
+
+  /**
+   * Session `id` moved to `state` (every status write, however it came
+   * about). A turn end ends `id`'s own waits — a wait cannot outlive the
+   * turn that made it, whether that turn finished, failed, crashed or was
+   * closed — and any wait on `id` checks again.
+   */
+  observe(id: string, state: SessionState): void {
+    if (TURN_ENDED.has(state.kind)) this.cancel(id);
+    // A wait that settles removes itself; Map and Set iteration allow that.
+    for (const waits of this.#waits.values())
+      for (const wait of waits) if (wait.ids.includes(id)) wait.wake();
   }
 
   #run(caller: string, tool: AgentToolName, input: Record<string, unknown>): Promise<string> {
@@ -363,16 +411,17 @@ export class AgentSupervision {
     return this.#host.get(id) ?? refuse(`no such session: ${id}`);
   }
 
-  /** A child `caller` supervises, by full id (or an unambiguous prefix). */
+  /** A child `caller` supervises, by full id (or an unambiguous prefix): its
+   *  stored row, without git facts. */
   #child(caller: string, input: Record<string, unknown>): SessionSnapshot {
     const id = str(input, "id") ?? refuse("id is required");
-    const mine = this.#host.list().filter((s) => s.supervisorId === caller);
-    const match = mine.find((s) => s.id === id) ?? mine.filter((s) => s.id.startsWith(id));
-    if (!Array.isArray(match)) return match;
+    const exact = this.#host.row(id);
+    if (exact?.supervisorId === caller) return exact;
+    const match = this.#host.children(caller).filter((s) => s.id.startsWith(id));
     if (match.length === 1) return match[0]!;
     if (match.length > 1)
       refuse(`"${id}" matches more than one of your children; give the full id`);
-    return this.#host.get(id)
+    return exact
       ? refuse(`${short(id)} is not one of your children; you can act only on agents you started`)
       : refuse(`no such session: ${id}`);
   }
@@ -534,10 +583,13 @@ export class AgentSupervision {
   }
 
   #status(caller: string, input: Record<string, unknown>): string {
-    if (str(input, "id")) return this.#describe(this.#child(caller, input));
-    const mine = this.#host.list().filter((s) => s.supervisorId === caller);
+    if (str(input, "id")) {
+      const child = this.#child(caller, input);
+      return this.#describe(this.#host.get(child.id) ?? child);
+    }
+    const mine = this.#host.children(caller);
     if (mine.length === 0) return "You have no agents. Start one with agent_start.";
-    return mine.map((s) => this.#describe(s)).join("\n\n");
+    return mine.map((s) => this.#describe(this.#host.get(s.id) ?? s)).join("\n\n");
   }
 
   #read(caller: string, input: Record<string, unknown>): string {
@@ -556,13 +608,15 @@ export class AgentSupervision {
         `cursor: ${cursor} (agent_read with since: ${cursor} continues from here)`,
       ].join("\n");
     }
-    const entries = this.#host.events(child.id, { after: since, limit: 1000 });
+    const entries = this.#host.events(child.id, { after: since, limit: READ_FETCH });
     const excerpt = renderExcerpt(entries);
     const cursor = excerpt.cursor ?? since;
+    // A full page may have more behind it, even when nothing on it showed.
+    const more = excerpt.more || entries.length >= READ_FETCH;
     return [
       excerpt.text || "(nothing new)",
       "",
-      excerpt.more
+      more
         ? `cursor: ${cursor} — more follows; agent_read with since: ${cursor}`
         : `cursor: ${cursor} — up to date`,
     ].join("\n");
@@ -574,8 +628,19 @@ export class AgentSupervision {
       !["running", "starting", "working_background", "awaiting_input"].includes(child.status.kind)
     )
       return `${short(child.id)} is not running (${child.status.kind}).`;
-    await this.#host.interrupt(child.id);
+    await this.#quietly(child.id, () => this.#host.interrupt(child.id));
     return `Interrupted ${short(child.id)}. Message it to go on.`;
+  }
+
+  /** Run `stop`, the caller's own stop of `child`, without reporting the
+   *  turn end it causes back to that caller. */
+  async #quietly(child: string, stop: () => Promise<void>): Promise<void> {
+    this.#stopping.add(child);
+    try {
+      await stop();
+    } finally {
+      this.#stopping.delete(child);
+    }
   }
 
   async #stop(caller: string, input: Record<string, unknown>): Promise<string> {
@@ -591,7 +656,7 @@ export class AgentSupervision {
       refuse(
         `${short(child.id)} has uncommitted changes: message it to commit them, or call agent_stop with discard: true to lose them.`,
       );
-    await this.#host.archive(child.id, discard);
+    await this.#quietly(child.id, () => this.#host.archive(child.id, discard));
     return `Stopped and archived ${short(child.id)}; its branch${child.branch ? ` ${child.branch}` : ""} and transcript are kept.`;
   }
 
@@ -606,29 +671,45 @@ export class AgentSupervision {
         ? input["timeout"]
         : WAIT_DEFAULT_S,
     );
+    // Read off the stored rows: this runs on every status change of a child.
     const done = () => {
       const settled = ids.map((id) => {
-        const s = this.#host.get(id);
+        const s = this.#host.row(id);
         return !s || SETTLED.has(s.status.kind);
       });
       return all ? settled.every(Boolean) : settled.some(Boolean);
     };
-    const abort = new AbortController();
-    const waits = this.#waits.get(caller) ?? new Set();
-    waits.add(abort);
-    this.#waits.set(caller, waits);
-    const deadline = Date.now() + timeout * 1000;
-    try {
-      while (!done() && Date.now() < deadline && !abort.signal.aborted)
-        await new Promise((r) => setTimeout(r, WAIT_POLL_MS));
-    } finally {
-      waits.delete(abort);
+    type Outcome = "settled" | "timeout" | "cancelled";
+    let outcome: Outcome = "settled";
+    if (!done()) {
+      const waits = this.#waits.get(caller) ?? new Set<Waiter>();
+      this.#waits.set(caller, waits);
+      outcome = await new Promise<Outcome>((resolve) => {
+        const finish = (how: Outcome) => {
+          clearTimeout(timer);
+          waits.delete(waiter);
+          if (waits.size === 0 && this.#waits.get(caller) === waits) this.#waits.delete(caller);
+          resolve(how);
+        };
+        const waiter: Waiter = {
+          ids,
+          wake: () => {
+            if (done()) finish("settled");
+          },
+          cancel: () => finish("cancelled"),
+        };
+        const timer = setTimeout(() => finish("timeout"), timeout * 1000);
+        waits.add(waiter);
+      });
     }
-    let head = `Timed out after ${timeout}s.`;
-    if (done()) head = `${all ? "All" : "One"} settled.`;
-    else if (abort.signal.aborted) head = "Stopped waiting: your turn was interrupted.";
+    const heads: Record<Outcome, string> = {
+      settled: `${all ? "All" : "One"} settled.`,
+      cancelled: "Stopped waiting: your turn ended or was interrupted.",
+      timeout: `Timed out after ${timeout}s.`,
+    };
+    const head = heads[outcome];
     const lines = ids.map((id) => {
-      const s = this.#host.get(id);
+      const s = this.#host.row(id);
       return s ? `${short(id)}: ${s.status.kind}` : `${short(id)}: gone`;
     });
     return [head, ...lines].join("\n");
@@ -638,14 +719,23 @@ export class AgentSupervision {
    * Tell `child`'s supervisor that its turn stopped in `state`: a finished
    * turn, a failure or an interrupt. Queued as an end-of-turn entry labelled
    * as the child's, so a busy supervisor is not interrupted and an idle one is
-   * woken; never streamed output. A supervisor that is archived or gone is not
+   * woken — unless its queue is held, where it waits behind the hold like
+   * everything else; never streamed output. A supervisor that is archived or gone is not
    * told. A wait for input is not reported: permissions, and for now a
    * child's questions, go to the user, so the supervisor could not act on it
    * (the fleet shows the child waiting).
+   *
+   * Nor is a turn end the supervisor caused itself (`agent_interrupt`,
+   * `agent_stop`): its tool call already answers it. And `state` must still
+   * be the child's: one that has moved on since (a commit or rebase nudge
+   * started its next turn) is reported when that turn ends, so each settled
+   * turn sends exactly one notification.
    */
   async notify(child: SessionSnapshot, state: SessionState): Promise<void> {
     if (!child.supervisorId) return;
-    const supervisor = this.#host.get(child.supervisorId);
+    if (state.kind === "interrupted" && this.#stopping.has(child.id)) return;
+    if (this.#host.row(child.id)?.status.kind !== state.kind) return;
+    const supervisor = this.#host.row(child.supervisorId);
     if (!supervisor || supervisor.status.kind === "done") return;
     let event: string;
     switch (state.kind) {
@@ -677,7 +767,10 @@ export class AgentSupervision {
         : []),
     ].join("\n");
     try {
-      await this.#host.enqueue(supervisor.id, body, `agent:${child.id}`, "end_of_turn");
+      // Behind a hold: a supervisor the user stopped stays stopped.
+      await this.#host.enqueue(supervisor.id, body, `agent:${child.id}`, "end_of_turn", {
+        behindHold: true,
+      });
     } catch (err) {
       this.#host.log.warn("agent notification failed", {
         child: child.id,

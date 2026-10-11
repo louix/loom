@@ -413,4 +413,150 @@ describe("loom agents", { concurrency: 4 }, () => {
       });
     }
   });
+
+  test("a supervisor is not woken by its own interrupt or stop; a user's interrupt is reported", async (env) => {
+    const lead = await idleSession(env);
+    const child = await startChild(env, lead.fs);
+    const notes = () => lead.fs.sends.filter((s) => s.startsWith("[from your agent"));
+    child.fs.emit({ type: "assistant_text", text: "busy" });
+    await waitFor(async () => (await get(env.c, child.id)).status.kind === "running");
+    const interrupted = await lead.fs.callAgentTool("agent_interrupt", { id: child.id });
+    assert.match(interrupted.text, /^Interrupted/);
+    assert.equal((await get(env.c, child.id)).status.kind, "interrupted");
+
+    await env.c.request("session.send", { id: child.id, text: "go on", by: "client" });
+    await waitFor(() => child.fs.sends.includes("go on"));
+    child.fs.emit({ type: "assistant_text", text: "busy again" });
+    await waitFor(async () => (await get(env.c, child.id)).status.kind === "running");
+    const stopped = await lead.fs.callAgentTool("agent_stop", { id: child.id, discard: true });
+    assert.equal(stopped.ok, true, stopped.text);
+    await delay(50);
+    assert.deepEqual(notes(), [], "the supervisor's own stops wake nothing");
+
+    // The user stopping one of its agents is news to the supervisor.
+    const second = await startChild(env, lead.fs, { title: "Two" });
+    second.fs.emit({ type: "assistant_text", text: "busy" });
+    await waitFor(async () => (await get(env.c, second.id)).status.kind === "running");
+    await env.c.request("session.interrupt", { id: second.id });
+    await waitFor(() => notes().length > 0);
+    assert.match(notes()[0]!, /"Two".*It was interrupted \(user\)\./);
+  });
+
+  test("a notification waits behind a held supervisor queue and does not release it", async (env) => {
+    const lead = await idleSession(env);
+    const child = await startChild(env, lead.fs);
+    await env.c.request("session.send", { id: lead.id, text: "keep going", by: "client" });
+    await waitFor(() => lead.fs.sends.includes("keep going"));
+    lead.fs.emit({ type: "assistant_text", text: "working" });
+    await waitFor(async () => (await get(env.c, lead.id)).status.kind === "running");
+    await env.c.request("session.send", {
+      id: lead.id,
+      text: "then this",
+      by: "client",
+      delivery: "end_of_turn",
+    });
+    // The user stops the supervisor: what it had queued is held.
+    await env.c.request("session.interrupt", { id: lead.id });
+    await waitFor(async () => (await get(env.c, lead.id)).queue?.hold === "interrupt");
+    const sendsBefore = lead.fs.sends.length;
+
+    await finish(env, child, "Widget added.");
+    await waitFor(async () => ((await get(env.c, lead.id)).queue?.entries.length ?? 0) === 2);
+    await delay(50);
+    const queue = (await get(env.c, lead.id)).queue!;
+    assert.equal(queue.hold, "interrupt", "still held");
+    assert.deepEqual(
+      queue.entries.map((e) => e.author),
+      ["client", `agent:${child.id}`],
+      "behind the held message",
+    );
+    assert.equal(lead.fs.sends.length, sendsBefore, "no turn started");
+    assert.equal((await get(env.c, lead.id)).status.kind, "interrupted");
+
+    // The user releasing the queue lets both go, theirs first.
+    await env.c.request("session.queueRelease", { id: lead.id });
+    await waitFor(() => lead.fs.sends.length > sendsBefore);
+    assert.equal(lead.fs.sends[sendsBefore], "then this");
+  });
+
+  test("a turn the commit reminder carries on is reported once, when it ends", async (env) => {
+    const lead = await idleSession(env);
+    const child = await startChild(env, lead.fs);
+    const notes = () => lead.fs.sends.filter((s) => s.startsWith("[from your agent"));
+    writeFileSync(join((await get(env.c, child.id)).worktree!, "wip.txt"), "uncommitted\n");
+    child.fs.emit({ type: "assistant_text", text: "first pass, not committed" });
+    child.fs.finishTurn();
+    await waitFor(() => child.fs.sends.some((s) => /uncommitted changes in your worktree/.test(s)));
+    await delay(50);
+    assert.deepEqual(notes(), [], "the nudged turn has not settled");
+
+    child.fs.emit({ type: "assistant_text", text: "Committed it." });
+    child.fs.finishTurn();
+    await waitFor(() => notes().length > 0);
+    await delay(50);
+    assert.equal(notes().length, 1);
+    assert.match(notes()[0]!, /It finished a turn\.[\s\S]*Committed it\./);
+  });
+
+  test("a user's interrupt of a child still starting reaches its supervisor", async (env) => {
+    const lead = await idleSession(env);
+    const release = env.provider.blockCreate();
+    const started = lead.fs.callAgentTool("agent_start", {
+      profile: "implementer",
+      task: "add the widget",
+      title: "Widget",
+    });
+    let childId = "";
+    await waitFor(async () => {
+      const rows = await env.c.request<SessionSnapshot[]>("session.list", {});
+      childId = rows.find((r) => r.supervisorId === lead.id)?.id ?? "";
+      return childId !== "";
+    });
+    await env.c.request("session.interrupt", { id: childId });
+    const notes = () => lead.fs.sends.filter((s) => s.startsWith("[from your agent"));
+    await waitFor(() => notes().length > 0);
+    assert.match(notes()[0]!, /It was interrupted \(user\)\./);
+    release();
+    await started;
+    await delay(50);
+    assert.equal(notes().length, 1, "told once");
+  });
+
+  test("a running child is told its supervisor's renamed branch", async (env) => {
+    // The supervisor starts a child during its first turn; that turn's end
+    // names the supervisor's branch.
+    const snap = await env.c.request<SessionSnapshot>("session.create", {
+      prompt: "lead the work",
+      provider: "fake",
+    });
+    await waitFor(() => env.provider.session(snap.id) !== undefined);
+    const lead = env.provider.session(snap.id)!;
+    const before = (await get(env.c, snap.id)).branch!;
+    const child = await startChild(env, lead);
+    assert.equal(env.provider.creates.find((o) => o.sessionId === child.id)?.base, before);
+    lead.finishTurn();
+    await waitFor(async () => (await get(env.c, snap.id)).branch !== before);
+    const renamed = (await get(env.c, snap.id)).branch!;
+    assert.equal((await get(env.c, child.id)).baseBranch, renamed);
+    await waitFor(() => child.fs.bases.includes(renamed));
+  });
+
+  test("a supervisor's wait ends with its turn", async (env) => {
+    const lead = await idleSession(env);
+    const child = await startChild(env, lead.fs);
+    child.fs.emit({ type: "assistant_text", text: "busy" });
+    await waitFor(async () => (await get(env.c, child.id)).status.kind === "running");
+    await env.c.request("session.send", { id: lead.id, text: "wait for it", by: "client" });
+    await waitFor(() => lead.fs.sends.includes("wait for it"));
+    lead.fs.emit({ type: "assistant_text", text: "waiting" });
+    await waitFor(async () => (await get(env.c, lead.id)).status.kind === "running");
+    const waited = lead.fs.callAgentTool("agent_wait", { ids: [child.id], timeout: 60 });
+    await delay(20);
+    lead.fs.finishTurn();
+    const res = await Promise.race([
+      waited,
+      delay(2000).then(() => ({ ok: false, text: "still waiting" })),
+    ]);
+    assert.match(res.text, /^Stopped waiting/);
+  });
 });

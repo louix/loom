@@ -1,4 +1,5 @@
 import type { SessionState } from "@loom/core/events";
+import { stateDone } from "@loom/core/session-state";
 import type { SessionSnapshot } from "@loom/core/wire";
 import {
   SessionStore,
@@ -52,7 +53,17 @@ export class Registry {
 
   setStatus(id: string, state: SessionState, note: string | null = null): SessionSnapshot {
     this.#store.setStatus(id, state, note);
-    return this.mustGet(id);
+    const snap = this.mustGet(id);
+    this.#onStatus?.(id, state);
+    return snap;
+  }
+
+  #onStatus: ((id: string, state: SessionState) => void) | undefined;
+
+  /** Hear of every status write, whichever path made it, and of a removal
+   *  (as `done`). One listener. */
+  watchStatus(fn: (id: string, state: SessionState) => void): void {
+    this.#onStatus = fn;
   }
 
   addUsage(id: string, d: UsageDelta): SessionSnapshot {
@@ -88,5 +99,7 @@ export class Registry {
    *  `parent_id` is nulled (see the schema). */
   remove(id: string): void {
     this.#store.delete(id);
+    // Gone is as ended as archived, to whoever was watching it.
+    this.#onStatus?.(id, stateDone);
   }
 }
