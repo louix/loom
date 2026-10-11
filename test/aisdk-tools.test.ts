@@ -371,7 +371,8 @@ test("an MCP tool with a builtin's name (fff's grep) replaces the builtin", asyn
     const ask = offered.find((t) => t.name === "ask_user");
     assert.match(ask?.description ?? "", /supervising this session/);
     assert.doesNotMatch(ask?.description ?? "", /Fake MCP/);
-    assert.ok(names.includes("task"));
+    // No native sub-agent tool: a Loom session delegates through `loom-agents`.
+    assert.ok(!names.includes("task"));
   } finally {
     cleanup();
   }

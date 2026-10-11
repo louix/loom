@@ -1260,3 +1260,40 @@ test("queued messages are stamped with their input id and reported taken up once
   ]);
   assert.equal(consumed().length, 2);
 });
+
+// Loom agents replace the SDK's own sub-agent tool; background shells stay.
+test("every Claude session runs without the native sub-agent tool, created or resumed", async () => {
+  const captured: Array<Record<string, unknown>> = [];
+  __setClaudeSdk({
+    query: (args) => {
+      captured.push(args.options as Record<string, unknown>);
+      return fakeQuery([]) as never;
+    },
+  });
+  const provider = new ClaudeProvider();
+  const created = await provider.createSession({
+    sessionId: "no-agent-create",
+    cwd: "/tmp",
+    prompt: "go",
+    mode: "default",
+    mcpServers: [],
+    disableTools: ["Grep"],
+  });
+  const resumed = await provider.resumeSession({
+    sessionId: "no-agent-resume",
+    providerRef: "ref",
+    cwd: "/tmp",
+  });
+  try {
+    assert.deepEqual(captured[0]?.disallowedTools, ["Agent", "Task", "Grep"]);
+    assert.deepEqual(captured[1]?.disallowedTools, ["Agent", "Task"]);
+    for (const opts of captured) {
+      const denied = opts.disallowedTools as string[];
+      assert.ok(!denied.includes("Bash"), "background shells run through Bash");
+      assert.equal(opts.agents, undefined);
+    }
+  } finally {
+    await created.close();
+    await resumed.close();
+  }
+});

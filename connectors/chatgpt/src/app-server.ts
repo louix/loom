@@ -79,6 +79,20 @@ export const mcpConfig = (servers: McpServerHandle[]): string => {
   return `{ ${[...entries.entries()].map(([name, config]) => `${value(name)} = ${config}`).join(", ")} }`;
 };
 
+/**
+ * Codex feature switches that withdraw its native sub-agents. `multi_agent`
+ * gates the v1 collaboration tools (`spawn_agent`, `send_input`, `wait`,
+ * `close_agent`, …) and is on by default; `multi_agent_v2` the v2 team tools
+ * (`followup_task`, `send_message`, `wait_agent`, …). A model's catalogue
+ * entry also declares a `multi_agent_version`; that these flags withdraw the
+ * v2 tools from such a model too is not confirmed against a live thread (see
+ * docs/loom-agents.md, Open).
+ */
+export const NATIVE_SUBAGENT_FLAGS = [
+  "features.multi_agent=false",
+  "features.multi_agent_v2=false",
+] as const;
+
 /** Preserve the existing native environment, but omit upstream MCP credentials.
  *  Relay tokens arrive in the MCP mount configuration. Native host authority remains
  *  until the ChatGPT connector migration and VM isolation. */
@@ -98,6 +112,11 @@ const launchOptions = (
     'cli_auth_credentials_store="file"',
     "-c",
     `mcp_servers=${mcpConfig(servers)}`,
+    // Codex's own multi-agent tools (`spawn_agent` and the collaboration tools
+    // around it) are off for every thread this process serves — start, resume
+    // and fork alike: a Loom session delegates through `loom-agents`. Both
+    // generations are pinned, over whatever the user's config.toml enables.
+    ...NATIVE_SUBAGENT_FLAGS.flatMap((flag) => ["-c", flag]),
     // Keep the activated project environment instead of rebuilding it from login profiles.
     ...(Deno.env.get("LOOM_PROJECT_ENVIRONMENT") === "1"
       ? [

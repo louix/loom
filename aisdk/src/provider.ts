@@ -56,7 +56,7 @@ export interface AisdkProviderOptions {
   search?: SearchConfig;
   /** The repo's base branch, for the `status` tool's ahead/behind counts. */
   base?: string;
-  /** Whether Loom should advertise its `task` sub-agent capability. */
+  /** Whether Loom should advertise a native sub-agent capability (none: `loom-agents` replaces it). */
   subagents?: boolean;
   /** Optional authenticated catalog, e.g. Codex's subscription `/models` endpoint. */
   listModels?: () => Promise<DiscoveredModel[]>;
@@ -95,7 +95,7 @@ export class AisdkProvider implements AgentProvider {
       liveModelSwitch: false, // a model change takes effect on the next turn
       forking: false,
       rewind: true, // Loom owns the ModelMessage[] — slicing it is exact
-      subagents: opts.subagents ?? true, // the `task` tool spawns a depth-1 sub-agent
+      subagents: opts.subagents ?? false, // no native sub-agents; `loom-agents` instead
       compaction: false, // Loom summarises + rebuilds history; not the provider's own /compact
       compactionInstructions: true, // the summarizer prompt takes a custom instructions steer
       ownsTranscript: true, // Loom owns the ModelMessage[] in `provider_messages`

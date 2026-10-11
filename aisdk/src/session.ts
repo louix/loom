@@ -6,10 +6,11 @@
  *
  * M10b–d: multi-step turns with MCP tools, the `loom` tools, a first-party
  * Bash/Edit/Grep suite, plan mode (`exit_plan` → `plan_review`), Loom-side
- * summarise-and-rebuild compaction, and `task` sub-agents.
+ * summarise-and-rebuild compaction. No native sub-agents: a Loom session
+ * delegates through `loom-agents` (docs/loom-agents.md).
  */
 import { randomUUID } from "node:crypto";
-import { stepCountIs, streamText, tool } from "ai";
+import { streamText, tool } from "ai";
 import type { LanguageModel, ModelMessage, ToolSet } from "ai";
 import { z } from "zod";
 import type { HarnessEvent } from "@loom/core/events";
@@ -79,11 +80,6 @@ const COMPACT_BEAT_BACKOFF_AFTER_MS = 30_000;
 const COMPACT_PREAMBLE =
   "The earlier conversation was summarised to save context. Continue from this summary:\n\n";
 
-const SUBAGENT_SYSTEM =
-  "You are a sub-agent handling one focused task delegated by a parent agent. " +
-  "You have the same tools but your own context and cannot ask questions. Do the " +
-  "task, then end with a short report of what you did and what you found.";
-
 export interface AisdkSessionOptions {
   sessionId: string;
   initHooks?: CreateSessionOptions["initHooks"];
@@ -109,7 +105,7 @@ export interface AisdkSessionOptions {
   cwd: string;
   /** Vendor-neutral MCP servers to connect for this session. */
   mcpHandles: McpServerHandle[];
-  /** Mount the `loom` tools + first-party Bash/Edit/Grep + plan/task tools. */
+  /** Mount the `loom` tools + first-party Bash/Edit/Grep + the plan tool. */
   loomServer: boolean;
   /** Resolved `web_search` config, when configured. */
   search?: SearchConfig;
@@ -132,7 +128,6 @@ export interface AisdkSessionOptions {
 export class AisdkSession implements AgentSession {
   readonly id: string;
 
-  #modelId: string;
   #model: LanguageModel;
   readonly #makeModel: (id: string) => LanguageModel;
   /** Reasoning effort sent with every request, when the connector supports one. */
@@ -198,7 +193,6 @@ export class AisdkSession implements AgentSession {
 
   constructor(opts: AisdkSessionOptions) {
     this.id = opts.sessionId;
-    this.#modelId = opts.modelId;
     this.#modelContext = opts.modelContext ?? {};
     this.#providerOptionsName = opts.providerOptionsName;
     this.#cacheControl = opts.cacheControl;
@@ -458,7 +452,6 @@ export class AisdkSession implements AgentSession {
   }
 
   async setModel(model: string): Promise<void> {
-    this.#modelId = model;
     this.#model = this.#makeModel(model);
     this.#mapper.setModel(model);
     this.#snap.model = model;
@@ -584,7 +577,7 @@ export class AisdkSession implements AgentSession {
               askUser: (q, c) => this.#askUser(q, c),
             }),
           );
-          Object.assign(base, this.#planAndTaskTools());
+          Object.assign(base, this.#planTools());
           // Builtins fill only the names no MCP server claimed.
           this.#builtins ??= new BuiltinTools(this.#cwd, this.#search);
           for (const [name, t] of Object.entries(this.#builtins.tools)) {
@@ -637,7 +630,7 @@ export class AisdkSession implements AgentSession {
     });
   }
 
-  #planAndTaskTools(): ToolSet {
+  #planTools(): ToolSet {
     return {
       exit_plan: tool({
         description:
@@ -681,20 +674,6 @@ export class AisdkSession implements AgentSession {
               };
               return "Plan approved. Implementation begins now.";
           }
-        },
-      }),
-      task: tool({
-        description:
-          "Delegate a focused, self-contained sub-task to a fresh sub-agent that has the same " +
-          "tools but its own context. Good for a search sweep or an isolated change, so your own " +
-          "context stays lean. The sub-agent cannot ask questions. Returns its final report.",
-        inputSchema: z.object({
-          description: z.string().describe("A 3–6 word label for the sub-task."),
-          prompt: z.string().describe("Full, self-contained instructions for the sub-agent."),
-        }),
-        execute: async ({ description, prompt }) => {
-          const report = await this.#runSubagent(description, prompt);
-          return { report };
         },
       }),
     };
@@ -743,79 +722,6 @@ export class AisdkSession implements AgentSession {
       input,
     });
     return decision;
-  }
-
-  async #runSubagent(name: string, prompt: string): Promise<string> {
-    const subId = randomUUID();
-    this.#emit({
-      type: "subagent_started",
-      sessionId: this.id,
-      ts: Date.now(),
-      subagentId: subId,
-      name,
-    });
-
-    const base = await this.#ensureBaseTools();
-    const src = base as Record<string, unknown>;
-    const subPicked: Record<string, unknown> = {};
-    for (const n of Object.keys(src)) if (n !== "task" && n !== "exit_plan") subPicked[n] = src[n];
-    const effectiveMode: SessionMode = this.#mode === "plan" ? "default" : this.#mode;
-    const subTools = wrapToolSet(subPicked as ToolSet, {
-      mode: () => effectiveMode,
-      ask: (nm, input, id) => this.#requestPermission(`${name} › ${nm}`, input, id),
-    });
-    const subMapper = new AisdkEventMapper(this.id, this.#modelId, (m) => this.#limitFor(m));
-
-    let report = "";
-    let failure: string | null = null;
-    let lastStepReason: string | undefined;
-    const po = this.#providerOptions();
-    try {
-      const res = streamText({
-        model: this.#model,
-        // Sub-agents run the same model for the same session — carry the effort.
-        ...(po ? { providerOptions: po } : {}),
-        system: SUBAGENT_SYSTEM,
-        messages: [{ role: "user", content: prompt }],
-        tools: subTools,
-        stopWhen: stepCountIs(this.#maxSteps),
-        abortSignal: this.#abort?.signal ?? AbortSignal.timeout(300_000),
-      });
-      for await (const part of res.fullStream) {
-        for (const ev of subMapper.map(part)) this.#emit({ ...ev, agentId: subId } as HarnessEvent);
-        if (part.type === "text-delta") report += part.text;
-        if (part.type === "error") failure = "the sub-agent's model stream errored";
-        if (part.type === "finish-step") {
-          const r = (part as { finishReason?: string }).finishReason;
-          if (r) lastStepReason = r;
-        }
-        if (part.type === "abort") break;
-      }
-    } catch (err) {
-      failure = err instanceof Error ? err.message : String(err);
-    }
-
-    // The step ceiling cut the sub-agent off mid-work (unlike the main loop it
-    // has no continuation) — tell the parent turn so it doesn't treat a
-    // truncated report as a complete answer.
-    const truncated = failure == null && lastStepReason === "tool-calls";
-    if (failure != null || truncated) {
-      this.#emit({
-        type: "error",
-        sessionId: this.id,
-        ts: Date.now(),
-        message: truncated
-          ? `sub-agent "${name}" hit its ${this.#maxSteps}-step limit; report is partial`
-          : `sub-agent "${name}": ${failure}`,
-        fatal: false,
-        agentId: subId,
-      } as HarnessEvent);
-      if (failure != null) report = report || `sub-agent failed: ${failure}`;
-      else report += "\n\n[sub-agent truncated at its step limit — result may be incomplete]";
-    }
-
-    this.#emit({ type: "subagent_stopped", sessionId: this.id, ts: Date.now(), subagentId: subId });
-    return report.trim() || "(the sub-agent produced no output)";
   }
 
   async #doCompact(instructions: string | undefined, trigger: "manual" | "auto"): Promise<void> {

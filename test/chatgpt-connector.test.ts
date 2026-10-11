@@ -430,6 +430,44 @@ test("CodexAppServerSession.start/.resume and discoverCodexModels launch through
   assert.equal(specs[2]?.codexHome, codexHome);
 });
 
+test("Codex sessions run with its native multi-agent tools switched off, created or resumed", async () => {
+  const codexHome = {
+    dir: "/tmp/loom-codex-no-subagents",
+    authJsonPath: "/tmp/loom-codex-no-subagents/auth.json",
+  };
+  const specs: CodexLaunchSpec[] = [];
+  const launch: CodexLauncher = (spec) => {
+    specs.push(spec);
+    return spawnCodex(spec);
+  };
+  const started = await CodexAppServerSession.start(
+    { sessionId: "s1", cwd: "/tmp", prompt: "", mode: "default", mcpServers: [] },
+    codexHome,
+    FAKE_CODEX,
+    undefined,
+    false,
+    undefined,
+    launch,
+  );
+  await started.close();
+  const resumed = await CodexAppServerSession.resume(
+    { sessionId: "s2", providerRef: "fake-thread-1", cwd: "/tmp" },
+    codexHome,
+    FAKE_CODEX,
+    undefined,
+    false,
+    undefined,
+    launch,
+  );
+  await resumed.close();
+  assert.equal(specs.length, 2);
+  for (const spec of specs) {
+    const overrides = spec.args.flatMap((arg, i) => (spec.args[i - 1] === "-c" ? [arg] : []));
+    assert.ok(overrides.includes("features.multi_agent=false"));
+    assert.ok(overrides.includes("features.multi_agent_v2=false"));
+  }
+});
+
 test("activated Codex sessions preserve the project environment on create and resume", async () => {
   const previous = Deno.env.get("LOOM_PROJECT_ENVIRONMENT");
   const codexHome = {

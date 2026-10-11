@@ -59,7 +59,9 @@ const CAPS: ProviderCapabilities = {
   liveModelSwitch: true,
   forking: true,
   rewind: true, // fork the transcript truncated, then resume it — ClaudeSession.rewind
-  subagents: true,
+  // The SDK's own sub-agent tool is never offered (NATIVE_SUBAGENT_TOOLS): a
+  // Loom session delegates through `loom-agents` instead.
+  subagents: false,
   compaction: true,
   compactionInstructions: true, // /compact takes a custom summary steer
   ownsTranscript: false, // history lives in the Claude Agent SDK's own session
@@ -160,6 +162,15 @@ const asQueryEffort = (effort: EffortLevel): NonNullable<Options["effort"]> | un
 const CLAUDE_FLAG_EFFORTS = new Set(["low", "medium", "high", "xhigh"]);
 const asFlagEffort = (effort: EffortLevel): "low" | "medium" | "high" | "xhigh" | undefined =>
   CLAUDE_FLAG_EFFORTS.has(effort) ? (effort as "low" | "medium" | "high" | "xhigh") : undefined;
+
+/**
+ * The SDK's built-in sub-agent tool, under its current name and the one it had
+ * before (`Task`), withheld from every session: Loom's own agents
+ * (`loom-agents`) replace it, and its worktrees under `<repo>/.claude/worktrees`
+ * trip the writes-outside-the-workspace guard. Background shells are Bash's
+ * `run_in_background` and stay.
+ */
+export const NATIVE_SUBAGENT_TOOLS = ["Agent", "Task"] as const;
 
 /** Built-in file-mutating tools — the target path rides in `file_path` /
  *  `notebook_path`. */
@@ -654,9 +665,7 @@ class ClaudeSession implements AgentSession {
       ...(opts.model ? { model: opts.model } : {}),
       ...(queryEffort ? { effort: queryEffort } : {}),
       ...(resume ? { resume } : {}),
-      ...(opts.disableTools && opts.disableTools.length > 0
-        ? { disallowedTools: opts.disableTools }
-        : {}),
+      disallowedTools: [...new Set([...NATIVE_SUBAGENT_TOOLS, ...(opts.disableTools ?? [])])],
       ...(opts.settingSources && !opts.oneShot
         ? { settingSources: opts.settingSources as NonNullable<Options["settingSources"]> }
         : {}),
