@@ -12,7 +12,7 @@
  */
 import type { AgentCallEvent, HarnessEvent } from "@loom/core/events";
 import type { AgentCallResult, McpServerHandle, SessionMode } from "@loom/core/types";
-import type { QueueDelivery } from "@loom/core/message-queue";
+import type { HoldRespect, QueueDelivery, QueueHoldCause } from "@loom/core/message-queue";
 import type { SessionState, StopCause } from "@loom/core/session-state";
 import type { GitFacts, SessionSnapshot, TranscriptEntry } from "@loom/core/wire";
 import type { Logger } from "@loom/core/logger";
@@ -45,6 +45,22 @@ const gitSummary = (git: GitFacts): string =>
     ...(git.behindBase > 0 ? [`${git.behindBase} behind`] : []),
     ...(git.dirty ? ["uncommitted changes"] : []),
   ].join(", ");
+
+/** Why a child's queue is held, as its supervisor is told. */
+const holdCause = (hold: QueueHoldCause): string => {
+  if (hold.by === "user") return "the user stopped it";
+  if (hold.by === "supervisor") return "you stopped it";
+  switch (hold.reason) {
+    case "crash":
+      return "it stopped unexpectedly";
+    case "restart":
+      return "the daemon restarted while a message was being handed over";
+    case "rejected":
+      return "a message may not have reached it";
+    case "interrupt":
+      return "it was stopped";
+  }
+};
 
 /** States a child's turn has stopped in: done working until someone acts. */
 const SETTLED: ReadonlySet<SessionState["kind"]> = new Set([
@@ -281,17 +297,20 @@ export interface AgentHost {
   dirty(path: string): boolean;
   start(child: ChildStart): Promise<SessionSnapshot>;
   /**
-   * Put a message in a session's queue, reviving it when it is cold and
-   * unheld. A held queue keeps its hold: the message waits behind the held
-   * entries — a cold session stays cold — and nothing starts until the user
-   * sends or releases them. Only the user lifts a stop, never an agent.
+   * Put a message in a session's queue, reviving it when it is cold. A hold
+   * `respect` says it waits behind stays: the message joins the held entries
+   * — a cold session stays cold — and nothing starts until the user sends or
+   * releases them. Any other hold it lifts, going first, as the user's send
+   * does. Only the user lifts the user's stop, never an agent. `hold` is the
+   * hold it found; `waited`, whether it stays.
    */
   enqueue(
     id: string,
     text: string,
     author: string,
     delivery: QueueDelivery,
-  ): Promise<{ entryId: string; state: string }>;
+    respect: Exclude<HoldRespect, "none">,
+  ): Promise<{ entryId: string; state: string; hold: QueueHoldCause | null; waited: boolean }>;
   /** Interrupt a child for its supervisor: the turn's end is attributed to
    *  the supervisor (`interrupted` by `supervisor`). */
   interrupt(id: string): Promise<void>;
@@ -560,7 +579,9 @@ export class AgentSupervision {
       input["delivery"] === "end_of_turn" ? "end_of_turn" : "next_boundary";
     if (child.status.kind === "done")
       refuse(`${short(child.id)} is archived; start a new agent instead`);
-    // A child the user stopped stays stopped: the message waits behind its hold.
+    // A child the user stopped stays stopped: the message waits behind the
+    // user's hold. Any other (the supervisor's own stop, a crash, a restart)
+    // it lifts, reviving the child, as the user's send would.
     const title = this.#host.settledTitle(caller);
     const from = `[from your supervisor, session ${short(caller)}${title ? ` "${title}"` : ""}]`;
     const queued = await this.#host.enqueue(
@@ -568,11 +589,14 @@ export class AgentSupervision {
       `${from}\n${text}`,
       `supervisor:${caller}`,
       delivery,
+      "user",
     );
-    const held = this.#host.get(child.id)?.queue?.hold
-      ? " Its queue is held (the user stopped it): the message waits until the user sends or releases."
-      : "";
-    return `Queued for ${short(child.id)} (${delivery === "end_of_turn" ? "when it finishes" : "at its next tool boundary, or as its next turn"}): entry ${queued.entryId}, ${queued.state}.${held}`;
+    let hold = "";
+    if (queued.hold && queued.waited)
+      hold = ` Its queue is held (${holdCause(queued.hold)}): the message waits until the user sends or releases.`;
+    else if (queued.hold)
+      hold = ` Its queue was held (${holdCause(queued.hold)}): the message lifted the hold and goes first.`;
+    return `Queued for ${short(child.id)} (${delivery === "end_of_turn" ? "when it finishes" : "at its next tool boundary, or as its next turn"}): entry ${queued.entryId}, ${queued.state}.${hold}`;
   }
 
   #describe(s: SessionSnapshot): string {
@@ -772,8 +796,9 @@ export class AgentSupervision {
         : []),
     ].join("\n");
     try {
-      // Behind a hold: a supervisor the user stopped stays stopped.
-      await this.#host.enqueue(child.supervisorId, body, `agent:${child.id}`, "end_of_turn");
+      // Behind any hold: a supervisor the user stopped stays stopped, and a
+      // crashed one is not revived by a report.
+      await this.#host.enqueue(child.supervisorId, body, `agent:${child.id}`, "end_of_turn", "any");
     } catch (err) {
       this.#host.log.warn("agent notification failed", {
         child: child.id,

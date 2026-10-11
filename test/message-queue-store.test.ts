@@ -360,3 +360,44 @@ test("migration 32 orders a pre-32 database's settled rows and keeps answering t
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("a hold records whose stop it is; clearing it forgets that", () =>
+  withStore((q, db) => {
+    assert.equal(q.holdCause("s"), null);
+    q.setHold("s", "interrupt", "supervisor");
+    assert.deepEqual(q.holdCause("s"), { reason: "interrupt", by: "supervisor" });
+    q.setHold("s", "crash");
+    assert.deepEqual(q.holdCause("s"), { reason: "crash", by: null });
+    q.setHold("s", null, "user");
+    assert.equal(q.holdCause("s"), null);
+    const row = db.prepare("SELECT queue_hold_by FROM sessions WHERE id = 's'").get() as {
+      queue_hold_by: string | null;
+    };
+    assert.equal(row.queue_hold_by, null);
+    assert.throws(() => db.prepare("UPDATE sessions SET queue_hold_by = 'agent'").run());
+  }));
+
+test("migration 34 makes an interrupt hold recorded before it the user's", () => {
+  const dir = mkdtempSync(join(tmpdir(), "loom-queue-mig34-"));
+  try {
+    const path = join(dir, "loom.db");
+    const old = new DatabaseSync(path);
+    old.exec("PRAGMA foreign_keys = ON");
+    for (let v = 0; v < 33; v++) old.exec(MIGRATIONS[v]!);
+    old.exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+    old.prepare("INSERT INTO meta (key, value) VALUES ('schema_version', '33')").run();
+    const insert = old.prepare(
+      "INSERT INTO sessions (id, provider, mode, status, created_at, updated_at, queue_hold) VALUES (?, 'fake', 'default', 'idle', 1, 1, ?)",
+    );
+    insert.run("stopped", "interrupt");
+    insert.run("crashed", "crash");
+    old.close();
+    const db = openDb(path);
+    const q = new MessageQueueStore(db);
+    assert.deepEqual(q.holdCause("stopped"), { reason: "interrupt", by: "user" });
+    assert.deepEqual(q.holdCause("crashed"), { reason: "crash", by: null });
+    db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

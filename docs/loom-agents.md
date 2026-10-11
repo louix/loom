@@ -117,17 +117,25 @@ children inside the supervisor's VM is a later shared-VM feature.
 - Down: the supervisor's messages enter the child's queue (A9), labelled as
   coming from the supervisor. The user can message a child directly too. A
   child the user stopped stays stopped: the supervisor's message waits behind
-  its hold, and only the user's send or release lifts it.
+  the user's hold, and only the user's send or release lifts it. Any other
+  hold the supervisor's message lifts, going first as the user's send would:
+  one its own stop (`agent_interrupt`) set, and Loom's own (a crash, a
+  restart, a doubtful hand-over), reviving a cold child to recover it. The
+  hold records whose it is ([message-queue.md](message-queue.md#hold-causes));
+  `agent_message`'s answer names the hold it found and whether the message
+  waits behind it.
 - Up: event-driven, never streamed output. The supervisor gets a short
   notification when a child calls `report`, finishes a turn (its final message,
   cut to about 2 KB with a pointer to `agent_read`; no model-written summary;
   and its workspace's state), or fails or is interrupted. It is queued as an end-of-turn entry labelled as
   coming from the child: a busy supervisor is not interrupted, an idle one is
   woken (a cold one revived), and one the user stopped stays stopped. A user's
-  stop always holds the supervisor's queue, empty or not
+  stop — an interrupt, an archive, a VM stop — always holds the supervisor's
+  queue, empty or not, before the close awaits anything
   ([message-queue.md](message-queue.md#interrupt)), so the notification is
   just an entry behind the hold: it revives nothing, starts no turn and
-  releases nothing. Whether the queue is held is decided as the entry is
+  releases nothing. It waits behind any hold, a crashed supervisor's too.
+  Whether the queue is held is decided as the entry is
   queued, so a stop that lands while a cold supervisor is coming back for it
   still holds it. The user's send or release (`r`) revives a cold supervisor
   and delivers. A child waiting for input (a permission or a question) is not

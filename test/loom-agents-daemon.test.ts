@@ -520,7 +520,11 @@ describe("loom agents", { concurrency: 4 }, () => {
     await waitFor(async () => (await get(env.c, lead.id)).status.kind === "running");
     // Nothing queued: the user's stop holds the queue all the same.
     await env.c.request("session.interrupt", { id: lead.id });
-    assert.deepEqual((await get(env.c, lead.id)).queue, { hold: "interrupt", entries: [] });
+    assert.deepEqual((await get(env.c, lead.id)).queue, {
+      hold: "interrupt",
+      holdBy: "user",
+      entries: [],
+    });
     const sendsBefore = lead.fs.sends.length;
 
     await finish(env, child, "Widget added.");
@@ -585,10 +589,11 @@ describe("loom agents", { concurrency: 4 }, () => {
 
     const sent = await lead.fs.callAgentTool("agent_message", { id: child.id, text: "go on" });
     assert.equal(sent.ok, true, sent.text);
-    assert.match(sent.text, /Its queue is held/);
+    assert.match(sent.text, /Its queue is held \(the user stopped it\)/);
     await delay(50);
     const queue = (await get(env.c, child.id)).queue!;
     assert.equal(queue.hold, "interrupt", "the supervisor did not lift the user's stop");
+    assert.equal(queue.holdBy, "user");
     assert.deepEqual(
       queue.entries.map((e) => e.author),
       [`supervisor:${lead.id}`],
@@ -597,6 +602,93 @@ describe("loom agents", { concurrency: 4 }, () => {
 
     await env.c.request("session.queueRelease", { id: child.id });
     await waitFor(() => child.fs.sends.some((s) => s.includes("go on")));
+  });
+
+  test("a supervisor's message lifts the hold its own stop set, and goes first", async (env) => {
+    const lead = await idleSession(env);
+    const child = await startChild(env, lead.fs);
+    child.fs.emit({ type: "assistant_text", text: "busy" });
+    await waitFor(async () => (await get(env.c, child.id)).status.kind === "running");
+    await env.c.request("session.send", { id: child.id, text: "later", delivery: "end_of_turn" });
+    const stopped = await lead.fs.callAgentTool("agent_interrupt", { id: child.id });
+    assert.equal(stopped.ok, true, stopped.text);
+    const held = (await get(env.c, child.id)).queue!;
+    assert.equal(held.hold, "interrupt");
+    assert.equal(held.holdBy, "supervisor", "the supervisor's stop, not the user's");
+
+    const sent = await lead.fs.callAgentTool("agent_message", { id: child.id, text: "go on" });
+    assert.equal(sent.ok, true, sent.text);
+    assert.match(sent.text, /Its queue was held \(you stopped it\): the message lifted the hold/);
+    await waitFor(() => child.fs.sends.some((s) => s.includes("go on")));
+    assert.ok(!child.fs.sends.includes("later"), "the held message waits for the next finish");
+    assert.equal((await get(env.c, child.id)).queue?.hold, null);
+    child.fs.finishTurn();
+    await waitFor(() => child.fs.sends.includes("later"));
+  });
+
+  test("a user's stop joining a supervisor's makes the hold the user's", async (env) => {
+    const lead = await idleSession(env);
+    const child = await startChild(env, lead.fs);
+    child.fs.emit({ type: "assistant_text", text: "busy" });
+    await waitFor(async () => (await get(env.c, child.id)).status.kind === "running");
+    await env.c.request("session.send", { id: child.id, text: "later", delivery: "end_of_turn" });
+    await lead.fs.callAgentTool("agent_interrupt", { id: child.id });
+    assert.equal((await get(env.c, child.id)).queue?.holdBy, "supervisor");
+    // A stop on a settled session holds all the same, and takes the hold over.
+    env.h.daemon.sessions.holdForStop(child.id, "user");
+    assert.equal((await get(env.c, child.id)).queue?.holdBy, "user");
+    const sent = await lead.fs.callAgentTool("agent_message", { id: child.id, text: "go on" });
+    assert.match(sent.text, /Its queue is held \(the user stopped it\)/);
+    await delay(50);
+    assert.ok(!child.fs.sends.some((s) => s.includes("go on")));
+  });
+
+  test("a supervisor's message recovers a crashed child: it lifts the crash hold and revives it", async (env) => {
+    const lead = await idleSession(env);
+    const child = await startChild(env, lead.fs);
+    child.fs.emit({ type: "assistant_text", text: "busy" });
+    await waitFor(async () => (await get(env.c, child.id)).status.kind === "running");
+    await env.c.request("session.send", { id: child.id, text: "later", delivery: "end_of_turn" });
+    // The adapter goes away by itself, a message waiting: a crash hold.
+    child.fs.endStream();
+    await waitFor(async () => (await get(env.c, child.id)).queue?.hold === "crash");
+    assert.equal((await get(env.c, child.id)).queue?.holdBy, undefined, "no one's stop");
+
+    const sent = await lead.fs.callAgentTool("agent_message", { id: child.id, text: "go on" });
+    assert.equal(sent.ok, true, sent.text);
+    assert.match(sent.text, /Its queue was held \(it stopped unexpectedly\)/);
+    await waitFor(() => env.provider.resumes.some((r) => r.sessionId === child.id));
+    await waitFor(() => env.provider.session(child.id) !== child.fs);
+    const revived = env.provider.session(child.id)!;
+    await waitFor(() => revived.sends.some((s) => s.includes("go on")));
+    assert.equal((await get(env.c, child.id)).queue?.hold ?? null, null);
+  });
+
+  test("archiving a supervisor holds its queue before the close: a report meanwhile waits", async (env) => {
+    const lead = await idleSession(env);
+    const child = await startChild(env, lead.fs);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let closing = false;
+    const close = lead.fs.close.bind(lead.fs);
+    lead.fs.close = async () => {
+      closing = true;
+      await gate;
+      await close();
+    };
+    const archiving = env.c.request("session.markDone", { id: lead.id, children: "detach" });
+    await waitFor(() => closing);
+    await finish(env, child, "Widget added.");
+    await waitFor(async () => ((await get(env.c, lead.id)).queue?.entries.length ?? 0) === 1);
+    await delay(50);
+    release();
+    await archiving;
+    const row = await get(env.c, lead.id);
+    assert.equal(row.status.kind, "done");
+    assert.equal(row.queue?.hold, "interrupt");
+    assert.equal(row.queue?.holdBy, "user");
+    assert.ok(!lead.fs.sends.some((s) => s.startsWith("[from your agent")), "not handed over");
+    assert.ok(!env.provider.resumes.some((r) => r.sessionId === lead.id), "not revived");
   });
 
   nodeTest("a VM stop holds a supervisor before it closes: a report meanwhile waits", async () => {

@@ -28,6 +28,40 @@ export type QueueEntryState = z.infer<typeof queueEntryStateSchema>;
 export const queueHoldSchema = z.enum(["interrupt", "restart", "crash", "rejected"]);
 export type QueueHold = z.infer<typeof queueHoldSchema>;
 
+/**
+ * Whose stop a hold is: the user's, or a Loom supervisor's on its child. A
+ * hold Loom set itself (a crash, a restart, a doubtful hand-over) is no
+ * one's. A Loom supervisor's message waits only behind the user's.
+ */
+export const queueHoldBySchema = z.enum(["user", "supervisor"]);
+export type QueueHoldBy = z.infer<typeof queueHoldBySchema>;
+
+/** A hold and whose it is. */
+export interface QueueHoldCause {
+  readonly reason: QueueHold;
+  readonly by: QueueHoldBy | null;
+}
+
+/**
+ * Which holds a message waits behind, by who sends it: the user's lifts any
+ * (`none`); a Loom supervisor's waits behind the user's only (`user`); a
+ * child's notification waits behind any (`any`).
+ */
+export type HoldRespect = "none" | "user" | "any";
+
+/** Does a message sent with `respect` wait behind `hold` (rather than lift it)? */
+export const waitsBehind = (hold: QueueHoldCause | null, respect: HoldRespect): boolean => {
+  if (hold === null) return false;
+  switch (respect) {
+    case "none":
+      return false;
+    case "user":
+      return hold.by === "user";
+    case "any":
+      return true;
+  }
+};
+
 /** One entry in full — `session.queueEntry`'s result. */
 export const queueEntrySchema = z.object({
   /** Client-chosen UUID: the idempotency key and the provider's input id. */
@@ -93,6 +127,8 @@ export type QueueEntryView = z.infer<typeof queueEntryViewSchema>;
 /** `SessionSnapshot.queue`: the live entries in dispatch order, and the hold. */
 export const sessionQueueSchema = z.object({
   hold: z.union([queueHoldSchema, z.null()]),
+  /** Whose stop the hold is; absent when unheld or Loom's own. */
+  holdBy: queueHoldBySchema.optional(),
   entries: z.array(queueEntryViewSchema),
 });
 export type SessionQueue = z.infer<typeof sessionQueueSchema>;

@@ -73,6 +73,7 @@ interface QueueEntry {
   consumedAt?: number;
 }
 type QueueHold = "interrupt" | "restart" | "crash" | "rejected" | null;
+type QueueHoldBy = "user" | "supervisor"; // whose stop; absent for Loom's own
 ```
 
 - `queued`: in Loom; editable, deletable, movable, switchable, sendable now.
@@ -86,6 +87,15 @@ type QueueHold = "interrupt" | "restart" | "crash" | "rejected" | null;
   appends to the other group. A mid-turn message is never delayed by an earlier
   end-of-turn one.
 - Hold: a session-level flag; while set nothing is dispatched automatically.
+  It records its cause: the reason (`interrupt`, `restart`, `crash`,
+  `rejected`) and, for a stop, whose it is (`by`: the user's, or a Loom
+  supervisor's on its child). Loom's own holds (a crash, a restart, a doubtful
+  hand-over, an interrupt that only cancelled a compaction) are no one's. A
+  hold already set keeps its reason, but a user's stop landing on it makes it
+  the user's.
+- Who lifts a hold, by who sends ([hold causes](#hold-causes)): the user's send
+  or release lifts any; a Loom supervisor's message to its child lifts any but
+  the user's; a child's notification to its supervisor lifts none.
 - Any client may act on any entry (single user). Authors render as you or
   another client. Loom's own messages (hook feedback, nudges) bypass the queue
   ([decision 3](#decisions)).
@@ -209,15 +219,33 @@ A failed interrupt leaves entries and the hold in place; a retry repeats 2–3.
 are not released with it and each needs send now or delete. A cold session
 (stopped, crashed, restarted) with entries to release is revived first, as a
 send would revive it, and released once it is back, so a failed revival leaves
-the hold in place; released with nothing queued, the hold is simply gone. An
-entry queued behind a hold (`behindHold`: a Loom agent's notification) never
-revives a cold session nor lifts the hold; the enqueue itself decides whether
-the queue is held. Send now on one
+the hold in place; released with nothing queued, the hold is simply gone. A
+live clone whose guest Git (its turn-end sync, a rebase) holds its commands
+refuses the release as `busy`, as it refuses a send, so no turn starts under
+it. Send now on one
 entry delivers it and leaves the rest held. A new message typed while held is
 sent first and alone — a new turn, or a hand-over to a live one — not queued
 behind the held entries, and sending it releases the hold as `r` would: the
 held entries then follow the ordinary rules relative to the turn it started,
 so a held `end_of_turn` entry goes at that turn's end ([decision 2](#decisions)).
+
+### Hold causes
+
+What a Loom agent enqueues (`SessionManager.enqueue`'s `respect`,
+[loom-agents.md](loom-agents.md#communication)) lifts a hold or waits behind
+it by the hold's cause:
+
+| Hold                                | User's send / `r` | Supervisor's `agent_message` | Child's notification |
+| ----------------------------------- | ----------------- | ---------------------------- | -------------------- |
+| `interrupt` by the user             | lifts             | waits                        | waits                |
+| `interrupt` by the supervisor       | lifts             | lifts                        | waits                |
+| `crash`, `restart`, `rejected`, own | lifts             | lifts (reviving the child)   | waits                |
+
+A message that lifts a hold goes as the user's send does: first and alone,
+reviving a cold session. One that waits joins the held entries at the back
+and wakes nothing, a cold session included. The enqueue itself decides, so a
+hold set while a cold session came back still counts. `agent_message`'s
+answer names the hold it found and whether it waits.
 
 - **Daemon restart:** queued entries persist; delivering ones become `uncertain`
   with hold `restart`. Auto-resume (`#autoResumeInterrupted`) bypasses the queue
@@ -226,7 +254,10 @@ so a held `end_of_turn` entry goes at that turn's end ([decision 2](#decisions))
 - **Worker crash / session error:** hold `crash`; delivering entries become
   uncertain.
 - **Cold resume** (by send or `session.resume`) leaves the queue and its hold
-  alone. **Archive** sets hold `interrupt` if entries remain. **Delete**
+  alone. **Archive** is a stop like an interrupt, by whoever archives: the
+  hold is set in `SessionManager.close(by)` before the close awaits anything,
+  as for a VM stop, so nothing queued during the close (a child's report)
+  reaches the closing adapter or revives it. **Delete**
   cascades. **Forks** start with an empty queue.
 
 ## Interactions
@@ -247,7 +278,7 @@ so a held `end_of_turn` entry goes at that turn's end ([decision 2](#decisions))
 
 `PROTOCOL_VERSION` becomes 5 (`core/src/wire.ts:26`).
 
-`SessionSnapshot.queue` is `{ hold, entries }`; each entry carries `id`,
+`SessionSnapshot.queue` is `{ hold, holdBy?, entries }`; each entry carries `id`,
 `author`, `delivery`, `state`, `uncertain`, `revision`, `preview`, `bytes` and
 `dequeue`. `preview` is the first 200 characters; full text comes from
 `session.queueEntry`, because fleet snapshots republish often. `dequeue` is a
@@ -317,6 +348,9 @@ CREATE TABLE session_queue (
 CREATE INDEX session_queue_live ON session_queue(session_id, state, seq);
 ALTER TABLE sessions ADD COLUMN queue_hold TEXT
   CHECK (queue_hold IN ('interrupt','restart','crash','rejected'));
+-- migration 34: whose stop the hold is
+ALTER TABLE sessions ADD COLUMN queue_hold_by TEXT
+  CHECK (queue_hold_by IN ('user','supervisor'));
 ```
 
 ## TUI and commands (A2)

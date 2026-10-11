@@ -9,6 +9,7 @@ import { test } from "node:test";
 import type { SessionSnapshot, TranscriptEntry } from "@loom/core/wire";
 import type { HarnessEvent } from "@loom/core/events";
 import type { AgentCallResult, McpServerHandle } from "@loom/core/types";
+import { type HoldRespect, type QueueHoldCause, waitsBehind } from "@loom/core/message-queue";
 import { stateError, stateIdle } from "@loom/core/session-state";
 import { makeLogger, setLogLevel } from "@loom/core/logger";
 import {
@@ -84,7 +85,9 @@ const settledTitle =
 
 const stub = (rows: SessionSnapshot[], dirty = false, events: AgentHost["events"] = () => []) => {
   const starts: ChildStart[] = [];
-  const queued: Array<{ id: string; text: string; author: string }> = [];
+  const queued: Array<{ id: string; text: string; author: string; respect: HoldRespect }> = [];
+  /** Queue holds by session; a message lifts one it does not wait behind. */
+  const holds = new Map<string, QueueHoldCause>();
   const answers: AgentCallResult[] = [];
   const byId = new Map(rows.map((r) => [r.id, r]));
   const host: AgentHost = {
@@ -112,9 +115,12 @@ const stub = (rows: SessionSnapshot[], dirty = false, events: AgentHost["events"
       byId.set(made.id, made);
       return made;
     },
-    enqueue: async (id, text, author) => {
-      queued.push({ id, text, author });
-      return { entryId: "e", state: "queued" };
+    enqueue: async (id, text, author, _delivery, respect) => {
+      queued.push({ id, text, author, respect });
+      const hold = holds.get(id) ?? null;
+      const waited = waitsBehind(hold, respect);
+      if (hold && !waited) holds.delete(id);
+      return { entryId: "e", state: waited ? "queued" : "delivering", hold, waited };
     },
     interrupt: async () => {},
     archive: async () => {},
@@ -136,7 +142,7 @@ const stub = (rows: SessionSnapshot[], dirty = false, events: AgentHost["events"
     });
     return answers.at(-1)!;
   };
-  return { starts, queued, call, byId, sup };
+  return { starts, queued, holds, call, byId, sup };
 };
 
 test("a VM supervisor's child runs in a VM, in a worktree off the supervisor's branch", async () => {
@@ -282,6 +288,32 @@ test("a supervisor's provisional title, the head of its first prompt, never reac
       ["k2", '[from your supervisor, session lead "Lead"]\ngo on', "supervisor:lead"],
     ],
   );
+});
+
+test("agent_message waits behind the user's hold only, and its reply names the hold", async () => {
+  const s = stub([row({ id: "boss" }), row({ id: "kid", supervisorId: "boss" })]);
+  const send = async () => {
+    const r = await s.call("boss", "agent_message", { id: "kid", text: "go on" });
+    assert.equal(r.ok, true);
+    return JSON.stringify(r);
+  };
+  assert.doesNotMatch(await send(), /held/);
+  s.holds.set("kid", { reason: "interrupt", by: "user" });
+  assert.match(await send(), /Its queue is held \(the user stopped it\): the message waits/);
+  assert.ok(s.holds.has("kid"), "the user's hold stays");
+  for (const [hold, why] of [
+    [{ reason: "interrupt", by: "supervisor" }, "you stopped it"],
+    [{ reason: "crash", by: null }, "it stopped unexpectedly"],
+    [{ reason: "restart", by: null }, "the daemon restarted"],
+  ] as const) {
+    s.holds.set("kid", hold);
+    const reply = await send();
+    assert.match(reply, /Its queue was held \(/);
+    assert.ok(reply.includes(why), reply);
+    assert.match(reply, /the message lifted the hold and goes first/);
+    assert.ok(!s.holds.has("kid"));
+  }
+  assert.ok(s.queued.every((q) => q.respect === "user"));
 });
 
 test("final message, excerpt bounds and byte cuts", () => {

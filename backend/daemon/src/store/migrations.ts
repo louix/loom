@@ -447,4 +447,13 @@ export const MIGRATIONS: string[] = [
   ALTER TABLE sessions ADD COLUMN task_id TEXT;
   CREATE INDEX sessions_supervisor_idx ON sessions(supervisor_id);
   `,
+  // 34 — whose stop a queue hold is (docs/message-queue.md): the user's or a
+  // Loom supervisor's; NULL for Loom's own (a crash, a restart, a doubtful
+  // hand-over). A Loom supervisor's message waits only behind the user's. An
+  // interrupt hold recorded before this was the user's.
+  /* sql */ `
+  ALTER TABLE sessions ADD COLUMN queue_hold_by TEXT
+    CHECK (queue_hold_by IN ('user', 'supervisor'));
+  UPDATE sessions SET queue_hold_by = 'user' WHERE queue_hold = 'interrupt';
+  `,
 ];

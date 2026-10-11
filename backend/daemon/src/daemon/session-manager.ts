@@ -46,8 +46,11 @@ import type {
 import {
   DeliveryUncertainError,
   QUEUE_PREVIEW_CHARS,
+  type HoldRespect,
   type QueueEntry,
+  type QueueHoldCause,
   type SessionQueue,
+  waitsBehind,
 } from "@loom/core/message-queue";
 import { deriveStatus } from "./status-machine.ts";
 import { RpcError } from "./rpc.ts";
@@ -911,7 +914,7 @@ export class SessionManager {
     let back = 0;
     for (const item of items) if (item.ref !== undefined && q.requeue(id, item.ref)) back++;
     if (back === 0) return;
-    if (q.hold(id) === null) q.setHold(id, "interrupt");
+    if (q.hold(id) === null) q.setHold(id, "interrupt", this.#running.get(id)?.stopBy ?? null);
     this.#hooks.onOverlay(id);
   }
 
@@ -1047,25 +1050,31 @@ export class SessionManager {
    * and alone, and sending it releases the hold; the held entries then follow
    * the ordinary rules relative to the turn it starts.
    *
-   * `behindHold` is for what is not the user speaking (a Loom supervisor's
-   * message, a child's notification): it joins a held queue at the back and
-   * leaves the hold — only the user, sending or releasing, lifts a stop.
+   * `respect` is for what is not the user speaking (docs/message-queue.md):
+   * a Loom supervisor's message (`user`) waits behind the user's stop only,
+   * and lifts any other hold as the user's send does — its own stop, a crash,
+   * a restart; a child's notification (`any`) waits behind every hold. A
+   * message that waits joins the held queue at the back and leaves the hold.
+   *
+   * `hold` is the hold the message found, and `waited` whether it stays.
    */
   async enqueue(
     id: string,
     e: { entryId: string; text: string; author: string; delivery: QueueEntry["delivery"] },
-    opts: { behindHold?: boolean } = {},
-  ): Promise<QueueResult<Enqueued>> {
+    opts: { respect?: HoldRespect } = {},
+  ): Promise<{ result: QueueResult<Enqueued>; hold: QueueHoldCause | null; waited: boolean }> {
     const q = this.#hooks.queue;
     if (!q) throw new Error("this daemon has no message queue");
-    const held = q.hold(id) !== null && !opts.behindHold;
-    const r = q.enqueue(
+    const hold = q.holdCause(id);
+    const waited = waitsBehind(hold, opts.respect ?? "none");
+    const lifts = hold !== null && !waited;
+    const result = q.enqueue(
       id,
       { id: e.entryId, text: e.text, author: e.author, delivery: e.delivery },
-      { head: held },
+      { head: lifts },
     );
-    if (!r.ok || !r.value.created) return r;
-    if (held) {
+    if (!result.ok || !result.value.created) return { result, hold, waited };
+    if (lifts) {
       this.#forced.set(id, e.entryId);
       q.setHold(id, null);
     }
@@ -1074,7 +1083,7 @@ export class SessionManager {
     // Settles once a hand-over this triggered has run (or straight away when
     // the message waits), so the caller reports how far it got.
     await this.#pumpQueue(id);
-    return r;
+    return { result, hold, waited };
   }
 
   /** The queue changed outside the manager (a client edit): publish, re-evaluate. */
@@ -1128,11 +1137,13 @@ export class SessionManager {
     const q = this.#hooks.queue;
     if (!q) return null;
     const entries = q.live(id);
-    const hold = q.hold(id);
+    const cause = q.holdCause(id);
+    const hold = cause?.reason ?? null;
     if (entries.length === 0 && hold === null) return null;
     const hints = dequeueHints(entries, hold, this.#dispatchView(this.#running.get(id)));
     return {
       hold,
+      ...(cause?.by ? { holdBy: cause.by } : {}),
       entries: entries.map((e) => ({
         id: e.id,
         author: e.author,
@@ -1310,17 +1321,31 @@ export class SessionManager {
    * queued, so that nothing queued afterwards (a Loom agent's notification)
    * starts a turn until the user sends or releases; anyone's while entries
    * wait, so nothing is dispatched into the stop. Works on a cold session too.
+   * The hold is `by`'s (docs/message-queue.md): a supervisor's message lifts
+   * its own stop's hold, never the user's.
    */
   holdForStop(id: string, by: StopCause): void {
-    this.#holdForStop(id, by === "user");
+    this.#holdForStop(id, by === "user", by);
   }
 
-  /** Hold the queue for a stop while entries wait; `empty`, even without. */
-  #holdForStop(id: string, empty: boolean): void {
+  /**
+   * Hold the queue for a stop while entries wait; `empty`, even without. A
+   * hold already set keeps its reason (it came first), but a user's stop
+   * makes it the user's: no agent lifts it after that.
+   */
+  #holdForStop(id: string, empty: boolean, by: StopCause | null): void {
     const q = this.#hooks.queue;
-    if (!q || q.hold(id) !== null) return;
+    if (!q) return;
+    const held = q.holdCause(id);
+    if (held !== null) {
+      if (by === "user" && held.by !== "user") {
+        q.setHold(id, held.reason, "user");
+        this.#hooks.onOverlay(id);
+      }
+      return;
+    }
     if (!empty && q.live(id).length === 0) return;
-    q.setHold(id, "interrupt");
+    q.setHold(id, "interrupt", by);
     this.#hooks.onOverlay(id);
   }
 
@@ -1332,11 +1357,11 @@ export class SessionManager {
    */
   #askedToStop(id: string, run: Running, by: StopCause): void {
     if (run.restructuring === "compact" && !isLiveState(run.state)) {
-      this.#holdForStop(id, false);
+      this.#holdForStop(id, false, null);
       return;
     }
     if (run.stopBy !== "user") run.stopBy = by;
-    this.#holdForStop(id, by === "user");
+    this.#holdForStop(id, by === "user", by);
   }
 
   /**
@@ -1713,9 +1738,13 @@ export class SessionManager {
   /**
    * Close and forget a single session (e.g. tearing down a failed fork).
    * `by`: someone's stop (an archive, a VM stop) — what the turn ends in as
-   * the adapter goes is attributed to them. The queue is the caller's.
+   * the adapter goes is attributed to them, and the queue holds for it as
+   * for an interrupt ({@link holdForStop}), cold session included. The hold
+   * is set before the close awaits anything, so nothing queued meanwhile (a
+   * child's report) is handed to the closing adapter or revives it.
    */
   async close(id: string, reason: HostStopReason = "session_close", by?: StopCause): Promise<void> {
+    if (by) this.#holdForStop(id, by === "user", by);
     const run = this.#running.get(id);
     if (!run) return;
     run.closing = true;

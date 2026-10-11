@@ -3,7 +3,7 @@
  * renamed: the clone has the host's branches only as `origin/*`, as its syncs
  * fetch them, so its agent is told the new name only once a sync has fetched
  * it — never a ref that does not resolve there. And a live clone session's
- * queue is released while a workspace operation holds its commands.
+ * queue is not released into a workspace operation that holds its commands.
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -212,7 +212,7 @@ test("a clone child resumed as its supervisor's branch is renamed is told the na
     assert.deepEqual(resumed.bases, [`origin/${renamed}`]);
   }));
 
-test("releasing a live clone session's queue mid workspace operation is not refused", () =>
+test("releasing a live clone session's queue mid workspace operation is refused as busy, as a send is", () =>
   withClones(async ({ fake, c, get, blockGuest }) => {
     const s = await c.request<SessionSnapshot>("session.create", {
       provider: "claude",
@@ -231,10 +231,19 @@ test("releasing a live clone session's queue mid workspace operation is not refu
     const rebasing = c.request("session.rebase", { id: s.id });
     await until(guest.entered, "the rebase is under way");
     try {
-      await c.request("session.queueRelease", { id: s.id });
-      await until(() => fs.sends.includes("later"), "the released message went");
+      // No turn starts under the guest's Git: refused, and still held.
+      await assert.rejects(
+        c.request("session.queueRelease", { id: s.id }),
+        /completing a workspace operation/,
+      );
+      await delay(50);
+      assert.equal((await get(s.id)).queue?.hold, "interrupt");
+      assert.ok(!fs.sends.includes("later"));
     } finally {
       guest.release();
       await rebasing.catch(() => {});
     }
+    // Once the operation is done, the release goes through.
+    await c.request("session.queueRelease", { id: s.id });
+    await until(() => fs.sends.includes("later"), "the released message went");
   }));

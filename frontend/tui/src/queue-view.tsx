@@ -24,6 +24,13 @@ const HOLDS: Record<NonNullable<SessionQueue["hold"]>, string> = {
   rejected: "held: a hand-over may not have arrived",
 };
 
+/** Why a held queue is held: a Loom supervisor's stop is named as such. */
+const holdLabel = (queue: SessionQueue): string => {
+  if (queue.hold === "interrupt" && queue.holdBy === "supervisor")
+    return "held after its supervisor's stop";
+  return queue.hold ? HOLDS[queue.hold] : "";
+};
+
 /** What an entry is doing, in a word or three. */
 export const entryState = (e: QueueEntryView): string => {
   if (e.uncertain) return "uncertain";
@@ -69,7 +76,7 @@ export const QueueView = ({
   const current = rows.find((e) => e.id === selected) ?? rows[0] ?? null;
   const inner = Math.max(8, width - 6);
   const line = (text: string) => truncate(text.replace(/\s+/g, " ").trim(), inner);
-  const title = `queue${queue?.hold ? ` — ${HOLDS[queue.hold]}` : ""}`;
+  const title = `queue${queue?.hold ? ` — ${holdLabel(queue)}` : ""}`;
   // The list takes what the selected entry's details leave.
   const fetched = current && full?.id === current.id && full.revision === current.revision;
   const text = fetched ? full.text : (current?.preview ?? "");

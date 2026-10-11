@@ -117,7 +117,12 @@ import { HookRunner, hookSessionOf } from "./hooks.ts";
 import { SessionManager } from "./session-manager.ts";
 import { AgentSupervision, agentSessionPlan, profileInfos, type ChildStart } from "./agents.ts";
 import { SELF_PROFILE, type ChildrenOnClose } from "@loom/core/agents";
-import type { QueueDelivery } from "@loom/core/message-queue";
+import {
+  type HoldRespect,
+  type QueueDelivery,
+  type QueueHoldCause,
+  waitsBehind,
+} from "@loom/core/message-queue";
 import { SessionShells } from "./session-shell.ts";
 import { mkSessionQueue, type SessionQueue } from "./session-queue.ts";
 import { cheapModelFor, generateTitle } from "./titler.ts";
@@ -469,9 +474,7 @@ export class Daemon {
           this.#sessions.setKeepWarm(id, false);
           await this.#queue.run(id, async () => {
             if (!isCurrent()) return;
-            // Held before the close awaits, as an interrupt holds before it
-            // stops: a child's report queued meanwhile must not revive it.
-            this.#sessions.holdForStop(id, "user");
+            // The user's stop: the close holds the queue before it awaits.
             await this.#sessions.close(id, "user_stop", "user");
             this.#vmGenerations.delete(id);
             this.#registry.setStatus(id, stateInterrupted("user"));
@@ -657,9 +660,10 @@ export class Daemon {
       repoRoot: this.repoRoot,
       dirty: (path) => this.#worktrees.isDirty(path),
       start: (child) => this.#startChild(child),
-      // An agent never lifts a user's stop: its messages wait behind a hold.
-      enqueue: (id, text, author, delivery) =>
-        this.#enqueueMessage(id, text, author, delivery, undefined, { behindHold: true }),
+      // An agent never lifts a user's stop; which other holds it lifts is
+      // the caller's `respect`.
+      enqueue: (id, text, author, delivery, respect) =>
+        this.#enqueueMessage(id, text, author, delivery, undefined, { respect }),
       interrupt: async (id) => {
         await this.#interruptSession(id, "supervisor");
       },
@@ -3710,10 +3714,11 @@ export class Daemon {
   /**
    * Put a message in `id`'s queue (`docs/message-queue.md`), bringing a cold
    * session back first: `session.send`, and Loom agents messaging each other.
-   * `behindHold` (whatever a Loom agent sends): a held queue stays held — the
-   * message waits behind the held entries and wakes nothing, a cold session
-   * included. Whether it is held is decided by the enqueue itself, so a hold
-   * set while the session came back still counts.
+   * `respect` (what a Loom agent sends; `SessionManager.enqueue`): a hold
+   * the message waits behind stays — the message joins the held entries and
+   * wakes nothing, a cold session included; one it lifts revives the session
+   * as the user's send does. Whether it waits is decided by the enqueue
+   * itself, so a hold set while the session came back still counts.
    */
   async #enqueueMessage(
     id: string,
@@ -3721,16 +3726,39 @@ export class Daemon {
     author: string,
     delivery: QueueDelivery,
     requestedId?: string,
-    opts: { behindHold?: boolean } = {},
-  ): Promise<{ entryId: string; state: string }> {
+    opts: { respect?: HoldRespect } = {},
+  ): Promise<{ entryId: string; state: string; hold: QueueHoldCause | null; waited: boolean }> {
     const entryId = requestedId ?? randomUUID();
     this.#registry.mustGet(id);
-    if (!opts.behindHold || this.#messageQueue.hold(id) === null) await this.#reviveForQueue(id);
+    if (!waitsBehind(this.#messageQueue.holdCause(id), opts.respect ?? "none"))
+      await this.#reviveForQueue(id);
     // A compaction, a rewind or a stop in progress no longer refuses the
     // message: it waits in the queue until the session can take it.
-    const r = await this.#sessions.enqueue(id, { entryId, text, author, delivery }, opts);
+    const {
+      result: r,
+      hold,
+      waited,
+    } = await this.#sessions.enqueue(id, { entryId, text, author, delivery }, opts);
     if (!r.ok) throw new RpcError(r.code, r.message, { sessionId: id });
-    return { entryId, state: this.#messageQueue.entry(id, entryId)?.state ?? r.value.state };
+    return {
+      entryId,
+      state: this.#messageQueue.entry(id, entryId)?.state ?? r.value.state,
+      hold,
+      waited,
+    };
+  }
+
+  /**
+   * A clone's Git operations (its turn-end sync, a rebase) run in the guest
+   * and hold its command queue: a turn must not start under them. Refused
+   * as `busy` while one runs.
+   */
+  #refuseBusyClone(id: string): void {
+    if (this.#registry.get(id)?.checkout === "clone" && this.#queue.activeKeys.includes(id))
+      throw new RpcError(
+        "busy",
+        "The session is completing a workspace operation; retry in a moment.",
+      );
   }
 
   /**
@@ -3739,14 +3767,7 @@ export class Daemon {
    * thrown.
    */
   async #reviveForQueue(id: string): Promise<void> {
-    // A clone's Git operations (a sync, a rebase) hold the command queue.
-    const refuseBusyClone = () => {
-      if (this.#registry.get(id)?.checkout === "clone" && this.#queue.activeKeys.includes(id))
-        throw new RpcError(
-          "busy",
-          "The session is completing a workspace operation; retry in a moment.",
-        );
-    };
+    const refuseBusyClone = () => this.#refuseBusyClone(id);
     try {
       // A start that first builds the VM runtime outlasts any client: then the
       // message waits in the queue and goes once the session runs. Joining a
@@ -3879,11 +3900,9 @@ export class Daemon {
         );
       }
       this.#hooks.forget(id);
-      // What the closing turn ends in is `by`'s doing.
-      if (this.#sessions.has(id)) await this.#sessions.close(id, "user_stop", by);
-      // Archiving is a stop: whatever is still queued waits for the user.
-      if (this.#messageQueue.live(id).length > 0 && this.#messageQueue.hold(id) === null)
-        this.#messageQueue.setHold(id, "interrupt");
+      // Archiving is `by`'s stop: what the closing turn ends in is theirs, and
+      // the queue holds for it before the close awaits (a cold session's too).
+      await this.#sessions.close(id, "user_stop", by);
       return await withStoppedSessionVm(this.repoRoot, id, async () => {
         if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
         this.#forgetSessionCaches(id);
@@ -4364,11 +4383,13 @@ export class Daemon {
       // What the release lets go goes to the agent: a cold session (a stop, a
       // restart, a crash) comes back for it as it would for a send. Still
       // held meanwhile, so a failed revival leaves the queue as it was. A
-      // live one just releases and its queue pumps, whatever else holds its
-      // commands (a clone's sync).
+      // live one just releases and its queue pumps — unless it is a clone
+      // whose guest Git (a turn-end sync or rebase) is under way, refused as
+      // a send would be, so the release cannot start a turn under it.
       const live =
         this.#sessions.has(id) && !this.#sessions.isEnded(id) && !this.#lifecycles.has(id);
-      if (!live && this.#messageQueue.slots(id).some((e) => e.state === "queued" && !e.uncertain))
+      if (live) this.#refuseBusyClone(id);
+      else if (this.#messageQueue.slots(id).some((e) => e.state === "queued" && !e.uncertain))
         await this.#reviveForQueue(id);
       if (!this.#sessions.releaseQueue(id)) throw refused();
       return this.#enrich(this.#registry.mustGet(id), false);

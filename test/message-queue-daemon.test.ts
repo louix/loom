@@ -333,7 +333,7 @@ describe("message queue", { concurrency: 4 }, () => {
     await c.request("session.interrupt", { id });
     const snap = await get(c, id);
     assert.equal(snap.status.kind, "interrupted");
-    assert.deepEqual(snap.queue, { hold: "interrupt", entries: [] });
+    assert.deepEqual(snap.queue, { hold: "interrupt", holdBy: "user", entries: [] });
     assert.ok(!notices(frames).some((n) => n.includes("held")), "nothing held to review");
     await send(c, id, "go on");
     await waitFor(() => fs.sends.includes("go on"));
@@ -364,7 +364,11 @@ describe("message queue", { concurrency: 4 }, () => {
     await delay(50);
     const snap = await get(c, id);
     // The user's stop holds the queue, empty as it is; the nudge is not in it.
-    assert.deepEqual(snap.queue, { hold: "interrupt", entries: [] }, "not surfaced as an entry");
+    assert.deepEqual(
+      snap.queue,
+      { hold: "interrupt", holdBy: "user", entries: [] },
+      "not surfaced as an entry",
+    );
     assert.equal(fs.sends.length, 1, "not re-sent");
     assert.ok(!notices(frames).some((n) => n.includes("held")));
   });

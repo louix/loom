@@ -13,6 +13,8 @@ import {
   type QueueEntry,
   type QueueEntryState,
   type QueueHold,
+  type QueueHoldBy,
+  type QueueHoldCause,
 } from "@loom/core/message-queue";
 import { createHash } from "node:crypto";
 import { type Db, withTransaction } from "./db.ts";
@@ -157,8 +159,21 @@ export class MessageQueueStore {
     return row?.queue_hold ?? null;
   }
 
-  setHold(sessionId: string, hold: QueueHold | null): void {
-    this.#db.prepare("UPDATE sessions SET queue_hold = ? WHERE id = ?").run(hold, sessionId);
+  /** The hold and whose stop it is; null when unheld. */
+  holdCause(sessionId: string): QueueHoldCause | null {
+    const row = this.#db
+      .prepare("SELECT queue_hold, queue_hold_by FROM sessions WHERE id = ?")
+      .get(sessionId) as
+      | { queue_hold: QueueHold | null; queue_hold_by: QueueHoldBy | null }
+      | undefined;
+    return row?.queue_hold ? { reason: row.queue_hold, by: row.queue_hold_by } : null;
+  }
+
+  /** Set (or, with null, clear) the hold; `by` whose stop it is, if anyone's. */
+  setHold(sessionId: string, hold: QueueHold | null, by: QueueHoldBy | null = null): void {
+    this.#db
+      .prepare("UPDATE sessions SET queue_hold = ?, queue_hold_by = ? WHERE id = ?")
+      .run(hold, hold === null ? null : by, sessionId);
   }
 
   /**
