@@ -20,8 +20,21 @@ const DIRECTORIES = {
   XDG_RUNTIME_DIR: "runtime",
 };
 
-/** Real profile locations that would bypass HOME. */
-const UNSET = ["CLAUDE_CONFIG_DIR", "CODEX_HOME", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"];
+/**
+ * Real profile locations that would bypass HOME, and the commit identity a
+ * Loom session exports to its agent: tests set identity through the throwaway
+ * `.gitconfig`, which these would silently override.
+ */
+const UNSET = [
+  "CLAUDE_CONFIG_DIR",
+  "CODEX_HOME",
+  "GIT_CONFIG_GLOBAL",
+  "GIT_CONFIG_SYSTEM",
+  "GIT_AUTHOR_NAME",
+  "GIT_AUTHOR_EMAIL",
+  "GIT_COMMITTER_NAME",
+  "GIT_COMMITTER_EMAIL",
+];
 
 /** Deno's module cache moves with HOME; pin it so child `deno` processes stay offline-capable. */
 const denoDir = async (): Promise<string> => {
