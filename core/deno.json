@@ -2,6 +2,7 @@
   "name": "@loom/core",
   "exports": {
     "./absurd": "./src/absurd.ts",
+    "./agents": "./src/agents.ts",
     "./events": "./src/events.ts",
     "./session-state": "./src/session-state.ts",
     "./session-order": "./src/session-order.ts",

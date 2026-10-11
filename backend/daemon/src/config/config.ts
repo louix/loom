@@ -1,6 +1,6 @@
 import type { McpGrants } from "../../../../core/src/mcp-config.ts";
 import type { z } from "zod";
-import type { mcpDefinitionSchema } from "./schema.ts";
+import type { agentProfileSchema, mcpDefinitionSchema } from "./schema.ts";
 import type { McpOAuthConfig } from "../daemon/mcp-oauth-model.ts";
 import {
   normalizeSessionEnvironment,
@@ -17,7 +17,8 @@ import { isAbsolute, join, resolve } from "node:path";
 import { parse, printParseErrorCode, type ParseError } from "jsonc-parser";
 import { onPath, tryFindRepoRoot } from "@loom/core/paths";
 import { isClaudeId } from "@loom/core/provider-id";
-import type { McpCapability } from "@loom/core/types";
+import type { McpCapability, SessionMode } from "@loom/core/types";
+import { DEFAULT_MAX_DEPTH, LOOM_AGENTS_SERVER, SELF_PROFILE } from "@loom/core/agents";
 import { createConfigSchema, providerSchema, parseSettings } from "./schema.ts";
 import { userConfigPath } from "../config-path.ts";
 import type { GitIdentityConfig } from "./git-identity.ts";
@@ -380,6 +381,32 @@ export interface LoomConfig {
     apiBase: string;
     maxResults: number;
   };
+  /**
+   * Loom agents (`docs/loom-agents.md`): how deep supervision may go, and the
+   * named profiles a session starts children with. Global, with a matching
+   * `repos[]` entry merging over it profile by profile.
+   */
+  agents: {
+    /** 1 starts no agents; 2 (the default) a supervisor and its children. */
+    maxDepth: number;
+    profiles: Record<string, AgentProfileConfig>;
+  };
+}
+
+/** One validated `agents.profiles` entry. Absent fields follow the spawner. */
+export interface AgentProfileConfig {
+  description: string;
+  provider?: string;
+  model?: string;
+  effort?: string;
+  mode?: SessionMode;
+  /** Session MCP servers by name, plus `loom-agents`; absent keeps them all. */
+  mcp?: string[];
+  /** Claude skills to enable; absent keeps the CLI's own. */
+  skills?: string[];
+  tools?: { allow?: string[]; deny?: string[] };
+  /** Appended to the agent's own system prompt. */
+  prompt?: string;
 }
 
 /**
@@ -425,6 +452,7 @@ export const DEFAULT_CONFIG: LoomConfig = {
   notify: { webhook: "" },
   hooks: [],
   search: { backend: "none", apiKeyEnv: "", apiKey: "", apiBase: "", maxResults: 5 },
+  agents: { maxDepth: DEFAULT_MAX_DEPTH, profiles: {} },
 };
 
 const asRecord = (v: unknown): Record<string, unknown> => {
@@ -752,6 +780,18 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
       : "claude";
 
   const { mcp, httpMcp } = resolveToolSelection(settings);
+  const agents = resolveAgents(settings.agents, {
+    providers: [
+      ...claudeIds,
+      ...Object.keys(aisdk),
+      "fake",
+      "mock",
+      ...(settings.providers.echo?.enabled === true ? ["echo"] : []),
+    ],
+    disabled: (id) => (only !== undefined && !only.includes(id)) || disabled.includes(id),
+    codex: (id) => aisdk[id]?.sdk === "chatgpt",
+    mcp: [...mcp, ...httpMcp].map((m) => m.name),
+  });
 
   return {
     ...(isolation.launcher !== undefined ? { removedKeys: ["session.isolation.launcher"] } : {}),
@@ -833,7 +873,72 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
       apiBase: settings.search.api_base,
       maxResults: settings.search.max_results,
     },
+    agents,
   };
+};
+
+/**
+ * `agents` with every profile checked against what this config can run: a
+ * configured, enabled provider, MCP servers the session selects, and the
+ * settings that provider honours. A profile that cannot work is a config
+ * error naming the field, rather than a child that fails when it starts.
+ */
+const resolveAgents = (
+  raw: {
+    max_depth: number;
+    profiles: Record<string, z.output<typeof agentProfileSchema>>;
+  },
+  known: {
+    providers: readonly string[];
+    disabled: (id: string) => boolean;
+    codex: (id: string) => boolean;
+    mcp: readonly string[];
+  },
+): LoomConfig["agents"] => {
+  const profiles: Record<string, AgentProfileConfig> = {};
+  for (const [name, p] of Object.entries(raw.profiles)) {
+    const at = `agents.profiles.${name}`;
+    if (name === SELF_PROFILE)
+      throw new Error(`${at}: ${SELF_PROFILE} is built in (the spawner's own settings)`);
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(name))
+      throw new Error(`${at}: a profile name takes letters, digits, _ and - only`);
+    if (p.provider !== undefined) {
+      if (!known.providers.includes(p.provider))
+        throw new Error(
+          `${at}.provider: "${p.provider}" is not a configured provider (configured: ${known.providers.join(", ")})`,
+        );
+      if (known.disabled(p.provider))
+        throw new Error(`${at}.provider: "${p.provider}" is disabled by session.provider_access`);
+    }
+    for (const server of p.mcp ?? [])
+      if (server !== LOOM_AGENTS_SERVER && !known.mcp.includes(server))
+        throw new Error(
+          `${at}.mcp: "${server}" is not one of the session's MCP servers (${[...known.mcp, LOOM_AGENTS_SERVER].join(", ")})`,
+        );
+    if (p.provider !== undefined && !isClaudeId(p.provider) && p.skills !== undefined)
+      throw new Error(`${at}.skills: skills are only supported for Claude providers`);
+    if (p.provider !== undefined && known.codex(p.provider) && p.tools !== undefined)
+      throw new Error(`${at}.tools: tool allow/deny lists are not supported for Codex providers`);
+    profiles[name] = {
+      description: p.description.trim(),
+      ...(p.provider !== undefined ? { provider: p.provider } : {}),
+      ...(p.model !== undefined ? { model: p.model } : {}),
+      ...(p.effort !== undefined ? { effort: p.effort } : {}),
+      ...(p.mode !== undefined ? { mode: p.mode } : {}),
+      ...(p.mcp !== undefined ? { mcp: p.mcp } : {}),
+      ...(p.skills !== undefined ? { skills: p.skills } : {}),
+      ...(p.tools !== undefined
+        ? {
+            tools: {
+              ...(p.tools.allow !== undefined ? { allow: p.tools.allow } : {}),
+              ...(p.tools.deny !== undefined ? { deny: p.tools.deny } : {}),
+            },
+          }
+        : {}),
+      ...(p.prompt?.trim() ? { prompt: p.prompt.trim() } : {}),
+    };
+  }
+  return { maxDepth: raw.max_depth, profiles };
 };
 
 /** JSONC accepts comments and trailing commas, but never partial or non-object configs. */

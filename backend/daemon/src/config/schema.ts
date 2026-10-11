@@ -2,6 +2,7 @@
 import { z } from "zod";
 import { mcpSourceSchema, mcpGrantsSchema } from "../../../../core/src/mcp-config.ts";
 import { MCP_CAPABILITIES } from "@loom/core/types";
+import { LOOM_AGENTS_SERVER, SELF_PROFILE } from "@loom/core/agents";
 import { mcpOAuthConfigSchema } from "../daemon/mcp-oauth-model.ts";
 import { validateOAuthUrl } from "../daemon/mcp-oauth-endpoint.ts";
 import { sessionEnvironmentSchema } from "../../../../core/src/session-environment.ts";
@@ -196,6 +197,66 @@ const sparseProviderSchema = z.strictObject(providerFields).partial();
 const providerFamilySchema = sparseProviderSchema.extend({
   profiles: z.record(z.string(), sparseProviderSchema).optional(),
 });
+
+const names = (what: string) =>
+  z
+    .array(requiredText)
+    .refine((v) => new Set(v).size === v.length, `duplicate ${what}`)
+    .optional();
+
+/** One `agents.profiles` entry: what a child started with it runs as. */
+export const agentProfileSchema = z.strictObject({
+  description: requiredText.describe(
+    "What the profile is for, as the agents choosing a child read it.",
+  ),
+  provider: requiredText
+    .optional()
+    .describe("Provider id, e.g. claude:personal or codex; omitted runs on the spawner's own."),
+  model: requiredText.optional().describe("Model id; omitted takes the provider's default."),
+  effort: requiredText.optional().describe("Thinking effort, for models that accept one."),
+  mode: preprocess(
+    (v) => (v === "manual" ? "default" : v),
+    z.enum(["default", "plan", "acceptEdits", "auto"]),
+    z.enum(["manual", "default", "plan", "acceptEdits", "auto"]),
+  )
+    .optional()
+    .describe("Permission mode; omitted takes the spawner's own (plan becomes manual)."),
+  mcp: names("MCP servers").describe(
+    `The session MCP servers it gets, by name, plus ${LOOM_AGENTS_SERVER} to let it start agents of its own. Omitted: all of them.`,
+  ),
+  skills: names("skills").describe(
+    "Claude skills to enable, by name; omitted keeps the CLI's own.",
+  ),
+  tools: z
+    .strictObject({
+      allow: names("tools").describe("Built-in tools it may use; omitted allows them all."),
+      deny: names("tools").describe("Built-in tools withheld from it."),
+    })
+    .optional(),
+  prompt: z
+    .string()
+    .optional()
+    .describe("Appended to the agent's own system prompt (developer instructions for Codex)."),
+});
+
+const agentsSchema = (maxDepth: number) =>
+  section({
+    max_depth: z
+      .number()
+      .int()
+      .min(1)
+      .max(8)
+      .default(maxDepth)
+      .describe(
+        `How deep supervision may go: 1 starts no agents, 2 (the default) a supervisor and its children. Sessions at the limit get no ${LOOM_AGENTS_SERVER}.`,
+      ),
+    profiles: z
+      // Names are checked in config.ts: a record key's own error says only
+      // "Invalid key in record".
+      .record(z.string(), agentProfileSchema)
+      .default({})
+      .describe(`Named agent profiles; ${SELF_PROFILE} (the spawner's own settings) is built in.`),
+  });
 
 export const createConfigSchema = (d: LoomConfig, events: readonly HookEvent[]) => {
   const hook = section({
@@ -396,6 +457,7 @@ export const createConfigSchema = (d: LoomConfig, events: readonly HookEvent[]) 
       api_base: text(d.search.apiBase),
       max_results: nonNegative(d.search.maxResults).transform((v) => Math.max(1, v)),
     }),
+    agents: agentsSchema(d.agents.maxDepth),
   });
 };
 

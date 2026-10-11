@@ -3,6 +3,7 @@
   "exports": {
     "./pending": "./src/pending.ts",
     "./loom-tools": "./src/loom-tools.ts",
+    "./agent-tools": "./src/agent-tools.ts",
     "./policy": "./src/policy.ts",
     "./instructions": "./src/instructions.ts",
     "./process": "./src/process.ts",

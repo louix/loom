@@ -80,6 +80,22 @@
       "default_for": ["web_search", "web_fetch"],
     },
   },
+  // Loom agents: profiles a session starts children with (built in: self, the
+  // spawner's own settings). Unset fields follow the spawner.
+  "agents": {
+    "max_depth": 2,
+    "profiles": {
+      // "implementer": {
+      //   "description": "Cheap; give it a specific, verifiable task",
+      //   "provider": "claude:personal",
+      //   "model": "claude-sonnet-5-5",
+      //   "effort": "medium",
+      //   "mode": "auto",
+      //   "mcp": [], // without "loom-agents" it cannot start agents of its own
+      //   "prompt": "You implement exactly the task you are given…",
+      // },
+    },
+  },
   "hooks": [],
   // Objects merge recursively; arrays replace inherited arrays, except hooks:
   // repo hooks append to global hooks (an empty array still inherits globals).

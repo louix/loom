@@ -1380,6 +1380,92 @@
       },
       "additionalProperties": false
     },
+    "agents": {
+      "type": "object",
+      "properties": {
+        "max_depth": {
+          "default": 2,
+          "description": "How deep supervision may go: 1 starts no agents, 2 (the default) a supervisor and its children. Sessions at the limit get no loom-agents.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8
+        },
+        "profiles": {
+          "description": "Named agent profiles; self (the spawner's own settings) is built in.",
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "description": {
+                "type": "string",
+                "description": "What the profile is for, as the agents choosing a child read it."
+              },
+              "provider": {
+                "description": "Provider id, e.g. claude:personal or codex; omitted runs on the spawner's own.",
+                "type": "string"
+              },
+              "model": {
+                "description": "Model id; omitted takes the provider's default.",
+                "type": "string"
+              },
+              "effort": {
+                "description": "Thinking effort, for models that accept one.",
+                "type": "string"
+              },
+              "mode": {
+                "description": "Permission mode; omitted takes the spawner's own (plan becomes manual).",
+                "type": "string",
+                "enum": ["manual", "default", "plan", "acceptEdits", "auto"]
+              },
+              "mcp": {
+                "description": "The session MCP servers it gets, by name, plus loom-agents to let it start agents of its own. Omitted: all of them.",
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "skills": {
+                "description": "Claude skills to enable, by name; omitted keeps the CLI's own.",
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "tools": {
+                "type": "object",
+                "properties": {
+                  "allow": {
+                    "description": "Built-in tools it may use; omitted allows them all.",
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "deny": {
+                    "description": "Built-in tools withheld from it.",
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "additionalProperties": false
+              },
+              "prompt": {
+                "description": "Appended to the agent's own system prompt (developer instructions for Codex).",
+                "type": "string"
+              }
+            },
+            "required": ["description"],
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "repos": {
       "type": "array",
       "description": "Overrides for individual repositories.",
@@ -2765,6 +2851,92 @@
                 "default": 5,
                 "type": "number",
                 "minimum": 0
+              }
+            },
+            "additionalProperties": false
+          },
+          "agents": {
+            "type": "object",
+            "properties": {
+              "max_depth": {
+                "default": 2,
+                "description": "How deep supervision may go: 1 starts no agents, 2 (the default) a supervisor and its children. Sessions at the limit get no loom-agents.",
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 8
+              },
+              "profiles": {
+                "description": "Named agent profiles; self (the spawner's own settings) is built in.",
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {
+                  "type": "object",
+                  "properties": {
+                    "description": {
+                      "type": "string",
+                      "description": "What the profile is for, as the agents choosing a child read it."
+                    },
+                    "provider": {
+                      "description": "Provider id, e.g. claude:personal or codex; omitted runs on the spawner's own.",
+                      "type": "string"
+                    },
+                    "model": {
+                      "description": "Model id; omitted takes the provider's default.",
+                      "type": "string"
+                    },
+                    "effort": {
+                      "description": "Thinking effort, for models that accept one.",
+                      "type": "string"
+                    },
+                    "mode": {
+                      "description": "Permission mode; omitted takes the spawner's own (plan becomes manual).",
+                      "type": "string",
+                      "enum": ["manual", "default", "plan", "acceptEdits", "auto"]
+                    },
+                    "mcp": {
+                      "description": "The session MCP servers it gets, by name, plus loom-agents to let it start agents of its own. Omitted: all of them.",
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "skills": {
+                      "description": "Claude skills to enable, by name; omitted keeps the CLI's own.",
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "tools": {
+                      "type": "object",
+                      "properties": {
+                        "allow": {
+                          "description": "Built-in tools it may use; omitted allows them all.",
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "deny": {
+                          "description": "Built-in tools withheld from it.",
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    "prompt": {
+                      "description": "Appended to the agent's own system prompt (developer instructions for Codex).",
+                      "type": "string"
+                    }
+                  },
+                  "required": ["description"],
+                  "additionalProperties": false
+                }
               }
             },
             "additionalProperties": false
