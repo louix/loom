@@ -1500,6 +1500,11 @@ describe("session-manager", { concurrency: 4 }, () => {
       !frames.some((f) => f.type === "event" && f.event.type === "compact"),
       "the compact boundary never landed",
     );
+    // No turn was stopped: nothing is held, and the next message goes as usual.
+    const snap = await c.request<SessionSnapshot>("session.get", { id });
+    assert.equal(snap.queue, undefined, "no hold left behind");
+    await c.request("session.send", { id, text: "next" });
+    await waitFor(() => fs.sends.includes("next"));
     await c.close();
   });
 

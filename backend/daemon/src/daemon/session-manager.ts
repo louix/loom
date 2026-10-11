@@ -805,6 +805,9 @@ export class SessionManager {
    *  Returns whether it fired — the caller then knows a snapshot went out. */
   #transition(id: string, run: Running, next: SessionState, note?: string): boolean {
     if (sameSessionState(run.state, next) && note === undefined) return false;
+    // A turn starts, however it came about (a send, the provider waking for a
+    // background task): an earlier stop is not what it ends in.
+    if (!isLiveState(run.state) && isLiveState(next)) run.stopBy = null;
     run.state = next;
     // A refused hand-over is retried once the session has moved on.
     run.backoff = false;
@@ -1309,18 +1312,31 @@ export class SessionManager {
    * wait, so nothing is dispatched into the stop. Works on a cold session too.
    */
   holdForStop(id: string, by: StopCause): void {
+    this.#holdForStop(id, by === "user");
+  }
+
+  /** Hold the queue for a stop while entries wait; `empty`, even without. */
+  #holdForStop(id: string, empty: boolean): void {
     const q = this.#hooks.queue;
     if (!q || q.hold(id) !== null) return;
-    if (by !== "user" && q.live(id).length === 0) return;
+    if (!empty && q.live(id).length === 0) return;
     q.setHold(id, "interrupt");
     this.#hooks.onOverlay(id);
   }
 
-  /** `by` asked `run` to stop: the turn's end is theirs (the user's over a
-   *  supervisor's), and the queue holds for it. */
+  /**
+   * `by` asked `run` to stop: the turn's end is theirs (the user's over a
+   * supervisor's), and the queue holds for it. A stop that only cancels a
+   * compaction on a settled session stops no turn: it is no one's, and holds
+   * only what already waits.
+   */
   #askedToStop(id: string, run: Running, by: StopCause): void {
+    if (run.restructuring === "compact" && !isLiveState(run.state)) {
+      this.#holdForStop(id, false);
+      return;
+    }
     if (run.stopBy !== "user") run.stopBy = by;
-    this.holdForStop(id, by);
+    this.#holdForStop(id, by === "user");
   }
 
   /**

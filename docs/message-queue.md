@@ -187,7 +187,9 @@ The keys (`i`, ⌥i) and `session.interrupt` are unchanged. In
    (a Loom agent's notification, [loom-agents.md](loom-agents.md#communication))
    waits behind it instead of starting a turn. The same holds for a user
    interrupting a session still starting, and for stopping its VM. A user's
-   interrupt joining one already under way sets the hold too.
+   interrupt joining one already under way sets the hold too. An interrupt
+   that only cancels a compaction on a settled session stops no turn: it
+   holds only if entries wait, like a supervisor's.
 2. The adapter reports what the stop discarded as an `input_discarded` event
    (`2930534f`), which may land just before or after `interrupt()` settles:
    Claude reports drained `#inbox` IDs plus the receipt's `cancelled`; AISDK
