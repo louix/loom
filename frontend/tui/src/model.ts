@@ -19,6 +19,7 @@ import type {
   SessionSnapshot,
 } from "@loom/core/wire";
 import type { ClientState, ConnectionError } from "@loom/client";
+import type { AgentProfileInfo } from "@loom/core/agents";
 import { foldLoadable, loadableIdle, type Loadable } from "@loom/core/loadable";
 import type { SessionMode } from "@loom/core/types";
 import { DEFAULT_EFFORT_LEVELS, modelEfforts } from "@loom/core/model-catalogue";
@@ -88,6 +89,10 @@ export const fleetSessions = (s: Pick<TuiState, "fleet">): SessionSnapshot[] =>
 /** Configured providers from the current snapshot, or empty while pending. */
 export const fleetProviders = (s: Pick<TuiState, "fleet">): ProviderInfo[] =>
   s.fleet.tag === "data" ? s.fleet.value.providers : [];
+
+/** The configured agent profiles, for the new-session prompt's `⌥a`. */
+export const fleetAgentProfiles = (s: Pick<TuiState, "fleet">): AgentProfileInfo[] =>
+  s.fleet.tag === "data" ? (s.fleet.value.agentProfiles ?? []) : [];
 
 export const fleetDaemon = (s: Pick<TuiState, "fleet">): DaemonInfo | null =>
   s.fleet.tag === "data" ? s.fleet.value.daemon : null;
@@ -239,6 +244,8 @@ export type Action =
   | { t: "closePrompt"; saveDraft?: boolean }
   | { t: "cyclePlanMode" }
   | { t: "toggleConfirmBranch" }
+  /** Archiving or deleting a supervisor: stop its agents, or detach them. */
+  | { t: "toggleConfirmChildren" }
   | { t: "pickerFilter"; buffer: Buffer }
   | { t: "pickerMove"; delta: number }
   | { t: "qnavSet"; nav: QNav | null }
@@ -432,6 +439,17 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
       const c = s.overlay.t === "confirm" ? s.overlay.confirm : null;
       if (c?.action !== "deleteSession" || !c.branchName) return s;
       return { ...s, overlay: { t: "confirm", confirm: { ...c, deleteBranch: !c.deleteBranch } } };
+    }
+
+    case "toggleConfirmChildren": {
+      const c = s.overlay.t === "confirm" ? s.overlay.confirm : null;
+      if ((c?.action !== "archiveSession" && c?.action !== "deleteSession") || !c.children)
+        return s;
+      const choice = c.children.choice === "stop" ? "detach" : "stop";
+      return {
+        ...s,
+        overlay: { t: "confirm", confirm: { ...c, children: { ...c.children, choice } } },
+      };
     }
 
     case "pickerFilter": {
@@ -1152,14 +1170,66 @@ export interface Group {
   sessions: SessionSnapshot[];
 }
 
+/** Is `s` drawn nested under its supervisor — is that supervisor listed too? */
+const nestedIn = (sessions: readonly SessionSnapshot[]) => {
+  const ids = new Set(sessions.map((s) => s.id));
+  return (s: SessionSnapshot): boolean =>
+    s.supervisorId !== undefined && s.supervisorId !== s.id && ids.has(s.supervisorId);
+};
+
+/** The status groups of the sessions nobody listed supervises; each one's Loom
+ *  agents are drawn under it (see {@link fleetEntries}), not in their own group. */
 export const groupsOf = (sessions: readonly SessionSnapshot[]): Group[] => {
+  const nested = nestedIn(sessions);
+  const roots = sessions.filter((s) => !nested(s));
   const out: Group[] = [];
   for (const status of STATUS_ORDER) {
-    const inGroup = sessions.filter((x) => x.status.kind === status);
+    const inGroup = roots.filter((x) => x.status.kind === status);
     if (inGroup.length > 0)
       out.push({ status, label: statusLook(status).label, sessions: inGroup });
   }
   return out;
+};
+
+/** The Loom agents `id` supervises, in fleet order. */
+export const agentsOf = (sessions: readonly SessionSnapshot[], id: string): SessionSnapshot[] =>
+  sessions.filter((s) => s.supervisorId === id && s.id !== id);
+
+/** A supervisor's open agents in a few words — "2 working · 1 needs input";
+ *  "" with none open. Archived ones are left out. */
+export const agentSummary = (agents: readonly SessionSnapshot[]): string => {
+  const words: Array<[string, (k: SessionStateKind) => boolean]> = [
+    ["needs input", (k) => k === "awaiting_input"],
+    ["working", (k) => k === "running" || k === "starting" || k === "working_background"],
+    ["failed", (k) => k === "error"],
+    ["interrupted", (k) => k === "interrupted"],
+    ["idle", (k) => k === "idle"],
+  ];
+  return words
+    .map(([word, is]) => [agents.filter((a) => is(a.status.kind)).length, word] as const)
+    .filter(([n]) => n > 0)
+    .map(([n, word]) => `${n} ${word}`)
+    .join(" · ");
+};
+
+/** What a supervisor and every agent under it (however deep) have spent. */
+export const treeCost = (
+  s: SessionSnapshot,
+  sessions: readonly SessionSnapshot[],
+): Pick<SessionSnapshot, "costUsd" | "costSource"> => {
+  const seen = new Set<string>();
+  const all: SessionSnapshot[] = [];
+  const walk = (at: SessionSnapshot): void => {
+    if (seen.has(at.id)) return;
+    seen.add(at.id);
+    all.push(at);
+    for (const agent of agentsOf(sessions, at.id)) walk(agent);
+  };
+  walk(s);
+  const sources = new Set(all.map((x) => x.costSource));
+  let costSource: SessionSnapshot["costSource"] = sources.size === 1 ? s.costSource : "mixed";
+  if (sources.size > 1 && (sources.has("none") || sources.has("partial"))) costSource = "partial";
+  return { costUsd: all.reduce((sum, x) => sum + x.costUsd, 0), costSource };
 };
 
 /** A clickable region in the current frame: one terminal row, columns `x0..x1`
@@ -1184,7 +1254,16 @@ export type FleetHit =
 export type FleetEntry =
   | { kind: "blank" }
   | { kind: "groupHeader"; group: Group }
-  | { kind: "session"; s: SessionSnapshot }
+  | {
+      kind: "session";
+      s: SessionSnapshot;
+      /** A Loom agent drawn under its supervisor: how deep, and whether it is
+       *  that supervisor's last. Absent for a row at the top of its group. */
+      nest?: { depth: number; isLast: boolean };
+      /** For a supervisor: its open agents in words, and its spend with
+       *  theirs. Absent for a session that supervises none. */
+      agents?: { summary: string; cost: Pick<SessionSnapshot, "costUsd" | "costSource"> };
+    }
   | { kind: "child"; s: SessionSnapshot; c: FleetChild; isLast: boolean }
   | { kind: "childMore"; s: SessionSnapshot; extra: number };
 
@@ -1196,12 +1275,23 @@ export const fleetEntries = (
   const matched = searchMatches(state.find ?? null, fleetSessions(state));
   const active = state.find != null && queryOf(state.find) !== "";
   const focused = focusedChildOf(state);
+  const all = fleetSessions(state);
   const out: FleetEntry[] = [];
+  const placed = new Set<string>();
 
-  const pushSession = (s: SessionSnapshot): void => {
-    out.push({ kind: "session", s });
+  const pushSession = (s: SessionSnapshot, nest?: { depth: number; isLast: boolean }): void => {
+    if (placed.has(s.id)) return;
+    placed.add(s.id);
+    const mine = agentsOf(all, s.id);
+    out.push({
+      kind: "session",
+      s,
+      ...(nest ? { nest } : {}),
+      ...(mine.length > 0
+        ? { agents: { summary: agentSummary(mine), cost: treeCost(s, all) } }
+        : {}),
+    });
     const kids = childrenOf(s);
-    if (kids.length === 0) return;
     // Mirrors the FLEET row cap: 4 children shown, lifted while drilled in.
     const drilled = focused != null && s.id === state.selectedId;
     const shown = drilled ? kids : kids.slice(0, 4);
@@ -1210,6 +1300,12 @@ export const fleetEntries = (
       out.push({ kind: "child", s, c, isLast: i === shown.length - 1 && extra === 0 }),
     );
     if (extra > 0) out.push({ kind: "childMore", s, extra });
+    // Its Loom agents are full sessions, drawn under it like its children (a
+    // filtered list is flat, ranked by relevance).
+    const agents = active ? [] : mine;
+    agents.forEach((agent, i) =>
+      pushSession(agent, { depth: (nest?.depth ?? 0) + 1, isLast: i === agents.length - 1 }),
+    );
   };
 
   if (active) {

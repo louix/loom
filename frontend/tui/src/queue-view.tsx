@@ -35,9 +35,14 @@ const rowTone = (e: QueueEntryView): "warn" | "text" | "dim" => {
   return e.state === "queued" ? "text" : "dim";
 };
 
-/** You, or the other client that queued it. */
-export const entryAuthor = (e: QueueEntryView, clientId: string): string =>
-  e.author === clientId ? "you" : "other client";
+/** You, the other client that queued it, or the Loom agent session it is from:
+ *  this session's supervisor, or one of its own agents reporting. */
+export const entryAuthor = (e: QueueEntryView, clientId: string): string => {
+  if (e.author === clientId) return "you";
+  if (e.author.startsWith("supervisor:")) return `supervisor ${e.author.slice(11, 19)}`;
+  if (e.author.startsWith("agent:")) return `agent ${e.author.slice(6, 14)}`;
+  return "other client";
+};
 
 /** The rows, grouped, in dispatch order — what ↑↓ walks. */
 export const queueRows = (queue: SessionQueue | undefined): QueueEntryView[] =>

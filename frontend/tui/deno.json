@@ -24,6 +24,8 @@
     "./commands": "./src/commands.ts",
     "./layout": "./src/layout.ts",
     "./mouse": "./src/mouse.ts",
+    "./new-workspace": "./src/new-workspace.ts",
+    "./queue-view": "./src/queue-view.tsx",
     "./ui": "./src/ui.tsx"
   }
 }

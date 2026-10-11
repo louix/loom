@@ -71,7 +71,10 @@ import { queueRows } from "./queue-view.tsx";
 import { mkModeControl, pendingMode } from "./mode-control.ts";
 import { mkSearchControl, searchStale, searchMatches, type Find } from "./fleet-search.ts";
 import { cycleLogFilter, mkTranscript, transcriptText } from "./transcript.ts";
+import type { ChildrenOnClose } from "@loom/core/agents";
 import {
+  agentsOf,
+  fleetAgentProfiles,
   fleetProviders,
   fleetSessions,
   defaultModelOf,
@@ -119,6 +122,7 @@ import {
   requestPrompt,
   sessionPrompt,
   type QueueText,
+  type ChildrenChoice,
   type Confirm,
   type Overlay,
   type PickItem,
@@ -150,6 +154,7 @@ import {
   startingForkOf,
 } from "./fork-flow.ts";
 import {
+  cycleProfile,
   cycleWorkspace,
   newBase,
   toggleBase,
@@ -1272,7 +1277,14 @@ export const mkFleetHandle = ({
       .catch((e: unknown) => note(e instanceof Error ? e.message : String(e), "bad"));
   };
 
-  const archiveSession = (id: string, force = false): void => {
+  /** A supervisor's open Loom agents, as the confirm asks about them; stopping
+   *  them is not the default — detaching loses nothing. */
+  const openAgents = (id: string): ChildrenChoice | undefined => {
+    const count = agentsOf(fleetSessions(state), id).filter((a) => a.status.kind !== "done").length;
+    return count > 0 ? { count, choice: "detach" } : undefined;
+  };
+
+  const archiveSession = (id: string, force = false, children?: ChildrenOnClose): void => {
     if (state.archiving.includes(id)) return;
     dispatch({ t: "archivePending", id, pending: true });
     perform(async () => {
@@ -1281,6 +1293,7 @@ export const mkFleetHandle = ({
           id,
           by: client.clientId,
           ...(force ? { force: true } : {}),
+          ...(children ? { children } : {}),
         });
         return "archived — branch + chat kept";
       } finally {
@@ -1413,6 +1426,19 @@ export const mkFleetHandle = ({
           prompt: newPrompt(newSettings(state, null, null, null), state.drafts.last),
         });
         return loadBases();
+      case "newProfile": {
+        const p = openPrompt(state.overlay);
+        if (p?.t !== "new") return;
+        return showNewStep(
+          p,
+          cycleProfile(
+            fleetAgentProfiles(state),
+            fleetProviders(state),
+            p.settings,
+            newSettings(state, null, null, null),
+          ),
+        );
+      }
       case "newWorkspace": {
         const p = openPrompt(state.overlay);
         if (p?.t !== "new") return;
@@ -1638,18 +1664,24 @@ export const mkFleetHandle = ({
       case "done": {
         // Archiving reclaims the worktree — a dirty tree would have its
         // uncommitted changes discarded, so make that an explicit confirm
-        // (mirrors delete). Clean trees archive straight away.
-        if (s.git?.dirty === true) {
+        // (mirrors delete). A supervisor's open agents are a question too:
+        // stop them with it, or detach them. Otherwise it archives at once.
+        const dirty = s.git?.dirty === true;
+        const children = openAgents(s.id);
+        if (dirty || children) {
           return void show({
             t: "confirm",
             confirm: {
               title: `Archive session ${shortId(s.id)}?`,
-              body:
-                "Its worktree has uncommitted changes — archiving discards them. " +
-                "The branch and chat are kept; message it again to resume on a fresh tree.",
-              danger: true,
+              body: dirty
+                ? "Its worktree has uncommitted changes — archiving discards them. " +
+                  "The branch and chat are kept; message it again to resume on a fresh tree."
+                : "The branch and chat are kept; message it again to resume on a fresh tree.",
+              danger: dirty,
               action: "archiveSession",
               sessionId: s.id,
+              ...(dirty ? { force: true } : {}),
+              ...(children ? { children } : {}),
             },
           });
         }
@@ -2057,6 +2089,7 @@ export const mkFleetHandle = ({
             ...(p.settings.provider ? { provider: p.settings.provider } : {}),
             ...(p.settings.model ? { model: p.settings.model } : {}),
             ...(p.settings.effort ? { effort: p.settings.effort } : {}),
+            ...(p.settings.profile ? { profile: p.settings.profile } : {}),
           });
           // Creation runs in the background. Completion never owns selection.
           // No local echo — the daemon emits a `user_message` for the opening
@@ -2308,7 +2341,9 @@ export const mkFleetHandle = ({
     const name = `“${(s.title ?? "").split("\n")[0]?.trim() || "untitled"}”`;
     const canBranch = !s.inPlace && !!s.branch;
     const dirty = s.git?.dirty === true;
+    const children = openAgents(s.id);
     return {
+      ...(children ? { children } : {}),
       title: `Delete session ${shortId(s.id)}?`,
       body: name,
       danger: true,
@@ -2401,6 +2436,7 @@ export const mkFleetHandle = ({
           by: client.clientId,
           ...(alsoBranch ? { deleteBranch: true } : {}),
           ...(c.force ? { force: true } : {}),
+          ...(c.children ? { children: c.children.choice } : {}),
         })
         .then((r) =>
           note(
@@ -2412,7 +2448,7 @@ export const mkFleetHandle = ({
       return;
     }
     if (c.action === "archiveSession") {
-      archiveSession(c.sessionId, true);
+      archiveSession(c.sessionId, c.force === true, c.children?.choice);
       return;
     }
     if (c.action === "gc") {
@@ -2748,6 +2784,12 @@ export const mkFleetHandle = ({
       ) {
         return void dispatch({ t: "toggleConfirmBranch" });
       }
+      if (
+        input === "c" &&
+        (confirm.action === "archiveSession" || confirm.action === "deleteSession") &&
+        confirm.children
+      )
+        return void dispatch({ t: "toggleConfirmChildren" });
       if (key.escape || input === "q" || input === "n") {
         // A confirm raised from the queue view backs out to it.
         if ((confirm.action === "clearQueue" && confirm.back) || confirm.action === "queueSendNow")

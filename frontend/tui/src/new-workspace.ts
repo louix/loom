@@ -1,8 +1,9 @@
 /**
  * Where a new session will run and work, as the `new` prompt settles it:
- * isolation (`⌥i`), workspace (`⌥w`) and base (`⌥b`). Pure functions of the
- * prompt's settings and the daemon's facts, so the prompt line, the commands'
- * descriptions and the submit all read one answer.
+ * isolation (`⌥i`), workspace (`⌥w`) and base (`⌥b`), and the agent profile it
+ * starts on (`⌥a`). Pure functions of the prompt's settings and the daemon's
+ * facts, so the prompt line, the commands' descriptions and the submit all
+ * read one answer.
  *
  * The daemon offers three workspaces: a worktree (on the host, or mounted into
  * a VM), a private clone (VM only: the guest reaches the repository through a
@@ -13,6 +14,7 @@
 import { absurd } from "@loom/core/absurd";
 import type { Loadable } from "@loom/core/loadable";
 import type { BaseChoices, ProviderInfo, WorkspaceMode } from "@loom/core/wire";
+import type { AgentProfileInfo } from "@loom/core/agents";
 import type { NewSessionSettings } from "./overlay.ts";
 
 /** `⌥w` order. */
@@ -89,6 +91,59 @@ export const toggleIsolation = (p: Provider, s: NewSessionSettings): SettingsSte
   if (s.workspace === "clone")
     return { settings: { ...s, isolation: "local", workspace: "worktree" }, note: CLONE_LEFT_VM };
   return { settings: { ...s, isolation: "local" } };
+};
+
+// ---------------------------------------------------------------------------
+// agent profile
+// ---------------------------------------------------------------------------
+
+/**
+ * `⌥a`: the next agent profile, after the last back to none. Choosing one sets
+ * what it names — provider, model, effort, mode — over the prompt's settings;
+ * none puts back `defaults`, today's settings. Where, isolation and base stay.
+ * A profile on a provider this daemon does not offer is passed over.
+ */
+export const cycleProfile = (
+  profiles: readonly AgentProfileInfo[],
+  providers: readonly ProviderInfo[],
+  s: NewSessionSettings,
+  defaults: NewSessionSettings,
+): SettingsStep => {
+  if (profiles.length === 0)
+    return { disabled: "No agent profiles are configured (agents.profiles)." };
+  const at = profiles.findIndex((p) => p.name === s.profile);
+  const skipped: string[] = [];
+  for (let i = at + 1; i < profiles.length; i++) {
+    const p = profiles[i]!;
+    if (p.provider && !providers.some((x) => x.id === p.provider)) {
+      skipped.push(`${p.name} runs on ${p.provider}, which is not available.`);
+      continue;
+    }
+    const provider = p.provider ?? s.provider;
+    const same = provider === s.provider;
+    return {
+      settings: {
+        ...s,
+        profile: p.name,
+        provider,
+        model: p.model ?? (same ? s.model : null),
+        effort: p.effort ?? (same && !p.model ? s.effort : null),
+        mode: p.mode ?? s.mode,
+      },
+      note: [...skipped, `${p.name}: ${p.description}`].join(" "),
+    };
+  }
+  const { profile: _, ...rest } = s;
+  return {
+    settings: {
+      ...rest,
+      provider: defaults.provider,
+      model: defaults.model,
+      effort: defaults.effort,
+      mode: defaults.mode,
+    },
+    note: [...skipped, "No profile: today's settings."].join(" "),
+  };
 };
 
 // ---------------------------------------------------------------------------

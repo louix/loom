@@ -178,19 +178,20 @@ to the request panel with the answers kept, and `a` resumes where you left off.
 
 `Alt` runs an action without dropping what you've typed:
 
-| key  | action                                                                                                                                                                                     |
-| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `⌥e` | edit the text in `$EDITOR` (`:wq` to return); `tui.include_event_log_in_editor: true` includes the log (default `false`, may require `:wq!`); nothing is sent until `Enter` back in the UI |
-| `⌥o` | open the event log in `$EDITOR`, read-only                                                                                                                                                 |
-| `⇧⇥` | cycle the permission mode — the new session's _(new prompt)_, or the one you're messaging, live _(send prompt)_                                                                            |
-| `⌥m` | switch the model — a model step for the new session _(new prompt)_, or a live switch on the one you're messaging _(send prompt, draft kept)_                                               |
-| `⌥t` | switch the thinking-effort level, same shape as `⌥m` — only offered when the current (or chosen) model takes one                                                                           |
-| `⌥p` | pick the provider / model — for the new session, or live on the one you're messaging _(send prompt)_; a model that takes a thinking-effort level asks for one as a third step              |
-| `⌥q` | queued send — queue the message for when the agent has finished (background work included); on an idle session, plain send _(send prompt only)_                                            |
-| `⌥x` | clear the session's queued messages, after a confirm _(send prompt only)_                                                                                                                  |
-| `⌥i` | interrupt the session you're messaging; the draft stays _(send prompt)_ · switch the new session between Local and VM isolation _(new prompt)_                                             |
-| `⌥w` | cycle the new session's workspace: worktree → clone (a VM's private clone; brings VM isolation) → in-place (the repo checkout itself) _(new prompt only)_                                  |
-| `⌥b` | switch what the new session branches from: the checked-out branch (or detached commit) ↔ the default branch; the session keeps it _(new prompt only)_                                      |
+| key  | action                                                                                                                                                                                                    |
+| ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `⌥e` | edit the text in `$EDITOR` (`:wq` to return); `tui.include_event_log_in_editor: true` includes the log (default `false`, may require `:wq!`); nothing is sent until `Enter` back in the UI                |
+| `⌥o` | open the event log in `$EDITOR`, read-only                                                                                                                                                                |
+| `⇧⇥` | cycle the permission mode — the new session's _(new prompt)_, or the one you're messaging, live _(send prompt)_                                                                                           |
+| `⌥m` | switch the model — a model step for the new session _(new prompt)_, or a live switch on the one you're messaging _(send prompt, draft kept)_                                                              |
+| `⌥t` | switch the thinking-effort level, same shape as `⌥m` — only offered when the current (or chosen) model takes one                                                                                          |
+| `⌥p` | pick the provider / model — for the new session, or live on the one you're messaging _(send prompt)_; a model that takes a thinking-effort level asks for one as a third step                             |
+| `⌥q` | queued send — queue the message for when the agent has finished (background work included); on an idle session, plain send _(send prompt only)_                                                           |
+| `⌥x` | clear the session's queued messages, after a confirm _(send prompt only)_                                                                                                                                 |
+| `⌥i` | interrupt the session you're messaging; the draft stays _(send prompt)_ · switch the new session between Local and VM isolation _(new prompt)_                                                            |
+| `⌥w` | cycle the new session's workspace: worktree → clone (a VM's private clone; brings VM isolation) → in-place (the repo checkout itself) _(new prompt only)_                                                 |
+| `⌥b` | switch what the new session branches from: the checked-out branch (or detached commit) ↔ the default branch; the session keeps it _(new prompt only)_                                                     |
+| `⌥a` | cycle the new session's agent profile (`agents.profiles`): it sets provider, model, effort and mode, which stay changeable, and brings its prompt and tools; none is today's settings _(new prompt only)_ |
 
 `⇧⏎` / `⌥⏎` insert a newline inline; `⌥e` hands the whole thing to `$EDITOR`
 for heavier multi-line editing.

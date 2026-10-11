@@ -10,6 +10,7 @@
  */
 import type { SessionMode } from "@loom/core/types";
 import type { WorkspaceMode } from "@loom/core/wire";
+import type { ChildrenOnClose } from "@loom/core/agents";
 import { buffer, type Buffer } from "./editor.ts";
 
 /** The editor fields every prompt shares — the text and its ↑/↓ history walk. */
@@ -43,6 +44,10 @@ export interface NewSessionSettings {
   /** What it branches from (⌥b): the checked-out branch, or the default
    *  branch. Omitted is the checked-out branch. */
   base?: "current" | "default";
+  /** The agent profile it starts on (⌥a): its prompt and tools come with it,
+   *  and choosing it set provider, model, effort and mode, which stay
+   *  changeable. Omitted is none: today's settings. */
+  profile?: string;
 }
 
 /** Prompts that act on a session as a whole. */
@@ -176,13 +181,26 @@ export interface ForkPlan {
 // confirmation
 // ---------------------------------------------------------------------------
 
+/** Closing a supervisor with Loom agents still open: how many, and whether
+ *  they are stopped (archived) with it or detached to run on (`c` toggles). */
+export interface ChildrenChoice {
+  count: number;
+  choice: ChildrenOnClose;
+}
+
 export type Confirm = {
   title: string;
   body?: string;
   danger: boolean;
 } & (
   | { action: "restart" | "quitAll" | "gc" }
-  | { action: "archiveSession"; sessionId: string }
+  | {
+      action: "archiveSession";
+      sessionId: string;
+      /** Archive even with uncommitted changes, which go. */
+      force?: boolean;
+      children?: ChildrenChoice;
+    }
   /** Clear exactly these queued messages — the ones on screen when asked; one
    *  arriving after is never swept. `back`: return to the queue view. */
   | { action: "clearQueue"; sessionId: string; entryIds: readonly string[]; back: boolean }
@@ -199,6 +217,7 @@ export type Confirm = {
       deleteBranch?: boolean;
       /** Confirm discarding uncommitted worktree changes. */
       force?: boolean;
+      children?: ChildrenChoice;
     }
 );
 

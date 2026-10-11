@@ -40,6 +40,7 @@ import type { ClientState } from "@loom/client";
 import type { ModeChoices } from "./mode-control.ts";
 import type { FleetPaneView, HeaderView, LogView } from "./views.ts";
 import {
+  fleetAgentProfiles,
   fleetSessions,
   cacheHeat,
   cacheStatus,
@@ -60,6 +61,7 @@ import {
   pickerCurrent,
   pickerVisible,
   promptKind,
+  type ChildrenChoice,
   type Confirm as ConfirmState,
   type PickItem,
   type Picker as PickerState,
@@ -260,6 +262,8 @@ export const Fleet = memo(
             case "session":
               return FleetRow({
                 s: entry.s,
+                ...(entry.nest ? { nest: entry.nest } : {}),
+                ...(entry.agents ? { agents: entry.agents } : {}),
                 selected: entry.s.id === view.selectedId,
                 focused: childKeyOf(entry.s) != null,
                 tick,
@@ -360,6 +364,8 @@ const cacheLede = (cs: CacheStatus): string => {
 
 const FleetRow = ({
   s,
+  nest,
+  agents,
   selected,
   focused = false,
   tick,
@@ -371,6 +377,11 @@ const FleetRow = ({
   hovered = false,
 }: {
   s: SessionSnapshot;
+  /** A Loom agent under its supervisor: indented behind a tree branch, like
+   *  the work rows a session fans out, but a session row in full. */
+  nest?: { depth: number; isLast: boolean };
+  /** A supervisor's open agents in words, and its spend with theirs. */
+  agents?: { summary: string; cost: Pick<SessionSnapshot, "costUsd" | "costSource"> };
   selected: boolean;
   /** The fleet is drilled into this row's children — its cursor goes dim and
    *  the bright one moves onto the focused child row. */
@@ -396,14 +407,23 @@ const FleetRow = ({
   let titleColor = selected ? C.text : C.dim;
   if (blocked) titleColor = C.faint;
   const id = shortId(s.id);
-  const cost = sessionCost(s);
+  // A supervisor's figure is its spend with its agents'.
+  const cost = agents ? `Σ${sessionCost(agents.cost)}` : sessionCost(s);
   const heat = cacheHeat(cacheStatus(s, now));
   // Always 2 cols so titles stay aligned whether or not a session has a warm cache.
   const cacheColor = heat ? C[cacheHeatTone(heat)] : null;
   const idColor = blocked ? C.faint : pcolor.get(s.provider) || C.faint;
   const forked = s.parentId != null && s.forkTurn != null;
   const idText = forked ? `⑂${id}` : id;
-  const room = Math.max(6, iw - (2 + 2 + idText.length + 3 + 2 + 2 + cost.length + 1));
+  const branch = nest ? `${"  ".repeat(nest.depth - 1)}${nest.isLast ? "└ " : "├ "}` : "";
+  const width = Math.max(
+    6,
+    iw - (2 + branch.length + 2 + idText.length + 3 + 2 + 2 + cost.length + 1),
+  );
+  // The summary takes what the title leaves, and gives way first.
+  const summaryRoom = Math.min(agents?.summary.length ?? 0, width - 12);
+  const summary = agents?.summary && summaryRoom >= 6 ? truncate(agents.summary, summaryRoom) : "";
+  const room = Math.max(6, width - (summary ? summary.length + 2 : 0));
   const title = truncate(
     archiving ? "archiving… " + titleLine(s.title) : titleLine(s.title),
     room,
@@ -414,6 +434,7 @@ const FleetRow = ({
   return (
     <Line key={s.id}>
       <Text tone={selected && !focused ? "accent" : "faint"}>{selected ? "▍ " : "  "}</Text>
+      {branch ? <Text tone="faint">{branch}</Text> : null}
       <Text tone={glyphTone}>{glyph + " "}</Text>
       <Text color={idColor}>{idText}</Text>
       <Text tone="faint">{s.isolation === "vm" ? " ◇ " : "   "}</Text>
@@ -426,6 +447,7 @@ const FleetRow = ({
       <Text color={hovered ? C.text : titleColor} bold={selected && !blocked} underline={hovered}>
         {title}
       </Text>
+      {summary ? <Text tone="dim">{`  ${summary}`}</Text> : null}
       <Text tone="faint">{` ${cost}`}</Text>
     </Line>
   );
@@ -557,6 +579,14 @@ export const detailLayout = (
     }
     if (s.worktreeOwner)
       addLine(truncate(`⑂ shares the worktree of ${shortId(s.worktreeOwner)}`, w));
+    if (s.supervisorId || s.agentProfile) {
+      const parts = [
+        ...(s.supervisorId ? [`agent of ${shortId(s.supervisorId)}`] : []),
+        ...(s.agentProfile ? [`profile ${s.agentProfile}`] : []),
+        ...(s.taskId ? [`task ${s.taskId}`] : []),
+      ];
+      addLine(truncate(`↳ ${parts.join(" · ")}`, w));
+    }
     space();
     let status = `${look!.glyph} ${look!.label}${statusDetailSuffix(s)}`;
     if (s.stopFailed) status = "⚠ stop failed — press i to retry";
@@ -1151,7 +1181,10 @@ export const NewSessionModal = ({
             {prov?.tag ?? p.settings.provider ?? "auto"}
           </Text>
           {` / ${model}${p.settings.effort ? ` · ${p.settings.effort}` : ""}`}
-          <Text tone="faint">{"  ⌥p change"}</Text>
+          {p.settings.profile ? <Text tone="accent">{` · ${p.settings.profile}`}</Text> : null}
+          <Text tone="faint">
+            {fleetAgentProfiles(state).length > 0 ? "  ⌥p change · ⌥a profile" : "  ⌥p change"}
+          </Text>
         </Line>
         <Box gap={1}>
           <Box flexShrink={0}>{modeChip(p.settings.mode, null, hover)}</Box>
@@ -1254,11 +1287,26 @@ const deletionLayout = (confirm: DeleteConfirmState, width: number) => {
         room,
       )
     : [];
+  const agents = confirm.children ? wrapText(childrenLine(confirm.children), room) : [];
   return {
     history,
     worktree,
-    height: 9 + history.length + worktree.length + (confirm.branchName ? 4 : 0),
+    agents,
+    height:
+      9 +
+      history.length +
+      worktree.length +
+      (confirm.branchName ? 4 : 0) +
+      (agents.length ? agents.length + 1 : 0),
   };
+};
+
+/** What closing a supervisor does to its open agents, as its confirm says it. */
+const childrenLine = (c: ChildrenChoice): string => {
+  const n = `${c.count} open agent${c.count === 1 ? "" : "s"}`;
+  return c.choice === "stop"
+    ? `It supervises ${n}: they are stopped and archived with it.`
+    : `It supervises ${n}: they are detached and keep running as sessions of their own.`;
 };
 
 const DeleteSessionConfirm = ({
@@ -1291,6 +1339,14 @@ const DeleteSessionConfirm = ({
         <Lines tone="text" lines={content.history} />
         <Lines tone={confirm.force ? "warn" : "dim"} lines={content.worktree} />
       </Box>
+      {content.agents.length ? (
+        <Box flexDirection="column" marginTop={gap} flexShrink={0}>
+          <Lines
+            tone={confirm.children?.choice === "stop" ? "warn" : "dim"}
+            lines={content.agents}
+          />
+        </Box>
+      ) : null}
       {confirm.branchName ? (
         <Box flexDirection="column" marginTop={gap} flexShrink={0}>
           <Line tone={confirm.deleteBranch ? "warn" : "dim"}>
@@ -1305,6 +1361,16 @@ const DeleteSessionConfirm = ({
       ) : null}
       <Box flexDirection="column" marginTop={gap} flexShrink={0}>
         {confirm.branchName ? <Hints items={[{ keys: "b", label: "toggle branch" }]} /> : null}
+        {confirm.children ? (
+          <Hints
+            items={[
+              {
+                keys: "c",
+                label: confirm.children.choice === "stop" ? "detach agents" : "stop agents",
+              },
+            ]}
+          />
+        ) : null}
         <Hints
           items={[
             { keys: "enter", label: "delete" },
@@ -1336,7 +1402,11 @@ export const Confirm = ({
   }
   const compact = height !== undefined && height < 12;
   // A body may hold several lines (the fork summary); each wraps on its own.
-  const body = (confirm.body ?? "")
+  // A supervisor's archive says what happens to its agents last.
+  const agents =
+    confirm.action === "archiveSession" && confirm.children ? confirm.children : undefined;
+  const body = [confirm.body ?? "", ...(agents ? [childrenLine(agents)] : [])]
+    .join("\n")
     .split("\n")
     .flatMap((line) => wrapText(line, Math.max(1, width - 6)));
   const capacity = height === undefined ? body.length : Math.max(0, height - (compact ? 5 : 7));
@@ -1351,6 +1421,7 @@ export const Confirm = ({
       forkIsolationLocked(confirm.fork) ? "" : " (i to change)"
     }`;
   else if (confirm.action === "gc") actionText = "remove the worktrees";
+  else if (confirm.action === "archiveSession") actionText = "archive";
   return (
     <Panel
       width={width}
@@ -1368,6 +1439,9 @@ export const Confirm = ({
         gap={2}
         items={[
           { keys: "enter", label: actionText },
+          ...(agents
+            ? [{ keys: "c", label: agents.choice === "stop" ? "detach agents" : "stop agents" }]
+            : []),
           { keys: "esc", label: "cancel" },
         ]}
       />

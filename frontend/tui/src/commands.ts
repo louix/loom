@@ -23,15 +23,23 @@ import type { KeyLike } from "./editor.ts";
 import { liveQNav, questionsOf } from "./interactions.ts";
 import { nextThemeMode } from "./theme.ts";
 import { startingForkOf } from "./fork-flow.ts";
-import { cycleWorkspace, newBase, newWorkspace, toggleBase } from "./new-workspace.ts";
+import {
+  cycleProfile,
+  cycleWorkspace,
+  newBase,
+  newWorkspace,
+  toggleBase,
+} from "./new-workspace.ts";
 import { openPrompt } from "./overlay.ts";
 import {
   childrenOf,
   defaultProviderId,
+  fleetAgentProfiles,
   fleetProviders,
   fleetSessions,
   modelPickItems,
   modelSupportsEffort,
+  newSettings,
   providerInfo,
   queueFor,
   selectedSession,
@@ -320,6 +328,13 @@ const COMMANDS = {
       "Rediscover the selected session's provider's models (the default provider's with none selected); ⌥r in a model picker.",
   },
   new: { scope: "app", keys: "n", label: "new", description: "Start a new session." },
+  newProfile: {
+    scope: "app",
+    newSession: "⌥a",
+    label: "profile",
+    description:
+      "Cycle the agent profile the new session starts on: its provider, model, effort and mode (still changeable), prompt and tools. None is today's settings.",
+  },
   newWorkspace: {
     scope: "app",
     newSession: "⌥w",
@@ -856,6 +871,19 @@ const otherAvailability = (
     case "quit":
     case "palette":
       return { bar: true };
+    case "newProfile": {
+      const p = openPrompt(ctx.overlay);
+      if (p?.t !== "new") return null;
+      const profiles = fleetAgentProfiles(ctx);
+      const step = cycleProfile(
+        profiles,
+        fleetProviders(ctx),
+        p.settings,
+        newSettings(ctx, null, null, null),
+      );
+      if ("disabled" in step) return { disabled: step.disabled };
+      return { label: `profile → ${step.settings.profile ?? "none"}` };
+    }
     case "newWorkspace": {
       const p = openPrompt(ctx.overlay);
       if (p?.t !== "new") return null;
@@ -1120,14 +1148,21 @@ export const footerHints = (ctx: CommandContext): BarItem[] => {
         { keys: "esc", label: "cancel" },
       ];
     }
-    case "confirm":
+    case "confirm": {
+      const c = ctx.overlay.confirm;
+      const children =
+        c.action === "archiveSession" || c.action === "deleteSession" ? c.children : undefined;
       return [
         { keys: "enter", label: "confirm" },
-        ...(ctx.overlay.confirm.action === "deleteSession" && ctx.overlay.confirm.branchName
-          ? [{ keys: "b", label: ctx.overlay.confirm.deleteBranch ? "keep branch" : "+ branch" }]
+        ...(c.action === "deleteSession" && c.branchName
+          ? [{ keys: "b", label: c.deleteBranch ? "keep branch" : "+ branch" }]
+          : []),
+        ...(children
+          ? [{ keys: "c", label: children.choice === "stop" ? "detach agents" : "stop agents" }]
           : []),
         { keys: "esc", label: "cancel" },
       ];
+    }
     case "plan":
       return [
         { keys: "i", label: "implement" },
