@@ -177,8 +177,10 @@ messages, interrupts and outcomes are ordinary session events.
 
 - Native sub-agents: Claude runs with `disallowedTools` `Agent` and `Task`;
   aisdk sessions lost their `task` tool; Codex app-servers start with
-  `-c features.multi_agent=false -c features.multi_agent_v2=false` (start,
-  resume and fork alike).
+  `-c features.multi_agent=false` and
+  `-c features.multi_agent_v2={enabled=false, max_concurrent_threads_per_session=1}`
+  (start, resume and fork alike), and their developer instructions say to use
+  the `loom-agents` tools for sub-agents, never Codex's own.
 - The tools are mounted in each provider (Claude: an in-process `loom-agents`
   MCP server; aisdk: plain tools; Codex: dynamic tools, so only threads started
   with them have them). A call parks in the adapter as an `agent_call` event;
@@ -215,7 +217,11 @@ detach` on `session.markDone` / `session.remove`, `--children` in the CLI,
   overrides both flags: upstream openai/codex#50880 (open, 0.160.0 too), whose
   reporter found only
   `features.multi_agent_v2={enabled=false, max_concurrent_threads_per_session=1}`
-  refuses the spawn (the tools stay listed). Untried here: that switch, and a
+  refuses the spawn (the tools stay listed). Loom now passes that switch and
+  tells the model not to use Codex's sub-agent tools. Live (2026-10-11, Codex
+  0.153.2, terra): the v2 tools are still listed; asked to call `spawn_agent`
+  once, the model declined, citing its configuration, so no call reached Codex
+  and whether Codex itself refuses the spawn is unconfirmed. Untried: a
   `model_catalog_json` that pins `multi_agent_version` to v1.
 - Shared VM for children (running inside the supervisor's VM).
 - Clone children while the supervisor's VM is stopped: the clone directory

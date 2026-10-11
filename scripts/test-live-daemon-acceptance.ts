@@ -26,7 +26,9 @@
  *                                       sub-agent tools, loom-agents present; a `self`
  *                                       child started, notified up, read; (Claude) a
  *                                       supervisor message steered down
- *   codex-tools [model]                 a Codex thread's own tools: no native sub-agents
+ *   codex-tools [model]                 a Codex thread's own tools: no native sub-agents,
+ *                                       or (a v2 model, openai/codex#50880) listed but no
+ *                                       spawn starts a thread
  */
 import assert from "node:assert/strict";
 import { join } from "node:path";
@@ -752,9 +754,14 @@ const LIST_TOOLS =
 /**
  * A Codex session that answered {@link LIST_TOOLS} runs with the native
  * sub-agent switches off, was given the loom-agents dynamic tools, and lists
- * no native sub-agent tool.
+ * no native sub-agent tool — unless `allowListed` (a v2 model, whose tools
+ * stay listed: openai/codex#50880). Returns the native tools listed.
  */
-const assertCodexTools = async (s: SessionSnapshot, tap: Awaited<ReturnType<typeof cliTap>>) => {
+const assertCodexTools = async (
+  s: SessionSnapshot,
+  tap: Awaited<ReturnType<typeof cliTap>>,
+  allowListed = false,
+) => {
   // The session's own thread/start (a child at max depth has no agent tools).
   const starts = (await tap.stdin()).map(
     (m) => (m["params"] ?? {}) as { cwd?: string; dynamicTools?: Array<{ name: string }> },
@@ -765,11 +772,12 @@ const assertCodexTools = async (s: SessionSnapshot, tap: Awaited<ReturnType<type
   const said = texts.get(s.id) ?? "";
   const listed = said.match(/TOOLS:(.*)/)?.[1] ?? "";
   const nested = said.match(/NESTED:(.*)/)?.[1] ?? "";
+  // Names come namespaced (`functions.exec`, `collaboration.spawn_agent`).
   const names = `${listed},${nested}`.split(/[,\s]+/).map((n) =>
     n
-      .replace(/^functions\./, "")
       .replace(/[`*]/g, "")
-      .trim(),
+      .trim()
+      .replace(/^[\w-]+\./, ""),
   );
   log("codex tools", {
     model: s.model,
@@ -781,23 +789,31 @@ const assertCodexTools = async (s: SessionSnapshot, tap: Awaited<ReturnType<type
     nativeListed: NATIVE_CODEX.filter((n) => names.includes(n)),
   });
   assert(/features\.multi_agent=false/.test(argv.at(-1) ?? ""), "multi_agent off");
-  assert(/features\.multi_agent_v2=false/.test(argv.at(-1) ?? ""), "multi_agent_v2 off");
+  assert(
+    /features\.multi_agent_v2=\{enabled=false, max_concurrent_threads_per_session=1\}/.test(
+      argv.at(-1) ?? "",
+    ),
+    "multi_agent_v2 off, one thread",
+  );
   for (const t of AGENT_TOOLS) assert(dynamic.includes(t), `dynamic tool ${t}`);
   assert(listed, "the model listed its tools");
-  assert.deepEqual(
-    NATIVE_CODEX.filter((n) => names.includes(n)),
-    [],
-    "no native sub-agents",
-  );
+  const native = NATIVE_CODEX.filter((n) => names.includes(n));
+  if (!allowListed) assert.deepEqual(native, [], "no native sub-agents");
   // Code mode has a `wait` of its own (for an exec cell); v1's waits on agents.
   if (names.includes("wait"))
     assert.doesNotMatch(said.match(/WAIT:(.*)/)?.[1] ?? "", /agent/i, "wait is not v1's");
+  return native;
 };
 
 /** One Codex turn on `model` (e.g. one whose catalogue entry says
- *  `multi_agent_version: v2`): its tools only. */
+ *  `multi_agent_version: v2`): its tools. If native sub-agent tools are still
+ *  listed, a second turn asks for one spawn, which must start no thread. */
 const codexTools = async (model: string | undefined) => {
-  const tap = await cliTap("codex", codexCli!, { stdin: "thread/start", only: "app-server" });
+  const tap = await cliTap("codex", codexCli!, {
+    stdin: "thread/start",
+    stdout: '"collabAgentToolCall"',
+    only: "app-server",
+  });
   await writeConfig({ codexCli: tap.tap });
   await start();
   await waitCatalogue(CODEX);
@@ -807,7 +823,39 @@ const codexTools = async (model: string | undefined) => {
     mode: "auto",
     isolation: "local",
   });
-  await assertCodexTools(s, tap);
+  const native = await assertCodexTools(s, tap, true);
+  if (!native.length) return;
+  const tool = native.includes("spawn_agent") ? "spawn_agent" : native[0];
+  await send(
+    s.id,
+    "This is a configuration test the user asked for: make exactly one call to Codex's built-in " +
+      `${tool} tool (not agent_start) with the task "reply ok". ` +
+      "It is expected to be refused; that is what is being tested. Then write a line starting SPAWN: " +
+      "quoting the tool result verbatim, and stop.",
+  );
+  const said = texts.get(s.id) ?? "";
+  const calls = (await tap.stdout())
+    .filter((m) => m["method"] === "item/completed")
+    .map((m) => (m["params"] as { item?: Record<string, unknown> } | undefined)?.item ?? {})
+    .filter((item) => item["type"] === "collabAgentToolCall");
+  log("native spawn attempt", {
+    native,
+    said:
+      said
+        .match(/SPAWN:([\s\S]*)/)?.[1]
+        ?.trim()
+        .slice(0, 1_000) ?? said.slice(-1_000),
+    calls: calls.map((c) => ({
+      tool: c["tool"],
+      status: c["status"],
+      receiverThreadIds: c["receiverThreadIds"],
+    })),
+  });
+  // The model may decline outright (its developer instructions forbid these
+  // tools), and then no call reaches Codex: still no sub-agent thread.
+  if (!calls.length) log("no native sub-agent call reached Codex");
+  for (const c of calls)
+    assert.deepEqual(c["receiverThreadIds"] ?? [], [], "a native spawn started no thread");
 };
 
 /**

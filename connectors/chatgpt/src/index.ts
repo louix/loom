@@ -33,6 +33,18 @@ const withTimeout = <T>(p: Promise<T>, ms: number, label: string): Promise<T> =>
   ]);
 
 /**
+ * Codex's own sub-agent tools are switched off at launch
+ * (`NATIVE_SUBAGENT_FLAGS`), but a v2 model keeps them listed (only a spawn is
+ * refused), so the instructions rule them out too. The `loom-agents` tools are
+ * named only when this thread was given them.
+ */
+export const subAgentInstructions = (agentTools: boolean): string =>
+  (agentTools
+    ? "For sub-agents, use only the `loom-agents` tools (`agent_start` and the other `agent_*` tools). "
+    : "") +
+  "Never use Codex's built-in sub-agent tools (`spawn_agent`, `followup_task`, `send_message`, `wait_agent`, `list_agents`, `interrupt_agent`, `send_input`, `close_agent`), even if they are listed.";
+
+/**
  * The dynamic tools `CodexAppServerSession` mounts (`commit`/`status`/
  * `ask_user`, see `app-server.ts`) are Loom's own; the daemon's
  * `systemPromptAppend` is written assuming Claude/aisdk's full loom-mcp/tool
@@ -74,6 +86,8 @@ export const codeModeInstructions = (
   toolPreferences = "",
   /** An agent profile's prompt (`loom-agents`), last. */
   agentPrompt = "",
+  /** The `loom-agents` tools are mounted; false on resume, like `askUserMounted`. */
+  agentTools = false,
 ): string =>
   [
     toolSteer(workspaceRoot, {
@@ -82,6 +96,7 @@ export const codeModeInstructions = (
       status: mountsLoomTools,
     }),
     toolPreferences,
+    subAgentInstructions(agentTools),
     repoInstructions,
     agentPrompt,
   ]
@@ -168,6 +183,7 @@ class ChatGPTProvider implements AgentProvider {
               opts.repoInstructions ?? null,
               mcpToolPreferences(opts.mcpServers),
               opts.agentPrompt,
+              mounted && opts.agentTools === true,
             ),
       },
       this.#codexHome,
@@ -187,7 +203,8 @@ class ChatGPTProvider implements AgentProvider {
       // daemon always resumes with `loomServer` semantics equivalent to
       // `true` for this provider — `SessionRef` has no `loomServer` field).
       // `askUserMounted: false` regardless — see `codeModeInstructions`'s
-      // doc comment for why resume never claims `ask_user`.
+      // doc comment for why resume never claims `ask_user`. The `loom-agents`
+      // tools likewise go unnamed: a thread started before them lacks them.
       {
         ...ref,
         systemPromptAppend: codeModeInstructions(

@@ -90,14 +90,17 @@ export const mcpConfig = (servers: McpServerHandle[]): string => {
  * Codex feature switches that withdraw its native sub-agents. `multi_agent`
  * gates the v1 collaboration tools (`spawn_agent`, `send_input`, `wait`,
  * `close_agent`, …) and is on by default; `multi_agent_v2` the v2 team tools
- * (`followup_task`, `send_message`, `wait_agent`, …). A model's catalogue
- * entry also declares a `multi_agent_version`; that these flags withdraw the
- * v2 tools from such a model too is not confirmed against a live thread (see
- * docs/loom-agents.md, Open).
+ * (`followup_task`, `send_message`, `wait_agent`, …). A model whose catalogue
+ * entry declares `multi_agent_version: v2` keeps the v2 tools whatever
+ * `multi_agent_v2` says (upstream openai/codex#50880). The workaround reported
+ * there, a cap of one thread per session (its own), refuses a spawn; the
+ * tools stay listed, so the developer instructions also rule them out
+ * (`subAgentInstructions`). The table form disables v2 as `=false` did. See
+ * docs/loom-agents.md, Open.
  */
 export const NATIVE_SUBAGENT_FLAGS = [
   "features.multi_agent=false",
-  "features.multi_agent_v2=false",
+  "features.multi_agent_v2={enabled=false, max_concurrent_threads_per_session=1}",
 ] as const;
 
 /** Preserve the existing native environment, but omit upstream MCP credentials.

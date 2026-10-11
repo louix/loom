@@ -158,6 +158,22 @@ test("codeModeInstructions never mentions ask_user when askUserMounted is false,
   }
 });
 
+test("codeModeInstructions rules out Codex's own sub-agent tools, naming loom-agents only when mounted", () => {
+  const supervisor = codeModeInstructions("/workspace", true, true, null, "", "", true);
+  assert.match(supervisor, /For sub-agents, use only the `loom-agents` tools \(`agent_start`/);
+  assert.match(
+    supervisor,
+    /Never use Codex's built-in sub-agent tools \(`spawn_agent`, `followup_task`/,
+  );
+  for (const plain of [
+    codeModeInstructions("/workspace", true, true, null),
+    codeModeInstructions("/workspace", false, false, null),
+  ]) {
+    assert.doesNotMatch(plain, /loom-agents/);
+    assert.match(plain, /Never use Codex's built-in sub-agent tools/);
+  }
+});
+
 test("codeModeInstructions splices in the caller's repoInstructions instead of reading LOOM.md itself", async () => {
   // A directory with no `.loom/LOOM.md` on disk at all — proves the text
   // below reached the output only because it was passed in, not because the
@@ -464,7 +480,14 @@ test("Codex sessions run with its native multi-agent tools switched off, created
   for (const spec of specs) {
     const overrides = spec.args.flatMap((arg, i) => (spec.args[i - 1] === "-c" ? [arg] : []));
     assert.ok(overrides.includes("features.multi_agent=false"));
-    assert.ok(overrides.includes("features.multi_agent_v2=false"));
+    // A v2 model keeps its tools whatever `enabled` says (openai/codex#50880);
+    // a one-thread cap is what refuses the spawn.
+    assert.ok(
+      overrides.includes(
+        "features.multi_agent_v2={enabled=false, max_concurrent_threads_per_session=1}",
+      ),
+    );
+    assert.ok(!overrides.includes("features.multi_agent_v2=false"), "one setting for v2");
   }
 });
 
