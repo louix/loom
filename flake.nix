@@ -2,11 +2,8 @@
   description = "loom — per-repo agent-fleet daemon (dev shell + package)";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-  # SmolVM 1.18.2; its Nix recipe still needs the release override below.
-  inputs.smolvm.url = "github:smol-machines/smolvm/5ea706f39a87578039388ec23e24af4c7f746754";
-  # Match the release's submodules when rebuilding its bundled libkrun.
-  inputs.smolvm.inputs.libkrun-src.url = "github:smol-machines/libkrun/5e467b42439f32b473888ee12c0932ac40635da5";
-  inputs.smolvm.inputs.libkrunfw-src.url = "github:smol-machines/libkrunfw/6ec329e11154814a4df9963a3f94f2a430f55723";
+  # SmolVM 1.23.0; its Nix recipe still needs the release override below.
+  inputs.smolvm.url = "github:smol-machines/smolvm/6aae73101065ce22bfcff17ec0f57371b3a90e11";
 
   outputs =
     { self, nixpkgs, smolvm }:
@@ -15,66 +12,28 @@
       forAll = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
 
       # Split session runtimes need a code share in addition to the worktree,
-      # Git metadata, credentials and profile. libkrun's legacy x86 IRQ ceiling
-      # (15) exhausts the device budget before attaching vsock. KVM's I/O APIC
-      # has 24 pins; allow virtio devices to use the remaining GSIs through 23.
-      # Keep the MP table in sync, as in firecracker-microvm/firecracker#2286.
+      # Git metadata, credentials and profile. Since 1.23.0 the bundled libkrun
+      # gives x86 virtio devices all 24 I/O APIC pins (smol-machines/libkrun#153),
+      # which Loom used to patch in, so the release no longer runs out of IRQs
+      # before attaching vsock.
       hostSmolvmFor = system:
         let
           upstream = smolvm.packages.${system};
           pkgs = smolvm.inputs.nixpkgs.legacyPackages.${system};
           # The release tags' Nix recipe lags the published tarballs.
-          # Keep upstream's packaging, but use the published 1.18.2 assets.
+          # Keep upstream's packaging, but use the published 1.23.0 assets.
           release = {
-            x86_64-linux = { platform = "linux-x86_64"; hash = "sha256-cajbQSRnk2Kk2gwR0yE6ODA5lVGqNGpfxjmEdWpF6kU="; };
-            aarch64-linux = { platform = "linux-arm64"; hash = "sha256-UjAq8NcvTJlxW+RpKxrZeQ/RL08IJmgB8pN2eUZeIco="; };
-            aarch64-darwin = { platform = "darwin-arm64"; hash = "sha256-uk9tlfUkUGPpnsOI3FntokUURk1olCEdDRY+hEe+33E="; };
+            x86_64-linux = { platform = "linux-x86_64"; hash = "sha256-4kMxACuO962Q+9/n53fm9rLlWFUrLRWcK7WuJKJ1glA="; };
+            aarch64-linux = { platform = "linux-arm64"; hash = "sha256-NimL47iXath/wxu7A/CwwQWk3dMFoegzBTm3Szubqvk="; };
+            aarch64-darwin = { platform = "darwin-arm64"; hash = "sha256-J2PouFE/kC0CNQZrVgWkkVKAKbZ4RBY9jYS5pgeqY6Q="; };
           }.${system};
-          releasedSmolvm = upstream.default.overrideAttrs (_: rec {
-            version = "1.18.2";
-            sourceRoot = "smolvm-${version}-${release.platform}";
-            src = pkgs.fetchurl {
-              url = "https://github.com/smol-machines/smolvm/releases/download/v${version}/${sourceRoot}.tar.gz";
-              inherit (release) hash;
-            };
-          });
-          # Link against the release's existing firmware; only libkrun changes.
-          libkrunfw = pkgs.lib.makeOverridable ({ variant ? null }:
-            assert variant == null;
-            pkgs.runCommand "smolvm-libkrunfw" { meta.platforms = [ system ]; } ''
-              mkdir -p $out/lib
-              cp -a ${releasedSmolvm}/libexec/smolvm/lib/libkrunfw.so* $out/lib/
-            ''
-          ) {};
-          libkrun = (upstream.libkrun.override { inherit libkrunfw; }).overrideAttrs (old: {
-            version = "2.0.0-dev";
-            src = old.src;
-            cargoDeps = pkgs.rustPlatform.fetchCargoVendor {
-              inherit (old) src;
-              hash = "sha256-Opf4QK5k5Lq0zYo5Bmo5teUvr1kBctnI2EOW+MxhMTI=";
-            };
-            # The guest cannot load the host's Nix dynamic linker. Build its
-            # embedded PID 1 statically, separately from the host shared library.
-            preBuild = (old.preBuild or "") + ''
-              CARGO_ENCODED_RUSTFLAGS="-Ctarget-feature=+crt-static" \
-                cargo build --offline --release -p krun-init --target ${pkgs.stdenv.hostPlatform.rust.rustcTarget}
-              export KRUN_INIT_BINARY_PATH="$PWD/target/${pkgs.stdenv.hostPlatform.rust.rustcTarget}/release/krun-init"
-            '';
-            postPatch = (old.postPatch or "") + ''
-              substituteInPlace src/arch/src/x86_64/layout.rs \
-                --replace-fail 'pub const IRQ_MAX: u32 = 15;' 'pub const IRQ_MAX: u32 = 23;'
-              substituteInPlace src/arch/src/x86_64/mptable.rs \
-                --replace-fail 'mem::size_of::<MpcIntsrcWrapper>() * 16' \
-                  'mem::size_of::<MpcIntsrcWrapper>() * (crate::IRQ_MAX as usize + 1)' \
-                --replace-fail 'for i in 0..16 {' 'for i in 0..=crate::IRQ_MAX as u8 {'
-            '';
-          });
-        in if system != "x86_64-linux" then releasedSmolvm
-        else releasedSmolvm.overrideAttrs (old: {
-          postInstall = (old.postInstall or "") + ''
-            rm $out/libexec/smolvm/lib/libkrun.so*
-            cp -a ${libkrun}/lib/libkrun.so* $out/libexec/smolvm/lib/
-          '';
+        in upstream.default.overrideAttrs (_: rec {
+          version = "1.23.0";
+          sourceRoot = "smolvm-${version}-${release.platform}";
+          src = pkgs.fetchurl {
+            url = "https://github.com/smol-machines/smolvm/releases/download/v${version}/${sourceRoot}.tar.gz";
+            inherit (release) hash;
+          };
         });
 
       # Guests always run Linux, independently of the machine running Loom/smolvm.
