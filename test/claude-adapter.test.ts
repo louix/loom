@@ -1334,6 +1334,62 @@ test("readPlanUsage reads the plan windows through a metadata-only query and clo
   assert.ok(closed);
 });
 
+/** A `query()` that treats its prompt the way SDK 0.3.282's `streamInput`
+ *  does: once `initialize` is written it drains the prompt stream and, when
+ *  the stream ends, ends the CLI's stdin. A control request written after
+ *  that fails, as it does against the real CLI. */
+const stdinModellingQuery = (prompt: AsyncIterable<unknown>) => {
+  let stdinOpen = true;
+  let closed = false;
+  const write = (what: string) => {
+    if (!stdinOpen) return Promise.reject(new Error(`${what} written to a closed stdin`));
+    return Promise.resolve();
+  };
+  const initialized = write("initialize");
+  void (async () => {
+    await initialized;
+    for await (const _ of prompt) await write("user message");
+    stdinOpen = false; // transport.endInput()
+  })();
+  const q = Object.assign(fakeQuery(), {
+    // The initialize response arrives after a round trip to the CLI.
+    initializationResult: async () => {
+      await delay(5);
+      return { models: [] };
+    },
+    usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET: async () => {
+      await write("get_usage");
+      await delay(5);
+      return usageReport(17);
+    },
+    close: () => {
+      closed = true;
+    },
+  });
+  return { q, state: () => ({ stdinOpen, closed }) };
+};
+
+test("readPlanUsage keeps the CLI's stdin open until the probe closes", async () => {
+  let probe: ReturnType<typeof stdinModellingQuery> | undefined;
+  __setClaudeSdk({
+    query: (args) => {
+      probe = stdinModellingQuery(args.prompt as AsyncIterable<unknown>);
+      return probe.q as never;
+    },
+  });
+  const windows = await new ClaudeProvider().readPlanUsage();
+  assert.deepEqual(
+    windows.map((w) => [w.window, w.utilization]),
+    [
+      ["five_hour", 17],
+      ["seven_day", 3],
+    ],
+  );
+  // Closed, and the prompt stream released so the SDK can end stdin.
+  await delay(0);
+  assert.deepEqual(probe?.state(), { stdinOpen: false, closed: true });
+});
+
 test("readPlanUsage is empty for an account without a plan", async () => {
   __setClaudeSdk({
     query: () =>

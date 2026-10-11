@@ -1856,11 +1856,24 @@ export class ClaudeProvider implements AgentProvider {
   }
 
   /** Run `read` against a metadata-only `query()` whose prompt never yields,
-   *  bounded by {@link LIST_MODELS_TIMEOUT_MS}; the query is always closed. */
+   *  bounded by {@link LIST_MODELS_TIMEOUT_MS}; the query is always closed.
+   *
+   *  The prompt stream stays open until the probe is done. The SDK ends the
+   *  CLI's stdin as soon as the prompt stream ends, so a stream that ends at
+   *  once closes stdin right after `initialize`, and a later control request
+   *  (`get_usage`) would be written to a closed pipe. */
   async #probe<T>(cli: string | undefined, label: string, read: (q: Query) => Promise<T>) {
     const env = queryEnv({ configDir: this.#configDir });
+    const { promise: done, resolve: finish } = Promise.withResolvers<void>();
     const q = sdk.query({
-      prompt: (async function* (): AsyncGenerator<SDKUserMessage> {})(),
+      prompt: {
+        [Symbol.asyncIterator]: (): AsyncIterator<SDKUserMessage> => ({
+          next: async () => {
+            await done;
+            return { done: true, value: undefined };
+          },
+        }),
+      },
       options: {
         cwd: Deno.cwd(),
         settingSources: [],
@@ -1889,7 +1902,10 @@ export class ClaudeProvider implements AgentProvider {
       ]);
     } finally {
       if (timer) clearTimeout(timer);
+      // Close the query (killing the CLI) before the prompt ends, so the CLI
+      // never sees an EOF it could take for a finished conversation.
       await Promise.resolve(q.close?.()).catch(() => {});
+      finish();
     }
   }
 
