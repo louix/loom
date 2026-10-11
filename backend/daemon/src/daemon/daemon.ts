@@ -113,6 +113,9 @@ import { SocketServer } from "./server.ts";
 import { runStartupHygiene, type HygieneReport } from "./hygiene.ts";
 import { HookRunner, hookSessionOf } from "./hooks.ts";
 import { SessionManager } from "./session-manager.ts";
+import { AgentSupervision, agentSessionPlan, profileInfos, type ChildStart } from "./agents.ts";
+import { SELF_PROFILE, type ChildrenOnClose } from "@loom/core/agents";
+import type { QueueDelivery } from "@loom/core/message-queue";
 import { SessionShells } from "./session-shell.ts";
 import { mkSessionQueue, type SessionQueue } from "./session-queue.ts";
 import { cheapModelFor, generateTitle } from "./titler.ts";
@@ -307,6 +310,7 @@ export class Daemon {
   #dispatcher: RpcDispatcher;
   #providers: ProviderRegistry;
   #sessions: SessionManager;
+  #agents: AgentSupervision;
   #worktrees: WorktreeManager;
   #hooks: HookRunner;
   #idle: IdleTimer;
@@ -602,8 +606,42 @@ export class Daemon {
       onFreshTurn: (id, text) => {
         if (!this.#stopping) this.#lastSend.set(id, text);
       },
+      // A `loom-agents` call runs alongside the turn that made it; the
+      // adapter's tool call waits for the answer.
+      onAgentCall: (id, call) => {
+        if (!this.#stopping) void this.#agents.call(id, call);
+      },
       queue: this.#messageQueue,
       log: this.#log.child("sessions"),
+    });
+    this.#agents = new AgentSupervision({
+      agents: () => this.config.agents,
+      get: (id) => {
+        const row = this.#registry.get(id);
+        return row ? this.#enrich(row, false) : undefined;
+      },
+      list: () => this.#registry.listSorted().map((s) => this.#enrich(s, false)),
+      providerKnown: (id) => this.#providers.has(id),
+      defaultModel: (provider) => this.#defaultModelFor(provider) || null,
+      defaultEffort: (provider, model) =>
+        this.#defaultEffortFor(provider, model ?? undefined) || null,
+      headBase: () => this.#worktrees.currentBase()?.ref,
+      repoRoot: this.repoRoot,
+      dirty: (path) => this.#worktrees.isDirty(path),
+      start: (child) => this.#startChild(child),
+      enqueue: (id, text, author, delivery) => this.#enqueueMessage(id, text, author, delivery),
+      interrupt: async (id) => {
+        await this.#interruptSession(id);
+      },
+      archive: async (id, force) => {
+        await this.#archive(id, force, "detach");
+      },
+      events: (id, { after, limit }) =>
+        after === undefined
+          ? [...this.#sessionEvents.page(id, { limit }).items]
+          : this.#sessionEvents.after(id, after, limit),
+      respond: (id, callId, result) => this.#sessions.respondToAgentCall(id, callId, result),
+      log: this.#log.child("agents"),
     });
     this.#idle = new IdleTimer(this.config.daemon.idleShutdownMinutes, () => {
       this.#log.info("idle shutdown");
@@ -880,6 +918,7 @@ export class Daemon {
         daemon: this.#daemonInfo(),
         providers: this.#providerList(),
         sessions: this.#registry.listSorted().map((s) => this.#enrich(s, false)),
+        agentProfiles: profileInfos(this.config.agents),
       },
     };
   }
@@ -1752,7 +1791,8 @@ export class Daemon {
         this.#publishState(newId);
         registered();
 
-        const mcpHandles = this.#mcpHandles();
+        const agent = this.#agentPlan(newId);
+        const mcpHandles = agent.mcpServers;
         const isAisdk = this.config.providers.aisdk[providerId] !== undefined;
         const promptAppend = systemPromptAppendFor(
           isAisdk,
@@ -1784,7 +1824,7 @@ export class Daemon {
             prompt,
             mode,
             parentId: id,
-            mcpServers: mcpHandles,
+            ...agent,
             loomServer: true,
             disableTools: this.config.providers.claude.disableBuiltin,
             settingSources: this.config.providers.claude.settingSources,
@@ -1802,7 +1842,7 @@ export class Daemon {
             ...(ownsTranscript ? {} : { forkHistory: true }),
             cwd: wt.path,
             mode,
-            mcpServers: mcpHandles,
+            ...agent,
             ...instructions,
             ...(model ? { model } : {}),
             ...(effort ? { effort } : {}),
@@ -2009,6 +2049,14 @@ export class Daemon {
     /** What it branches from; absent takes {@link #defaultBase}. */
     base?: string;
     by: string | undefined;
+    /** Loom agents: the supervising session, the profile and the task id. */
+    supervisorId?: string;
+    agentProfile?: string;
+    taskId?: string;
+    /** A title to keep, rather than one derived from the prompt. */
+    title?: string;
+    /** The base as it stands when the worktree is made, over `base`. */
+    baseOf?: () => string | undefined;
   }): Promise<SessionSnapshot> {
     const isolation = o.isolation ?? this.#providers.defaultIsolation(o.providerId);
     const workspace = o.workspace ?? this.#defaultWorkspace(isolation, o.worktree);
@@ -2062,7 +2110,7 @@ export class Daemon {
         effort: o.effort,
         mode: o.mode,
         parentId: o.parentId,
-        title: o.prompt.slice(0, 200),
+        title: (o.title ?? o.prompt).slice(0, 200),
         worktree: null,
         branch: null,
         baseBranch: base ?? legacyBaseBranch(this.config),
@@ -2073,7 +2121,12 @@ export class Daemon {
         // `history_backend = 'codex'` finds real rows, not just the absence of
         // the pre-cutover 'aisdk' legacy marker (migration 20).
         ...(aisdkProfile?.sdk === "chatgpt" ? { historyBackend: "codex" } : {}),
+        ...(o.supervisorId ? { supervisorId: o.supervisorId } : {}),
+        ...(o.agentProfile ? { agentProfile: o.agentProfile } : {}),
+        ...(o.taskId ? { taskId: o.taskId } : {}),
       });
+      // A title the caller chose is the session's: auto-titling leaves it.
+      if (o.title) this.#registry.setFields(id, { titleLocked: true });
 
       const startup = new AbortController();
       this.#startups.set(id, startup);
@@ -2088,6 +2141,8 @@ export class Daemon {
         ts: Date.now(),
         text: o.prompt,
         injected: false,
+        // An agent's task is its supervisor's message.
+        ...(o.supervisorId ? { author: `supervisor:${o.supervisorId}` } : {}),
       });
       registered();
 
@@ -2100,13 +2155,16 @@ export class Daemon {
             `provider "${o.providerId}" has no model; set model/models in config or choose an explicit model`,
           );
         // Remember what this session was created with, so the next `new`
-        // defaults here without any of it being pinned in config.
-        if (o.model && (aisdkProfile || isClaudeId(o.providerId))) {
-          this.#providerDefaults.remember(o.providerId, o.model);
+        // defaults here without any of it being pinned in config. An agent's
+        // child is the agent's choice, not the user's: it changes nothing.
+        if (!o.supervisorId) {
+          if (o.model && (aisdkProfile || isClaudeId(o.providerId))) {
+            this.#providerDefaults.remember(o.providerId, o.model);
+          }
+          if (o.effort) this.#providerDefaults.rememberEffort(o.providerId, o.effort);
+          this.#providerDefaults.rememberProvider(o.providerId);
+          this.#providerDefaults.rememberMode(o.mode);
         }
-        if (o.effort) this.#providerDefaults.rememberEffort(o.providerId, o.effort);
-        this.#providerDefaults.rememberProvider(o.providerId);
-        this.#providerDefaults.rememberMode(o.mode);
 
         if (workspace === "clone") {
           try {
@@ -2127,7 +2185,9 @@ export class Daemon {
           }
         } else if (wantWorktree) {
           try {
-            wt = this.#worktrees.create(id, base ? { baseRef: base } : {});
+            // A supervisor's branch may have been renamed (auto-titled) since.
+            const from = o.baseOf?.() ?? base;
+            wt = this.#worktrees.create(id, from ? { baseRef: from } : {});
           } catch (cause) {
             throw new RpcError(
               "worktree_error",
@@ -2144,10 +2204,10 @@ export class Daemon {
         const cwd = wt ? wt.path : (clonePath ?? this.repoRoot);
         const isClaude = isClaudeId(o.providerId);
         const isAisdk = aisdkProfile !== undefined;
-        const mcpHandles = this.#mcpHandles();
+        const agent = this.#agentPlan(id);
         const promptAppend = systemPromptAppendFor(
           isAisdk,
-          mcpHandles.length > 0,
+          agent.mcpServers.length > 0,
           cwd,
           this.repoRoot,
           this.#instructionsDir(cwd),
@@ -2157,7 +2217,7 @@ export class Daemon {
           cwd,
           prompt: o.prompt,
           mode: o.mode,
-          mcpServers: mcpHandles,
+          ...agent,
           disableTools: this.config.providers.claude.disableBuiltin,
           settingSources: this.config.providers.claude.settingSources,
           ...this.#agentBase(id),
@@ -2430,7 +2490,8 @@ export class Daemon {
       );
     }
     const cwd = worktree ?? this.repoRoot;
-    const mcpHandles = this.#mcpHandles();
+    const agent = this.#agentPlan(id);
+    const mcpHandles = agent.mcpServers;
     const isClaude = isClaudeId(row.provider);
     const isAisdk = prof !== undefined;
     const promptAppend = systemPromptAppendFor(
@@ -2447,7 +2508,7 @@ export class Daemon {
         providerRef,
         cwd,
         mode,
-        mcpServers: mcpHandles,
+        ...agent,
         ...(model ? { model } : {}),
         ...(row.effort ? { effort: row.effort } : {}),
         ...(usageBaseline ? { usageBaseline } : {}),
@@ -2590,8 +2651,10 @@ export class Daemon {
    * notifier should be told the state the session actually settled in.
    */
   #fireStatusHooks(snap: SessionSnapshot, state: SessionState): void {
-    if (this.#hooks.empty) return;
     const current = this.#registry.get(snap.id) ?? snap;
+    // A Loom agent's supervisor hears of the same moments, through its queue.
+    if (current.supervisorId && !this.#stopping) void this.#agents.notify(current, state);
+    if (this.#hooks.empty) return;
     const session = hookSessionOf(current);
     switch (state.kind) {
       case "idle":
@@ -2799,6 +2862,10 @@ export class Daemon {
       const branch = this.#worktrees.renameBranch(snap.title, snap.branch);
       if (branch === snap.branch) return;
       this.#registry.setFields(id, { branch });
+      // Its agents branched from it, and count ahead / behind against it.
+      for (const kid of this.#registry.listSorted())
+        if (kid.supervisorId === id && kid.baseBranch === snap.branch)
+          this.#registry.setFields(kid.id, { baseBranch: branch });
       if (snap.checkout === "clone") await this.#publishCloneBranch(id);
     };
     // A guest sync must finish publishing before its relay branch policy changes.
@@ -2837,6 +2904,46 @@ export class Daemon {
    * branches only as `origin/*`. Empty for a row stored without a base, which
    * keeps the provider-wide fallback.
    */
+  /**
+   * What `id` runs with as a Loom agent (`agents.ts#agentSessionPlan`): the
+   * MCP servers its profile keeps, `loom-agents` unless its profile leaves it
+   * out or it is at `agents.max_depth`, and its profile's prompt and tools.
+   * Read from its row, so every start and resume agrees.
+   */
+  #agentPlan(id: string): ReturnType<typeof agentSessionPlan> {
+    const row = this.#registry.mustGet(id);
+    return agentSessionPlan(row, {
+      agents: this.config.agents,
+      lookup: (other) => this.#registry.get(other) ?? undefined,
+      handles: this.#mcpHandles(),
+    });
+  }
+
+  /** Start a child for `agent_start`: a worktree off its base, nested under its supervisor. */
+  #startChild(child: ChildStart): Promise<SessionSnapshot> {
+    return this.#startSession({
+      prompt: child.prompt,
+      title: child.title,
+      providerId: child.providerId,
+      model: child.model,
+      effort: child.effort,
+      mode: child.mode,
+      parentId: null,
+      workspace: "worktree",
+      isolation: child.isolation,
+      base: child.base,
+      // The supervisor's branch, under the name it has when the tree is made.
+      baseOf: () => {
+        const supervisor = this.#registry.get(child.supervisorId);
+        return supervisor && !supervisor.inPlace ? (supervisor.branch ?? child.base) : child.base;
+      },
+      by: `agent:${child.supervisorId}`,
+      supervisorId: child.supervisorId,
+      agentProfile: child.agentProfile,
+      ...(child.taskId ? { taskId: child.taskId } : {}),
+    });
+  }
+
   #agentBase(id: string): { base?: string } {
     const row = this.#registry.get(id);
     if (!row?.baseBranch) return {};
@@ -3368,6 +3475,11 @@ export class Daemon {
     this.config.commitReminder = next.commitReminder;
     this.config.notify = next.notify;
     this.config.titles = next.titles;
+    // Read per start and resume; clients list the profiles off the snapshot.
+    if (JSON.stringify(next.agents) !== JSON.stringify(before.agents)) {
+      this.config.agents = next.agents;
+      this.#publishState();
+    }
     // Hooks are re-read per fire, so a new command takes effect on the next
     // event — no restart, and no need to touch a running session.
     if (JSON.stringify(next.hooks) !== JSON.stringify(before.hooks)) {
@@ -3410,6 +3522,195 @@ export class Daemon {
   // -------------------------------------------------------------------------
   // RPC handlers
   // -------------------------------------------------------------------------
+
+  /**
+   * Put a message in `id`'s queue (`docs/message-queue.md`), bringing a cold
+   * session back first: `session.send`, and Loom agents messaging each other.
+   */
+  async #enqueueMessage(
+    id: string,
+    text: string,
+    author: string,
+    delivery: QueueDelivery,
+    requestedId?: string,
+  ): Promise<{ entryId: string; state: string }> {
+    const entryId = requestedId ?? randomUUID();
+    this.#registry.mustGet(id);
+    // A clone's Git operations (a sync, a rebase) hold the command queue.
+    const refuseBusyClone = () => {
+      if (this.#registry.get(id)?.checkout === "clone" && this.#queue.activeKeys.includes(id))
+        throw new RpcError(
+          "busy",
+          "The session is completing a workspace operation; retry in a moment.",
+        );
+    };
+    try {
+      // A start that first builds the VM runtime outlasts any client: then the
+      // message waits in the queue and goes once the session runs. Joining a
+      // start already under way skips the check: the start holds the queue.
+      if (!(await this.#reviveDetached(id, refuseBusyClone))) {
+        await this.#lifecycleSettled(id);
+        // A cold session (daemon restarted, or a turn that ended) is brought back
+        // transparently — `send` is the one verb for "talk to this session", it
+        // doesn't need a separate resume step.
+        if (!this.#sessions.has(id) || this.#sessions.isEnded(id)) {
+          const revived = await this.#reviveSession(id);
+          // An archived session's revive restores a worktree and flips it off
+          // `done` — push that before the turn's own updates so clients don't
+          // briefly show a running session with no tree.
+          this.#publishState(revived.id);
+          this.#onActivityChange("session-resumed");
+        }
+        await this.#lifecycleSettled(id);
+        refuseBusyClone();
+      }
+    } catch (error) {
+      if (error instanceof RpcError && error.code === "busy") throw error;
+      const message = error instanceof Error ? error.message : String(error);
+      this.emitEvent({ type: "error", sessionId: id, ts: Date.now(), message, fatal: false });
+      this.#publishState(id);
+      throw new RpcError(error instanceof RpcError ? error.code : "provider_error", message, {
+        sessionId: id,
+      });
+    }
+    // A compaction, a rewind or a stop in progress no longer refuses the
+    // message: it waits in the queue until the session can take it.
+    const r = await this.#sessions.enqueue(id, { entryId, text, author, delivery });
+    if (!r.ok) throw new RpcError(r.code, r.message, { sessionId: id });
+    return { entryId, state: this.#messageQueue.entry(id, entryId)?.state ?? r.value.state };
+  }
+
+  /**
+   * Stop `id`'s turn (`session.interrupt`, `agent_interrupt`). Its own
+   * blocking agent waits end with it; the agents it supervises run on.
+   */
+  async #interruptSession(id: string): Promise<SessionSnapshot> {
+    this.#agents.cancel(id);
+    const startup = this.#startups.get(id);
+    if (startup && !this.#sessions.has(id)) {
+      startup.abort();
+      this.#hooks.forget(id);
+      this.#registry.setStatus(id, stateInterrupted("user"));
+      this.#publishState(id);
+      return this.#registry.mustGet(id);
+    }
+    if (!this.#sessions.has(id)) throw new RpcError("not_found", `session not running: ${id}`);
+    this.#hooks.forget(id);
+    await this.#sessions.interrupt(id);
+    const held = this.#sessions.queueView(id);
+    if (held?.hold === "interrupt" && held.entries.length > 0) {
+      const n = held.entries.length;
+      this.#emitNotice(
+        `Interrupted · ${n} message${n === 1 ? "" : "s"} held · q to review`,
+        "info",
+      );
+    }
+    return this.#registry.mustGet(id);
+  }
+
+  /**
+   * Archive `id` (`session.markDone`, `agent_stop`). A supervisor with agents
+   * still open needs `children`: stop (archive) them too, or detach them.
+   */
+  /**
+   * The agents `id` supervises that are still open. Closing a supervisor
+   * that has any is a choice the caller must make (`children`), never a
+   * default: refused without one.
+   */
+  #openChildren(id: string, children: ChildrenOnClose | undefined): SessionSnapshot[] {
+    const kids = this.#registry
+      .listSorted()
+      .filter((s) => s.supervisorId === id && s.status.kind !== "done");
+    if (kids.length > 0 && !children)
+      throw new RpcError(
+        "conflict",
+        `This session supervises ${kids.length} open agent${kids.length === 1 ? "" : "s"}: choose children "stop" to archive them too, or "detach" to keep them as sessions of their own.`,
+        { children: kids.map((k) => k.id) },
+      );
+    return kids;
+  }
+
+  /** Stop (archive) or detach a closed supervisor's open agents. A child with
+   *  uncommitted changes is stopped but kept, and the operator told. */
+  async #releaseChildren(kids: SessionSnapshot[], choice: ChildrenOnClose): Promise<void> {
+    const kept: string[] = [];
+    for (const kid of kids) {
+      if (choice === "detach") {
+        this.#registry.setFields(kid.id, { supervisorId: null });
+        continue;
+      }
+      try {
+        await this.#archive(kid.id, false, "stop");
+      } catch (err) {
+        this.#log.warn("could not archive a child", { id: kid.id, err: String(err) });
+        if (this.#sessions.has(kid.id)) await this.#sessions.close(kid.id, "user_stop");
+        kept.push(kid.id.slice(0, 8));
+      }
+    }
+    if (kept.length > 0)
+      this.#emitNotice(
+        `Stopped but kept ${kept.join(", ")}: uncommitted changes — archive them yourself`,
+        "warn",
+      );
+    this.#publishState();
+  }
+
+  async #archive(id: string, force: boolean, children?: ChildrenOnClose): Promise<SessionSnapshot> {
+    const kids = this.#openChildren(id, children);
+    this.#agents.cancel(id);
+    const archived = await this.#queue.run(id, async () => {
+      this.#shells.assertClosed(id);
+      const row = this.#registry.get(id);
+      if (!row) throw new RpcError("not_found", `no such session: ${id}`);
+      const clone = row.checkout === "clone";
+      // A sharing fork only lets go of the tree; its owner keeps the work.
+      const borrowed = !!row.worktreeOwner;
+      if (!borrowed) this.#assertNoBorrowers(id, "cannot archive");
+      if (!force && !clone && !borrowed && row.worktree && this.#worktrees.isDirty(row.worktree)) {
+        throw new RpcError(
+          "bad_request",
+          "the worktree has uncommitted changes — commit them, or archive with force to discard",
+        );
+      }
+      this.#hooks.forget(id);
+      if (this.#sessions.has(id)) await this.#sessions.close(id, "user_stop");
+      // Archiving is a stop: whatever is still queued waits for the user.
+      if (this.#messageQueue.live(id).length > 0 && this.#messageQueue.hold(id) === null)
+        this.#messageQueue.setHold(id, "interrupt");
+      return await withStoppedSessionVm(this.repoRoot, id, async () => {
+        if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
+        this.#lastSend.delete(id);
+        this.#cacheTtlSeen.delete(id);
+        if (borrowed && row.worktree) this.#registry.setFields(id, { worktree: null });
+        else if (row.worktree && !row.inPlace) {
+          try {
+            // Only the guest knows whether a clone is dirty, so archiving keeps it
+            // on disk unless forced; resuming repairs or rebuilds it either way.
+            if (!clone) await this.#worktrees.removeAsync(row.worktree, { force: true });
+            else if (force) this.#removeWorkdir(row.worktree, true);
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            this.#log.warn("session.markDone: worktree removal failed", { id, error: msg });
+            throw new RpcError("worktree_error", `could not remove the worktree: ${msg}`);
+          }
+          this.#registry.setFields(id, { worktree: null });
+        }
+        const snap = this.#registry.setStatus(id, stateDone, "marked_done");
+        this.emitEvent({
+          type: "status_changed",
+          sessionId: id,
+          status: stateDone,
+          ts: Date.now(),
+          note: "marked_done",
+        });
+        this.#publishState(snap.id);
+        this.#onActivityChange("marked-done");
+        return this.#enrich(snap);
+      });
+    });
+    if (children) await this.#releaseChildren(kids, children);
+    return archived;
+  }
 
   #registerHandlers(): void {
     const d = this.#dispatcher;
@@ -3684,11 +3985,25 @@ export class Daemon {
     d.register("session.create", async (params) => {
       const p = params;
       const prompt = p.prompt;
+      // A profile the user picked: what the client left out comes from it,
+      // and its prompt and tools follow the session through `#agentPlan`.
+      // `self` copies a spawner, and a user-started session has none.
+      const profile =
+        p.profile && p.profile !== SELF_PROFILE
+          ? this.config.agents.profiles[p.profile]
+          : undefined;
+      if (p.profile && !profile)
+        throw new RpcError(
+          "bad_request",
+          `no agent profile "${p.profile}"; configured: ${Object.keys(this.config.agents.profiles).join(", ") || "none"}`,
+        );
 
-      const providerId = p.provider ?? this.#defaultProviderId();
-      const mode = p.mode ?? this.#defaultMode();
+      const providerId = p.provider ?? profile?.provider ?? this.#defaultProviderId();
+      const mode = p.mode ?? profile?.mode ?? this.#defaultMode();
       const aisdkProfile = this.config.providers.aisdk[providerId];
-      const explicitModel = p.model ?? null;
+      // Its model and effort name its provider's; another provider has its own.
+      const applies = profile !== undefined && (profile.provider ?? providerId) === providerId;
+      const explicitModel = p.model ?? (applies ? profile?.model : undefined) ?? null;
       // Tell the operator once when the model we'd have reused has dropped out of
       // the endpoint's list since it last ran (item: "handle when the default is
       // no longer there").
@@ -3708,7 +4023,7 @@ export class Daemon {
         }
       }
       const model = explicitModel ?? (this.#defaultModelFor(providerId) || null);
-      const explicitEffort = p.effort ?? null;
+      const explicitEffort = p.effort ?? (applies ? profile?.effort : undefined) ?? null;
       const effort =
         explicitEffort ?? (this.#defaultEffortFor(providerId, model ?? undefined) || null);
       const parentId = p.parentId ?? null;
@@ -3742,6 +4057,7 @@ export class Daemon {
         ...(p.worktree !== undefined ? { worktree: p.worktree } : {}),
         ...(p.isolation ? { isolation: p.isolation } : {}),
         ...(p.base ? { base: p.base } : {}),
+        ...(profile && p.profile ? { agentProfile: p.profile } : {}),
         by: params.by,
       });
     });
@@ -3766,58 +4082,14 @@ export class Daemon {
     // `user_message` only once the agent has taken it, so nothing is emitted
     // here — a failure emits only the `error`.
     d.register("session.send", async (params) => {
-      const id = params.id;
-      const text = params.text;
-      const entryId = params.entryId ?? randomUUID();
-      this.#registry.mustGet(id);
-      // A clone's Git operations (a sync, a rebase) hold the command queue.
-      const refuseBusyClone = () => {
-        if (this.#registry.get(id)?.checkout === "clone" && this.#queue.activeKeys.includes(id))
-          throw new RpcError(
-            "busy",
-            "The session is completing a workspace operation; retry in a moment.",
-          );
-      };
-      try {
-        // A start that first builds the VM runtime outlasts any client: then the
-        // message waits in the queue and goes once the session runs. Joining a
-        // start already under way skips the check: the start holds the queue.
-        if (!(await this.#reviveDetached(id, refuseBusyClone))) {
-          await this.#lifecycleSettled(id);
-          // A cold session (daemon restarted, or a turn that ended) is brought back
-          // transparently — `send` is the one verb for "talk to this session", it
-          // doesn't need a separate resume step.
-          if (!this.#sessions.has(id) || this.#sessions.isEnded(id)) {
-            const revived = await this.#reviveSession(id);
-            // An archived session's revive restores a worktree and flips it off
-            // `done` — push that before the turn's own updates so clients don't
-            // briefly show a running session with no tree.
-            this.#publishState(revived.id);
-            this.#onActivityChange("session-resumed");
-          }
-          await this.#lifecycleSettled(id);
-          refuseBusyClone();
-        }
-      } catch (error) {
-        if (error instanceof RpcError && error.code === "busy") throw error;
-        const message = error instanceof Error ? error.message : String(error);
-        this.emitEvent({ type: "error", sessionId: id, ts: Date.now(), message, fatal: false });
-        this.#publishState(id);
-        throw new RpcError(error instanceof RpcError ? error.code : "provider_error", message, {
-          sessionId: id,
-        });
-      }
-      // A compaction, a rewind or a stop in progress no longer refuses the
-      // message: it waits in the queue until the session can take it.
-      const r = await this.#sessions.enqueue(id, {
-        entryId,
-        text,
-        author: params.by ?? "unknown",
-        delivery: params.delivery ?? "next_boundary",
-      });
-      if (!r.ok) throw new RpcError(r.code, r.message, { sessionId: id });
-      const state = this.#messageQueue.entry(id, entryId)?.state ?? r.value.state;
-      return { ...this.#enrich(this.#registry.mustGet(id), false), entryId, state };
+      const sent = await this.#enqueueMessage(
+        params.id,
+        params.text,
+        params.by ?? "unknown",
+        params.delivery ?? "next_boundary",
+        params.entryId,
+      );
+      return { ...this.#enrich(this.#registry.mustGet(params.id), false), ...sent };
     });
 
     d.register("session.queueEntry", (params) => {
@@ -4072,29 +4344,7 @@ export class Daemon {
 
     d.register("session.fork", (params) => this.#fork(params));
 
-    d.register("session.interrupt", async (params) => {
-      const id = params.id;
-      const startup = this.#startups.get(id);
-      if (startup && !this.#sessions.has(id)) {
-        startup.abort();
-        this.#hooks.forget(id);
-        this.#registry.setStatus(id, stateInterrupted("user"));
-        this.#publishState(id);
-        return this.#registry.mustGet(id);
-      }
-      if (!this.#sessions.has(id)) throw new RpcError("not_found", `session not running: ${id}`);
-      this.#hooks.forget(id);
-      await this.#sessions.interrupt(id);
-      const held = this.#sessions.queueView(id);
-      if (held?.hold === "interrupt" && held.entries.length > 0) {
-        const n = held.entries.length;
-        this.#emitNotice(
-          `Interrupted · ${n} message${n === 1 ? "" : "s"} held · q to review`,
-          "info",
-        );
-      }
-      return this.#registry.mustGet(id);
-    });
+    d.register("session.interrupt", (params) => this.#interruptSession(params.id));
 
     d.register("session.compact", async (params) => {
       const id = params.id;
@@ -4410,13 +4660,14 @@ export class Daemon {
         // Cold transcript-owning sessions pick up the provider on their next resume.
 
         const cwd = row.worktree ?? this.repoRoot;
-        const mcpHandles = this.#mcpHandles();
+        const agent = this.#agentPlan(id);
+        const mcpHandles = agent.mcpServers;
         const ref: SessionRef = {
           sessionId: id,
           providerRef: this.#registry.store.providerRef(id) ?? id,
           cwd,
           mode: isSessionMode(row.mode) ? row.mode : "default",
-          mcpServers: mcpHandles,
+          ...agent,
           systemPromptAppend: systemPromptAppendFor(
             true,
             mcpHandles.length > 0,
@@ -4487,66 +4738,9 @@ export class Daemon {
     // the session again checks the branch back out into a fresh tree and
     // resumes (see `#reviveSession`). A dirty worktree needs `force` to
     // archive, the way `remove` / `gc` already gate discarding live changes.
-    d.register("session.markDone", async (params) => {
-      const id = params.id;
-      const force = params.force === true;
-      return this.#queue.run(id, async () => {
-        this.#shells.assertClosed(id);
-        const row = this.#registry.get(id);
-        if (!row) throw new RpcError("not_found", `no such session: ${id}`);
-        const clone = row.checkout === "clone";
-        // A sharing fork only lets go of the tree; its owner keeps the work.
-        const borrowed = !!row.worktreeOwner;
-        if (!borrowed) this.#assertNoBorrowers(id, "cannot archive");
-        if (
-          !force &&
-          !clone &&
-          !borrowed &&
-          row.worktree &&
-          this.#worktrees.isDirty(row.worktree)
-        ) {
-          throw new RpcError(
-            "bad_request",
-            "the worktree has uncommitted changes — commit them, or archive with force to discard",
-          );
-        }
-        this.#hooks.forget(id);
-        if (this.#sessions.has(id)) await this.#sessions.close(id, "user_stop");
-        // Archiving is a stop: whatever is still queued waits for the user.
-        if (this.#messageQueue.live(id).length > 0 && this.#messageQueue.hold(id) === null)
-          this.#messageQueue.setHold(id, "interrupt");
-        return await withStoppedSessionVm(this.repoRoot, id, async () => {
-          if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
-          this.#lastSend.delete(id);
-          this.#cacheTtlSeen.delete(id);
-          if (borrowed && row.worktree) this.#registry.setFields(id, { worktree: null });
-          else if (row.worktree && !row.inPlace) {
-            try {
-              // Only the guest knows whether a clone is dirty, so archiving keeps it
-              // on disk unless forced; resuming repairs or rebuilds it either way.
-              if (!clone) await this.#worktrees.removeAsync(row.worktree, { force: true });
-              else if (force) this.#removeWorkdir(row.worktree, true);
-            } catch (err) {
-              const msg = err instanceof Error ? err.message : String(err);
-              this.#log.warn("session.markDone: worktree removal failed", { id, error: msg });
-              throw new RpcError("worktree_error", `could not remove the worktree: ${msg}`);
-            }
-            this.#registry.setFields(id, { worktree: null });
-          }
-          const snap = this.#registry.setStatus(id, stateDone, "marked_done");
-          this.emitEvent({
-            type: "status_changed",
-            sessionId: id,
-            status: stateDone,
-            ts: Date.now(),
-            note: "marked_done",
-          });
-          this.#publishState(snap.id);
-          this.#onActivityChange("marked-done");
-          return this.#enrich(snap);
-        });
-      });
-    });
+    d.register("session.markDone", (params) =>
+      this.#archive(params.id, params.force === true, params.children),
+    );
 
     // remove: delete a session row for good — its worktree and its stored
     // transcript / history / checkpoints go with it (child tables cascade).
@@ -4558,7 +4752,9 @@ export class Daemon {
       const p = params;
       const alsoBranch = p["deleteBranch"] === true;
       const force = p["force"] === true;
-      return this.#queue.run(id, async () => {
+      const kids = this.#openChildren(id, p.children);
+      this.#agents.cancel(id);
+      const removed = await this.#queue.run(id, async () => {
         this.#shells.assertClosed(id);
         const s = this.#registry.get(id);
         if (!s) throw new RpcError("not_found", `no such session: ${id}`);
@@ -4629,6 +4825,8 @@ export class Daemon {
           return { removed: id, branchDeleted };
         });
       });
+      if (p.children) await this.#releaseChildren(kids, p.children);
+      return removed;
     });
 
     // gc: remove worktrees for sessions marked done. `markDone` already reclaims

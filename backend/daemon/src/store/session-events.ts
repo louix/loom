@@ -35,6 +35,17 @@ export class SessionEventStore {
     return Number(info.lastInsertRowid);
   }
 
+  /** Up to `limit` rows after `afterId`, oldest first — a reader walking
+   *  forward from a cursor (`agent_read`). */
+  after(sessionId: string, afterId: TranscriptId | 0, limit: number): TranscriptEntry[] {
+    const rows = this.#db
+      .prepare(
+        "SELECT id, payload FROM session_events WHERE session_id = ? AND id > ? ORDER BY id LIMIT ?",
+      )
+      .all(sessionId, afterId, limit) as unknown as Row[];
+    return rows.map((r) => ({ id: r.id, event: JSON.parse(r.payload) as HarnessEvent }));
+  }
+
   /** Message recall is independent of intervening tool traffic. Newest 50,
    * distinct texts, returned oldest-first for the editor's Up-arrow walk. */
   messages(sessionId: string): string[] {

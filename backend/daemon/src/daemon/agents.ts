@@ -1,0 +1,679 @@
+/**
+ * Loom agents, daemon side (docs/loom-agents.md, stage 1): the `loom-agents`
+ * tools a session calls to start and manage its children, the settings a
+ * session gets from its profile and its place in the supervision tree, and
+ * the notifications a child's turn sends up to its supervisor.
+ *
+ * Children are ordinary sessions with a `supervisorId`: the daemon starts,
+ * messages (through the A9 queue), interrupts and archives them by the same
+ * paths a client does. Everything that reaches into the daemon goes through
+ * {@link AgentHost}, so this module holds the rules and the wording, not the
+ * machinery.
+ */
+import type { AgentCallEvent, HarnessEvent } from "@loom/core/events";
+import type { AgentCallResult, McpServerHandle, SessionMode } from "@loom/core/types";
+import type { QueueDelivery } from "@loom/core/message-queue";
+import type { SessionState } from "@loom/core/session-state";
+import type { SessionSnapshot, TranscriptEntry } from "@loom/core/wire";
+import type { Logger } from "@loom/core/logger";
+import {
+  LOOM_AGENTS_SERVER,
+  SELF_PROFILE,
+  supervisionDepth,
+  type AgentProfileInfo,
+} from "@loom/core/agents";
+import { isAgentTool, type AgentToolName } from "@loom/runtime/agent-tools";
+import type { AgentProfileConfig, LoomConfig } from "../config/config.ts";
+
+/** A notification carries the child's final message up to this many bytes. */
+export const NOTIFY_MESSAGE_BYTES = 2048;
+/** `agent_read` returns at most this much text per call. */
+export const READ_BUDGET_BYTES = 16 * 1024;
+/** `agent_read` without a cursor: the final message, up to this much. */
+const FINAL_BUDGET_BYTES = 32 * 1024;
+const WAIT_DEFAULT_S = 60;
+const WAIT_MAX_S = 600;
+const WAIT_POLL_MS = 200;
+
+const short = (id: string): string => id.slice(0, 8);
+
+/** States a child's turn has stopped in: done working until someone acts. */
+const SETTLED: ReadonlySet<SessionState["kind"]> = new Set([
+  "idle",
+  "awaiting_input",
+  "error",
+  "interrupted",
+  "done",
+]);
+
+/** Cut `text` to `bytes` of UTF-8 on a character boundary; whether it was cut. */
+export const cutBytes = (text: string, bytes: number): { text: string; cut: boolean } => {
+  const encoded = new TextEncoder().encode(text);
+  if (encoded.length <= bytes) return { text, cut: false };
+  // `fatal: false` drops a split trailing character rather than throwing.
+  const head = new TextDecoder("utf-8", { fatal: false }).decode(encoded.slice(0, bytes));
+  return { text: head.replace(/�$/, ""), cut: true };
+};
+
+// ---------------------------------------------------------------------------
+// what a session gets
+// ---------------------------------------------------------------------------
+
+/** The agent fields of `CreateSessionOptions` / `SessionRef`, with the MCP
+ *  servers its profile keeps. */
+export interface AgentSessionPlan {
+  mcpServers: McpServerHandle[];
+  agentTools?: true;
+  agentPrompt?: string;
+  skills?: string[];
+  allowTools?: string[];
+  denyTools?: string[];
+}
+
+/**
+ * What `row` runs with: `loom-agents` unless its profile leaves it out or it
+ * sits at `agents.max_depth`; the profile's MCP servers, skills, tool lists
+ * and prompt; and, for a child, a note on who supervises it. Recomputed for
+ * every start and resume, so a config change reaches a resumed session. A
+ * profile since removed from the config contributes nothing.
+ */
+export const agentSessionPlan = (
+  row: Pick<SessionSnapshot, "id" | "supervisorId" | "agentProfile">,
+  ctx: {
+    agents: LoomConfig["agents"];
+    lookup: (id: string) => SessionSnapshot | undefined;
+    handles: McpServerHandle[];
+  },
+): AgentSessionPlan => {
+  const profile =
+    row.agentProfile && row.agentProfile !== SELF_PROFILE
+      ? ctx.agents.profiles[row.agentProfile]
+      : undefined;
+  const depth = supervisionDepth(row.id, (id) => (id === row.id ? row : ctx.lookup(id)));
+  const keeps = (name: string) => profile?.mcp === undefined || profile.mcp.includes(name);
+  const supervisor = row.supervisorId ? ctx.lookup(row.supervisorId) : undefined;
+  const prompt = [supervisor ? childNote(supervisor) : "", profile?.prompt ?? ""]
+    .filter(Boolean)
+    .join("\n\n");
+  return {
+    mcpServers: ctx.handles.filter((h) => keeps(h.name)),
+    ...(depth < ctx.agents.maxDepth && keeps(LOOM_AGENTS_SERVER) ? { agentTools: true } : {}),
+    ...(prompt ? { agentPrompt: prompt } : {}),
+    ...(profile?.skills ? { skills: profile.skills } : {}),
+    ...(profile?.tools?.allow ? { allowTools: profile.tools.allow } : {}),
+    ...(profile?.tools?.deny ? { denyTools: profile.tools.deny } : {}),
+  };
+};
+
+const childNote = (supervisor: SessionSnapshot): string =>
+  [
+    `You are a Loom sub-agent: session ${short(supervisor.id)}${supervisor.title ? ` ("${supervisor.title}")` : ""} started you with a task and supervises you.`,
+    "Your final message at the end of each turn is sent to it, so end every turn with a clear report: what you did, how you verified it, and what is left or failed.",
+    "Commit your work before you report: your supervisor sees your branch, not your uncommitted files.",
+    "Questions and permission requests go to the user, as usual.",
+  ].join(" ");
+
+/** The configured profiles as clients list them. */
+export const profileInfos = (agents: LoomConfig["agents"]): AgentProfileInfo[] =>
+  Object.entries(agents.profiles).map(([name, p]) => ({
+    name,
+    description: p.description,
+    ...(p.provider ? { provider: p.provider } : {}),
+    ...(p.model ? { model: p.model } : {}),
+    ...(p.effort ? { effort: p.effort } : {}),
+    ...(p.mode ? { mode: p.mode } : {}),
+  }));
+
+// ---------------------------------------------------------------------------
+// transcripts
+// ---------------------------------------------------------------------------
+
+/**
+ * The final message of the latest turn: the root assistant text after its
+ * last tool activity or user message, else the turn's `result` summary.
+ * `events` oldest first, as a page holds them.
+ */
+export const finalMessage = (events: readonly HarnessEvent[]): string => {
+  const parts: string[] = [];
+  let summary = "";
+  for (let i = events.length - 1; i >= 0; i--) {
+    const ev = events[i]!;
+    if (ev.agentId !== undefined) continue;
+    if (ev.type === "assistant_text") parts.unshift(ev.text);
+    else if (ev.type === "result" && ev.kind === "ok" && !summary && parts.length === 0)
+      summary = ev.summary ?? "";
+    else if (ev.type === "tool_call" || ev.type === "tool_result" || ev.type === "user_message")
+      break;
+  }
+  // Every adapter emits whole text blocks, not deltas.
+  return (
+    parts
+      .map((p) => p.trim())
+      .filter(Boolean)
+      .join("\n\n") || summary
+  ).trim();
+};
+
+const oneLine = (v: unknown, max: number): string => {
+  const s = (typeof v === "string" ? v : JSON.stringify(v ?? "")).replace(/\s+/g, " ").trim();
+  return s.length > max ? `${s.slice(0, max - 1)}…` : s;
+};
+
+/** One transcript entry as `agent_read` shows it; null for what it skips. */
+const excerptLine = (ev: HarnessEvent): string | null => {
+  const sub = ev.agentId !== undefined ? "  (sub) " : "";
+  switch (ev.type) {
+    case "user_message":
+      return `› ${ev.author?.startsWith("supervisor:") ? "supervisor" : "user"}: ${ev.text}`;
+    case "assistant_text":
+      return `${sub}‹ ${ev.text}`;
+    case "tool_call":
+      return `${sub}⚙ ${ev.name} ${oneLine(ev.input, 200)}`;
+    case "tool_result":
+      return `${sub}  → ${ev.ok ? "ok" : "failed"}: ${oneLine(ev.output, 200)}`;
+    case "question":
+      return `? asked the user: ${ev.question}`;
+    case "permission_request":
+      return `? needs permission for ${ev.tool}`;
+    case "plan_review":
+      return "? presented a plan for review";
+    case "result":
+      return ev.kind === "ok" ? "— turn finished" : `— turn failed: ${ev.error}`;
+    case "error":
+      return ev.fatal ? `! ${ev.message}` : null;
+    default:
+      return null;
+  }
+};
+
+/**
+ * Entries after a cursor, oldest first, rendered until `budget` bytes. The
+ * cursor returned is the last entry included, so the next read continues
+ * exactly there; `more` when the budget stopped it.
+ */
+export const renderExcerpt = (
+  entries: readonly TranscriptEntry[],
+  budget = READ_BUDGET_BYTES,
+): { text: string; cursor: number | null; more: boolean } => {
+  const lines: string[] = [];
+  let used = 0;
+  let cursor: number | null = null;
+  for (const entry of entries) {
+    const line = excerptLine(entry.event);
+    const bytes = line === null ? 0 : new TextEncoder().encode(line).length + 1;
+    if (line !== null && used + bytes > budget) {
+      if (lines.length === 0) {
+        // One entry larger than the whole budget: show its head, move past it.
+        lines.push(cutBytes(line, budget).text + " …");
+        cursor = entry.id;
+      }
+      return { text: lines.join("\n"), cursor, more: true };
+    }
+    if (line !== null) {
+      lines.push(line);
+      used += bytes;
+    }
+    cursor = entry.id;
+  }
+  return { text: lines.join("\n"), cursor, more: false };
+};
+
+// ---------------------------------------------------------------------------
+// the daemon's side
+// ---------------------------------------------------------------------------
+
+/** A child to start, as `agent_start` resolved it. */
+export interface ChildStart {
+  prompt: string;
+  title: string;
+  providerId: string;
+  model: string | null;
+  effort: string | null;
+  mode: SessionMode;
+  /** What its worktree branches from. */
+  base: string;
+  isolation: "vm" | "local";
+  supervisorId: string;
+  agentProfile: string;
+  taskId?: string;
+}
+
+/** What {@link AgentSupervision} needs from the daemon. */
+export interface AgentHost {
+  agents(): LoomConfig["agents"];
+  /** A session with its git facts, or undefined. */
+  get(id: string): SessionSnapshot | undefined;
+  list(): SessionSnapshot[];
+  /** Is the provider configured and enabled here? */
+  providerKnown(id: string): boolean;
+  defaultModel(provider: string): string | null;
+  defaultEffort(provider: string, model: string | null): string | null;
+  /** The repository's current HEAD: its branch, or the commit when detached. */
+  headBase(): string | undefined;
+  repoRoot: string;
+  dirty(path: string): boolean;
+  start(child: ChildStart): Promise<SessionSnapshot>;
+  /** Put a message in a session's queue (reviving it when it is cold). */
+  enqueue(
+    id: string,
+    text: string,
+    author: string,
+    delivery: QueueDelivery,
+  ): Promise<{ entryId: string; state: string }>;
+  interrupt(id: string): Promise<void>;
+  /** Archive; refuses uncommitted changes unless `force`. */
+  archive(id: string, force: boolean): Promise<void>;
+  /** Transcript entries: after a cursor, oldest first; or the newest `limit`. */
+  events(id: string, opts: { after?: number; limit: number }): TranscriptEntry[];
+  /** Answer a parked `agent_call`. */
+  respond(sessionId: string, callId: string, result: AgentCallResult): Promise<unknown>;
+  log: Logger;
+}
+
+/** A tool refusal the caller should see as its result, not a daemon fault. */
+class Refusal extends Error {}
+
+const refuse = (message: string): never => {
+  throw new Refusal(message);
+};
+
+const str = (input: Record<string, unknown>, key: string): string | undefined => {
+  const v = input[key];
+  return typeof v === "string" && v.trim() ? v.trim() : undefined;
+};
+
+/** The agent tools, the profile rules and the notifications up. */
+export class AgentSupervision {
+  readonly #host: AgentHost;
+  /** `agent_wait` calls in flight, per caller, so an interrupt can end them. */
+  readonly #waits = new Map<string, Set<AbortController>>();
+
+  constructor(host: AgentHost) {
+    this.#host = host;
+  }
+
+  /** Run one `agent_call` and answer it. Never throws. */
+  async call(callerId: string, call: AgentCallEvent): Promise<void> {
+    let result: AgentCallResult;
+    try {
+      const input =
+        call.input && typeof call.input === "object" && !Array.isArray(call.input)
+          ? (call.input as Record<string, unknown>)
+          : {};
+      if (!isAgentTool(call.tool)) refuse(`unknown agent tool: ${call.tool}`);
+      result = { ok: true, text: await this.#run(callerId, call.tool as AgentToolName, input) };
+    } catch (err) {
+      if (!(err instanceof Refusal))
+        this.#host.log.warn("agent tool failed", {
+          callerId,
+          tool: call.tool,
+          err: err instanceof Error ? err.message : String(err),
+        });
+      result = { ok: false, text: err instanceof Error ? err.message : String(err) };
+    }
+    try {
+      await this.#host.respond(callerId, call.id, result);
+    } catch (err) {
+      this.#host.log.warn("agent tool answer failed", {
+        callerId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  /** End `callerId`'s blocking waits: its turn was interrupted or it stopped. */
+  cancel(callerId: string): void {
+    for (const wait of this.#waits.get(callerId) ?? []) wait.abort();
+    this.#waits.delete(callerId);
+  }
+
+  #run(caller: string, tool: AgentToolName, input: Record<string, unknown>): Promise<string> {
+    switch (tool) {
+      case "agents_profiles":
+        return Promise.resolve(this.#profiles(caller));
+      case "agent_start":
+        return this.#start(caller, input);
+      case "agent_message":
+        return this.#message(caller, input);
+      case "agent_status":
+        return Promise.resolve(this.#status(caller, input));
+      case "agent_read":
+        return Promise.resolve(this.#read(caller, input));
+      case "agent_interrupt":
+        return this.#interrupt(caller, input);
+      case "agent_stop":
+        return this.#stop(caller, input);
+      case "agent_wait":
+        return this.#wait(caller, input);
+    }
+  }
+
+  #session(id: string): SessionSnapshot {
+    return this.#host.get(id) ?? refuse(`no such session: ${id}`);
+  }
+
+  /** A child `caller` supervises, by full id (or an unambiguous prefix). */
+  #child(caller: string, input: Record<string, unknown>): SessionSnapshot {
+    const id = str(input, "id") ?? refuse("id is required");
+    const mine = this.#host.list().filter((s) => s.supervisorId === caller);
+    const match = mine.find((s) => s.id === id) ?? mine.filter((s) => s.id.startsWith(id));
+    if (!Array.isArray(match)) return match;
+    if (match.length === 1) return match[0]!;
+    if (match.length > 1)
+      refuse(`"${id}" matches more than one of your children; give the full id`);
+    return this.#host.get(id)
+      ? refuse(`${short(id)} is not one of your children; you can act only on agents you started`)
+      : refuse(`no such session: ${id}`);
+  }
+
+  #profiles(caller: string): string {
+    const me = this.#session(caller);
+    const agents = this.#host.agents();
+    const runs = (p: {
+      provider?: string;
+      model?: string | null;
+      effort?: string | null;
+      mode?: string;
+    }) =>
+      [
+        [p.provider, p.model].filter(Boolean).join("/"),
+        p.effort ? `effort ${p.effort}` : "",
+        p.mode ? `mode ${p.mode}` : "",
+      ]
+        .filter(Boolean)
+        .join(", ");
+    const lines = [
+      `${SELF_PROFILE} — your own settings (${runs({ provider: me.provider, model: me.model, effort: me.effort, mode: me.mode })}), no extra prompt.`,
+      ...Object.entries(agents.profiles).map(([name, p]) => {
+        const set = runs(p);
+        return `${name} — ${p.description}${set ? ` (${set}; the rest as yours)` : " (runs as you)"}`;
+      }),
+    ];
+    const depth = supervisionDepth(caller, (id) => this.#host.get(id));
+    const nested = depth + 1 < agents.maxDepth;
+    return [
+      ...lines,
+      "",
+      nested
+        ? "Children can start agents of their own unless their profile leaves out loom-agents."
+        : `Children cannot start agents of their own (agents.max_depth ${agents.maxDepth}).`,
+    ].join("\n");
+  }
+
+  /** `name`'s settings for a child of `me`: unset fields follow `me`. */
+  #resolve(
+    name: string,
+    me: SessionSnapshot,
+  ): { providerId: string; model: string | null; effort: string | null; mode: SessionMode } {
+    const agents = this.#host.agents();
+    let profile: AgentProfileConfig | undefined;
+    if (name !== SELF_PROFILE) {
+      profile = agents.profiles[name];
+      if (!profile)
+        refuse(
+          `no agent profile "${name}"; available: ${[SELF_PROFILE, ...Object.keys(agents.profiles)].join(", ")}`,
+        );
+    }
+    const providerId = profile?.provider ?? me.provider;
+    if (!this.#host.providerKnown(providerId))
+      refuse(`provider "${providerId}" is not available here`);
+    const same = providerId === me.provider;
+    const model = profile?.model ?? (same ? me.model : this.#host.defaultModel(providerId));
+    const effort =
+      profile?.effort ??
+      (same && !profile?.model ? me.effort : this.#host.defaultEffort(providerId, model));
+    // A child is given work to do: a planning supervisor's children implement.
+    const mine: SessionMode = me.mode === "plan" ? "default" : (me.mode as SessionMode);
+    return { providerId, model, effort, mode: profile?.mode ?? mine };
+  }
+
+  async #start(caller: string, input: Record<string, unknown>): Promise<string> {
+    const me = this.#session(caller);
+    const agents = this.#host.agents();
+    const depth = supervisionDepth(caller, (id) => this.#host.get(id));
+    if (depth >= agents.maxDepth)
+      refuse(
+        `agents.max_depth is ${agents.maxDepth} and this session is at depth ${depth}: it cannot start agents`,
+      );
+    if (me.checkout === "clone")
+      refuse(
+        "A session in a private clone cannot start agents yet: clone children arrive in stage 2 of Loom agents (docs/loom-agents.md). Use a worktree or in-place session as the supervisor.",
+      );
+    const profile = str(input, "profile") ?? refuse("profile is required");
+    const task = str(input, "task") ?? refuse("task is required");
+    const title = (str(input, "title") ?? refuse("title is required")).slice(0, 200);
+    const taskId = str(input, "task_id");
+    const settings = this.#resolve(profile, me);
+    // In place, the child branches from what is checked out; in a worktree,
+    // from the supervisor's own branch.
+    const base = me.inPlace
+      ? (this.#host.headBase() ?? refuse("the repository has no commit to branch a child from"))
+      : (me.branch ?? refuse("this session has no branch to branch a child from"));
+    const workdir = me.inPlace ? this.#host.repoRoot : me.worktree;
+    const dirty = workdir !== null && this.#host.dirty(workdir);
+    const child = await this.#host.start({
+      prompt: task,
+      title,
+      ...settings,
+      base,
+      isolation: me.isolation ?? "local",
+      supervisorId: caller,
+      agentProfile: profile,
+      ...(taskId ? { taskId } : {}),
+    });
+    const runs = [child.provider, child.model].filter(Boolean).join("/");
+    return [
+      `Started agent ${child.id} "${title}" on profile ${profile} (${runs}, mode ${child.mode}).`,
+      child.branch
+        ? `It works on branch ${child.branch}${child.worktree ? ` in ${child.worktree}` : ""}, from ${child.baseBranch ?? base}.`
+        : `It branches from ${child.baseBranch ?? base}.`,
+      "You are notified when it finishes a turn, waits for input, fails or is interrupted: end your turn to wait for it.",
+      ...(dirty
+        ? [
+            `Warning: you have uncommitted changes, and they do not carry over — the child starts from the last commit on ${base}. Commit first if it needs them.`,
+          ]
+        : []),
+    ].join("\n");
+  }
+
+  async #message(caller: string, input: Record<string, unknown>): Promise<string> {
+    const child = this.#child(caller, input);
+    const text = str(input, "text") ?? refuse("text is required");
+    const delivery: QueueDelivery =
+      input["delivery"] === "end_of_turn" ? "end_of_turn" : "next_boundary";
+    if (child.status.kind === "done")
+      refuse(`${short(child.id)} is archived; start a new agent instead`);
+    const me = this.#host.get(caller);
+    const from = `[from your supervisor, session ${short(caller)}${me?.title ? ` "${me.title}"` : ""}]`;
+    const queued = await this.#host.enqueue(
+      child.id,
+      `${from}\n${text}`,
+      `supervisor:${caller}`,
+      delivery,
+    );
+    return `Queued for ${short(child.id)} (${delivery === "end_of_turn" ? "when it finishes" : "at its next tool boundary, or as its next turn"}): entry ${queued.entryId}, ${queued.state}.`;
+  }
+
+  #describe(s: SessionSnapshot): string {
+    let state: string = s.status.kind;
+    if (s.status.kind === "awaiting_input")
+      state = `waiting for input (${s.status.on}) — the user answers it`;
+    else if (s.status.kind === "error") state = `failed: ${s.status.message}`;
+    else if (s.status.kind === "interrupted") state = "interrupted";
+    else if (s.status.kind === "done") state = "archived";
+    const git = s.git;
+    const diff = git
+      ? [
+          `${git.aheadOfBase} commit${git.aheadOfBase === 1 ? "" : "s"} ahead of its base`,
+          ...(git.behindBase > 0 ? [`${git.behindBase} behind`] : []),
+          ...(git.dirty ? ["uncommitted changes"] : []),
+        ].join(", ")
+      : "";
+    const final = finalMessage(this.#host.events(s.id, { limit: 200 }).map((e) => e.event));
+    const cost =
+      s.costSource === "none" || s.costSource === "partial"
+        ? "unpriced"
+        : `$${s.costUsd.toFixed(2)}`;
+    return [
+      `${s.id} "${s.title ?? ""}" · profile ${s.agentProfile ?? SELF_PROFILE}${s.taskId ? ` · task ${s.taskId}` : ""}`,
+      `  state: ${state} · ${s.turns} turn${s.turns === 1 ? "" : "s"} · ${cost}`,
+      ...(s.branch ? [`  branch: ${s.branch}${diff ? ` · ${diff}` : ""}`] : []),
+      ...(final ? [`  last message: ${oneLine(final, 300)}`] : []),
+    ].join("\n");
+  }
+
+  #status(caller: string, input: Record<string, unknown>): string {
+    if (str(input, "id")) return this.#describe(this.#child(caller, input));
+    const mine = this.#host.list().filter((s) => s.supervisorId === caller);
+    if (mine.length === 0) return "You have no agents. Start one with agent_start.";
+    return mine.map((s) => this.#describe(s)).join("\n\n");
+  }
+
+  #read(caller: string, input: Record<string, unknown>): string {
+    const child = this.#child(caller, input);
+    const since = input["since"];
+    if (typeof since !== "number") {
+      const page = this.#host.events(child.id, { limit: 500 });
+      const cursor = page.at(-1)?.id ?? 0;
+      const final = finalMessage(page.map((e) => e.event));
+      const { text, cut } = cutBytes(final, FINAL_BUDGET_BYTES);
+      return [
+        final
+          ? `Final message of ${short(child.id)}:\n${text}${cut ? "\n[… cut]" : ""}`
+          : `${short(child.id)} has no final message yet.`,
+        "",
+        `cursor: ${cursor} (agent_read with since: ${cursor} continues from here)`,
+      ].join("\n");
+    }
+    const entries = this.#host.events(child.id, { after: since, limit: 1000 });
+    const excerpt = renderExcerpt(entries);
+    const cursor = excerpt.cursor ?? since;
+    return [
+      excerpt.text || "(nothing new)",
+      "",
+      excerpt.more
+        ? `cursor: ${cursor} — more follows; agent_read with since: ${cursor}`
+        : `cursor: ${cursor} — up to date`,
+    ].join("\n");
+  }
+
+  async #interrupt(caller: string, input: Record<string, unknown>): Promise<string> {
+    const child = this.#child(caller, input);
+    if (
+      !["running", "starting", "working_background", "awaiting_input"].includes(child.status.kind)
+    )
+      return `${short(child.id)} is not running (${child.status.kind}).`;
+    await this.#host.interrupt(child.id);
+    return `Interrupted ${short(child.id)}. Message it to go on.`;
+  }
+
+  async #stop(caller: string, input: Record<string, unknown>): Promise<string> {
+    const child = this.#child(caller, input);
+    if (child.status.kind === "done") return `${short(child.id)} is already archived.`;
+    const discard = input["discard"] === true;
+    if (
+      !discard &&
+      child.worktree &&
+      child.checkout !== "clone" &&
+      this.#host.dirty(child.worktree)
+    )
+      refuse(
+        `${short(child.id)} has uncommitted changes: message it to commit them, or call agent_stop with discard: true to lose them.`,
+      );
+    await this.#host.archive(child.id, discard);
+    return `Stopped and archived ${short(child.id)}; its branch${child.branch ? ` ${child.branch}` : ""} and transcript are kept.`;
+  }
+
+  async #wait(caller: string, input: Record<string, unknown>): Promise<string> {
+    const raw = Array.isArray(input["ids"]) ? input["ids"] : refuse("ids is required");
+    const ids = raw.map((id) => this.#child(caller, { id }).id);
+    if (ids.length === 0) refuse("ids is required");
+    const all = input["until"] !== "any";
+    const timeout = Math.min(
+      WAIT_MAX_S,
+      typeof input["timeout"] === "number" && input["timeout"] > 0
+        ? input["timeout"]
+        : WAIT_DEFAULT_S,
+    );
+    const done = () => {
+      const settled = ids.map((id) => {
+        const s = this.#host.get(id);
+        return !s || SETTLED.has(s.status.kind);
+      });
+      return all ? settled.every(Boolean) : settled.some(Boolean);
+    };
+    const abort = new AbortController();
+    const waits = this.#waits.get(caller) ?? new Set();
+    waits.add(abort);
+    this.#waits.set(caller, waits);
+    const deadline = Date.now() + timeout * 1000;
+    try {
+      while (!done() && Date.now() < deadline && !abort.signal.aborted)
+        await new Promise((r) => setTimeout(r, WAIT_POLL_MS));
+    } finally {
+      waits.delete(abort);
+    }
+    let head = `Timed out after ${timeout}s.`;
+    if (done()) head = `${all ? "All" : "One"} settled.`;
+    else if (abort.signal.aborted) head = "Stopped waiting: your turn was interrupted.";
+    const lines = ids.map((id) => {
+      const s = this.#host.get(id);
+      return s ? `${short(id)}: ${s.status.kind}` : `${short(id)}: gone`;
+    });
+    return [head, ...lines].join("\n");
+  }
+
+  /**
+   * Tell `child`'s supervisor that its turn stopped in `state`: a finished
+   * turn, a wait for input, a failure or an interrupt. Queued as an
+   * end-of-turn entry labelled as the child's, so a busy supervisor is not
+   * interrupted and an idle one is woken; never streamed output. A supervisor
+   * that is archived or gone is not told.
+   */
+  async notify(child: SessionSnapshot, state: SessionState): Promise<void> {
+    if (!child.supervisorId) return;
+    const supervisor = this.#host.get(child.supervisorId);
+    if (!supervisor || supervisor.status.kind === "done") return;
+    let event: string;
+    switch (state.kind) {
+      case "idle":
+        event = "finished a turn";
+        break;
+      case "awaiting_input":
+        event = `is waiting for input (${state.on}); the user answers it`;
+        break;
+      case "error":
+        event = `failed: ${state.message}`;
+        break;
+      case "interrupted":
+        event = `was interrupted (${state.by})`;
+        break;
+      default:
+        return;
+    }
+    const final = finalMessage(this.#host.events(child.id, { limit: 200 }).map((e) => e.event));
+    const { text, cut } = cutBytes(final, NOTIFY_MESSAGE_BYTES);
+    const body = [
+      `[from your agent ${short(child.id)} "${child.title ?? ""}" (profile ${child.agentProfile ?? SELF_PROFILE})] It ${event}.`,
+      ...(final
+        ? [
+            "",
+            "Final message:",
+            text,
+            ...(cut
+              ? [`[… cut at 2 KB; agent_read with id ${child.id} for the whole message]`]
+              : []),
+          ]
+        : []),
+    ].join("\n");
+    try {
+      await this.#host.enqueue(supervisor.id, body, `agent:${child.id}`, "end_of_turn");
+    } catch (err) {
+      this.#host.log.warn("agent notification failed", {
+        child: child.id,
+        supervisor: supervisor.id,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+}

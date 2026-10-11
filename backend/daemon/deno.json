@@ -5,6 +5,7 @@
     "./config/claude-profile": "./src/config/claude-profile.ts",
     "./config/config": "./src/config/config.ts",
     "./config/pricing": "./src/config/pricing.ts",
+    "./daemon/agents": "./src/daemon/agents.ts",
     "./daemon/connection": "./src/daemon/connection.ts",
     "./daemon/daemon": "./src/daemon/daemon.ts",
     "./daemon/hooks": "./src/daemon/hooks.ts",

@@ -4,6 +4,7 @@ import { historyCursorSchema, helloParamsSchema, workspaceModeSchema } from "./w
 import { sessionModeSchema, planDecisionSchema, permissionDecisionSchema } from "./types.ts";
 import { sessionStateSchema } from "./session-state.ts";
 import { queueDeliverySchema } from "./message-queue.ts";
+import { childrenOnCloseSchema } from "./agents.ts";
 
 const text = z.string().min(1);
 const optionalText = z.string().optional();
@@ -93,6 +94,9 @@ export const rpcParamsSchemas = {
      *  commit. Default: `base_branch` when configured and present, else the
      *  checked-out branch (HEAD's commit when detached). */
     base: optionalText,
+    /** An agent profile (`agents.profiles`): its prompt, MCP servers, skills
+     *  and tools apply, and it fills provider / model / effort / mode left out. */
+    profile: optionalText,
     by,
   }),
   "session.baseChoices": empty,
@@ -165,10 +169,16 @@ export const rpcParamsSchemas = {
       .transform((s) => s.slice(0, 200)),
   }),
   "session.setComment": session.extend({ comment: optionalText.nullable() }),
-  "session.markDone": session.extend({ force: z.boolean().optional() }),
+  "session.markDone": session.extend({
+    force: z.boolean().optional(),
+    /** A supervisor's live children: stop (archive) them, or detach them. */
+    children: childrenOnCloseSchema.optional(),
+  }),
   "session.remove": session.extend({
     force: z.boolean().optional(),
     deleteBranch: z.boolean().optional(),
+    /** A supervisor's live children: stop (archive) them, or detach them. */
+    children: childrenOnCloseSchema.optional(),
   }),
   "session.gc": z.object({ id: optionalText, force: z.boolean().optional() }),
   "session.createStub": z.object({

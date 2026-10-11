@@ -171,7 +171,8 @@ loom config convert [FILE] [--out NEW] [--json]
   any other branch. The row, the branch, and the stored transcript are kept —
   \`loom send <id>\` later checks the branch back out into a fresh worktree and
   resumes. The branch has to be clean unless:
-  --force                      archive even a dirty worktree (discards changes)`,
+  --force                      archive even a dirty worktree (discards changes)
+  --children stop|detach      for a supervisor: archive its open agents too, or detach them`,
   gc: `loom gc  — remove worktrees for done sessions (branches kept)
 
   --id ONE                     just this session (may also target an error row)
@@ -180,7 +181,8 @@ loom config convert [FILE] [--out NEW] [--json]
 
   closes any live run, removes the worktree (not the repo root for an in-place
   session), drops the row and its stored transcript. The branch is left unless:
-  --delete-branch              also \`git branch -D\` the session's branch`,
+  --delete-branch              also \`git branch -D\` the session's branch
+  --children stop|detach      for a supervisor: archive its open agents, or detach them`,
 };
 
 const encoder = new TextEncoder();
@@ -230,6 +232,7 @@ const main = async (): Promise<void> => {
       isolation: { type: "string" },
       worktree: { type: "boolean", default: false },
       "delete-branch": { type: "boolean", default: false },
+      children: { type: "string" },
       "end-of-turn": { type: "boolean", default: false },
       release: { type: "boolean", default: false },
       out: { type: "string" },
@@ -687,6 +690,7 @@ const main = async (): Promise<void> => {
           id,
           by: client.clientId,
           ...(values.force ? { force: true } : {}),
+          ...(values.children ? { children: values.children } : {}),
         });
         writeOut(`${r.id} -> ${sessionStateLabel(r.status)}\n`);
         break;
@@ -700,6 +704,7 @@ const main = async (): Promise<void> => {
             by: client.clientId,
             ...(values["delete-branch"] ? { deleteBranch: true } : {}),
             ...(values["force"] ? { force: true } : {}),
+            ...(values.children ? { children: values.children } : {}),
           },
         );
         writeOut(`removed ${r.removed.slice(0, 8)}${r.branchDeleted ? " + branch" : ""}\n`);
