@@ -355,6 +355,13 @@ export interface AgentSession {
    */
   respondToAgentCall?(id: string, result: AgentCallResult): Promise<void>;
   /**
+   * The session's base was renamed ({@link CreateSessionOptions.base}): the
+   * `status` tool counts against `base` from its next call. A Loom agent's
+   * base is its supervisor's branch, which auto-titling renames. Absent on
+   * adapters without a `status` tool.
+   */
+  setBase?(base: string): Promise<void>;
+  /**
    * Stop the current turn. Together with {@link close}, this MUST cancel any
    * in-flight long-running operation — a turn, a compaction, a sub-agent, a
    * fork — and settle promptly (do not wait out a multi-minute summarise).

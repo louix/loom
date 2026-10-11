@@ -250,6 +250,12 @@ export class FakeSession implements AgentSession {
     this.#agentCalls.resolve(id, result);
   }
 
+  /** Every base `setBase` renamed this session's to, oldest first. */
+  readonly bases: string[] = [];
+  async setBase(base: string): Promise<void> {
+    this.bases.push(base);
+  }
+
   async respondToPlan(id: string, decision: PlanDecision): Promise<void> {
     this.planResponses.push({ id, decision });
     // Approving a plan is how a live session leaves plan mode: the decision

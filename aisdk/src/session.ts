@@ -40,7 +40,7 @@ import { AisdkEventMapper } from "./map.ts";
 import { runTurn, type VendorOptions } from "./loop.ts";
 import { dropDanglingToolCalls } from "./transcript.ts";
 import { McpHub } from "./mcp.ts";
-import { buildAgentTools, buildLoomTools } from "./loom-tools.ts";
+import { buildAgentTools, buildLoomTools, type LoomToolDeps } from "./loom-tools.ts";
 import { AgentCalls } from "@loom/runtime/agent-tools";
 import { BuiltinTools } from "./tools/builtins.ts";
 import type { SearchConfig } from "@loom/core/connector";
@@ -146,7 +146,7 @@ export class AisdkSession implements AgentSession {
   #mode: SessionMode;
   readonly #cwd: string;
   readonly #search: SearchConfig | undefined;
-  readonly #base: string | undefined;
+  #base: string | undefined;
   readonly #mcpHandles: McpServerHandle[];
   readonly #loomServer: boolean;
   readonly #store: TranscriptStore | null;
@@ -197,6 +197,8 @@ export class AisdkSession implements AgentSession {
   #declaredReadonly: ReadonlyMap<string, boolean> = new Map();
   #builtins: BuiltinTools | null = null;
   #baseToolsPromise: Promise<ToolSet> | null = null;
+  /** What the `loom` tools read at each call (`setBase` updates it). */
+  #loomDeps: LoomToolDeps | null = null;
   readonly #pending = new PendingInteractions<{ allow: boolean; message?: string }, PlanDecision>();
   readonly #agentCalls = new AgentCalls();
   readonly #agentTools: boolean;
@@ -416,6 +418,12 @@ export class AisdkSession implements AgentSession {
     this.#agentCalls.resolve(id, result);
   }
 
+  async setBase(base: string): Promise<void> {
+    this.#base = base;
+    // The tool set is built once; its `status` tool reads these deps per call.
+    if (this.#loomDeps) this.#loomDeps.base = base;
+  }
+
   /** `loom-agents` handler: hand the call to the daemon, block until answered. */
   #agentCall(tool: string, input: Record<string, unknown>): Promise<AgentCallResult> {
     if (this.#interrupted || this.#closing)
@@ -598,14 +606,12 @@ export class AisdkSession implements AgentSession {
           // Session-control tools are unconditional — they wire into the
           // daemon's permission / question / plan / subagent plumbing and
           // must not be shadowed by a same-named MCP tool.
-          Object.assign(
-            base,
-            buildLoomTools({
-              cwd: this.#cwd,
-              ...(this.#base ? { base: this.#base } : {}),
-              askUser: (q, c) => this.#askUser(q, c),
-            }),
-          );
+          this.#loomDeps = {
+            cwd: this.#cwd,
+            ...(this.#base ? { base: this.#base } : {}),
+            askUser: (q, c) => this.#askUser(q, c),
+          };
+          Object.assign(base, buildLoomTools(this.#loomDeps));
           Object.assign(base, this.#planTools());
           if (this.#agentTools)
             Object.assign(

@@ -35,7 +35,7 @@ import { AsyncChannel } from "@loom/core/channel";
 import { WorkerDiagnostic } from "@loom/core/worker";
 import { ClaudeEventMapper, baselineOf, type SdkGetUsageResponse } from "./map.ts";
 import { resolveClaudeCli } from "./cli.ts";
-import { buildAgentsMcpServer, buildLoomMcpServer } from "./loom-mcp.ts";
+import { buildAgentsMcpServer, buildLoomMcpServer, type LoomToolDeps } from "./loom-mcp.ts";
 import { PendingInteractions } from "@loom/runtime/pending";
 import { AgentCalls } from "@loom/runtime/agent-tools";
 import { LOOM_AGENTS_SERVER } from "@loom/core/agents";
@@ -424,6 +424,8 @@ class ClaudeSession implements AgentSession {
   /** The args `start()` last ran with, so `rewind()` can rebuild the query. */
   #startOpts: CreateSessionOptions | null = null;
   #startExtra: StartExtra = {};
+  /** What the mounted `loom` tools read at each call. */
+  #loomDeps: LoomToolDeps | null = null;
 
   /** Follow-up turns fed into the streaming-input prompt. */
   #inbox = new AsyncChannel<SDKUserMessage>();
@@ -643,11 +645,13 @@ class ClaudeSession implements AgentSession {
 
     const mcpServers = mcpConfig(opts.mcpServers);
     if (opts.loomServer) {
-      mcpServers["loom"] = buildLoomMcpServer({
+      // Kept, so `setBase` reaches the `status` tool of the running query.
+      this.#loomDeps = {
         cwd: opts.cwd,
         ...(extra.base ? { base: extra.base } : {}),
         askUser: (question, context) => this.#askUser(question, context),
-      });
+      };
+      mcpServers["loom"] = buildLoomMcpServer(this.#loomDeps);
     }
     if (opts.agentTools && !opts.oneShot)
       mcpServers[LOOM_AGENTS_SERVER] = buildAgentsMcpServer((tool, input) =>
@@ -1213,6 +1217,12 @@ class ClaudeSession implements AgentSession {
 
   async respondToAgentCall(id: string, result: AgentCallResult): Promise<void> {
     this.#agentCalls.resolve(id, result);
+  }
+
+  async setBase(base: string): Promise<void> {
+    // A rewind rebuilds the query from `#startExtra`; the live tools read deps.
+    this.#startExtra = { ...this.#startExtra, base };
+    if (this.#loomDeps) this.#loomDeps.base = base;
   }
 
   async respondToPlan(id: string, decision: PlanDecision): Promise<void> {

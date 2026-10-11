@@ -344,7 +344,7 @@ export class CodexAppServerSession implements AgentSession {
   /** A completed planning turn held open on the user's review. */
   #planReview: PlanReview | null = null;
   #cwd: string;
-  readonly #base: string | undefined;
+  #base: string | undefined;
   readonly #dispatch: ToolDispatcher;
   #closing = false;
   #status = stateRunning;
@@ -735,6 +735,10 @@ export class CodexAppServerSession implements AgentSession {
   }
   async respondToAgentCall(id: string, result: AgentCallResult): Promise<void> {
     this.#agentCalls.resolve(id, result);
+  }
+  async setBase(base: string): Promise<void> {
+    // Read per dynamic tool call.
+    this.#base = base;
   }
   /** loom `commit` handler for the case `@loom/runtime/policy`'s `policy()`
    *  says "ask" rather than "allow": raise a real `permission_request` and

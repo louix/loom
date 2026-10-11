@@ -277,6 +277,9 @@ export class RemoteWorkerSession implements AgentSession {
   async respondToAgentCall(id: string, result: AgentCallResult): Promise<void> {
     await this.#request({ method: "respondToAgentCall", args: [id, result] });
   }
+  async setBase(base: string): Promise<void> {
+    await this.#request({ method: "setBase", args: [base] });
+  }
   async interrupt(): Promise<void> {
     await this.#request({ method: "interrupt", args: [] });
   }

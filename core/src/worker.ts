@@ -20,7 +20,8 @@ import {
 
 // v4: `send` takes the queued input's `{ inputId, midTurn }`.
 // v5: `respondToAgentCall` answers a `loom-agents` tool call.
-export const WORKER_VERSION = 5;
+// v6: `setBase` renames a live session's base.
+export const WORKER_VERSION = 6;
 export const MAX_FRAME_BYTES = 1024 * 1024;
 export const MAX_PENDING = 128;
 
@@ -93,6 +94,7 @@ export const workerCommandSchema = z.discriminatedUnion("method", [
   command("answerQuestion", z.tuple([z.string(), z.string()])),
   command("respondToPlan", z.tuple([z.string(), planDecisionSchema])),
   command("respondToAgentCall", z.tuple([z.string(), agentCallResultSchema])),
+  command("setBase", z.tuple([z.string()])),
   command("interrupt", z.tuple([])),
   command("close", z.tuple([])),
   command("listModels", z.tuple([])),
