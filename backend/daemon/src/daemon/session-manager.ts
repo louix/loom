@@ -27,6 +27,7 @@ import {
   stateRunning,
   stateStarting,
   stateWorkingBackground,
+  type StopCause,
 } from "@loom/core/session-state";
 import type { Logger } from "@loom/core/logger";
 import type { UsageDelta } from "../store/sessions.ts";
@@ -61,8 +62,13 @@ import type {
 export interface ManagerHooks {
   /** Forward a normalized event to the push stream + persistence. */
   emitEvent(ev: HarnessEvent): void;
-  /** A turn-state transition, with an optional audit breadcrumb for it. */
-  onStatus(sessionId: string, state: SessionState, note?: string): void;
+  /**
+   * A turn-state transition, with an optional audit breadcrumb for it. A turn
+   * that ends (`interrupted`, `error`) after someone asked it to stop carries
+   * who asked, `cause`, however the end came about: the stop itself, a late
+   * failure, or the stream closing under it.
+   */
+  onStatus(sessionId: string, state: SessionState, note?: string, cause?: StopCause): void;
   /**
    * A usage delta to accumulate. Mutation only: publication for the event that
    * produced it happens once, after its status has been derived — a snapshot
@@ -215,6 +221,10 @@ interface Running {
   evaluated: string | null;
   /** Loom is closing the adapter: its stream ending is no crash. */
   closing: boolean;
+  /** Who asked the current turn to stop (an interrupt, a close), until the
+   *  next turn starts: what the turn ends in is attributed to them. The user
+   *  wins over a supervisor that asked too. */
+  stopBy: StopCause | null;
 }
 
 export class SessionManager {
@@ -374,6 +384,7 @@ export class SessionManager {
       backoff: false,
       evaluated: null,
       closing: false,
+      stopBy: null,
     };
     this.#running.set(id, run);
     // The adapter may have landed on another mode than the one it was given:
@@ -526,7 +537,9 @@ export class SessionManager {
       // dead session (interrupt() does the same).
       const cleared = this.#clearOverlays(run);
       if (isLiveState(run.state)) {
-        this.#transition(id, run, stateInterrupted("stream_ended"), "stream_ended");
+        // Closed by someone's stop, the turn ended because they asked.
+        const by = run.stopBy ?? "stream_ended";
+        this.#transition(id, run, stateInterrupted(by), by);
       } else if (cleared) {
         // A settled session whose stream ended still has to tell clients the
         // requests are gone — no transition will carry it.
@@ -795,7 +808,8 @@ export class SessionManager {
     run.state = next;
     // A refused hand-over is retried once the session has moved on.
     run.backoff = false;
-    this.#hooks.onStatus(id, next, note);
+    const ended = next.kind === "interrupted" || next.kind === "error";
+    this.#hooks.onStatus(id, next, note, (ended && run.stopBy) || undefined);
     return true;
   }
 
@@ -971,6 +985,7 @@ export class SessionManager {
     const armed = run.userTurn;
     run.userTurn = true;
     run.cancellation = "none";
+    run.stopBy = null;
     this.#warmPings.delete(id);
     try {
       await run.session.send(entry.text, { inputId: entry.id, midTurn });
@@ -1232,6 +1247,7 @@ export class SessionManager {
       if (run.cancellation === "stopping" || run.cancellation === "failed")
         throw new Error("cancellation is unresolved — retry interrupt before sending");
       run.cancellation = "none";
+      run.stopBy = null;
       const injected = isLiveState(run.state);
       const before = run.state;
       if (!injected) run.firstOutputSince = performance.now();
@@ -1286,9 +1302,39 @@ export class SessionManager {
     });
   }
 
-  async interrupt(id: string): Promise<void> {
+  /**
+   * A stop `by` someone holds the queue: the user's always, even with nothing
+   * queued, so that nothing queued afterwards (a Loom agent's notification)
+   * starts a turn until the user sends or releases; anyone's while entries
+   * wait, so nothing is dispatched into the stop. Works on a cold session too.
+   */
+  holdForStop(id: string, by: StopCause): void {
+    const q = this.#hooks.queue;
+    if (!q || q.hold(id) !== null) return;
+    if (by !== "user" && q.live(id).length === 0) return;
+    q.setHold(id, "interrupt");
+    this.#hooks.onOverlay(id);
+  }
+
+  /** `by` asked `run` to stop: the turn's end is theirs (the user's over a
+   *  supervisor's), and the queue holds for it. */
+  #askedToStop(id: string, run: Running, by: StopCause): void {
+    if (run.stopBy !== "user") run.stopBy = by;
+    this.holdForStop(id, by);
+  }
+
+  /**
+   * Stop the turn in flight, for `by`: the user, or the session's Loom agent
+   * supervisor. The turn's end is attributed to whoever asked (the user, if
+   * both did). A user's stop holds the queue (see {@link holdForStop}).
+   */
+  async interrupt(id: string, by: StopCause = "user"): Promise<void> {
     const run = this.#require(id);
-    if (run.interruptOperation) return run.interruptOperation;
+    if (run.interruptOperation) {
+      // Joining a stop under way: a user asking too makes it theirs.
+      this.#askedToStop(id, run, by);
+      return run.interruptOperation;
+    }
     // A fork / rewind is mid-flight — there is no turn to stop and clobbering
     // state here would race the rewind's own idle transition.
     if (run.rewinding) return;
@@ -1312,7 +1358,7 @@ export class SessionManager {
     // interrupt nothing queued reaches the agent until the user says so.
     const q = this.#hooks.queue;
     this.#forced.delete(id);
-    if (q && q.hold(id) === null && q.live(id).length > 0) q.setHold(id, "interrupt");
+    this.#askedToStop(id, run, by);
     this.#hooks.onOverlay(id);
     const operation = Promise.resolve().then(async () => {
       try {
@@ -1326,10 +1372,11 @@ export class SessionManager {
         if (q && run.inputReceipts) q.markUncertain(id);
         this.#clearOverlays(run);
         if (!run.ended && !compactOnly) {
-          // A confirmed user stop is the turn's (interrupted) outcome — unless
-          // a trailing result already reported one first.
+          // A confirmed stop is the turn's (interrupted) outcome — unless a
+          // trailing result already reported one first.
           this.#turnEnded(id, run, Date.now());
-          this.#transition(id, run, stateInterrupted("user"), "user");
+          const stoppedBy = run.stopBy ?? by;
+          this.#transition(id, run, stateInterrupted(stoppedBy), stoppedBy);
         }
       } catch (err) {
         run.cancellation = "failed";
@@ -1638,11 +1685,16 @@ export class SessionManager {
     return true;
   }
 
-  /** Close and forget a single session (e.g. tearing down a failed fork). */
-  async close(id: string, reason: HostStopReason = "session_close"): Promise<void> {
+  /**
+   * Close and forget a single session (e.g. tearing down a failed fork).
+   * `by`: someone's stop (an archive, a VM stop) — what the turn ends in as
+   * the adapter goes is attributed to them. The queue is the caller's.
+   */
+  async close(id: string, reason: HostStopReason = "session_close", by?: StopCause): Promise<void> {
     const run = this.#running.get(id);
     if (!run) return;
     run.closing = true;
+    if (by && run.stopBy !== "user") run.stopBy = by;
     await run.session.close(reason);
     this.#running.delete(id);
     this.#keepWarm.delete(id);

@@ -327,6 +327,26 @@ describe("message queue", { concurrency: 4 }, () => {
     assert.deepEqual(fs.sends, ["m1"]);
   });
 
+  test("a user's stop holds even an empty queue: a send goes first and releases it", async (env) => {
+    const { c, frames } = env;
+    const { id, fs } = await runningSession(env);
+    await c.request("session.interrupt", { id });
+    const snap = await get(c, id);
+    assert.equal(snap.status.kind, "interrupted");
+    assert.deepEqual(snap.queue, { hold: "interrupt", entries: [] });
+    assert.ok(!notices(frames).some((n) => n.includes("held")), "nothing held to review");
+    await send(c, id, "go on");
+    await waitFor(() => fs.sends.includes("go on"));
+    assert.equal((await get(c, id)).queue, undefined, "the send released it");
+
+    // Released by hand, it is simply gone.
+    fs.emit({ type: "assistant_text", text: "busy" });
+    await waitFor(async () => (await status(c, id)) === "running");
+    await c.request("session.interrupt", { id });
+    await c.request("session.queueRelease", { id });
+    assert.equal((await get(c, id)).queue, undefined);
+  });
+
   test("decision 3: Loom's own sends bypass the queue, and a stop that discards one drops it", async (env) => {
     const { c, frames, h } = env;
     const { id, fs } = await runningSession(env);
@@ -343,7 +363,8 @@ describe("message queue", { concurrency: 4 }, () => {
     await c.request("session.interrupt", { id });
     await delay(50);
     const snap = await get(c, id);
-    assert.equal(snap.queue, undefined, "not surfaced as an entry, no hold");
+    // The user's stop holds the queue, empty as it is; the nudge is not in it.
+    assert.deepEqual(snap.queue, { hold: "interrupt", entries: [] }, "not surfaced as an entry");
     assert.equal(fs.sends.length, 1, "not re-sent");
     assert.ok(!notices(frames).some((n) => n.includes("held")));
   });

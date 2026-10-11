@@ -27,7 +27,9 @@ import { agentProfileInfoSchema } from "./agents.ts";
 // v4 reconnects from a fresh snapshot and durable history; no transport replay.
 // v5 queues every `session.send` daemon-side (`SessionSnapshot.queue`); a
 // queued message reaches the log only once the agent has taken it.
-export const PROTOCOL_VERSION = 5;
+// v6 adds `interrupted` by `supervisor` (a Loom agent stopped by the session
+// supervising it), a state a v5 client cannot parse.
+export const PROTOCOL_VERSION = 6;
 
 /**
  * Hard cap on a single newline-delimited frame (bytes). Enforced identically on

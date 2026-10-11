@@ -18,6 +18,18 @@ import { absurd } from "./absurd.ts";
 export const awaitReasonSchema = z.enum(["permission", "question", "plan_review", "user_question"]);
 export type AwaitReason = z.infer<typeof awaitReasonSchema>;
 
+/**
+ * Who asked for a stop: the user (a client's interrupt, archive or VM stop),
+ * or a Loom agent's supervisor (`agent_interrupt`, `agent_stop`). Carried by
+ * the `interrupted` state it ends in, so whoever reads the state knows who
+ * caused it.
+ */
+export type StopCause = "user" | "supervisor";
+/** What ended a turn as `interrupted`: a stop someone asked for, or the
+ *  provider's stream ending with the turn still live. */
+export const interruptedBySchema = z.enum(["user", "supervisor", "stream_ended"]);
+export type InterruptedBy = z.infer<typeof interruptedBySchema>;
+
 export const sessionStateSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("starting"),
@@ -31,7 +43,7 @@ export const sessionStateSchema = z.discriminatedUnion("kind", [
   }),
   z.object({
     kind: z.literal("interrupted"),
-    by: z.union([z.literal("user"), z.literal("stream_ended")]),
+    by: interruptedBySchema,
   }),
   z.object({
     kind: z.literal("idle"),
@@ -68,7 +80,7 @@ export const stateAwaitingInput = (on: AwaitReason): SessionState => ({
   kind: "awaiting_input",
   on,
 });
-export const stateInterrupted = (by: "user" | "stream_ended"): SessionState => ({
+export const stateInterrupted = (by: InterruptedBy): SessionState => ({
   kind: "interrupted",
   by,
 });
@@ -78,7 +90,7 @@ interface FoldSessionState<B> {
   readonly onStarting: () => B;
   readonly onRunning: () => B;
   readonly onAwaitingInput: (on: AwaitReason) => B;
-  readonly onInterrupted: (by: "user" | "stream_ended") => B;
+  readonly onInterrupted: (by: InterruptedBy) => B;
   readonly onIdle: () => B;
   readonly onWorkingBackground: () => B;
   readonly onError: (message: string) => B;
@@ -168,7 +180,7 @@ export const parseSessionState = (kind: string, detail: string | null): SessionS
     case "awaiting_input":
       return stateAwaitingInput(isAwaitReason(detail) ? detail : "permission");
     case "interrupted":
-      return stateInterrupted(detail === "stream_ended" ? "stream_ended" : "user");
+      return stateInterrupted(interruptedBySchema.safeParse(detail).data ?? "user");
     case "error":
       return stateError(detail ?? "");
     default:

@@ -50,7 +50,7 @@ never swept by an open confirm. The status line shows `N queued/active · ⌥q` 
 
 A9 differs: entries reach the agent mid-turn by default; entries are editable,
 reorderable and switchable between delivery modes; interrupt holds the queue
-(main-new lets it continue).
+(main-new lets it continue), and a user's interrupt holds it even when empty.
 
 ## Model
 
@@ -180,8 +180,14 @@ emits it.
 The keys (`i`, ⌥i) and `session.interrupt` are unchanged. In
 `SessionManager.interrupt` (:798):
 
-1. Before calling the adapter, set hold `interrupt` if any entry is queued or
-   delivering, so dispatch cannot race the stop.
+1. Before calling the adapter, set hold `interrupt` — always for the user's
+   stop, even with nothing queued; for a Loom agent supervisor's
+   (`agent_interrupt`) only if any entry is queued or delivering — so dispatch
+   cannot race the stop. A user's stop is a hold, so what is queued after it
+   (a Loom agent's notification, [loom-agents.md](loom-agents.md#communication))
+   waits behind it instead of starting a turn. The same holds for a user
+   interrupting a session still starting, and for stopping its VM. A user's
+   interrupt joining one already under way sets the hold too.
 2. The adapter reports what the stop discarded as an `input_discarded` event
    (`2930534f`), which may land just before or after `interrupt()` settles:
    Claude reports drained `#inbox` IDs plus the receipt's `cancelled`; AISDK
@@ -198,7 +204,13 @@ The keys (`i`, ⌥i) and `session.interrupt` are unchanged. In
 A failed interrupt leaves entries and the hold in place; a retry repeats 2–3.
 
 `session.queueRelease` clears the hold and rules 4–5 resume; uncertain entries
-are not released with it and each needs send now or delete. Send now on one
+are not released with it and each needs send now or delete. A cold session
+(stopped, crashed, restarted) with entries to release is revived first, as a
+send would revive it, and released once it is back, so a failed revival leaves
+the hold in place; released with nothing queued, the hold is simply gone. An
+entry queued behind a hold (`behindHold`: a Loom agent's notification) never
+revives a cold session nor lifts the hold; the enqueue itself decides whether
+the queue is held. Send now on one
 entry delivers it and leaves the rest held. A new message typed while held is
 sent first and alone — a new turn, or a hand-over to a live one — not queued
 behind the held entries, and sending it releases the hold as `r` would: the

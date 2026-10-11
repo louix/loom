@@ -695,7 +695,7 @@ export const detailLayout = (
     if (queued.length || s.queue?.hold) {
       const head = (queued[0]?.preview ?? "").replace(/\s+/g, " ").trim();
       const count = s.queue?.hold
-        ? `▸ ${queued.length} held · q review`
+        ? `▸ ${queued.length ? `${queued.length} ` : ""}held · q review`
         : `▸ ${queued.length} queued`;
       addLine(head ? `${count} — “${truncate(head, w - count.length - 6)}”` : count, "accentDim");
     }
