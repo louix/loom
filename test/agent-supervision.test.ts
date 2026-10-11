@@ -398,7 +398,7 @@ test("a child's turn is reported once per settled turn, by its identity, with it
   s.turns.set("kid", 1);
   log = ["answer A"];
   const facts = slow();
-  const a = s.sup.notify(kid, stateIdle, { turn: 1, git: facts.promise });
+  const a = s.sup.notify(kid, stateIdle, { turn: 1, git: () => facts.promise });
   // The same settled turn written again: still one report.
   await s.sup.notify(kid, stateIdle, { turn: 1 });
   facts.resolve(null);
@@ -418,7 +418,7 @@ test("a child's turn is reported once per settled turn, by its identity, with it
   s.turns.set("kid", 5);
   log = ["answer C"];
   const late = slow();
-  const c = s.sup.notify(kid, stateIdle, { turn: 5, git: late.promise });
+  const c = s.sup.notify(kid, stateIdle, { turn: 5, git: () => late.promise });
   s.turns.set("kid", 6);
   log = ["answer C", "answer D"];
   late.resolve(null);
@@ -426,5 +426,31 @@ test("a child's turn is reported once per settled turn, by its identity, with it
   assert.equal(notes().length, 2);
   // A report for a turn already gone is dropped at once.
   await s.sup.notify(kid, stateIdle, { turn: 5 });
+  assert.equal(notes().length, 2);
+});
+
+test("a dropped report reads no Git; a removed child's reports are forgotten", async () => {
+  const kid = row({ id: "kid", supervisorId: "lead", title: "Kid" });
+  const s = stub([row({ id: "lead" }), kid]);
+  const notes = () => s.queued.filter((q) => q.author === "agent:kid");
+  let reads = 0;
+  const git = () => {
+    reads++;
+    return Promise.resolve(null);
+  };
+  s.turns.set("kid", 2);
+  // Not the child's turn any more, a duplicate, or a stop the supervisor
+  // asked for: dropped before any Git runs.
+  await s.sup.notify(kid, stateIdle, { turn: 1, git });
+  await s.sup.notify(kid, stateIdle, { turn: 2, git, cause: "supervisor" });
+  assert.equal(reads, 0);
+  await s.sup.notify(kid, stateIdle, { turn: 2, git });
+  assert.equal(reads, 1);
+  await s.sup.notify(kid, stateIdle, { turn: 2, git });
+  assert.equal(reads, 1, "a turn already reported reads nothing");
+  assert.equal(notes().length, 1);
+  // Forgotten (the session was removed): nothing of it is kept.
+  s.sup.forget("kid");
+  await s.sup.notify(kid, stateIdle, { turn: 2, git });
   assert.equal(notes().length, 2);
 });

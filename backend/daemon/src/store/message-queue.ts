@@ -8,7 +8,6 @@
  * user, never a fault.
  */
 import {
-  type HoldRespect,
   QUEUE_LIMITS,
   type QueueDelivery,
   type QueueEntry,
@@ -16,7 +15,6 @@ import {
   type QueueHold,
   type QueueHoldBy,
   type QueueHoldCause,
-  waitsBehind,
 } from "@loom/core/message-queue";
 import { createHash } from "node:crypto";
 import { type Db, withTransaction } from "./db.ts";
@@ -65,9 +63,9 @@ export type HoldChange =
   | { readonly t: "stop"; readonly by: QueueHoldBy | null; readonly empty: boolean }
   /** Loom's own hold: set on an unheld queue, never over one already set. */
   | { readonly t: "loom"; readonly reason: Exclude<QueueHold, "interrupt"> }
-  /** A message or a release by a sender with `respect`: clears the hold
-   *  unless the sender waits behind it. */
-  | { readonly t: "lift"; readonly respect: HoldRespect }
+  /** A message that lifts the hold, or a release: clears it. Whether a
+   *  message lifts or waits is the enqueue's decision (H2), made once. */
+  | { readonly t: "lift" }
   /** Undo the change `ticket` came from, unless the hold was written since. */
   | { readonly t: "restore"; readonly ticket: HoldTicket };
 
@@ -130,9 +128,12 @@ const REUSED = "That message id is already used for different text.";
 
 export class MessageQueueStore {
   readonly #db: Db;
-  /** Per session, how many times its hold was written in this process: a
-   *  restore applies only to the write it undoes. */
+  /** Per session, the last write of its hold in this process, numbered off
+   *  {@link #writes}: a restore applies only to the write it undoes. */
   readonly #generations = new Map<string, number>();
+  /** Hold writes numbered across sessions, never reused: a session forgotten
+   *  ({@link forget}) and written again cannot match an older ticket. */
+  #writes = 0;
 
   constructor(db: Db) {
     this.#db = db;
@@ -207,10 +208,15 @@ export class MessageQueueStore {
    * The one write of a session's hold (docs/message-queue.md, "Holds"):
    * `change` combined with the hold as it is. A hold already set keeps its
    * reason, and only a user's stop changes anything about it — it becomes
-   * the user's (H1); a lift clears it unless the sender waits behind it
-   * (H2); a restore undoes an earlier change unless the hold was written
-   * since (H5, H6). Synchronous, so nothing comes between the read and the
-   * write.
+   * the user's (H1); a lift clears it (the enqueue decided it lifts, H2); a
+   * restore undoes an earlier change unless the hold was written since (H5,
+   * H6). Synchronous, so nothing comes between the read and the write.
+   *
+   * "Written" is a change to the hold — and a user's stop, even on the
+   * user's hold already: that re-asserts it, and no older change is undone
+   * past it. Anything else that leaves the hold as it was (a requeued
+   * discard, a crash, a supervisor's stop on a hold already set) is no write,
+   * and voids no ticket.
    */
   applyHold(sessionId: string, change: HoldChange): HoldApplied {
     const before = this.holdCause(sessionId);
@@ -231,28 +237,27 @@ export class MessageQueueStore {
         if (before === null) after = { reason: change.reason, by: null };
         break;
       case "lift":
-        if (before !== null && !waitsBehind(before, change.respect)) after = null;
+        if (before !== null) after = null;
         break;
       case "restore":
         if (change.ticket.generation === generation) after = change.ticket.prior;
         break;
     }
-    // A stop or a Loom hold counts as a write even when it changes nothing
-    // (a user's stop on the user's hold): no older change is undone past it.
-    const wrote = after !== undefined || change.t === "stop" || change.t === "loom";
-    const next = wrote ? generation + 1 : generation;
+    const now = after === undefined ? before : after;
+    const changed = before?.reason !== now?.reason || before?.by !== now?.by;
+    const wrote = changed || (change.t === "stop" && change.by === "user");
+    const next = wrote ? ++this.#writes : generation;
     if (wrote) this.#generations.set(sessionId, next);
-    if (after !== undefined)
+    if (changed)
       this.#db
         .prepare("UPDATE sessions SET queue_hold = ?, queue_hold_by = ? WHERE id = ?")
-        .run(after?.reason ?? null, after?.by ?? null, sessionId);
-    const now = after === undefined ? before : after;
-    return {
-      before,
-      after: now,
-      changed: before?.reason !== now?.reason || before?.by !== now?.by,
-      ticket: { prior: before, generation: next },
-    };
+        .run(now?.reason ?? null, now?.by ?? null, sessionId);
+    return { before, after: now, changed, ticket: { prior: before, generation: next } };
+  }
+
+  /** Forget a removed session's hold writes. */
+  forget(sessionId: string): void {
+    this.#generations.delete(sessionId);
   }
 
   /**

@@ -422,6 +422,33 @@ test("streamed-only windows no refresh can fill never make an account stale", ()
   }
 });
 
+test("an untimed reading a refresh can confirm shows longer than one only streamed", () => {
+  const db = openDb(":memory:");
+  try {
+    const s = new SessionStore(db);
+    const at = 1_000_000;
+    const read = (window: string, polled: boolean) =>
+      s.recordAccountUsage("acct", {
+        ts: at,
+        status: "allowed",
+        window,
+        utilization: 5,
+        ...(polled ? { polled } : {}),
+      });
+    read("seven_day", true);
+    read("streamed", false);
+    const shown = (now: number) => Object.keys(s.accountUsage("acct", now)).sort();
+    assert.deepEqual(shown(at + 29 * MIN), ["seven_day", "streamed"]);
+    // Past freshness the polled one waits for its refresh; nothing will
+    // confirm the streamed-only one, so it goes.
+    assert.deepEqual(shown(at + 31 * MIN), ["seven_day"]);
+    assert.deepEqual(shown(at + 59 * MIN), ["seven_day"]);
+    assert.deepEqual(shown(at + 61 * MIN), []);
+  } finally {
+    db.close();
+  }
+});
+
 test("the readings fingerprint values, not when they were read", () => {
   const db = openDb(":memory:");
   try {

@@ -263,29 +263,47 @@ the store. Nothing else writes the hold, and `hold()` is read off
   hand-over, a requeued discard, a close not the user's — leaves an existing
   hold exactly as it is. So a user's hold is never downgraded, overwritten or
   re-attributed by any path but the user lifting it (or H5 and H6 undoing a
-  hold that never took effect).
+  hold that never took effect). A requeued discard is no stop of its own: it
+  belongs to the stop that discarded it (the latest one asked of the run),
+  and reported after that stop's hold was lifted — the user's send or
+  release, a supervisor's message — it holds nothing: the lift stands, and
+  its entries go back behind what lifted it.
 - **H2 Wait or lift** is decided once, by `SessionManager.enqueue`, as the
   message is queued: the user's send lifts any hold; a supervisor's message
-  any but the user's; a child's notification none. A message that lifts goes
-  first and alone (at the head, forced); one that waits joins the held
-  entries at the back and wakes nothing, a cold session included. The
-  enqueue answers whether the session must be revived for the message (it is
-  cold, and the message does not wait); the daemon revives only then and
-  decides nothing itself.
+  any but the user's; a child's notification none. `applyHold`'s lift then
+  clears the hold unconditionally. A message that lifts goes first and alone
+  (at the head, forced); one that waits joins the held entries at the back
+  and wakes nothing, a cold session included. The enqueue answers whether
+  the session must be revived for the message (it is cold — no adapter, one
+  whose stream ended, or one a start, an idle shutdown or an environment
+  refresh under way may stop or replace, which the revival waits out — and
+  the message does not wait); the daemon revives only then and decides
+  nothing itself. A message that does not wait on a live session is
+  dispatched, never revived for.
 - **H3 A hold beats a forced entry not yet handed over.** A message that
   lifted a hold, or one sent now, goes alone whatever the hold; but a hold
   applied before it is handed over (a stop while a cold session comes back
-  for it) drops that, and the entry waits at the head, held.
+  for it) drops that, and the entry waits at the head, held. A requeued
+  discard never drops it (H1): it is no one's new stop.
 - **H4 Send now** delivers one entry through any hold and leaves the hold.
 - **H5 A revival that fails** for a message withdraws the message and puts
   back the hold it lifted, unless the hold was written since: as if it was
-  never sent, and the sender is told.
+  never sent, and the sender is told. A message no longer queued — handed
+  over meanwhile — is not taken back, the hold stays lifted, and the send
+  succeeds. A revival that outlasts the send (a VM runtime build) answers
+  at once with the message queued; if it fails later, or the environment
+  refresh it waited out does, the message is withdrawn and the hold put
+  back then, on the same terms, and the failure is reported on the session.
 - **H6 A stop that does not complete.** A close by someone
   (`SessionManager.close(by)`: an archive, a VM stop) applies its stop
   before it awaits anything. If the close fails, or the archive around it
   does (a worktree that will not go), the hold goes back to what it was,
   unless it was written since: no user's hold outlives an archive that did
-  not happen.
+  not happen. Written since means changed — or re-asserted by a user's stop;
+  anything that leaves the hold as it was (a discard put back as the
+  adapter closes, a crash, a supervisor's stop on it) writes nothing and
+  voids no undo. Write numbers are never reused, so a session forgotten and
+  written again cannot match an older undo.
 - **H7 Busy.** While a clone's guest Git runs for the daemon — its turn-end
   sync, a rebase, republishing a renamed branch — the daemon marks the
   session busy in `SessionManager` (`setBusy`). Dispatch reads it with the

@@ -142,6 +142,30 @@ test("every RPC that starts a VM session replies before an on-demand runtime bui
     assert.equal(fork.status.kind, "starting");
     create();
     await until(async () => fake.session(fork.id) !== undefined);
+
+    // H5: a revival that outlasts the send and then fails takes the message
+    // back and puts back the hold it lifted.
+    h.daemon.sessions.holdForStop(s.id, "user");
+    await restart();
+    const queue = async () =>
+      (await c.request<SessionSnapshot>("session.get", { id: s.id })).queue ?? null;
+    const failing = Promise.withResolvers<void>();
+    fake.resumeSession = async () => {
+      await failing.promise;
+      throw new Error("the runtime build failed");
+    };
+    try {
+      const lost = await prompt(
+        c.request<SessionSnapshot & { state: string }>("session.send", { id: s.id, text: "lost" }),
+      );
+      assert.equal(lost.state, "queued");
+      assert.equal((await queue())?.hold ?? null, null, "the send lifted the hold");
+      failing.resolve();
+      await until(async () => (await queue())?.hold === "interrupt");
+      assert.deepEqual(await queue(), { hold: "interrupt", holdBy: "user", entries: [] });
+    } finally {
+      Reflect.deleteProperty(fake, "resumeSession");
+    }
   } finally {
     await c.close();
     await h.cleanup();

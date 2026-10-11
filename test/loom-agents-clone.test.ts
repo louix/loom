@@ -8,12 +8,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { execFileSync } from "node:child_process";
+import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { makeHarness, type Harness } from "@loom/harness";
 import { LoomClient } from "@loom/client";
 import { FakeProvider } from "@loom/connector-mock";
 import type { ConnectorManifest } from "@loom/core/connector";
 import type { SessionSnapshot } from "@loom/core/wire";
+import { sessionVmDirectory } from "../backend/daemon/src/daemon/session-vm-state.ts";
 
 const git = (cwd: string, ...args: string[]) =>
   execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
@@ -317,6 +319,53 @@ test("a launch's late base probe never overwrites the base a newer sync fetched"
       probe.release();
       await delay(100);
       assert.deepEqual(resumed.bases, [`origin/${renamed}`]);
+    } finally {
+      probe.release();
+    }
+  }));
+
+test("a launch's probe from before an archive records nothing after the session is resumed", () =>
+  withClones(async ({ fake, h, c, get, blockGuest, hooks }) => {
+    const lead = await c.request<SessionSnapshot>("session.create", {
+      provider: "claude",
+      prompt: "lead",
+      workspace: "worktree",
+    });
+    const before = lead.branch!;
+    // The create's probe of what its checkout fetched hangs.
+    const probe = blockGuest((command) => command.startsWith("git rev-parse --verify --quiet"));
+    try {
+      const kid = await c.request<SessionSnapshot>("session.create", {
+        provider: "claude",
+        prompt: "kid",
+        base: before,
+      });
+      h.daemon.registry.setFields(kid.id, { supervisorId: lead.id });
+      await until(probe.entered, "the create's probe is under way");
+      const first = fake.session(kid.id)!;
+      // Archived (its caches forgotten), the base renamed, and resumed from
+      // its saved VM history.
+      await c.request("session.markDone", { id: kid.id });
+      const history = join(sessionVmDirectory(h.repoRoot, kid.id), "profile/projects/loom-session");
+      await Deno.mkdir(history, { recursive: true });
+      await Deno.writeTextFile(join(history, `${kid.id}.jsonl`), "saved VM history");
+      h.daemon.registry.setFields(kid.id, { providerRef: kid.id });
+      await c.request("session.setTitle", { id: lead.id, title: "Lead work" });
+      const renamed = (await get(lead.id)).branch!;
+      assert.notEqual(renamed, before);
+      // Its launch fetches nothing: the old name is still in the clone.
+      hooks.fetch = false;
+      await c.request("session.resume", { id: kid.id });
+      await until(() => fake.session(kid.id) !== first, "resumed");
+      const resumed = fake.session(kid.id)!;
+      await until(
+        async () => !["starting", "done"].includes((await get(kid.id)).status.kind),
+        "launched",
+      );
+      // The probe from before the archive lands first, and records nothing.
+      probe.release();
+      await delay(150);
+      assert.ok(!resumed.bases.includes(`origin/${before}`), JSON.stringify(resumed.bases));
     } finally {
       probe.release();
     }

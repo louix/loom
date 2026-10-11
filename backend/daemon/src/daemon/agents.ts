@@ -368,6 +368,11 @@ export class AgentSupervision {
     this.#host = host;
   }
 
+  /** Forget a removed session's reports. */
+  forget(id: string): void {
+    this.#notified.delete(id);
+  }
+
   /** Run one `agent_call` and answer it. Never throws. */
   async call(callerId: string, call: AgentCallEvent): Promise<void> {
     let result: AgentCallResult;
@@ -762,13 +767,13 @@ export class AgentSupervision {
    *
    * A child gets no commit or rebase nudges, so its turn end is its own: the
    * notification says what its workspace holds (`git`, read fresh at the
-   * turn end, else `child.git`), and the supervisor decides whether to ask
-   * for a commit.
+   * turn end — only once the report is known to go out — else `child.git`),
+   * and the supervisor decides whether to ask for a commit.
    */
   async notify(
     child: SessionSnapshot,
     state: SessionState,
-    opts: { turn: number; cause?: StopCause; git?: Promise<GitFacts | null> },
+    opts: { turn: number; cause?: StopCause; git?: () => Promise<GitFacts | null> },
   ): Promise<void> {
     const { turn, cause } = opts;
     if (!child.supervisorId) return;
@@ -796,7 +801,13 @@ export class AgentSupervision {
     this.#notified.set(child.id, turn);
     const final = finalMessage(this.#host.events(child.id, { limit: 200 }).map((e) => e.event));
     const { text, cut } = cutBytes(final, NOTIFY_MESSAGE_BYTES);
-    const git = (opts.git ? await opts.git.catch(() => null) : null) ?? child.git;
+    const read = opts.git;
+    const git =
+      (read
+        ? await Promise.resolve()
+            .then(read)
+            .catch(() => null)
+        : null) ?? child.git;
     if (!current()) return;
     const workspace = git
       ? `Its workspace: ${gitSummary(git)}${git.dirty ? "" : ", nothing uncommitted"}.`

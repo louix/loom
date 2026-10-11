@@ -23,8 +23,10 @@ const UNTIMED_STATUS_MS = 5 * 60_000;
  *  fresh after it was read: nothing says when it moves on, so past this a
  *  refresh confirms it (and, read again, it is fresh again). */
 export const UNTIMED_READING_MS = 30 * 60_000;
-/** How long such a window is shown after it was read: longer than it is
- *  fresh, so the refresh that confirms it lands before it would vanish. */
+/** How long such a window is shown after it was read when a refresh can
+ *  read it again (`polled`): longer than it is fresh, so the refresh that
+ *  confirms it lands before it would vanish. A streamed-only one, which no
+ *  refresh confirms, shows for {@link UNTIMED_READING_MS}. */
 export const UNTIMED_SHOWN_MS = 2 * UNTIMED_READING_MS;
 
 // ---------------------------------------------------------------------------
@@ -517,8 +519,8 @@ export class SessionStore {
     const rows = this.#db
       .prepare(`SELECT * FROM account_usage WHERE scope = ?
       AND (resets_at > ? OR (resets_at IS NULL AND observed_at >
-        CASE WHEN utilization IS NULL THEN ? ELSE ? END))`)
-      .all(scope, now, now - UNTIMED_STATUS_MS, now - UNTIMED_SHOWN_MS);
+        CASE WHEN utilization IS NULL THEN ? WHEN polled = 1 THEN ? ELSE ? END))`)
+      .all(scope, now, now - UNTIMED_STATUS_MS, now - UNTIMED_SHOWN_MS, now - UNTIMED_READING_MS);
     return Object.fromEntries(
       rows.map((r) => [
         String(r["window"]),

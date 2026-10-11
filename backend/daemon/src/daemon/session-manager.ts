@@ -136,6 +136,13 @@ export interface ManagerHooks {
    * {@link SessionManager.enqueue} refuses and only direct sends work.
    */
   queue?: MessageQueueStore;
+  /**
+   * Whether the daemon has a start, an idle shutdown or an environment
+   * refresh under way for the session, which may stop or replace its adapter:
+   * a message that goes then waits it out as for a cold session
+   * ({@link SessionManager.enqueue}'s `revive`).
+   */
+  lifecycle?(sessionId: string): boolean;
   log: Logger;
 }
 
@@ -231,6 +238,13 @@ interface Running {
    *  next turn starts: what the turn ends in is attributed to them. The user
    *  wins over a supervisor that asked too. */
   stopBy: StopCause | null;
+  /** The stops asked of this run (an interrupt, joining one, a close by
+   *  someone), counted: what a discard reported later belongs to. */
+  stops: number;
+  /** The stop (`stops` then) whose hold a send, a release or an agent's
+   *  message lifted, if nothing has set a hold since: a discard of that
+   *  stop's reported after it holds nothing (H1). */
+  liftedStop: number | null;
 }
 
 export class SessionManager {
@@ -394,6 +408,8 @@ export class SessionManager {
       evaluated: null,
       closing: false,
       stopBy: null,
+      stops: 0,
+      liftedStop: null,
     };
     this.#running.set(id, run);
     // The adapter may have landed on another mode than the one it was given:
@@ -902,16 +918,22 @@ export class SessionManager {
    * Every hold write the manager makes (docs/message-queue.md, "Holds"):
    * the store combines `change` with the hold as it is (H1, H2), and a hold
    * that is set after it drops a forced entry not yet handed over, which
-   * then waits at the head with the rest (H3). Null without a queue.
+   * then waits at the head with the rest (H3) — unless `keepForced` (a
+   * requeued discard, which is no one's new stop). Null without a queue.
    */
-  #applyHold(id: string, change: HoldChange): HoldApplied | null {
+  #applyHold(
+    id: string,
+    change: HoldChange,
+    { keepForced = false }: { keepForced?: boolean } = {},
+  ): HoldApplied | null {
     const q = this.#hooks.queue;
     if (!q) return null;
     const applied = q.applyHold(id, change);
-    if (applied.after !== null && change.t !== "lift") this.#forced.delete(id);
-    if (applied.changed) {
-      const run = this.#running.get(id);
-      if (run) run.evaluated = null;
+    if (applied.after !== null && change.t !== "lift" && !keepForced) this.#forced.delete(id);
+    const run = this.#running.get(id);
+    if (applied.changed && run) {
+      run.evaluated = null;
+      run.liftedStop = applied.after === null ? run.stops : null;
     }
     return applied;
   }
@@ -926,9 +948,6 @@ export class SessionManager {
     const q = this.#hooks.queue;
     if (!q || q.slots(id).length === 0) return false;
     q.markUncertain(id);
-    this.#forced.delete(id);
-    const run = this.#running.get(id);
-    if (run) run.evaluated = null;
     this.#applyHold(id, { t: "loom", reason: "crash" });
     return true;
   }
@@ -952,6 +971,12 @@ export class SessionManager {
    * A stop discarded input before the agent saw it: the queue's entries go
    * back to `queued` at their old places, held. Anything else — Loom's own
    * direct sends, the provider's notifications — is dropped.
+   *
+   * The discard is no stop of its own (H1): on a hold already set it changes
+   * nothing, and it never drops a forced entry — what the user sent goes
+   * first, the discarded entries behind it. Reported after the stop's hold
+   * was lifted (the user's send or release, a supervisor's message), it
+   * holds nothing: it belongs to that stop, and the lift stands.
    */
   #requeueDiscarded(id: string, items: readonly DiscardedInput[]): void {
     const q = this.#hooks.queue;
@@ -959,8 +984,17 @@ export class SessionManager {
     let back = 0;
     for (const item of items) if (item.ref !== undefined && q.requeue(id, item.ref)) back++;
     if (back === 0) return;
-    this.#applyHold(id, { t: "stop", by: this.#running.get(id)?.stopBy ?? null, empty: true });
+    const run = this.#running.get(id);
+    const lifted = run !== undefined && run.stops > 0 && run.liftedStop === run.stops;
+    if (!lifted && q.holdCause(id) === null)
+      this.#applyHold(
+        id,
+        { t: "stop", by: run?.stopBy ?? null, empty: true },
+        { keepForced: true },
+      );
     this.#hooks.onOverlay(id);
+    // Unheld, they go behind what lifted the hold.
+    void this.#pumpQueue(id);
   }
 
   /**
@@ -1106,11 +1140,15 @@ export class SessionManager {
    * leaves the hold.
    *
    * This is where wait-or-lift is decided, once (H2). `hold` is the hold the
-   * message found, and `waited` whether it stays. `revive`: the message goes,
-   * so the caller brings a cold session back (or waits out its start or
-   * stop) and then {@link dispatch}es; nothing is handed over before that.
-   * `undo` takes the message back and restores the hold it lifted, unless
-   * the hold was written since — for a revival that failed (H5).
+   * message found, and `waited` whether it stays. One that does not wait the
+   * caller then {@link dispatch}es; nothing is handed over before that.
+   * `revive`: it goes, and the session is cold (no adapter, one whose stream
+   * ended, or one a start, an idle shutdown or a refresh may stop or
+   * replace — `ManagerHooks.lifecycle`), so the caller brings it back (or
+   * waits that out) first. `undo` takes the message back and restores the hold it lifted,
+   * unless the hold was written since — for a revival that failed (H5).
+   * False when the message is no longer queued to take back (handed over,
+   * or settled), which then restores nothing.
    */
   enqueue(
     id: string,
@@ -1121,7 +1159,7 @@ export class SessionManager {
     hold: QueueHoldCause | null;
     waited: boolean;
     revive: boolean;
-    undo: () => void;
+    undo: () => boolean;
   } {
     const q = this.#hooks.queue;
     if (!q) throw new Error("this daemon has no message queue");
@@ -1134,22 +1172,25 @@ export class SessionManager {
       { id: e.entryId, text: e.text, author: e.author, delivery: e.delivery },
       { head: lifts },
     );
-    const nothing = () => {};
+    const nothing = () => false;
     if (!result.ok) return { result, hold, waited, revive: false, undo: nothing };
-    const revive = !waited && result.value.state === "queued";
+    const run = this.#running.get(id);
+    const cold = run === undefined || run.ended || (this.#hooks.lifecycle?.(id) ?? false);
+    const revive = cold && !waited && result.value.state === "queued";
     if (!result.value.created) return { result, hold, waited, revive, undo: nothing };
     let ticket: HoldTicket | null = null;
     if (lifts) {
-      ticket = this.#applyHold(id, { t: "lift", respect })?.ticket ?? null;
+      ticket = this.#applyHold(id, { t: "lift" })?.ticket ?? null;
       this.#forced.set(id, e.entryId);
     }
     this.#retry(id);
     this.#hooks.onOverlay(id);
     const undo = () => {
-      q.withdraw(id, e.entryId);
+      if (!q.withdraw(id, e.entryId)) return false;
       if (this.#forced.get(id) === e.entryId) this.#forced.delete(id);
       if (ticket) this.#applyHold(id, { t: "restore", ticket });
       this.#hooks.onOverlay(id);
+      return true;
     };
     return { result, hold, waited, revive, undo };
   }
@@ -1202,7 +1243,7 @@ export class SessionManager {
 
   /** Clear the hold; uncertain entries stay where they are. False when unheld. */
   releaseQueue(id: string): boolean {
-    if (!this.#applyHold(id, { t: "lift", respect: "none" })?.changed) return false;
+    if (!this.#applyHold(id, { t: "lift" })?.changed) return false;
     this.queueChanged(id);
     return true;
   }
@@ -1407,9 +1448,12 @@ export class SessionManager {
    * Hold the queue for `by`'s stop while entries wait; `empty`, even
    * without. A hold already set keeps its reason (it came first), but a
    * user's stop makes it the user's: no agent lifts it after that (H1).
-   * Returns the change, to undo a stop that did not complete (H6).
+   * Returns the change, to undo a stop that did not complete (H6). A live
+   * run counts the stop: what it discards from here on is this stop's.
    */
   #holdForStop(id: string, empty: boolean, by: StopCause): HoldApplied | null {
+    const run = this.#running.get(id);
+    if (run) run.stops++;
     const applied = this.#applyHold(id, { t: "stop", by, empty });
     if (applied?.changed) this.#hooks.onOverlay(id);
     return applied;

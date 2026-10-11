@@ -143,5 +143,6 @@ export class Registry {
     this.#store.delete(id);
     // Gone is as ended as archived, to whoever was watching it.
     this.#statusChanged(id, stateDone);
+    this.#epochs.delete(id);
   }
 }

@@ -629,6 +629,142 @@ describe("holds", { concurrency: 4 }, () => {
     await waitFor(() => provider.session(id)?.sends.includes("go on") ?? false);
   });
 
+  test("H5: a message handed over meanwhile is not taken back, and the send succeeds", async (env) => {
+    const { c, h, provider } = env;
+    const { id, fs } = await queuedBehind(env, "later");
+    fs.endStream();
+    await waitFor(async () => (await holdOf(c, id)).hold === "crash");
+    const entryId = crypto.randomUUID();
+    const store = new MessageQueueStore(h.daemon.db);
+    // The revival fails, but the message went meanwhile.
+    provider.resumeSession = () => {
+      store.markDelivering(id, [entryId]);
+      return Promise.reject(new Error("no VM today"));
+    };
+    try {
+      const sent = await c.request<Sent>("session.send", {
+        id,
+        text: "go on",
+        entryId,
+        by: "client-a",
+      });
+      assert.equal(sent.state, "delivering");
+      assert.deepEqual(await holdOf(c, id), { hold: null, by: null }, "the lift stands");
+    } finally {
+      Reflect.deleteProperty(provider, "resumeSession");
+    }
+    // The manager's own undo answers whether it took the message back.
+    const late = h.daemon.sessions.enqueue(id, {
+      entryId: "late",
+      text: "late",
+      author: "client-a",
+      delivery: "next_boundary",
+    });
+    store.markDelivering(id, ["late"]);
+    assert.equal(late.undo(), false);
+    assert.equal(store.entry(id, "late")?.state, "delivering");
+  });
+
+  test("H2: only a cold session is revived for a message; a live one is dispatched", async (env) => {
+    const { h, provider } = env;
+    const { id, fs } = await idleSession(env);
+    const msg = (entryId: string) => ({
+      entryId,
+      text: entryId,
+      author: "client-a",
+      delivery: "next_boundary" as const,
+    });
+    const live = h.daemon.sessions.enqueue(id, msg("live"));
+    assert.equal(live.waited, false);
+    assert.equal(live.revive, false, "a live session is not revived");
+    await h.daemon.sessions.dispatch(id);
+    await waitFor(() => fs.sends.includes("live"));
+    fs.finishTurn();
+    await waitFor(() => h.daemon.sessions.queueView(id) === null);
+    fs.endStream();
+    await waitFor(() => h.daemon.sessions.isEnded(id));
+    const cold = h.daemon.sessions.enqueue(id, msg("cold"));
+    assert.equal(cold.revive, true, "a cold one is");
+    assert.equal(cold.undo(), true);
+    // A send to a live session never resumes it.
+    const before = provider.resumes.length;
+    const { id: other } = await idleSession(env);
+    await send(env.c, other, "hello");
+    assert.equal(provider.resumes.length, before);
+  });
+
+  test(
+    "H1/H3: a discard reported after the user lifted the stop's hold neither holds nor drops the send",
+    async (env) => {
+      const { c, provider } = env;
+      const { id, fs } = await runningSession(env);
+      fs.emit({ type: "tool_call", id: "t1", name: "Bash", input: { command: "sleep 9" } });
+      const m1 = (await send(c, id, "m1")).entryId;
+      await waitFor(() => fs.sends.includes("m1"));
+      // The stop is slow to finish; its discard of m1 comes late.
+      const stopped = Promise.withResolvers<void>();
+      fs.interrupt = () => stopped.promise;
+      const stopping = c.request("session.interrupt", { id });
+      await waitFor(async () => (await holdOf(c, id)).by === "user");
+      const resumes = provider.resumes.length;
+      // The user sends: it lifts the hold, and waits only for the stop to end.
+      const sent = await send(c, id, "go on");
+      assert.equal(sent.state, "queued");
+      assert.equal(provider.resumes.length, resumes, "a live session is not revived");
+      fs.emit({ type: "input_discarded", items: [{ kind: "message", text: "m1", ref: m1 }] });
+      await waitFor(async () =>
+        (await entries(c, id)).some((e) => e.id === m1 && e.state === "queued"),
+      );
+      assert.deepEqual(await holdOf(c, id), { hold: null, by: null }, "the lift stands");
+      assert.deepEqual(
+        (await entries(c, id)).map((e) => e.preview),
+        ["go on", "m1"],
+        "the discarded entry goes behind the send",
+      );
+      stopped.resolve();
+      await stopping;
+      await waitFor(() => fs.sends.includes("go on"));
+      assert.equal(fs.sends.indexOf("go on"), 1, "the user's send went first, alone");
+    },
+    true,
+  );
+
+  test(
+    "H6: a discard put back while an archive closes voids nothing; the failed archive restores",
+    async (env) => {
+      const { c, h } = env;
+      const { id, fs } = await idleSession(env);
+      const m1 = (await send(c, id, "m1")).entryId;
+      await waitFor(() => fs.sends.includes("m1"));
+      const close = fs.close.bind(fs);
+      fs.close = async () => {
+        // The adapter drops what it had not started on, as it goes.
+        fs.emit({ type: "input_discarded", items: [{ kind: "message", text: "m1", ref: m1 }] });
+        await waitFor(async () => (await entries(c, id)).some((e) => e.state === "queued"));
+        await close();
+      };
+      const worktree = (await get(c, id)).worktree!;
+      const lock = (verb: "lock" | "unlock") =>
+        new Deno.Command("git", { args: ["-C", h.repoRoot, "worktree", verb, worktree] }).output();
+      await lock("lock");
+      try {
+        await assert.rejects(
+          c.request("session.markDone", { id, force: true }),
+          /could not remove the worktree/,
+        );
+      } finally {
+        await lock("unlock");
+        fs.close = close;
+      }
+      assert.deepEqual(
+        await holdOf(c, id),
+        { hold: null, by: null },
+        "no user's hold left by an archive that did not happen",
+      );
+    },
+    true,
+  );
+
   test("H6: an archive whose worktree will not go leaves the hold as it was", async (env) => {
     const { c, h } = env;
     const { id } = await queuedBehind(env, "later");

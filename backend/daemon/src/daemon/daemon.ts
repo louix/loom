@@ -274,10 +274,14 @@ export class Daemon {
   /** Per clone session, the host base branch a launch or sync is known to
    *  have fetched: the clone has `origin/<it>`. */
   readonly #cloneFetchedBase = new Map<string, string>();
-  /** Per clone session, a generation bumped by every write of
+  /** Per clone session, a generation taken by every write of
    *  `#cloneFetchedBase` and every launch's probe of it: a probe that
    *  resolves after a newer write or probe records nothing. */
   readonly #cloneBaseGeneration = new Map<string, number>();
+  /** Where those generations come from: across sessions and never reused,
+   *  so one forgotten (an archive) and launched again cannot be matched by a
+   *  probe from before. */
+  #cloneBaseGenerations = 0;
   /** Per clone session, the base the launch under way was told to fetch —
    *  recorded as fetched only once the launch succeeded and the ref is there. */
   readonly #cloneLaunchBase = new Map<string, string>();
@@ -650,6 +654,7 @@ export class Daemon {
         if (!this.#stopping) void this.#agents.call(id, call);
       },
       queue: this.#messageQueue,
+      lifecycle: (id) => this.#lifecycles.has(id),
       log: this.#log.child("sessions"),
     });
     this.#agents = new AgentSupervision({
@@ -2368,9 +2373,11 @@ export class Daemon {
    * its queue goes once it runs. A refresh reports its own failure; the session
    * then stays as the refresh left it. False when the session is live or nothing
    * needs building; the caller then revives as usual. A revival refused outright
-   * (no such session, nothing to resume) still throws here.
+   * (no such session, nothing to resume) still throws here. One that fails
+   * later — or a refresh it waited out that fails — calls `failed` (a sender
+   * takes its message back, H5), unless the daemon is stopping.
    */
-  async #reviveDetached(id: string): Promise<boolean> {
+  async #reviveDetached(id: string, failed?: () => void): Promise<boolean> {
     const cold = () => !this.#sessions.has(id) || this.#sessions.isEnded(id);
     if (!cold() && !this.#lifecycles.has(id)) return false;
     const row = this.#registry.get(id);
@@ -2396,18 +2403,28 @@ export class Daemon {
             () => true,
             () => false,
           ))
-        )
+        ) {
+          if (!this.#stopping) failed?.();
           return;
+        }
       if (cold()) await this.#reviveSession(id);
       this.#publishState(id);
       this.#onActivityChange("session-resumed");
       this.#sessions.queueChanged(id);
-    })().catch((error: unknown) => {
-      if (this.#stopping) return;
-      const message = error instanceof Error ? error.message : String(error);
-      this.emitEvent({ type: "error", sessionId: id, ts: Date.now(), message, fatal: false });
-      this.#publishState(id);
-    });
+    })()
+      .catch((error: unknown) => {
+        if (this.#stopping) return;
+        const message = error instanceof Error ? error.message : String(error);
+        this.emitEvent({ type: "error", sessionId: id, ts: Date.now(), message, fatal: false });
+        this.#publishState(id);
+        failed?.();
+      })
+      .catch((error: unknown) => {
+        this.#log.warn("could not take back a message after a failed revival", {
+          id,
+          err: String(error),
+        });
+      });
     return true;
   }
 
@@ -2764,7 +2781,8 @@ export class Daemon {
     turn = this.#registry.statusEpoch(row.id),
   ): void {
     if (this.#stopping || !row.supervisorId) return;
-    const git = state.kind === "idle" ? this.#turnEndGit(row) : undefined;
+    // Read only once `notify` knows the report goes out.
+    const git = state.kind === "idle" ? () => this.#turnEndGit(row) : undefined;
     void this.#agents
       .notify(row, state, {
         turn,
@@ -3130,7 +3148,7 @@ export class Daemon {
 
   /** Start a new generation of `id`'s fetched clone base; returns it. */
   #nextCloneBaseGeneration(id: string): number {
-    const next = (this.#cloneBaseGeneration.get(id) ?? 0) + 1;
+    const next = ++this.#cloneBaseGenerations;
     this.#cloneBaseGeneration.set(id, next);
     return next;
   }
@@ -3824,15 +3842,17 @@ export class Daemon {
     if (!r.ok) throw new RpcError(r.code, r.message, { sessionId: id });
     if (queued.revive) {
       try {
-        await this.#reviveForQueue(id);
+        // A revival that outlasts the call (a VM runtime build) and fails
+        // later takes the message back then.
+        await this.#reviveForQueue(id, () => queued.undo());
       } catch (error) {
-        queued.undo();
-        throw error;
+        // Already handed over (by a revival that raced this one): it went.
+        if (queued.undo() || !this.#handedOver(id, entryId)) throw error;
       }
-      // Settles once a hand-over it triggered has run, so the answer says
-      // how far the message got.
-      await this.#sessions.dispatch(id);
     }
+    // Settles once a hand-over it triggered has run, so the answer says how
+    // far the message got.
+    if (!queued.waited) await this.#sessions.dispatch(id);
     return {
       entryId,
       state: this.#messageQueue.entry(id, entryId)?.state ?? r.value.state,
@@ -3870,16 +3890,23 @@ export class Daemon {
     });
   }
 
+  /** Whether queue entry `entryId` of `id` has gone to the agent. */
+  #handedOver(id: string, entryId: string): boolean {
+    const state = this.#messageQueue.entry(id, entryId)?.state;
+    return state === "delivering" || state === "consumed";
+  }
+
   /**
    * Bring `id` back, if it is cold, for its queue to go to: a send, or the
    * user releasing a held queue. A failure is reported on the session and
-   * thrown.
+   * thrown — or, for a revival that outlasts the call, reported when it
+   * fails and handed to `detachedFailed` (H5).
    */
-  async #reviveForQueue(id: string): Promise<void> {
+  async #reviveForQueue(id: string, detachedFailed?: () => void): Promise<void> {
     try {
       // A start that first builds the VM runtime outlasts any client: then the
       // message waits in the queue and goes once the session runs.
-      if (!(await this.#reviveDetached(id))) {
+      if (!(await this.#reviveDetached(id, detachedFailed))) {
         await this.#lifecycleSettled(id);
         // A cold session (daemon restarted, or a turn that ended) is brought back
         // transparently — `send` is the one verb for "talk to this session", it
@@ -5165,6 +5192,8 @@ export class Daemon {
           await removeSessionVmProfile(this.repoRoot, id);
           this.#registry.remove(id);
           this.#cloneFacts.delete(id);
+          this.#agents.forget(id);
+          this.#messageQueue.forget(id);
           this.#hooks.forget(id);
           this.#publishState();
           this.#worktrees.prune();

@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { openDb, type Db } from "@loom/daemon/store/db";
 import { MIGRATIONS } from "@loom/daemon/store/migrations";
 import { MessageQueueStore, type QueueResult } from "@loom/daemon/store/message-queue";
-import { QUEUE_LIMITS, type QueueEntry } from "@loom/core/message-queue";
+import { QUEUE_LIMITS, type QueueEntry, waitsBehind } from "@loom/core/message-queue";
 import { setLogLevel } from "@loom/core/logger";
 
 setLogLevel("error");
@@ -367,7 +367,7 @@ test("a hold records whose stop it is; lifting it forgets that", () =>
     q.applyHold("s", { t: "stop", by: "supervisor", empty: true });
     assert.deepEqual(q.holdCause("s"), { reason: "interrupt", by: "supervisor" });
     assert.equal(q.hold("s"), "interrupt", "hold() is holdCause()'s reason");
-    q.applyHold("s", { t: "lift", respect: "none" });
+    q.applyHold("s", { t: "lift" });
     assert.equal(q.holdCause("s"), null);
     const row = db.prepare("SELECT queue_hold_by FROM sessions WHERE id = 's'").get() as {
       queue_hold_by: string | null;
@@ -396,7 +396,7 @@ test("Holds, user row: a user's stop holds even an empty queue, and lands on any
       ...LOOM_HOLDS,
     ] as const;
     for (const first of existing) {
-      q.applyHold("other", { t: "lift", respect: "none" });
+      q.applyHold("other", { t: "lift" });
       const set = q.applyHold("other", first).after!;
       const after = q.applyHold("other", { t: "stop", by: "user", empty: false }).after;
       assert.deepEqual(after, { reason: set.reason, by: "user" }, JSON.stringify(first));
@@ -417,10 +417,10 @@ test("Holds, H1: nothing but the user changes a user's hold — no stop, crash, 
       assert.deepEqual(q.holdCause("s"), USER);
     }
     // Neither does an agent's message: a supervisor's or a child's waits.
-    assert.equal(q.applyHold("s", { t: "lift", respect: "user" }).changed, false);
-    assert.equal(q.applyHold("s", { t: "lift", respect: "any" }).changed, false);
+    assert.equal(waitsBehind(q.holdCause("s"), "user"), true);
+    assert.equal(waitsBehind(q.holdCause("s"), "any"), true);
     assert.deepEqual(q.holdCause("s"), USER);
-    assert.equal(q.applyHold("s", { t: "lift", respect: "none" }).after, null);
+    assert.equal(q.applyHold("s", { t: "lift" }).after, null);
   }));
 
 test("Holds, supervisor row: only while entries wait; first come stays; its message lifts it", () =>
@@ -432,14 +432,15 @@ test("Holds, supervisor row: only while entries wait; first come stays; its mess
       SUPERVISOR,
     );
     for (const later of LOOM_HOLDS) assert.equal(q.applyHold("s", later).changed, false);
-    assert.equal(q.applyHold("s", { t: "lift", respect: "any" }).changed, false, "a report waits");
-    assert.equal(q.applyHold("s", { t: "lift", respect: "user" }).after, null, "its message lifts");
+    assert.equal(waitsBehind(q.holdCause("s"), "any"), true, "a report waits");
+    assert.equal(waitsBehind(q.holdCause("s"), "user"), false);
+    assert.equal(q.applyHold("s", { t: "lift" }).after, null, "its message lifts");
   }));
 
 test("Holds, crash / restart / rejected rows: Loom's own, set only when unheld, lifted by a supervisor", () =>
   withStore((q) => {
     for (const hold of LOOM_HOLDS) {
-      q.applyHold("s", { t: "lift", respect: "none" });
+      q.applyHold("s", { t: "lift" });
       assert.deepEqual(q.applyHold("s", hold).after, { reason: hold.reason, by: null });
       for (const later of LOOM_HOLDS) assert.equal(q.applyHold("s", later).changed, false);
       assert.equal(
@@ -447,8 +448,9 @@ test("Holds, crash / restart / rejected rows: Loom's own, set only when unheld, 
         false,
         "a supervisor's stop on it changes nothing",
       );
-      assert.equal(q.applyHold("s", { t: "lift", respect: "any" }).changed, false);
-      assert.equal(q.applyHold("s", { t: "lift", respect: "user" }).after, null);
+      assert.equal(waitsBehind(q.holdCause("s"), "any"), true);
+      assert.equal(waitsBehind(q.holdCause("s"), "user"), false);
+      assert.equal(q.applyHold("s", { t: "lift" }).after, null);
     }
   }));
 
@@ -462,13 +464,35 @@ test("Holds, H5/H6: a restore undoes its own change only while nothing wrote the
     assert.deepEqual(q.holdCause("s"), SUPERVISOR);
     // A lift undone; but not past a later write — even a user's stop that
     // changed nothing, which re-asserts the user's hold.
-    const lift = q.applyHold("s", { t: "lift", respect: "none" });
+    const lift = q.applyHold("s", { t: "lift" });
     assert.equal(q.applyHold("s", { t: "restore", ticket: lift.ticket }).changed, true);
     assert.deepEqual(q.holdCause("s"), SUPERVISOR);
     const user = q.applyHold("s", { t: "stop", by: "user", empty: true });
     q.applyHold("s", { t: "stop", by: "user", empty: true });
     assert.equal(q.applyHold("s", { t: "restore", ticket: user.ticket }).changed, false);
     assert.deepEqual(q.holdCause("s"), USER);
+  }));
+
+test("Holds, H6: what leaves the hold as it was voids no ticket; a forgotten session matches none", () =>
+  withStore((q) => {
+    add(q, "a");
+    // An archive's stop on an unheld queue; meanwhile a discard is put back,
+    // the adapter crashes, a supervisor stops it: none of them changes the hold.
+    const archive = q.applyHold("s", { t: "stop", by: "user", empty: true });
+    for (const change of [
+      { t: "stop", by: null, empty: true },
+      { t: "stop", by: "supervisor", empty: true },
+      ...LOOM_HOLDS,
+    ] as const)
+      assert.equal(q.applyHold("s", change).changed, false, JSON.stringify(change));
+    // The archive fails: the hold goes back to none.
+    assert.equal(q.applyHold("s", { t: "restore", ticket: archive.ticket }).after, null);
+    // A forgotten session's old ticket matches nothing written after.
+    const stop = q.applyHold("other", { t: "stop", by: "user", empty: true });
+    q.forget("other");
+    q.applyHold("other", { t: "lift" });
+    assert.equal(q.applyHold("other", { t: "restore", ticket: stop.ticket }).changed, false);
+    assert.equal(q.holdCause("other"), null);
   }));
 
 test("a restart keeps a hold already set: a user's stays the user's", () =>

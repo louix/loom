@@ -171,3 +171,16 @@ test("every status listener hears every write; one that throws breaks neither th
     assert.deepEqual(heard, ["s:interrupted"], "unsubscribed");
   });
 });
+
+test("a status write moves a session's epoch; a removed session's is forgotten", () => {
+  withRegistry((registry) => {
+    registry.create({ id: "s", provider: "fake" });
+    registry.setStatus("s", stateRunning);
+    registry.setStatus("s", stateRunning);
+    assert.equal(registry.statusEpoch("s"), 1, "the same state again is the same spell");
+    registry.setStatus("s", stateIdle);
+    assert.equal(registry.statusEpoch("s"), 2);
+    registry.remove("s");
+    assert.equal(registry.statusEpoch("s"), 0);
+  });
+});

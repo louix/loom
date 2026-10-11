@@ -81,9 +81,9 @@ interface ScopeState {
   lastAt: number;
   /** Consecutive refreshes that failed or left the windows stale. */
   failures: number;
-  /** The readings as the last refresh started, while its outcome is still to
-   *  be judged (on the first look once it is due again); null once judged. */
-  before: string | null;
+  /** The last refresh ended and its outcome is still to be judged (on the
+   *  first look once it is due again). */
+  judging: boolean;
   /** The readings last judged; fresh ones that differ came some other way. */
   seen: string;
 }
@@ -135,14 +135,14 @@ export class PlanUsageRefresher {
       running: false,
       lastAt: -Infinity,
       failures: 0,
-      before: null,
+      judging: false,
       seen: view.readings,
     };
     this.#scopes.set(scope, st);
     if (st.running || this.#closing.signal.aborted) return;
     const now = this.#now();
     const due = () => now >= st.lastAt + this.#gap(st.failures);
-    if (st.before !== null) {
+    if (st.judging) {
       // Fresh again is a refresh that helped, whether or not the values
       // moved: an untimed window confirmed at the same utilization is a
       // success, not a failure to back off from.
@@ -150,14 +150,14 @@ export class PlanUsageRefresher {
       // Its readings have had until it is due again to land.
       else if (due()) st.failures++;
       else return;
-      st.before = null;
+      st.judging = false;
       st.seen = view.readings;
     } else if (!view.stale && view.readings !== st.seen) {
       st.failures = 0;
       st.seen = view.readings;
     }
     if (!view.stale || !due()) return;
-    this.#start(scope, provider, st, now, view.readings);
+    this.#start(scope, provider, st, now);
   }
 
   /** Whether a refresh of `scope` is running. */
@@ -175,10 +175,10 @@ export class PlanUsageRefresher {
     return Math.min(this.#minGapMs * 2 ** Math.min(failures, 30), this.#maxGapMs);
   }
 
-  #start(scope: string, provider: string, st: ScopeState, now: number, readings: string): void {
+  #start(scope: string, provider: string, st: ScopeState, now: number): void {
     st.running = true;
     st.lastAt = now;
-    st.before = null;
+    st.judging = false;
     const signal = AbortSignal.any([this.#closing.signal, AbortSignal.timeout(this.#timeoutMs)]);
     // Shutdown waits for the source itself (a probe's subprocess) to settle.
     const work = (async () => await this.#refresh(scope, provider, signal))();
@@ -200,7 +200,7 @@ export class PlanUsageRefresher {
               st.failures,
               Math.ceil(Math.log2(this.#maxGapMs / this.#minGapMs)),
             );
-          } else st.before = readings;
+          } else st.judging = true;
         } catch (error) {
           st.failures++;
           if (!this.#closing.signal.aborted) this.#onError(scope, error);
