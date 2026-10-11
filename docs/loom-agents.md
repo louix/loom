@@ -141,12 +141,10 @@ combined cost of itself and its children.
 
 ## Data, not statistics UI
 
-Record everything needed for manual analysis now; build views later. One row
-per child run: supervisor and child profile, model and effort, `task_id`,
-start/end, outcome and verdict from `report`, rounds per task, tokens, cost,
-wall time, interrupts by supervisor or user, and whether the user overrode the
-outcome. Full event history stays in the session store. `loom agents export`
-writes runs as JSONL or CSV.
+No statistics views or export: the facts live in `loom.db` for later ad hoc
+queries. Each session records its `supervisor_id`, profile and `task_id`
+alongside the model, usage and cost it already has; `report` calls, supervisor
+messages, interrupts and outcomes are ordinary session events.
 
 ## Stages
 
@@ -156,8 +154,7 @@ writes runs as JSONL or CSV.
    supervisor notifications.
 2. Child workspaces per the table (including clone children and the read-only
    verifier), `agent_merge`, question routing, reparenting.
-3. `report` outcomes and the run log with `loom agents export`; optional
-   concurrency limits.
+3. `report` outcomes as events; optional concurrency limits.
 
 ## Open
 
