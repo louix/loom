@@ -22,6 +22,11 @@
  *   forks                               native Claude/Codex forks, Claude→Codex handoff
  *   queue-claude | queue-codex          a message folded in at a Bash boundary; three
  *                                       held by an interrupt, released in order
+ *   agents-claude | agents-codex        Loom agents (docs/loom-agents.md): no native
+ *                                       sub-agent tools, loom-agents present; a `self`
+ *                                       child started, notified up, read; (Claude) a
+ *                                       supervisor message steered down
+ *   codex-tools [model]                 a Codex thread's own tools: no native sub-agents
  */
 import assert from "node:assert/strict";
 import { join } from "node:path";
@@ -67,7 +72,12 @@ const configFile = join(f.root, "config/loom/config.jsonc");
 const log = (what: string, data: unknown = "") =>
   console.log(`[${check}] ${what}` + (data === "" ? "" : " " + JSON.stringify(data)));
 
-const writeConfig = async (opts: { vm?: boolean; idleMinutes?: number; codexCli?: string }) => {
+const writeConfig = async (opts: {
+  vm?: boolean;
+  idleMinutes?: number;
+  codexCli?: string;
+  claudeCli?: string;
+}) => {
   const runtime = artifact && smolvm ? { artifact, smolvm } : undefined;
   await Deno.mkdir(join(f.root, "config/loom"), { recursive: true });
   await Deno.writeTextFile(
@@ -78,6 +88,7 @@ const writeConfig = async (opts: { vm?: boolean; idleMinutes?: number; codexCli?
         providers: {
           claude: {
             setting_sources: [],
+            ...(opts.claudeCli ? { cli_path: opts.claudeCli } : {}),
             profiles: { personal: { config_dir: claudeProfile } },
           },
           codex: { config_dir: codexProfile, cli_path: opts.codexCli ?? codexCli },
@@ -141,6 +152,7 @@ const start = async () => {
         text: String(event["text"]).slice(0, 80),
         injected: event["injected"],
         entry: event["queueEntryId"],
+        author: event["author"],
       }),
     };
     const describe = detail[event.type];
@@ -659,6 +671,334 @@ const queue = async (provider: string) => {
   assert.deepEqual(order, held, "delivered in order");
 };
 
+/**
+ * A pass-through CLI that records, without secrets, what proves which tools a
+ * session has: its argv, the stdin lines matching `stdin` (Codex `thread/start`
+ * params) and the stdout lines matching `stdout` (Claude's system init).
+ */
+const cliTap = async (
+  name: string,
+  real: string,
+  filters: { stdin?: string; stdout?: string; only?: string },
+) => {
+  const dir = join(f.root, `tap-${name}`);
+  await Deno.mkdir(dir, { recursive: true });
+  const [argv, input, output, tap] = ["argv", "stdin", "stdout", "cli"].map((n) => join(dir, n));
+  const q = JSON.stringify;
+  const grep = (pattern: string, file: string) =>
+    `tee >(grep --line-buffered -F ${q(pattern)} >> ${q(file)})`;
+  await Deno.writeTextFile(
+    tap!,
+    `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> ${q(argv)}
+${filters.only ? `if [ "$1" != ${q(filters.only)} ]; then exec ${q(real)} "$@"; fi` : ""}
+${filters.stdin ? `${grep(filters.stdin, input!)} <&0 |` : ""} ${q(real)} "$@" ${filters.stdin ? "" : "<&0"} ${filters.stdout ? `> >(${grep(filters.stdout, output!)})` : ""} &
+child=$!
+trap 'kill $child 2>/dev/null' TERM INT HUP
+wait $child
+`,
+  );
+  await Deno.chmod(tap!, 0o755);
+  const lines = async (file: string) =>
+    (await Deno.readTextFile(file).catch(() => ""))
+      .split("\n")
+      .filter(Boolean)
+      .flatMap((line) => {
+        try {
+          return [JSON.parse(line) as Record<string, unknown>];
+        } catch {
+          return [];
+        }
+      });
+  return {
+    tap: tap!,
+    argv: async () => (await Deno.readTextFile(argv!).catch(() => "")).split("\n").filter(Boolean),
+    stdin: () => lines(input!),
+    stdout: () => lines(output!),
+  };
+};
+
+/** Native sub-agent tools each provider must not offer (docs/loom-agents.md). */
+const NATIVE_CLAUDE = ["Agent", "Task"];
+const NATIVE_CODEX = [
+  "spawn_agent",
+  "send_input",
+  "resume_agent",
+  "close_agent",
+  "interrupt_agent",
+  "list_agents",
+  "followup_task",
+  "send_message",
+  "wait_agent",
+  "spawn_agents_on_csv",
+];
+const AGENT_TOOLS = [
+  "agents_profiles",
+  "agent_start",
+  "agent_message",
+  "agent_status",
+  "agent_read",
+  "agent_interrupt",
+  "agent_stop",
+  "agent_wait",
+];
+
+/** Asks a Codex model for its tools: the only view of Codex's own tool list. */
+const LIST_TOOLS =
+  "First write one line starting TOOLS: listing the exact names of every tool (function) you can call, comma separated, verbatim. " +
+  "If any tool's description lists further tools callable from inside it, write a line starting NESTED: with those names, comma separated. " +
+  "If you have a tool named wait, write a line starting WAIT: quoting the first sentence of its description.";
+
+/**
+ * A Codex session that answered {@link LIST_TOOLS} runs with the native
+ * sub-agent switches off, was given the loom-agents dynamic tools, and lists
+ * no native sub-agent tool.
+ */
+const assertCodexTools = async (s: SessionSnapshot, tap: Awaited<ReturnType<typeof cliTap>>) => {
+  // The session's own thread/start (a child at max depth has no agent tools).
+  const starts = (await tap.stdin()).map(
+    (m) => (m["params"] ?? {}) as { cwd?: string; dynamicTools?: Array<{ name: string }> },
+  );
+  const params = starts.find((p) => p.cwd === s.worktree) ?? starts[0] ?? {};
+  const dynamic = (params.dynamicTools ?? []).map((t) => t.name);
+  const argv = (await tap.argv()).filter((a) => a.startsWith("app-server"));
+  const said = texts.get(s.id) ?? "";
+  const listed = said.match(/TOOLS:(.*)/)?.[1] ?? "";
+  const nested = said.match(/NESTED:(.*)/)?.[1] ?? "";
+  const names = `${listed},${nested}`.split(/[,\s]+/).map((n) =>
+    n
+      .replace(/^functions\./, "")
+      .replace(/[`*]/g, "")
+      .trim(),
+  );
+  log("codex tools", {
+    model: s.model,
+    argv: argv.at(-1),
+    dynamicTools: dynamic,
+    modelListed: listed.trim(),
+    nestedListed: nested.trim(),
+    waitDescribed: said.match(/WAIT:(.*)/)?.[1]?.trim(),
+    nativeListed: NATIVE_CODEX.filter((n) => names.includes(n)),
+  });
+  assert(/features\.multi_agent=false/.test(argv.at(-1) ?? ""), "multi_agent off");
+  assert(/features\.multi_agent_v2=false/.test(argv.at(-1) ?? ""), "multi_agent_v2 off");
+  for (const t of AGENT_TOOLS) assert(dynamic.includes(t), `dynamic tool ${t}`);
+  assert(listed, "the model listed its tools");
+  assert.deepEqual(
+    NATIVE_CODEX.filter((n) => names.includes(n)),
+    [],
+    "no native sub-agents",
+  );
+  // Code mode has a `wait` of its own (for an exec cell); v1's waits on agents.
+  if (names.includes("wait"))
+    assert.doesNotMatch(said.match(/WAIT:(.*)/)?.[1] ?? "", /agent/i, "wait is not v1's");
+};
+
+/** One Codex turn on `model` (e.g. one whose catalogue entry says
+ *  `multi_agent_version: v2`): its tools only. */
+const codexTools = async (model: string | undefined) => {
+  const tap = await cliTap("codex", codexCli!, { stdin: "thread/start", only: "app-server" });
+  await writeConfig({ codexCli: tap.tap });
+  await start();
+  await waitCatalogue(CODEX);
+  const s = await create(CODEX, `${LIST_TOOLS} Then stop: call no tool.`, {
+    model: model ?? (await cheapModel(CODEX)),
+    effort: "low",
+    mode: "auto",
+    isolation: "local",
+  });
+  await assertCodexTools(s, tap);
+};
+
+/**
+ * Loom agents, stage 1: a supervisor on `provider` starts a `self` child,
+ * is woken by its end-of-turn notification, reads it; with `steer`, also
+ * messages it and sees the message reach the child's queue labelled.
+ */
+const agents = async (provider: string) => {
+  const claudeReal = new Deno.Command("bash", { args: ["-c", "command -v claude"] }).outputSync();
+  const claudeTap = await cliTap("claude", new TextDecoder().decode(claudeReal.stdout).trim(), {
+    stdout: '"subtype":"init"',
+  });
+  const codexTap = await cliTap("codex", codexCli!, { stdin: "thread/start", only: "app-server" });
+  await writeConfig({ claudeCli: claudeTap.tap, codexCli: codexTap.tap });
+  await start();
+  await waitCatalogue(provider);
+  const model = await cheapModel(provider);
+  const codex = provider === CODEX;
+  const extra = { model, isolation: "local", ...(codex ? { effort: "low", mode: "auto" } : {}) };
+  const childTask =
+    "Create a file child.txt containing exactly hi, commit it with the message 'add child', then reply with the commit's short hash.";
+  const sup = await create(
+    provider,
+    `${codex ? `${LIST_TOOLS} Then ` : ""}Call agents_profiles. Then call agent_start with profile "self", title "child", and task: "${childTask}". ` +
+      "Do not call agent_wait. Then end your turn, replying with the agent's id. Later, when you are notified about the agent, reply with one short sentence and use no tools unless I ask.",
+    extra,
+  );
+  log("supervisor turn 1", {
+    model,
+    branch: sup.branch,
+    worktree: !!sup.worktree,
+    text: texts.get(sup.id)?.slice(0, 600),
+  });
+
+  // 1. Native sub-agents absent; loom-agents present.
+  if (codex) await assertCodexTools(sup, codexTap);
+  else {
+    const init = (await claudeTap.stdout()).find((m) => m["subtype"] === "init");
+    const tools = (init?.["tools"] ?? []) as string[];
+    const servers = (init?.["mcp_servers"] ?? []) as Array<{ name: string; status: string }>;
+    log("claude init tools", {
+      count: tools.length,
+      native: tools.filter((t) => NATIVE_CLAUDE.includes(t)),
+      loomAgents: tools.filter((t) => t.startsWith("mcp__loom-agents__")),
+      servers: servers.map((s) => `${s.name}:${s.status}`),
+    });
+    assert(tools.length > 0, "the init message lists tools");
+    assert.deepEqual(
+      tools.filter((t) => NATIVE_CLAUDE.includes(t)),
+      [],
+      "no Agent/Task",
+    );
+    for (const t of AGENT_TOOLS)
+      assert(tools.includes(`mcp__loom-agents__${t}`), `loom-agents tool ${t}`);
+  }
+
+  // 2. The child: supervised, its own worktree from the supervisor's branch, done.
+  const listChildren = async () =>
+    (await rpc<SessionSnapshot[]>("session.list")).filter((s) => s.supervisorId === sup.id);
+  const kids = await listChildren();
+  assert.equal(kids.length, 1, "exactly one child");
+  let child = await settle(kids[0]!.id, (s) => s.status.kind === "idle" && s.turns > 0);
+  const hasFile = async (ref: string) =>
+    new TextDecoder()
+      .decode(
+        (
+          await new Deno.Command("git", {
+            args: ["-C", child.worktree!, "show", `${ref}:child.txt`],
+          }).output()
+        ).stdout,
+      )
+      .trim();
+  const ancestor = await new Deno.Command("git", {
+    args: ["-C", child.worktree!, "merge-base", "--is-ancestor", sup.branch!, child.branch!],
+  }).output();
+  log("child", {
+    id: child.id,
+    supervisorId: child.supervisorId === sup.id,
+    profile: child.agentProfile,
+    provider: child.provider,
+    model: child.model,
+    mode: child.mode,
+    branch: child.branch,
+    baseBranch: child.baseBranch,
+    ownWorktree: child.worktree !== sup.worktree,
+    fromSupervisorBranch: ancestor.success,
+    committed: await hasFile("HEAD"),
+    clean: !child.git?.dirty,
+    aheadOfBase: child.git?.aheadOfBase,
+    text: texts.get(child.id)?.slice(-300),
+  });
+  assert.equal(child.agentProfile, "self");
+  assert.equal(child.provider, sup.provider);
+  assert(child.worktree && child.worktree !== sup.worktree, "its own worktree");
+  assert.equal(child.baseBranch, sup.branch, "branched from the supervisor's branch");
+  assert(ancestor.success, "the supervisor's branch is an ancestor of the child's");
+  assert.equal(await hasFile("HEAD"), "hi", "child.txt committed");
+
+  // 3. The supervisor is woken by an end-of-turn notification from the child.
+  const notified = await settleFor(
+    () =>
+      events.find(
+        (e) =>
+          e.id === sup.id &&
+          e.type === "user_message" &&
+          (e.detail as { author?: string }).author === `agent:${child.id}`,
+      ),
+    "the notification",
+  );
+  const woken = await settle(sup.id, (s) => s.status.kind === "idle" && s.turns > sup.turns);
+  log("supervisor notified and woken", {
+    notification: notified.detail,
+    turns: [sup.turns, woken.turns],
+    reply: texts.get(sup.id)?.slice(-300),
+  });
+  assert.match((notified.detail as { text: string }).text, /^\[from your agent /);
+
+  // 4. agent_read (and, with Claude, one agent_message steer down).
+  const steer = !codex;
+  const childFrom = events.filter((e) => e.id === child.id).length;
+  await send(
+    sup.id,
+    `Call agent_read on agent ${child.id} and tell me the name and content of the file it committed.` +
+      (steer
+        ? ` Then call agent_message on it with text "Reply with exactly ACK." and delivery next_boundary. Then end your turn.`
+        : ""),
+  );
+  const readReply = texts.get(sup.id) ?? "";
+  const supCalls = events
+    .filter((e) => e.id === sup.id && e.type === "tool_call")
+    .map((e) => (e.detail as { name: string }).name);
+  log("supervisor read", { reply: readReply.slice(-400), calls: supCalls });
+  assert(
+    supCalls.some((n) => n.endsWith("agent_read")),
+    "agent_read called",
+  );
+  assert.match(readReply, /child\.txt/);
+  if (steer) {
+    assert(
+      supCalls.some((n) => n.endsWith("agent_message")),
+      "agent_message called",
+    );
+    const delivered = await settleFor(
+      () =>
+        events
+          .slice(0)
+          .filter((e) => e.id === child.id)
+          .slice(childFrom)
+          .find(
+            (e) =>
+              e.type === "user_message" &&
+              (e.detail as { author?: string }).author === `supervisor:${sup.id}`,
+          ),
+      "the steer",
+    );
+    child = await settle(child.id, (s) => s.status.kind === "idle" && s.turns > child.turns);
+    log("steer delivered", {
+      message: delivered.detail,
+      childTurns: child.turns,
+      reply: texts.get(child.id)?.slice(-120),
+    });
+    assert.match((delivered.detail as { text: string }).text, /^\[from your supervisor/);
+  }
+  // Let the last notification's wake-up finish before the daemon stops.
+  await new Promise((r) => setTimeout(r, 3000));
+  const final = await settle(sup.id, (s) => s.status.kind === "idle" && s.queue === undefined);
+  log("done", {
+    notifications: events
+      .filter(
+        (e) =>
+          e.id === sup.id &&
+          e.type === "user_message" &&
+          (e.detail as { author?: string }).author === `agent:${child.id}`,
+      )
+      .map((e) => (e.detail as { text: string }).text),
+    supervisorTurns: final.turns,
+    childTurns: (await get(child.id)).turns,
+    costs: [final.costUsd, (await get(child.id)).costUsd],
+  });
+};
+
+const settleFor = async <T>(cond: () => T | undefined, what: string, ms = 300_000) => {
+  const deadline = Date.now() + ms;
+  for (;;) {
+    const v = cond();
+    if (v) return v;
+    assert(Date.now() < deadline, `timed out waiting for ${what}`);
+    await new Promise((r) => setTimeout(r, 300));
+  }
+};
+
 const run = async () => {
   let passed = false;
   try {
@@ -670,6 +1010,9 @@ const run = async () => {
     else if (check === "forks") await forks();
     else if (check === "queue-claude") await queue(CLAUDE);
     else if (check === "queue-codex") await queue(CODEX);
+    else if (check === "agents-claude") await agents(CLAUDE);
+    else if (check === "agents-codex") await agents(CODEX);
+    else if (check === "codex-tools") await codexTools(Deno.args[1]);
     else throw new Error("unknown check " + check);
     log("PASSED");
     passed = true;

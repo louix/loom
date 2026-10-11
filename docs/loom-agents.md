@@ -205,8 +205,18 @@ detach` on `session.markDone` / `session.remove`, `--children` in the CLI,
   in Codex 0.156.1. The bundled model catalogue also declares a per-model
   `multi_agent_version` (`v2` for the current models), and
   `codex debug prompt-input` still renders the v2 team instructions with both
-  flags off, though it may not apply feature gating at all. Confirm against a live thread
-  that `spawn_agent` and the v2 team tools are absent for a v2 model.
+  flags off, though it may not apply feature gating at all. Live (2026-10-11,
+  Codex 0.153.2, `scripts/test-live-daemon-acceptance.ts codex-tools <model>`):
+  for `gpt-5.6-luna` (`multi_agent_version` v1) the flags work, and no
+  `spawn_agent`/`send_input`/`close_agent` is offered (its `wait` is code
+  mode's, for an `exec` cell); for `gpt-5.6-terra` (v2) the thread still
+  offers `spawn_agent`, `followup_task`, `send_message`, `wait_agent`,
+  `interrupt_agent` and `list_agents`. The catalogue's `multi_agent_version`
+  overrides both flags: upstream openai/codex#50880 (open, 0.160.0 too), whose
+  reporter found only
+  `features.multi_agent_v2={enabled=false, max_concurrent_threads_per_session=1}`
+  refuses the spawn (the tools stay listed). Untried here: that switch, and a
+  `model_catalog_json` that pins `multi_agent_version` to v1.
 - Shared VM for children (running inside the supervisor's VM).
 - Clone children while the supervisor's VM is stopped: the clone directory
   persists on the host, so the child can still mount it; confirm nothing in the
