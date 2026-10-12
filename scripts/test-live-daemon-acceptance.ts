@@ -231,8 +231,10 @@ const create = async (provider: string, prompt: string, extra: Record<string, un
 const cheapModel = async (provider: string) => {
   const list = await rpc<Array<{ id: string; models: string[] }>>("providers.list");
   const models = list.find((p) => p.id === provider)?.models ?? [];
+  // The oldest small Codex model: newer ones (gpt-6-luna) are multi-agent v2,
+  // whose native tools stay listed (openai/codex#50880).
   return provider === CODEX
-    ? (models.find((m) => /mini|luna/.test(m)) ?? models.at(-1))
+    ? (models.findLast((m) => /mini|luna/.test(m)) ?? models.at(-1))
     : (models.find((m) => /haiku/.test(m)) ?? models[0]);
 };
 const waitCatalogue = async (provider: string) => {
