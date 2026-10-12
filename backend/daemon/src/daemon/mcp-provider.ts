@@ -64,7 +64,10 @@ export const withExternalMcp = async (
           if (!context.config.sessionVm) return handle;
           const worker = await startHostCommand(
             handle.name,
-            handle.spec,
+            {
+              ...handle.spec,
+              ...(handle.requestTimeoutMs ? { requestTimeoutMs: handle.requestTimeoutMs } : {}),
+            },
             handle.spec.cwd ?? (await hostCommandCwd(input.cwd, repo)),
           );
           workers.push(worker);

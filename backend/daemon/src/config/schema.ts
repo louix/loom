@@ -126,7 +126,7 @@ export const mcpDefinitionSchema = z
       .max(3600)
       .optional()
       .describe(
-        "Seconds one MCP request may take, 1–3600. Loom's relays for http, nix and runtime sources stop a request after this (omitted: 60); Claude and Codex get it as the server's tool-call timeout.",
+        "Seconds one MCP request may take, 1–3600. Loom's relays for http, nix and runtime sources, and for command sources relayed to VM sessions, stop a request after this (omitted: 60); Claude and Codex get it as the server's tool-call timeout.",
       ),
     vm_sessions: z
       .enum(["refuse", "relay"])

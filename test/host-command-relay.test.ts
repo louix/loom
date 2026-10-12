@@ -150,7 +150,7 @@ test("a VM agent may select a relayed host command, which preflight still checks
 test("withExternalMcp: a VM session gets its own relayed endpoint, and refuses an unrelayed command", async () => {
   // given
   const seen: CreateSessionOptions[] = [];
-  const started: Array<{ name: string; cwd: string }> = [];
+  const started: Array<{ name: string; cwd: string; requestTimeoutMs: number | undefined }> = [];
   const closed: string[] = [];
   const provider = await withExternalMcp(
     async () => mkRecordingProvider(seen),
@@ -159,14 +159,16 @@ test("withExternalMcp: a VM session gets its own relayed endpoint, and refuses a
     undefined,
     "/repo",
     [],
-    async (name, _spec, cwd) => {
-      started.push({ name, cwd });
+    async (name, spec, cwd) => {
+      started.push({ name, cwd, requestTimeoutMs: spec.requestTimeoutMs });
       return mkFakeRelay(4100 + started.length, closed);
     },
   );
   // when
   const first = await provider.createSession(mkSession("first", [browser]));
-  const second = await provider.createSession(mkSession("second", [browser]));
+  const second = await provider.createSession(
+    mkSession("second", [{ ...browser, requestTimeoutMs: 120_000 }]),
+  );
   // then: the agent sees the loopback endpoint the VM relays, one per session
   assert.deepEqual(
     seen.map((options) => options.mcpServers?.map((h) => h.spec)),
@@ -193,6 +195,11 @@ test("withExternalMcp: a VM session gets its own relayed endpoint, and refuses a
     ["browser", "browser"],
   );
   assert.ok(started.every((s) => s.cwd !== "/nowhere/worktree"));
+  // timeout_seconds reaches the session's bridge; unset, the bridge keeps its default.
+  assert.deepEqual(
+    started.map((s) => s.requestTimeoutMs),
+    [undefined, 120_000],
+  );
   await first.close();
   assert.deepEqual(closed, ["4101"]);
   await second.close();

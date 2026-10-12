@@ -4,6 +4,7 @@
  *
  *   - `whoami` — its pid, the grandchild's, its cwd and $LOOM_TEST_MARKER
  *   - `big`    — a text result of $LOOM_TEST_BIG_BYTES characters
+ *   - `slow`   — answers after $LOOM_TEST_SLOW_MS milliseconds
  *
  * $LOOM_TEST_STUBBORN set: it ignores SIGTERM and stdin EOF, so only a SIGKILL ends it.
  */
@@ -28,7 +29,7 @@ const respond: Record<string, (tool: string | undefined) => unknown> = {
     serverInfo: { name: "host-command-fixture", version: "1" },
   }),
   "tools/list": () => ({
-    tools: ["whoami", "big"].map((name) => ({
+    tools: ["whoami", "big", "slow"].map((name) => ({
       name,
       description: name,
       inputSchema: { type: "object", properties: {} },
@@ -53,10 +54,16 @@ for await (const frame of readFrames(
   64 * 1024 * 1024,
 )) {
   if (frame.id === undefined) continue;
-  const result = respond[frame.method]?.(frame.params?.name) ?? {};
-  await writer.write(
-    new TextEncoder().encode(JSON.stringify({ jsonrpc: "2.0", id: frame.id, result }) + "\n"),
-  );
+  const answer = (result: unknown) =>
+    writer.write(
+      new TextEncoder().encode(JSON.stringify({ jsonrpc: "2.0", id: frame.id, result }) + "\n"),
+    );
+  if (frame.method === "tools/call" && frame.params?.name === "slow")
+    setTimeout(
+      () => void answer(text("slow")).catch(() => {}),
+      Number(Deno.env.get("LOOM_TEST_SLOW_MS") ?? "0"),
+    );
+  else await answer(respond[frame.method]?.(frame.params?.name) ?? {});
 }
 if (stubborn) setInterval(() => {}, 60_000);
 else grandchild.kill("SIGKILL");

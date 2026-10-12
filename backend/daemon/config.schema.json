@@ -187,7 +187,7 @@
             "additionalProperties": false
           },
           "timeout_seconds": {
-            "description": "Seconds one MCP request may take, 1–3600. Loom's relays for http, nix and runtime sources stop a request after this (omitted: 60); Claude and Codex get it as the server's tool-call timeout.",
+            "description": "Seconds one MCP request may take, 1–3600. Loom's relays for http, nix and runtime sources, and for command sources relayed to VM sessions, stop a request after this (omitted: 60); Claude and Codex get it as the server's tool-call timeout.",
             "type": "integer",
             "minimum": 1,
             "maximum": 3600
@@ -1724,7 +1724,7 @@
                   "additionalProperties": false
                 },
                 "timeout_seconds": {
-                  "description": "Seconds one MCP request may take, 1–3600. Loom's relays for http, nix and runtime sources stop a request after this (omitted: 60); Claude and Codex get it as the server's tool-call timeout.",
+                  "description": "Seconds one MCP request may take, 1–3600. Loom's relays for http, nix and runtime sources, and for command sources relayed to VM sessions, stop a request after this (omitted: 60); Claude and Codex get it as the server's tool-call timeout.",
                   "type": "integer",
                   "minimum": 1,
                   "maximum": 3600

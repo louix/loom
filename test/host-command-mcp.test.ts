@@ -139,6 +139,37 @@ test("startHostCommandMcp: a command that ignores EOF and SIGTERM is killed afte
   assert.deepEqual(await stillRunning([worker.pid, who.pid, who.grandchild], 10_000), []);
 });
 
+test("startHostCommandMcp: a request outliving the server's timeout_seconds fails, others are served", async () => {
+  // given: timeout_seconds as the handle carries it, shorter than the slow tool
+  const worker = await startHostCommandMcp(
+    "fixture",
+    { ...mkFixtureSpec({ LOOM_TEST_SLOW_MS: "5000" }), requestTimeoutMs: 500 },
+    Deno.cwd(),
+  );
+  try {
+    if (worker.handle.spec.transport !== "http") throw new Error("expected an HTTP endpoint");
+    const started = Date.now();
+    // when
+    const slow = await fetch(worker.handle.spec.url, {
+      method: "POST",
+      headers: { ...worker.handle.spec.headers, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "slow" },
+      }),
+    });
+    await slow.body?.cancel();
+    // then
+    assert.equal(slow.status, 502);
+    assert.ok(Date.now() - started < 4_000, "cut at the server's timeout, not the slow answer");
+    assert.equal((JSON.parse(await callTool(worker, "whoami")) as Whoami).marker, null);
+  } finally {
+    await worker.close();
+  }
+});
+
 test("startHostCommandMcp: a command that fails names itself and its stderr", async () => {
   // given
   const spec = {

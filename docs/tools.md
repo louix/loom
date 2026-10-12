@@ -280,8 +280,9 @@ stdio bridge answers the agent with an error and sends the server
 `notifications/cancelled`. Claude and Codex also receive it as that server's
 tool-call timeout (`timeout` and `tool_timeout_sec`). Codex's own default is
 also 60 seconds, so a longer limit has to reach it too.
-A `command` source has no Loom relay; for it the setting only sets the
-Claude or Codex tool-call timeout. AISDK agents' MCP client sets no per-call
+A `command` source has no Loom relay in a host session; there the setting
+only sets the Claude or Codex tool-call timeout. One [relayed to a VM
+session](#relaying-a-host-command-to-vm-sessions) has its bridge enforce it too. AISDK agents' MCP client sets no per-call
 limit, so there the setting applies through Loom's relays alone.
 
 ## Host commands
@@ -382,9 +383,9 @@ VM's network policy:
   or your home directory when the session has none (a VM session with a private
   clone). The worktree is writable by the VM agent, so set `cwd` for a command
   that loads code or configuration from its working directory, as `npx` does.
-- **Limits.** Those of Loom's HTTP relay: a request times out after 60 seconds,
-  a request is at most 1 MiB and a response 8 MiB, and at most 32 requests are in
-  flight. A larger message from the command ends the session's run.
+- **Limits.** Those of Loom's HTTP relay: a request times out after
+  `timeout_seconds` (omitted: 60), a request is at most 1 MiB and a response
+  8 MiB, and at most 32 requests are in flight. A larger message from the command ends the session's run.
 
 Preflight is unchanged: the command must be on the daemon's `PATH` and every
 `pass_env` variable set before any session resources are created. Agent

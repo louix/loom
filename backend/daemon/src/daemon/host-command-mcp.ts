@@ -17,7 +17,8 @@ const STARTUP_MARGIN_ms = 10_000;
 /** The HTTP relay's response cap (runtime/src/mcp/main.ts): a browser's inline screenshot fits. */
 const MAX_SERVER_FRAME_BYTES = 8 * 1024 * 1024;
 
-type StdioSpec = Extract<McpServerHandle["spec"], { transport: "stdio" }>;
+type StdioSpec = Extract<McpServerHandle["spec"], { transport: "stdio" }> &
+  Pick<McpServerHandle, "requestTimeoutMs">;
 
 /**
  * Where a relayed command starts without a configured cwd: the session's host worktree, or
@@ -39,8 +40,7 @@ export const startHostCommandMcp = async (
   cwd: string,
   launch: WorkerLauncher = launchLocalWorker,
 ): Promise<ManagedMcp> => {
-  // mcp_servers.<name>.timeout_seconds, once it reaches this handle, is what belongs here.
-  const requestTimeoutMs = MCP_REQUEST_TIMEOUT_DEFAULT_MS;
+  const requestTimeoutMs = spec.requestTimeoutMs ?? MCP_REQUEST_TIMEOUT_DEFAULT_MS;
   const child = launch({
     ...mockLaunchSpec("/"),
     // exitWorker watches its group with ps, Deno granting /proc only to --allow-all:
