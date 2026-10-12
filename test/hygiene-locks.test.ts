@@ -90,3 +90,49 @@ test("startup hygiene clears old index locks in current and legacy worktrees, no
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("startup hygiene clears no index lock when recovery could not list the session VMs", () => {
+  const root = mkdtempSync(join(tmpdir(), "loom-hygiene-locks-"));
+  const repo = join(root, "repo");
+  const env = { HOME: root, XDG_RUNTIME_DIR: "/nonexistent-run", XDG_STATE_HOME: join(root, "st") };
+  const db = openDb(join(root, "loom.db"));
+  try {
+    // given: an old lock in a worktree no VM is known to mount
+    execFileSync("git", ["init", "-q", "-b", "main", repo]);
+    git(
+      repo,
+      "-c",
+      "user.email=t@example.com",
+      "-c",
+      "user.name=t",
+      "commit",
+      "-q",
+      "--allow-empty",
+      "-m",
+      "base",
+    );
+    const paths = loomPaths(repo, join(root, "trees"), env);
+    const tree = join(paths.trees, "unlisted");
+    git(repo, "worktree", "add", "-q", "-b", "a", tree);
+    const lock = lockOf(tree);
+    writeFileSync(lock, "");
+    utimesSync(lock, OLD_s, OLD_s);
+
+    // when
+    const report = runStartupHygiene({
+      paths,
+      registry: new Registry(db, makeLogger("test")),
+      children: new ChildStore(db),
+      epoch: "now",
+      vmWorktrees: "unknown",
+      log: makeLogger("test"),
+    });
+
+    // then
+    assert.deepEqual(report.clearedLocks, []);
+    assert.equal(existsSync(lock), true, "a VM recovery never saw may still run a git there");
+  } finally {
+    db.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});

@@ -16,9 +16,10 @@ export interface HygieneInput {
   epoch: string;
   /**
    * Worktrees mounted into a session VM that recovery left possibly running: a
-   * `git` in its guest is invisible to the host's lock check.
+   * `git` in its guest is invisible to the host's lock check. `unknown` when
+   * recovery could not list every session: no lock is cleared then.
    */
-  vmWorktrees: ReadonlySet<string>;
+  vmWorktrees: ReadonlySet<string> | "unknown";
   log: Logger;
 }
 
@@ -102,9 +103,13 @@ const reapChildren = (children: ChildStore, epoch: string, log: Logger): number 
 /** Paths of the stale `index.lock`s removed from the session worktrees. */
 const clearWorktreeLocks = (
   paths: LoomPaths,
-  vmWorktrees: ReadonlySet<string>,
+  vmWorktrees: ReadonlySet<string> | "unknown",
   log: Logger,
 ): string[] => {
+  if (vmWorktrees === "unknown") {
+    log.warn("left every worktree lock alone: a session VM may still run in any of them");
+    return [];
+  }
   const mounted = new Set([...vmWorktrees].map((tree) => resolve(tree)));
   const clearedLocks: string[] = [];
   for (const trees of new Set([paths.trees, join(paths.legacy.dir, "trees")])) {
@@ -137,7 +142,7 @@ const clearWorktreeLocks = (
 
 const tidyWorktrees = (
   paths: LoomPaths,
-  vmWorktrees: ReadonlySet<string>,
+  vmWorktrees: ReadonlySet<string> | "unknown",
   log: Logger,
 ): { clearedLocks: string[]; worktreePruned: boolean } => {
   const clearedLocks = clearWorktreeLocks(paths, vmWorktrees, log);

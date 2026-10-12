@@ -55,11 +55,17 @@ export const stoppedSessionVm = async (repo: string, id: string, remove = false)
  */
 export type VmRecovery = "stopped" | "unsettled";
 
-/** The sessions recovery acted on; one with no VM to stop is not listed. */
+export interface RepositoryVmRecovery {
+  /** The sessions recovery acted on; one with no VM to stop is not listed. */
+  readonly sessions: ReadonlyMap<string, VmRecovery>;
+  /** `failed`: the sessions could not all be listed, so any VM may still run. */
+  readonly scan: "complete" | "failed";
+}
+
 export const recoverRepositoryVms = async (
   repo: string,
   report: (id: string, error: unknown) => void,
-): Promise<ReadonlyMap<string, VmRecovery>> => {
+): Promise<RepositoryVmRecovery> => {
   const handled = new Map<string, VmRecovery>();
   const deadline = Date.now() + 30_000;
   const root = dirname(sessionVmDirectory(repo, "scan"));
@@ -82,9 +88,11 @@ export const recoverRepositoryVms = async (
       }
     }
   } catch (error) {
-    if (!(error instanceof Deno.errors.NotFound)) report("repository", error);
+    if (error instanceof Deno.errors.NotFound) return { sessions: handled, scan: "complete" };
+    report("repository", error);
+    return { sessions: handled, scan: "failed" };
   }
-  return handled;
+  return { sessions: handled, scan: "complete" };
 };
 
 /** Collect legacy disks without stopping VMs or touching native conversation history. */

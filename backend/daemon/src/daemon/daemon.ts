@@ -799,12 +799,15 @@ export class Daemon {
         this.#registry.setStatus(id, stateError(message), "vm_recovery_failed");
     });
 
-    const vmWorktrees = new Set(
-      [...recoveredVms].flatMap(([id, recovery]) => {
-        const worktree = recovery === "unsettled" ? this.#registry.get(id)?.worktree : null;
-        return worktree ? [worktree] : [];
-      }),
-    );
+    const vmWorktrees =
+      recoveredVms.scan === "failed"
+        ? "unknown"
+        : new Set(
+            [...recoveredVms.sessions].flatMap(([id, recovery]) => {
+              const worktree = recovery === "unsettled" ? this.#registry.get(id)?.worktree : null;
+              return worktree ? [worktree] : [];
+            }),
+          );
     this.#hygiene = runStartupHygiene({
       paths: this.paths,
       registry: this.#registry,
@@ -852,7 +855,7 @@ export class Daemon {
     // one that can't be re-mounted (no provider ref, provider gone) simply
     // stays interrupted.
     const interrupted = (this.#hygiene?.interruptedSessions ?? []).filter(
-      ({ id }) => !recoveredVms.has(id),
+      ({ id }) => !recoveredVms.sessions.has(id),
     );
     if (this.config.autoResume && interrupted.length > 0) {
       void this.#autoResumeInterrupted(interrupted);

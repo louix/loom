@@ -1,7 +1,7 @@
 // test-run: own-process — points XDG_STATE_HOME at its fixture for daemon code that reads Deno.env.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   assertNoActiveVm,
   finishSessionState,
@@ -168,7 +168,10 @@ test("startup migrates stopped session disks without marking the session interru
     await Deno.mkdir(join(dir, "profile"));
     await Deno.writeTextFile(join(dir, "profile/history"), "conversation");
     const errors: unknown[] = [];
-    assert.equal((await recoverRepositoryVms(root, (_, error) => errors.push(error))).size, 0);
+    assert.equal(
+      (await recoverRepositoryVms(root, (_, error) => errors.push(error))).sessions.size,
+      0,
+    );
     assert.deepEqual(errors, []);
     await assert.rejects(Deno.stat(join(dir, "disks")), Deno.errors.NotFound);
     assert.equal(await Deno.readTextFile(join(dir, "profile/history")), "conversation");
@@ -190,11 +193,35 @@ test("startup recovery reports a session VM it found still owned as unsettled", 
       // when
       const recovered = await recoverRepositoryVms(root, () => {});
       // then
-      assert.deepEqual([...recovered], [["running", "unsettled"]]);
+      assert.deepEqual([...recovered.sessions], [["running", "unsettled"]]);
+      assert.equal(recovered.scan, "complete");
     } finally {
       owner.close();
     }
   } finally {
+    if (previous === undefined) Deno.env.delete("XDG_STATE_HOME");
+    else Deno.env.set("XDG_STATE_HOME", previous);
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+test("startup recovery that cannot list the sessions says its scan failed", async () => {
+  const root = await Deno.realPath(await Deno.makeTempDir());
+  const previous = Deno.env.get("XDG_STATE_HOME");
+  Deno.env.set("XDG_STATE_HOME", root);
+  const sessions = dirname(sessionVmDirectory(root, "scan"));
+  try {
+    // given: the sessions directory exists but cannot be read
+    await Deno.mkdir(join(sessions, "running"), { recursive: true });
+    await Deno.chmod(sessions, 0o000);
+    const errors: unknown[] = [];
+    // when
+    const recovered = await recoverRepositoryVms(root, (_, error) => errors.push(error));
+    // then
+    assert.equal(recovered.scan, "failed");
+    assert.equal(errors.length, 1);
+  } finally {
+    await Deno.chmod(sessions, 0o700);
     if (previous === undefined) Deno.env.delete("XDG_STATE_HOME");
     else Deno.env.set("XDG_STATE_HOME", previous);
     await Deno.remove(root, { recursive: true });
