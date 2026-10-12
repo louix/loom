@@ -53,6 +53,9 @@ import {
 
 const zeroUsage = (): TokenUsage => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
 const now = (): number => Date.now();
+/** A Codex epoch-ms timestamp (`startedAtMs` / `completedAtMs`), if it is one. */
+const epochMs = (v: unknown): number | undefined =>
+  typeof v === "number" && Number.isFinite(v) && v > 0 ? v : undefined;
 
 /** Serialize Loom's MCP mounts as a TOML inline table for `codex -c`. */
 export const mcpConfig = (servers: McpServerHandle[]): string => {
@@ -327,6 +330,9 @@ export class CodexAppServerSession implements AgentSession {
   /** Commands and MCP calls reported running at `item/started`: their
    *  `item/completed` adds only the result. */
   readonly #runningTools = new Set<string>();
+  /** When Codex says an item of the current turn started (`item/started`'s
+   *  `startedAtMs`), for a call reported only at its completion. */
+  readonly #itemStartedAt = new Map<string, number>();
   #model: string;
   #effort: EffortLevel | null;
   /** Effective native settings, as Codex last reported them. */
@@ -913,6 +919,7 @@ export class CodexAppServerSession implements AgentSession {
     // is still unconfirmed stays unknown to the daemon (uncertain).
     this.#steered.clear();
     this.#runningTools.clear();
+    this.#itemStartedAt.clear();
     await this.#endTurn();
   }
   async rewind(): Promise<void> {
@@ -1377,8 +1384,9 @@ export class CodexAppServerSession implements AgentSession {
       return;
     }
     const item = p["item"] as Record<string, unknown> | undefined;
-    if (method === "item/started" && item) this.#itemStarted(item);
-    if (method === "item/completed" && item) this.#item(item);
+    // Codex stamps an item's lifecycle; its own times beat when Loom read them.
+    if (method === "item/started" && item) this.#itemStarted(item, epochMs(p["startedAtMs"]));
+    if (method === "item/completed" && item) this.#item(item, epochMs(p["completedAtMs"]));
     if (method === "item/agentMessage/delta") return; // final item is authoritative and avoids duplicate transcript text.
     if (method === "turn/started") this.#turnId = (p["turn"] as any)?.id ?? this.#turnId;
     if (method === "turn/completed") {
@@ -1413,6 +1421,7 @@ export class CodexAppServerSession implements AgentSession {
       this.#turnMode = null;
       this.#turnId = null;
       this.#runningTools.clear();
+      this.#itemStartedAt.clear();
       // Codex reads steered input before its next sampling, so a turn that
       // completed took all of it; a server that does not echo `clientId` on
       // the `userMessage` item is confirmed here. A failed turn says nothing.
@@ -1466,9 +1475,10 @@ export class CodexAppServerSession implements AgentSession {
    * running (the queue folds messages in at its boundary); its completion
    * adds only the result. Steered input appears here as a `userMessage`.
    */
-  #itemStarted(item: Record<string, unknown>): void {
+  #itemStarted(item: Record<string, unknown>, startedAt: number | undefined): void {
     const id = String(item["id"] ?? "");
-    const call = this.#toolCallOf(item);
+    if (id && startedAt !== undefined) this.#itemStartedAt.set(id, startedAt);
+    const call = this.#toolCallOf(item, startedAt ?? now());
     if (item["type"] === "userMessage") this.#userMessageItem(item);
     else if (call && id && !this.#runningTools.has(id)) {
       this.#runningTools.add(id);
@@ -1477,11 +1487,14 @@ export class CodexAppServerSession implements AgentSession {
   }
 
   /** The `tool_call` a command / MCP item reports, or null for other items. */
-  #toolCallOf(item: Record<string, unknown>): Extract<HarnessEvent, { type: "tool_call" }> | null {
+  #toolCallOf(
+    item: Record<string, unknown>,
+    ts: number,
+  ): Extract<HarnessEvent, { type: "tool_call" }> | null {
     const base = {
       type: "tool_call" as const,
       sessionId: this.id,
-      ts: now(),
+      ts,
       id: String(item["id"] ?? ""),
     };
     if (item["type"] === "commandExecution")
@@ -1495,10 +1508,13 @@ export class CodexAppServerSession implements AgentSession {
     return null;
   }
 
-  #item(item: Record<string, unknown>): void {
+  #item(item: Record<string, unknown>, completedAt: number | undefined): void {
     const id = String(item["id"] ?? "");
     const type = item["type"];
-    const ts = now();
+    const ts = completedAt ?? now();
+    // A call first reported here still started when Codex said it did.
+    const startedAt = this.#itemStartedAt.get(id) ?? ts;
+    this.#itemStartedAt.delete(id);
     if (type === "userMessage") this.#userMessageItem(item);
     else if (type === "agentMessage" && typeof item["text"] === "string")
       this.#events.push({ type: "assistant_text", sessionId: this.id, ts, text: item["text"] });
@@ -1518,7 +1534,7 @@ export class CodexAppServerSession implements AgentSession {
         ].join("\n"),
       });
     else if (type === "commandExecution") {
-      const call = this.#toolCallOf(item);
+      const call = this.#toolCallOf(item, startedAt);
       if (!this.#runningTools.delete(id) && call) this.#events.push(call);
       this.#events.push({
         type: "tool_result",
@@ -1532,7 +1548,7 @@ export class CodexAppServerSession implements AgentSession {
       this.#events.push({
         type: "tool_call",
         sessionId: this.id,
-        ts,
+        ts: startedAt,
         id,
         name: "apply_patch",
         input: { changes: item["changes"] },
@@ -1546,7 +1562,7 @@ export class CodexAppServerSession implements AgentSession {
         output: item["status"] ?? "unknown",
       });
     } else if (type === "mcpToolCall") {
-      const call = this.#toolCallOf(item);
+      const call = this.#toolCallOf(item, startedAt);
       if (!this.#runningTools.delete(id) && call) this.#events.push(call);
       this.#events.push({
         type: "tool_result",
@@ -1573,7 +1589,7 @@ export class CodexAppServerSession implements AgentSession {
       this.#events.push({
         type: "tool_call",
         sessionId: this.id,
-        ts,
+        ts: startedAt,
         id,
         name: String(item["tool"] ?? ""),
         input: item["arguments"],

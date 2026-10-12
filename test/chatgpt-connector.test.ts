@@ -3093,3 +3093,40 @@ test("Codex plan windows carry the account's plan when the snapshot names it", a
       undefined,
     );
 });
+
+test("Codex's own item start and completion times stamp the transcript's calls and results", async () => {
+  const cmd = { type: "commandExecution", id: "cmd-1", command: "make", cwd: "/tmp" };
+  const patch = { type: "fileChange", id: "edit-1", changes: [] };
+  const before = Date.now();
+  const events = await turnEvents("codex-item-timing", {
+    LOOM_TEST_TURN_ITEMS: JSON.stringify([
+      { method: "item/started", params: { item: cmd, startedAtMs: 1_000_000 } },
+      {
+        method: "item/completed",
+        params: {
+          item: { ...cmd, status: "completed", aggregatedOutput: "ok" },
+          completedAtMs: 1_004_500,
+        },
+      },
+      // Reported as a call only at completion, yet started when Codex said.
+      { method: "item/started", params: { item: patch, startedAtMs: 2_000_000 } },
+      {
+        method: "item/completed",
+        params: { item: { ...patch, status: "completed" }, completedAtMs: 2_000_750 },
+      },
+      // An older server without timestamps: Loom's receive time stands in.
+      {
+        method: "item/completed",
+        params: { item: { type: "agentMessage", id: "msg-1", text: "done" } },
+      },
+    ]),
+  });
+  const at = (type: string, id: string) =>
+    events.find((e) => e.type === type && "id" in e && e.id === id)?.ts;
+  assert.equal(at("tool_call", "cmd-1"), 1_000_000);
+  assert.equal(at("tool_result", "cmd-1"), 1_004_500);
+  assert.equal(at("tool_call", "edit-1"), 2_000_000);
+  assert.equal(at("tool_result", "edit-1"), 2_000_750);
+  const text = events.find((e) => e.type === "assistant_text");
+  assert.ok(text && text.ts >= before);
+});

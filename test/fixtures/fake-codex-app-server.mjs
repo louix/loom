@@ -80,6 +80,8 @@
  * turn Codex cut short itself. `LOOM_TEST_INTERRUPT_COMPLETION` (JSON turn
  * fields) makes `turn/interrupt` answer with that turn's `turn/completed`
  * (`status: "interrupted"` plus the fields), as Codex 0.160 reports it.
+ * `LOOM_TEST_TURN_ITEMS` (JSON array of `{method, params}`) is sent, tagged
+ * with the thread and turn, just before the automatic `turn/completed`.
  */
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -392,6 +394,12 @@ const handle = (req) => {
     const planning = threadSettings.collaborationMode.mode === "plan";
     const planId = `fake-plan-${turnStartCount}`;
     const completeTurn = () => {
+      for (const { method, params } of JSON.parse(process.env["LOOM_TEST_TURN_ITEMS"] || "[]"))
+        send({
+          jsonrpc: "2.0",
+          method,
+          params: { threadId: startedThreadId, turnId: "fake-turn-1", ...params },
+        });
       if (planning && process.env["LOOM_TEST_PLAN_ITEM"])
         send({
           jsonrpc: "2.0",
