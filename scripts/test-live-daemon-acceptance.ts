@@ -24,8 +24,9 @@
  *                                       held by an interrupt, released in order
  *   agents-claude | agents-codex        Loom agents (docs/loom-agents.md): no native
  *                                       sub-agent tools, loom-agents present; a `self`
- *                                       child started, notified up, read; (Claude) a
- *                                       supervisor message steered down
+ *                                       child started, (Claude) a supervisor message
+ *                                       steered down while it works, notified up,
+ *                                       archive reminder, read
  *   codex-tools [model]                 a Codex thread's own tools: no native sub-agents,
  *                                       or (a v2 model, openai/codex#50880) listed but no
  *                                       spawn starts a thread
@@ -333,7 +334,7 @@ const codexPlan = async () => {
     model,
     effort: "low",
     mode: "auto",
-    isolation: "local",
+    isolation: "none",
   });
   log("created in auto", { model, mode: s.mode, modes: s.modes });
   await rpc("session.setMode", { id: s.id, mode: "plan" });
@@ -472,7 +473,7 @@ const cost = async () => {
   const model = await cheapModel(CLAUDE);
   let s = await create(CLAUDE, "Reply with exactly ok. Do not use tools.", {
     model,
-    isolation: "local",
+    isolation: "none",
   });
   s = await send(s.id, "Reply with exactly ok again. Do not use tools.");
   const beforeRestart = s.costUsd;
@@ -520,7 +521,7 @@ const forks = async () => {
     "Remember the word amber. Reply with exactly ok. Do not use tools.",
     {
       model: claudeModel,
-      isolation: "local",
+      isolation: "none",
     },
   );
   const cf = await rpc("session.fork", {
@@ -554,7 +555,7 @@ const forks = async () => {
     {
       model: codexModel,
       effort: "low",
-      isolation: "local",
+      isolation: "none",
     },
   );
   const xf = await rpc("session.fork", {
@@ -619,7 +620,7 @@ const queue = async (provider: string) => {
   const model = await cheapModel(provider);
   const s = await create(provider, "Reply with exactly ok. Do not use tools.", {
     model,
-    isolation: "local",
+    isolation: "none",
   });
   const mine = () => events.filter((e) => e.id === s.id);
   const rootBash = () =>
@@ -718,7 +719,7 @@ const tail = async () => {
   const model = await cheapModel(CLAUDE);
   const s = await create(CLAUDE, "Reply with exactly ok. Do not use tools.", {
     model,
-    isolation: "local",
+    isolation: "none",
   });
   const mine = () => events.filter((e) => e.id === s.id);
   const wait = async <T>(cond: () => Promise<T | undefined> | T | undefined, what: string) => {
@@ -997,7 +998,7 @@ const codexTools = async (model: string | undefined) => {
     model: model ?? (await cheapModel(CODEX)),
     effort: "low",
     mode: "auto",
-    isolation: "local",
+    isolation: "none",
   });
   const native = await assertCodexTools(s, tap, true);
   if (!native.length) return;
@@ -1036,8 +1037,9 @@ const codexTools = async (model: string | undefined) => {
 
 /**
  * Loom agents, stage 1: a supervisor on `provider` starts a `self` child,
- * is woken by its end-of-turn notification, reads it; with `steer`, also
- * messages it and sees the message reach the child's queue labelled.
+ * is woken by its end-of-turn notification, then by the archive reminder,
+ * and reads it; with `steer`, it first messages the child while it works and
+ * sees the message reach the child labelled, ahead of its report.
  */
 const agents = async (provider: string) => {
   const claudeReal = new Deno.Command("bash", { args: ["-c", "command -v claude"] }).outputSync();
@@ -1050,10 +1052,17 @@ const agents = async (provider: string) => {
   await waitCatalogue(provider);
   const model = await cheapModel(provider);
   const codex = provider === CODEX;
-  const extra = { model, isolation: "local", ...(codex ? { effort: "low", mode: "auto" } : {}) };
+  const steer = !codex;
+  const extra = { model, isolation: "none", ...(codex ? { effort: "low", mode: "auto" } : {}) };
+  // The wait keeps the child working while the supervisor steers it: once it
+  // reports, the archive reminder may have the supervisor archive it. Not
+  // `sleep`: the CLI refuses a long foreground sleep outright.
   const childTask =
-    "Create a file child.txt containing exactly hi, commit it with the message 'add child', then reply with the commit's short hash.";
-  const sup = await create(
+    (steer
+      ? "First run the Bash command `timeout 45 tail -f /dev/null; echo waited` in the foreground. Then c"
+      : "C") +
+    "reate a file child.txt containing exactly hi, commit it with the message 'add child', then reply with the commit's short hash.";
+  let sup = await create(
     provider,
     `${codex ? `${LIST_TOOLS} Then ` : ""}Call agents_profiles. Then call agent_start with profile "self", title "child", and task: "${childTask}". ` +
       "Do not call agent_wait. Then end your turn, replying with the agent's id. Later, when you are notified about the agent, reply with one short sentence and use no tools unless I ask.",
@@ -1088,24 +1097,72 @@ const agents = async (provider: string) => {
       assert(tools.includes(`mcp__loom-agents__${t}`), `loom-agents tool ${t}`);
   }
 
-  // 2. The child: supervised, its own worktree from the supervisor's branch, done.
   const listChildren = async () =>
     (await rpc<SessionSnapshot[]>("session.list")).filter((s) => s.supervisorId === sup.id);
   const kids = await listChildren();
   assert.equal(kids.length, 1, "exactly one child");
-  let child = await settle(kids[0]!.id, (s) => s.status.kind === "idle" && s.turns > 0);
+  const childId = kids[0]!.id;
+  const fromChild = (e: { id: string; type: string; detail?: unknown }) =>
+    e.id === sup.id &&
+    e.type === "user_message" &&
+    (e.detail as { author?: string }).author === `agent:${childId}`;
+
+  // 2. With Claude, one agent_message steer down while the child works.
+  if (steer) {
+    await settleFor(
+      () => events.find((e) => e.id === childId && e.type === "tool_call"),
+      "the child's first tool call",
+    );
+    const steerFrom = events.length;
+    sup = await send(
+      sup.id,
+      `Call agent_message on agent ${childId} with text "Once you have committed, end your reply with ACK." and delivery next_boundary. Then end your turn.`,
+    );
+    const supCalls = events
+      .filter((e) => e.id === sup.id && e.type === "tool_call")
+      .map((e) => (e.detail as { name: string }).name);
+    log("supervisor steered", { reply: texts.get(sup.id)?.slice(-300), calls: supCalls });
+    assert(
+      supCalls.some((n) => n.endsWith("agent_message")),
+      "agent_message called",
+    );
+    const delivered = await settleFor(
+      () =>
+        events
+          .slice(steerFrom)
+          .find(
+            (e) =>
+              e.id === childId &&
+              e.type === "user_message" &&
+              (e.detail as { author?: string }).author === `supervisor:${sup.id}`,
+          ),
+      "the steer",
+    );
+    log("steer delivered", { message: delivered.detail });
+    assert.match((delivered.detail as { text: string }).text, /^\[from your supervisor/);
+    assert(!events.some(fromChild), "the steer reached the child before its report");
+  }
+
+  // 3. The child: supervised, its own worktree from the supervisor's branch, done.
+  // Read through the repository: the child's worktree goes when it is archived.
+  const child = await settle(
+    childId,
+    (s) => s.status.kind === "idle" && s.turns > 0 && s.queue === undefined,
+  );
+  // Read now: the generated title renames the supervisor's branch.
+  const supBranch = (await get(sup.id)).branch!;
   const hasFile = async (ref: string) =>
     new TextDecoder()
       .decode(
         (
           await new Deno.Command("git", {
-            args: ["-C", child.worktree!, "show", `${ref}:child.txt`],
+            args: ["-C", f.repo, "show", `${ref}:child.txt`],
           }).output()
         ).stdout,
       )
       .trim();
   const ancestor = await new Deno.Command("git", {
-    args: ["-C", child.worktree!, "merge-base", "--is-ancestor", sup.branch!, child.branch!],
+    args: ["-C", f.repo, "merge-base", "--is-ancestor", supBranch, child.branch!],
   }).output();
   log("child", {
     id: child.id,
@@ -1118,29 +1175,22 @@ const agents = async (provider: string) => {
     baseBranch: child.baseBranch,
     ownWorktree: child.worktree !== sup.worktree,
     fromSupervisorBranch: ancestor.success,
-    committed: await hasFile("HEAD"),
+    committed: await hasFile(child.branch!),
     clean: !child.git?.dirty,
     aheadOfBase: child.git?.aheadOfBase,
+    turns: child.turns,
     text: texts.get(child.id)?.slice(-300),
   });
   assert.equal(child.agentProfile, "self");
   assert.equal(child.provider, sup.provider);
   assert(child.worktree && child.worktree !== sup.worktree, "its own worktree");
-  assert.equal(child.baseBranch, sup.branch, "branched from the supervisor's branch");
+  assert.equal(child.baseBranch, supBranch, "branched from the supervisor's branch");
   assert(ancestor.success, "the supervisor's branch is an ancestor of the child's");
-  assert.equal(await hasFile("HEAD"), "hi", "child.txt committed");
+  assert.equal(await hasFile(child.branch!), "hi", "child.txt committed");
 
-  // 3. The supervisor is woken by an end-of-turn notification from the child.
-  const notified = await settleFor(
-    () =>
-      events.find(
-        (e) =>
-          e.id === sup.id &&
-          e.type === "user_message" &&
-          (e.detail as { author?: string }).author === `agent:${child.id}`,
-      ),
-    "the notification",
-  );
+  // 4. The supervisor is woken by an end-of-turn notification from the child,
+  // then reminded to archive it.
+  const notified = await settleFor(() => events.find(fromChild), "the notification");
   const woken = await settle(sup.id, (s) => s.status.kind === "idle" && s.turns > sup.turns);
   log("supervisor notified and woken", {
     notification: notified.detail,
@@ -1148,16 +1198,34 @@ const agents = async (provider: string) => {
     reply: texts.get(sup.id)?.slice(-300),
   });
   assert.match((notified.detail as { text: string }).text, /^\[from your agent /);
+  const isReminder = (e: { id: string; type: string; detail?: unknown }) =>
+    e.id === sup.id &&
+    e.type === "user_message" &&
+    (e.detail as { text: string }).text.startsWith("[loom] You have 1 agent");
+  const reminded = await settleFor(() => events.find(isReminder), "the archive reminder");
+  // The turns can all be over before a poll sees one: wait on the reminder
+  // turn's own end.
+  await settleFor(
+    () =>
+      events
+        .slice(events.findIndex(isReminder))
+        .find((e) => e.id === sup.id && e.type === "result"),
+    "the reminder turn's end",
+  );
+  const afterReminder = await settle(
+    sup.id,
+    (s) => s.status.kind === "idle" && s.queue === undefined,
+  );
+  log("supervisor reminded", {
+    reminder: reminded.detail,
+    childArchived: (await get(childId)).status.kind === "done",
+    reply: texts.get(sup.id)?.slice(-300),
+  });
 
-  // 4. agent_read (and, with Claude, one agent_message steer down).
-  const steer = !codex;
-  const childFrom = events.filter((e) => e.id === child.id).length;
+  // 5. agent_read, archived or not: the transcript is kept.
   await send(
     sup.id,
-    `Call agent_read on agent ${child.id} and tell me the name and content of the file it committed.` +
-      (steer
-        ? ` Then call agent_message on it with text "Reply with exactly ACK." and delivery next_boundary. Then end your turn.`
-        : ""),
+    `Call agent_read on agent ${childId} and tell me the name and content of the file it committed.`,
   );
   const readReply = texts.get(sup.id) ?? "";
   const supCalls = events
@@ -1169,47 +1237,14 @@ const agents = async (provider: string) => {
     "agent_read called",
   );
   assert.match(readReply, /child\.txt/);
-  if (steer) {
-    assert(
-      supCalls.some((n) => n.endsWith("agent_message")),
-      "agent_message called",
-    );
-    const delivered = await settleFor(
-      () =>
-        events
-          .slice(0)
-          .filter((e) => e.id === child.id)
-          .slice(childFrom)
-          .find(
-            (e) =>
-              e.type === "user_message" &&
-              (e.detail as { author?: string }).author === `supervisor:${sup.id}`,
-          ),
-      "the steer",
-    );
-    child = await settle(child.id, (s) => s.status.kind === "idle" && s.turns > child.turns);
-    log("steer delivered", {
-      message: delivered.detail,
-      childTurns: child.turns,
-      reply: texts.get(child.id)?.slice(-120),
-    });
-    assert.match((delivered.detail as { text: string }).text, /^\[from your supervisor/);
-  }
   // Let the last notification's wake-up finish before the daemon stops.
   await new Promise((r) => setTimeout(r, 3000));
   const final = await settle(sup.id, (s) => s.status.kind === "idle" && s.queue === undefined);
   log("done", {
-    notifications: events
-      .filter(
-        (e) =>
-          e.id === sup.id &&
-          e.type === "user_message" &&
-          (e.detail as { author?: string }).author === `agent:${child.id}`,
-      )
-      .map((e) => (e.detail as { text: string }).text),
-    supervisorTurns: final.turns,
-    childTurns: (await get(child.id)).turns,
-    costs: [final.costUsd, (await get(child.id)).costUsd],
+    notifications: events.filter(fromChild).map((e) => (e.detail as { text: string }).text),
+    supervisorTurns: [afterReminder.turns, final.turns],
+    childTurns: (await get(childId)).turns,
+    costs: [final.costUsd, (await get(childId)).costUsd],
   });
 };
 
@@ -1305,7 +1340,7 @@ const skills = async () => {
   const s = await create(
     CLAUDE,
     "Use the Skill tool to load the skill coding-style. Then reply with only the first markdown heading in its text.",
-    { model, isolation: "local", profile: "styled" },
+    { model, isolation: "none", profile: "styled" },
   );
   const mine = events.filter((e) => e.id === s.id);
   const call = mine.find(
