@@ -162,6 +162,63 @@ checked against this server; a full login and tool call with it has not been run
 A failed login names its cause, for example
 `MCP OAuth: registration_failed: HTTP 400 invalid_client_metadata: …`.
 
+#### Without OAuth: AWS's SigV4 proxy
+
+Where OAuth sign-in is unavailable (an organization can withhold
+`signin:AuthorizeOAuth2Access`), AWS's [MCP Proxy for
+AWS](https://github.com/aws/mcp-proxy-for-aws) signs the same server's requests
+with your AWS CLI credentials. It is a [host command](#host-commands);
+[relayed](#relaying-a-host-command-to-vm-sessions), VM sessions can use it too:
+
+```jsonc
+{
+  "mcp_servers": {
+    "aws": {
+      "source": {
+        "kind": "command",
+        "command": "uvx",
+        "args": [
+          "mcp-proxy-for-aws-cli@1.7.0",
+          "https://aws-mcp.us-east-1.api.aws/mcp",
+          // Hides tools not annotated read-only; drop it to let agents change resources.
+          "--read-only",
+          // Optional: default region for AWS operations, otherwise the profile's.
+          // After the URL: --metadata takes the arguments that follow it.
+          "--metadata",
+          "AWS_REGION=eu-west-1",
+        ],
+        "env": { "AWS_PROFILE": "my-profile" },
+      },
+      "vm_sessions": "relay",
+      "timeout_seconds": 120,
+    },
+  },
+  "session": { "mcp_servers": ["aws"] },
+}
+```
+
+**The proxy runs on the host with your AWS credentials, and VM agents can call
+it.** Whatever that profile may do in AWS, an agent can now ask for.
+
+- **Credentials.** The proxy reads `~/.aws` like the AWS CLI, with the profile
+  from `env.AWS_PROFILE` (or the daemon's own `AWS_PROFILE`, inherited). Signing
+  in is yours to do (`aws sso login --profile my-profile` or `aws login`). The
+  proxy rereads credentials on every request, so a refreshed sign-in applies to a
+  running session; a session that started while signed out fails with
+  `MCP initialization failed: No AWS credentials available…`, and needs resuming.
+- **Permissions.** No MCP-specific IAM action, and not
+  `AWSMCPSignInOAuthAccessPolicy`: each call needs the profile's own permission
+  for the AWS action it makes. AWS marks those requests with the
+  `aws:ViaAWSMCPService` condition key, which an organization's policies can deny.
+- **First start.** `uvx` downloads the proxy and its dependencies (about 230 MB
+  of cache) the first time, taking tens of seconds; run
+  `uvx mcp-proxy-for-aws-cli@1.7.0 --help` once beforehand. The pinned
+  `-cli` package freezes its whole dependency tree.
+- **NixOS and Guix System.** A Python that uv downloads cannot run there (there
+  is no `/lib64` loader): put `uv` and `python3` in a profile on the daemon's
+  `PATH` (`nix profile add nixpkgs#uv nixpkgs#python3`) and add
+  `"UV_PYTHON_DOWNLOADS": "never"` to `env`.
+
 ## Permissions
 
 A local `source` (`nix`, `runtime`) always runs in a VM; the old
@@ -372,6 +429,9 @@ VM's network policy:
   own process, started before its VM boots and stopped with the session; sessions
   never share one. A command that exits ends its session's run; resume the session
   to start it again.
+- **Startup.** The session starts once the command answers MCP `initialize`,
+  within `timeout_seconds` (omitted: 60). A failure, with the command's error and
+  the end of its stderr, stops the session from starting.
 - **No orphans.** The process runs in a process group Loom ends — SIGTERM, then
   SIGKILL after 2 seconds — when the session stops, when the daemon stops, and
   when the daemon dies. A descendant that puts itself in a process group of its
