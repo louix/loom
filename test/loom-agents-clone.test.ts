@@ -260,6 +260,9 @@ test("a base counts as fetched only when a launch succeeded and its clone has th
     failedLaunch(kid.id);
     first.endStream();
     await until(() => !h.daemon.sessions.has(kid.id) || h.daemon.sessions.isEnded(kid.id), "cold");
+    // The rename republishes the kid's base under its guest Git, during which a
+    // send answers busy (H7); under load it can outlast the failed launch.
+    await until(() => !h.daemon.sessions.isBusy(kid.id), "renamed base republished");
     // The next launch succeeds, but its checkout did not fetch the new name.
     hooks.fetch = false;
     await c.request("session.send", { id: kid.id, text: "go on" });
