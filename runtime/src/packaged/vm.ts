@@ -224,7 +224,8 @@ export const vmArguments = (b: VmBinding) => {
         ]),
     ...(b.manifest.environmentCompatibility ? ["-v", `${b.artifact}:/run/loom/code:ro`] : []),
     ...workspaceVolumes,
-    // Not `--allow-host`, which also admits every subdomain of the name.
+    // Not `--allow-host`, which also admits every subdomain of the name; the
+    // grants hold exact names only, so each pattern matches just its host.
     ...(grants?.network ?? []).flatMap((host) => ["--allow-host-pattern", host]),
     "-w",
     guestWorkingDirectory(b),

@@ -3,7 +3,7 @@ import { z } from "zod";
 import {
   mcpSourceSchema,
   mcpGrantsSchema,
-  mcpHostPatternsSchema,
+  mcpHostsSchema,
 } from "../../../../core/src/mcp-config.ts";
 import { MCP_CAPABILITIES } from "@loom/core/types";
 import { LOOM_AGENTS_SERVER, SELF_PROFILE } from "@loom/core/agents";
@@ -93,8 +93,8 @@ const selections = preprocess(
 );
 const mcpNetworkSchema = z
   .strictObject({
-    allowed_hosts: mcpHostPatternsSchema.describe(
-      "DNS names the tool VM may reach, on any port; *.example.com covers every subdomain, not the name itself.",
+    allowed_hosts: mcpHostsSchema.describe(
+      "Exact DNS names the tool VM may reach, on any port; a name grants only itself, not its subdomains.",
     ),
     presets: networkPresetsSchema.describe("Named host sets: nix, javascript, python, rust."),
   })
@@ -108,9 +108,7 @@ export const mcpGrantsConfigSchema = z.strictObject({
     mcpNetworkSchema,
     z.union([
       mcpNetworkSchema,
-      mcpHostPatternsSchema
-        .meta({ deprecated: true })
-        .describe("Replaced by { allowed_hosts: [...] }."),
+      mcpHostsSchema.meta({ deprecated: true }).describe("Replaced by { allowed_hosts: [...] }."),
     ]),
   ),
 });

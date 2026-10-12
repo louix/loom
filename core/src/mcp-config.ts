@@ -5,22 +5,24 @@ const text = z
   .string()
   .min(1)
   .refine((v) => v.trim() === v, "must not have surrounding whitespace");
-// An exact DNS name, or `*.` plus one: every subdomain of that name, not the name itself.
-const hostPattern = z
+// Exact DNS names only: a `*.` grant would take a public suffix (`*.github.io`,
+// `*.co.uk`) as readily as one organisation's domain.
+const host = z
   .string()
   .max(253)
   .regex(
-    /^(?:\*\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/i,
+    /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/i,
+    "must be an exact DNS name (no wildcards, URLs, IPs or ports)",
   );
-export const mcpHostPatternsSchema = z
-  .array(hostPattern)
+export const mcpHostsSchema = z
+  .array(host)
   .max(64)
   .default([])
   .transform((hosts) => [...new Set(hosts.map((h) => h.toLowerCase()))]);
-/** Resolved grants, as launches carry them: `network` is every allowed host pattern. */
+/** Resolved grants, as launches carry them: `network` is every allowed host. */
 export const mcpGrantsSchema = z.strictObject({
   workspace: z.enum(["none", "read-only", "read-write"]).default("none"),
-  network: mcpHostPatternsSchema,
+  network: mcpHostsSchema,
 });
 export type McpGrants = z.output<typeof mcpGrantsSchema>;
 export const nixMcpSourceSchema = z.strictObject({

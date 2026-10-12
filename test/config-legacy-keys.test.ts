@@ -113,12 +113,12 @@ test("an MCP server's grants.network host list reads as grants.network.allowed_h
     },
     session: { mcp_servers: ["docs"] },
   });
-  const legacy = normalizeConfig(server(["*.Example.com"]));
-  const current = normalizeConfig(server({ allowed_hosts: ["*.Example.com"] }));
+  const legacy = normalizeConfig(server(["API.Example.com"]));
+  const current = normalizeConfig(server({ allowed_hosts: ["API.Example.com"] }));
   for (const cfg of [legacy, current]) {
     const [tool] = cfg.mcp;
     assert(tool && "grants" in tool);
-    assert.deepEqual(tool.grants, { workspace: "read-only", network: ["*.example.com"] });
+    assert.deepEqual(tool.grants, { workspace: "read-only", network: ["api.example.com"] });
   }
   assert.deepEqual(configKeyWarnings(legacy), [
     "mcp_servers.docs.grants.network is deprecated; write mcp_servers.docs.grants.network.allowed_hosts instead",

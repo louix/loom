@@ -1,6 +1,6 @@
 /**
- * Live check of MCP tool-VM network grants: an exact grant admits only that name,
- * `*.` admits subdomains only. Needs internet access; uses throwaway VM state only.
+ * Live check of MCP tool-VM network grants: an exact grant admits only that name.
+ * Needs internet access; uses throwaway VM state only.
  *
  *   deno run -A scripts/test-mcp-network-grants-vm.ts <session-runtime> <smolvm>
  */
@@ -112,10 +112,5 @@ const exact = await probe(["github.com"]);
 report.push(exact);
 assert.equal(exact.statuses[apex], 0, "exact grant did not reach its host");
 assert.notEqual(exact.statuses[subdomain], 0, "exact grant admitted a subdomain");
-
-const wildcard = await probe(["*.github.com"]);
-report.push(wildcard);
-assert.equal(wildcard.statuses[subdomain], 0, "*. grant did not reach a subdomain");
-assert.notEqual(wildcard.statuses[apex], 0, "*. grant admitted the apex");
 
 console.log(JSON.stringify({ passed: true, report }, null, 2));

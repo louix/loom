@@ -82,10 +82,13 @@ test("MCP catalogs reject permissions on remote servers and malformed local gran
     { ...tilth, auth: kagi.auth },
     { ...tilth, grants: { workspace: "all" } },
     { ...tilth, grants: { network: ["https://example.com"] } },
-    // Only a whole leading `*.` label before a multi-label name is a pattern.
+    // Exact names only: no wildcard, not even a whole leading `*.` label.
     ...[
       "*",
       "*.com",
+      "*.example.com",
+      "*.github.io",
+      "*.co.uk",
       "*.*.example.com",
       "api.*.example.com",
       "*example.com",
@@ -108,8 +111,8 @@ test("MCP catalogs reject permissions on remote servers and malformed local gran
     /vm_tools\.tilth and mcp_servers\.tilth share the name tilth/,
   );
   assert.deepEqual(
-    mcpGrantsSchema.parse({ network: ["EXAMPLE.com", "example.com", "*.Example.com"] }).network,
-    ["example.com", "*.example.com"],
+    mcpGrantsSchema.parse({ network: ["EXAMPLE.com", "example.com", "API.Example.com"] }).network,
+    ["example.com", "api.example.com"],
   );
 });
 
@@ -156,7 +159,7 @@ const binding: VmBinding = {
 };
 test("VM grants enforce no mounts, read-only mounts, and independent network", () => {
   for (const workspace of ["none", "read-only", "read-write"] as const) {
-    for (const network of [[], ["example.com", "*.files.example.com"]]) {
+    for (const network of [[], ["example.com", "files.example.com"]]) {
       const b = { ...binding, mcpGrants: { workspace, network } };
       const args = vmCreateArguments(b);
       assert.equal(args.includes("--net"), false);

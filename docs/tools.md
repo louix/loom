@@ -137,9 +137,10 @@ A local `source` (`nix`, `runtime`) always runs in a VM; the old
   read-only access. No workspace grant means no repository mount and a disposable
   guest working directory.
 - `network.allowed_hosts`: exact DNS names, e.g. `["api.example.com"]`. Empty means offline.
-  A name grants only itself, not its subdomains; grant those explicitly with a
-  leading `*.`, e.g. `"*.example.com"`, which matches every subdomain but not
-  `example.com` itself. This uses smolvm's `--allow-host-pattern`: the guest can
+  A name grants only itself, not its subdomains; there are no wildcards (a
+  `*.` grant would admit a public suffix such as `*.github.io` as readily as
+  one organisation's domain), so list each host. This uses smolvm's
+  `--allow-host-pattern` with each exact name: the guest can
   resolve only granted names, exact names also resolve at VM start, and traffic
   is permitted to the resolved IP addresses on all ports. It is an IP allowlist,
   not an HTTPS hostname/path filter; other services sharing an allowed IP are

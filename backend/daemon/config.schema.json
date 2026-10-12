@@ -146,14 +146,14 @@
                     "type": "object",
                     "properties": {
                       "allowed_hosts": {
-                        "description": "DNS names the tool VM may reach, on any port; *.example.com covers every subdomain, not the name itself.",
+                        "description": "Exact DNS names the tool VM may reach, on any port; a name grants only itself, not its subdomains.",
                         "default": [],
                         "maxItems": 64,
                         "type": "array",
                         "items": {
                           "type": "string",
                           "maxLength": 253,
-                          "pattern": "^(?:\\*\\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+                          "pattern": "^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"
                         }
                       },
                       "presets": {
@@ -178,7 +178,7 @@
                     "items": {
                       "type": "string",
                       "maxLength": 253,
-                      "pattern": "^(?:\\*\\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+                      "pattern": "^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"
                     }
                   }
                 ]
@@ -1657,14 +1657,14 @@
                           "type": "object",
                           "properties": {
                             "allowed_hosts": {
-                              "description": "DNS names the tool VM may reach, on any port; *.example.com covers every subdomain, not the name itself.",
+                              "description": "Exact DNS names the tool VM may reach, on any port; a name grants only itself, not its subdomains.",
                               "default": [],
                               "maxItems": 64,
                               "type": "array",
                               "items": {
                                 "type": "string",
                                 "maxLength": 253,
-                                "pattern": "^(?:\\*\\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+                                "pattern": "^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"
                               }
                             },
                             "presets": {
@@ -1689,7 +1689,7 @@
                           "items": {
                             "type": "string",
                             "maxLength": 253,
-                            "pattern": "^(?:\\*\\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+                            "pattern": "^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"
                           }
                         }
                       ]
