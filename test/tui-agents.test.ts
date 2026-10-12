@@ -29,7 +29,7 @@ import {
 import { newPrompt, openPrompt } from "@loom/tui/overlay";
 import { applyProfile, profileBlocked } from "@loom/tui/new-workspace";
 import { fleetPaneView } from "@loom/tui/views";
-import { Fleet } from "@loom/tui/components";
+import { detailLayout, Fleet } from "@loom/tui/components";
 import { entryAuthor } from "@loom/tui/queue-view";
 import { shownStatusIn } from "@loom/tui/fleet-status";
 
@@ -222,6 +222,55 @@ test("the fleet draws agents on tree branches, and a supervisor's combined cost 
   assert.match(line("kid1"), /└ .*kid1.*Implement/);
   assert.equal(out.includes("Old"), false, "the archived agent waits for the supervisor's →");
   assert.doesNotMatch(line("other"), /[├└]/);
+});
+
+test("Detail shows a supervisor's spend with its agents' under its own, as the fleet row's Σ", () => {
+  const { lead, kids, other } = tree();
+  const all = [lead, ...kids, other];
+  const detail = (s: SessionSnapshot, list: readonly SessionSnapshot[]) => {
+    const state = withFleet([...list]);
+    const supervises = list.some((x) => x.supervisorId === s.id);
+    const withAgents = supervises ? treeCost(s, fleetSessions(state)) : null;
+    return stripVTControlCharacters(
+      renderToString(detailLayout(s, { width: 100, withAgents }).render(0), { columns: 100 }),
+    );
+  };
+  const out = detail(lead, all);
+  assert.match(
+    out,
+    /\$1\.00 reported\s+│\n│ {9}Σ \$2\.00 with agents\s+│\n/,
+    "own first, combined under it",
+  );
+  assert.doesNotMatch(detail(other, all), /with agents|Σ/, "a session with no agents: unchanged");
+  assert.doesNotMatch(detail(kids[0]!, all), /with agents/, "nor a leaf agent");
+
+  // Two levels down, part estimated, then part unpriced.
+  const grand = snap({
+    id: "grand",
+    status: "running",
+    supervisorId: "kid1",
+    costUsd: 0.75,
+    costSource: "table",
+    createdAt: 21,
+  });
+  const deep = [...all, grand];
+  assert.match(detail(lead, deep), / Σ ~\$2\.75 with agents, part estimated\s+│\n/);
+  assert.match(
+    detail(kids[0]!, deep),
+    /\$0\.50 reported\s+│\n│ {9}Σ ~\$1\.25 with agents, part estimated\s+│\n/,
+  );
+  const state = withFleet(deep);
+  const view = fleetPaneView(state.fleet, fleetLayout(state, 40), "lead", null, null);
+  const fleetOut = stripVTControlCharacters(
+    renderToString(createElement(Fleet, { view, find: null, tick: 0, width: 100, now: 0 }), {
+      columns: 100,
+    }),
+  );
+  assert.match(fleetOut, /Coordinate\s+\?1 Σ~\$2\.75/, "the fleet row agrees");
+  const unpriced = [...deep, snap({ id: "free", status: "idle", supervisorId: "grand" })];
+  assert.match(detail(lead, unpriced), / Σ -- with agents, part unpriced\s+│\n/);
+  const estimated = [lead, ...kids].map((x) => ({ ...x, costSource: "table" as const }));
+  assert.match(detail(estimated[0]!, estimated), / Σ ~\$2\.00 with agents, estimated\s+│\n/);
 });
 
 test("archiving or deleting a supervisor asks about its agents, c toggles stop and detach", () => {

@@ -546,6 +546,7 @@ export const detailLayout = (
     compacting = s?.compacting ?? null,
     archiving = false,
     waiting = [],
+    withAgents = null,
   }: {
     width?: number;
     account?: string;
@@ -555,6 +556,9 @@ export const detailLayout = (
     archiving?: boolean;
     /** Its agents (however deep) waiting on the person — see `fleet-status.ts`. */
     waiting?: readonly SessionSnapshot[];
+    /** For a supervisor: its spend with its agents' (however deep) — the
+     *  fleet row's `Σ`, see `treeCost`. Null for a session that supervises none. */
+    withAgents?: Pick<SessionSnapshot, "costUsd" | "costSource"> | null;
   } = {},
 ) => {
   // `hovered`: the mouse pointer is over this row's click target.
@@ -678,6 +682,18 @@ export const detailLayout = (
           (hitRate == null ? "" : ` · ${Math.round(hitRate * 100)}% cached`)}
       </Field>,
     );
+    // Under its own cost, a supervisor's with its agents' (the fleet row's Σ);
+    // reported is the default and goes unsaid.
+    if (withAgents) {
+      const { costUsd, costSource } = withAgents;
+      const scope = costSource === "provider" ? "" : `, ${costScope(costSource)}`;
+      add(
+        <Field label="">
+          <Text tone={costUsd ? "good" : "faint"}>{`Σ ${sessionCost(withAgents)}`}</Text>
+          <Text tone="faint">{` with agents${scope}`}</Text>
+        </Field>,
+      );
+    }
     // Reserve one row per window so clock ticks cannot change geometry.
     for (const [i, [window, rl]] of Object.entries(s.rateLimits).entries())
       add((now) => (

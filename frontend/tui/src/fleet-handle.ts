@@ -109,6 +109,7 @@ import {
   providerColorOf,
   cacheStatus,
   queueFor,
+  treeCost,
 } from "./model.ts";
 import {
   browse,
@@ -466,6 +467,10 @@ const deriveView = (
     compacting: sel?.compacting ?? null,
     archiving: state.archiving.includes(sel?.id ?? ""),
     waiting: sel ? waitingAgentsIn(fleetSessions(state))(sel) : [],
+    withAgents:
+      sel && agentsOf(fleetSessions(state), sel.id).length > 0
+        ? treeCost(sel, fleetSessions(state))
+        : null,
   });
   // The `session` view gives Detail + events the whole terminal; the wide
   // `overview` split confines them to the right column.

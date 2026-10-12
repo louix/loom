@@ -221,6 +221,24 @@ describe("tui-render", { concurrency: 4 }, () => {
     }
   });
 
+  test("Detail of a selected supervisor adds its agents' spend, as its fleet row does", async () => {
+    const { stdout, app, settle } = await mountFleet(
+      [
+        snap({ id: "lead", title: "lead", costUsd: 1.2, costSource: "provider" }),
+        snap({ id: "kid", supervisorId: "lead", costUsd: 2.2, costSource: "table" }),
+      ],
+      { columns: 160 },
+    );
+    try {
+      await settle();
+      const frame = stripVTControlCharacters(stdout.last);
+      assert.match(frame, /Σ~\$3\.40/);
+      assert.match(frame, /\$1\.20 reported\s+│\n.*│ {9}Σ ~\$3\.40 with agents, part estimated/);
+    } finally {
+      app.unmount();
+    }
+  });
+
   test("esc does not quit; only overlays back out", async () => {
     const { stdout, stdin, app, settle } = await mountFleet([snap({ title: "a task" })]);
     try {
