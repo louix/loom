@@ -32,6 +32,10 @@ historical finding; completed plans and investigation reports remain in Git hist
 - A named `check` tool with bounded output for configured project checks.
 - Measure package size before dependency-pruning or standalone-distribution work.
 - Consider a standalone isolation launcher as a separate product.
+- Loom-managed memory shared across providers (Claude, Codex, AISDK), replacing
+  each provider's own: Claude Code's auto memory is off by default
+  (`providers.claude.auto_memory`), since its notes are per provider and, in a
+  session VM, per session.
 
 ## Engineering follow-ups
 
