@@ -124,8 +124,39 @@ the definition from config.
 
 Use distinct server names for different accounts. Login is explicit and requires
 one name; device flow, batch login and client ID metadata documents are not
-supported. Named provider compatibility has not yet been verified. See the
-[OAuth internals](mcp-oauth.md) for protocol and storage details.
+supported. See the [OAuth internals](mcp-oauth.md) for protocol and storage
+details.
+
+### AWS
+
+The AWS MCP Server signs in through AWS sign-in with dynamic registration, so an
+empty OAuth block is enough. Its tools (`aws___run_script` especially) can
+outlast the default 60-second request limit; AWS's own client configuration uses
+100 seconds:
+
+```jsonc
+{
+  "mcp_servers": {
+    "aws": {
+      "source": { "kind": "http", "url": "https://aws-mcp.us-east-1.api.aws/mcp" },
+      "auth": { "oauth": {} },
+      "timeout_seconds": 120,
+    },
+  },
+  "session": { "mcp_servers": ["aws"] },
+}
+```
+
+```sh
+loom mcp login aws
+```
+
+The identity you sign in as needs the `AWSMCPSignInOAuthAccessPolicy` managed
+IAM policy, plus permissions for whatever the tools then call. Access tokens
+last an hour and Loom refreshes them, but AWS's refresh tokens are single-use
+and expire within 12 hours of login, so expect to run `loom mcp login aws` again
+roughly every 12 hours. Loom's discovery has been checked against this server; a full
+login and tool call with it has not been run.
 
 ## Permissions
 

@@ -15,7 +15,8 @@ with compatibility for 2025-11-25 servers within this subset.
 Device flow, service accounts, automatic scope escalation, client ID metadata
 documents, batch login and provider-specific authentication adapters are not
 supported. Dynamic registration is a compatibility path, not universal automatic
-registration. Real service compatibility remains unverified.
+registration. Discovery has been checked against AWS's MCP server
+([Tools](tools.md#aws)); a full login with a real service remains unverified.
 
 ## Login and configuration identity
 
