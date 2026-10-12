@@ -145,7 +145,7 @@ export type SendOutcome =
   | { readonly kind: "refused"; readonly message: string }
   /** It may have arrived (`DeliveryUncertainError`). */
   | { readonly kind: "uncertain"; readonly message: string }
-  /** The adapter was replaced while it went. */
+  /** Nothing went: the run had ended, or was replaced, before the hand-over. */
   | { readonly kind: "detached" };
 
 export type QueueEvent =
@@ -535,8 +535,8 @@ const onSent = (
       ]);
     }
     case "detached":
-      return done({ ...m, delivery: { kind: "ready" } }, [
-        { kind: "requeue", ids: rest },
+      return thenEvaluate({ ...m, delivery: { kind: "ready" } }, [
+        { kind: "requeue", ids: [ev.entryId, ...rest] },
         { kind: "publish" },
       ]);
     default:
@@ -636,8 +636,29 @@ const transition = (m: QueueMachine, ev: QueueEvent, world: World): Draft => {
       const ids = run.inputReceipts ? deliveringIds(slots, true) : [];
       return done(m, ids.length > 0 ? [{ kind: "mark_uncertain", ids }] : []);
     }
-    case "attached":
-      return done({ ...m, delivery: { kind: "ready" }, stop: { kind: "none" } });
+    case "attached": {
+      const attached: QueueMachine = { ...m, delivery: { kind: "ready" }, stop: { kind: "none" } };
+      if (m.delivery.kind !== "handing_over") return done(attached);
+      // The previous adapter's trip is cut off, and what it reports later is
+      // ignored: the entry on the wire may have reached that adapter, the
+      // rest never went.
+      const { ids, at } = m.delivery;
+      const held = writeHold(attached, loomOn(m.hold, "rejected"), {
+        reasserted: false,
+        keepForced: false,
+      });
+      return done(held.machine, [
+        { kind: "mark_uncertain", ids: ids.slice(at, at + 1) },
+        { kind: "requeue", ids: ids.slice(at + 1) },
+        ...held.effects,
+        {
+          kind: "warn",
+          message:
+            "A queued message was being handed over as the session's adapter was replaced and may not have reached the agent; the queue is held — review it with q.",
+        },
+        PUBLISH,
+      ]);
+    }
     case "run_moved":
       return thenEvaluate(m);
     case "status_moved": {

@@ -586,6 +586,54 @@ describe("hand-over", () => {
     assert.equal(went.machine.push.kind, "none");
   });
 
+  test("a new adapter attached mid-trip settles the old trip's entries, whose late events change nothing", () => {
+    // given: "a" is on the wire to the old adapter, "b" not yet sent
+    const trip = run(scheduled.machine, [{ kind: "gate_reached", op }], world);
+    const handed = mkWorld([
+      mkSlot("a", { state: "delivering" }),
+      mkSlot("b", { state: "delivering" }),
+    ]);
+    // when
+    const attached = run(trip.machine, [{ kind: "attached" }], handed);
+    const late = run(
+      attached.machine,
+      [
+        { kind: "sent", op, entryId: "a", outcome: { kind: "ok" } },
+        { kind: "handover_ended", op },
+      ],
+      handed,
+    );
+    // then
+    assert.deepEqual(attached.effects.slice(0, 2), [
+      { kind: "mark_uncertain", ids: ["a"] },
+      { kind: "requeue", ids: ["b"] },
+    ]);
+    assert.ok(has(attached.effects, "warn"));
+    assert.deepEqual(attached.machine.hold, { kind: "loom", reason: "rejected" });
+    assert.equal(attached.machine.delivery.kind, "ready");
+    assert.equal(has(late.all, "send"), false);
+    assert.equal(has(late.all, "consume"), false);
+  });
+
+  test("an adapter attached with no trip under way changes no entry", () => {
+    const { machine, effects } = run(scheduled.machine, [{ kind: "attached" }], world);
+    assert.deepEqual(effects, []);
+    assert.deepEqual(machine.hold, FREE);
+  });
+
+  test("a send that found no adapter puts it and the rest back", () => {
+    const trip = run(scheduled.machine, [{ kind: "gate_reached", op }], world);
+    const { machine, effects } = run(
+      trip.machine,
+      [{ kind: "sent", op, entryId: "a", outcome: { kind: "detached" } }],
+      mkWorld([mkSlot("a", { state: "delivering" }), mkSlot("b", { state: "delivering" })], {
+        attached: false,
+      }),
+    );
+    assert.deepEqual(effects[0], { kind: "requeue", ids: ["a", "b"] });
+    assert.equal(machine.delivery.kind, "ready");
+  });
+
   test("a stale trip's end does not reset the next one", () => {
     const next = run(scheduled.machine, [{ kind: "handover_ended", op }], world);
     assert.equal(

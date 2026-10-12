@@ -1034,7 +1034,11 @@ export class SessionManager {
       });
       return { kind: uncertain ? "uncertain" : "refused", message };
     }
-    if (this.#running.get(id) !== run) return { kind: "detached" };
+    if (this.#running.get(id) !== run)
+      return {
+        kind: "uncertain",
+        message: "the session's adapter was replaced as the message was handed over",
+      };
     if (!e.midTurn) {
       this.#hooks.onFreshTurn?.(id, entry.text);
       // S2, as in `send`: only claim `running` if nothing moved the state yet.
