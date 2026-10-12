@@ -7,7 +7,8 @@ import { join } from "node:path";
 import { openDb, type Db } from "@loom/daemon/store/db";
 import { MIGRATIONS } from "@loom/daemon/store/migrations";
 import { MessageQueueStore, type QueueResult } from "@loom/daemon/store/message-queue";
-import { QUEUE_LIMITS, type QueueEntry, waitsBehind } from "@loom/core/message-queue";
+import { QUEUE_LIMITS, type QueueEntry } from "@loom/core/message-queue";
+import type { Hold } from "@loom/daemon/daemon/queue-machine";
 import { setLogLevel } from "@loom/core/logger";
 
 setLogLevel("error");
@@ -209,18 +210,15 @@ test("requeue puts a discarded entry back at its old place", () => {
   });
 });
 
-test("a restart marks delivering entries uncertain and holds only those sessions", () => {
+test("a restart looks at the sessions with entries left delivering, not yet uncertain", () => {
   withStore((q) => {
     add(q, "a");
     add(q, "b");
     q.enqueue("other", { id: "o", text: "o", author: "c1", delivery: "next_boundary" });
     q.markDelivering("s", ["a"]);
-    assert.deepEqual(q.recoverAfterRestart(), ["s"]);
-    assert.equal(q.hold("s"), "restart");
-    assert.equal(q.hold("other"), null);
-    assert.equal(q.entry("s", "a")?.uncertain, true);
-    assert.equal(q.entry("s", "b")?.state, "queued");
-    assert.deepEqual(q.sessionsWithQueues().sort(), ["other", "s"]);
+    q.markDelivering("other", ["o"]);
+    q.markUncertain("other");
+    assert.deepEqual(q.sessionsDelivering(), ["s"]);
   });
 });
 
@@ -311,10 +309,10 @@ test("migration 31 applies to a copied pre-31 database", () => {
     old.close();
     const db = openDb(path);
     const q = new MessageQueueStore(db);
-    assert.equal(q.hold("old"), null);
+    assert.deepEqual(q.hold("old"), { kind: "free" });
     value(q.enqueue("old", { id: "x", text: "hi", author: "c", delivery: "end_of_turn" }));
-    q.applyHold("old", { t: "stop", by: null, empty: true });
-    assert.equal(q.hold("old"), "interrupt");
+    q.setHold("old", { kind: "loom", reason: "interrupt" });
+    assert.deepEqual(q.hold("old"), { kind: "loom", reason: "interrupt" });
     assert.throws(() =>
       db.prepare("UPDATE sessions SET queue_hold = 'bogus' WHERE id = 'old'").run(),
     );
@@ -361,148 +359,22 @@ test("migration 32 orders a pre-32 database's settled rows and keeps answering t
   }
 });
 
-test("a hold records whose stop it is; lifting it forgets that", () =>
+test("every hold round-trips through its column, and nothing else is stored", () =>
   withStore((q, db) => {
-    assert.equal(q.holdCause("s"), null);
-    q.applyHold("s", { t: "stop", by: "supervisor", empty: true });
-    assert.deepEqual(q.holdCause("s"), { reason: "interrupt", by: "supervisor" });
-    assert.equal(q.hold("s"), "interrupt", "hold() is holdCause()'s reason");
-    q.applyHold("s", { t: "lift" });
-    assert.equal(q.holdCause("s"), null);
-    const row = db.prepare("SELECT queue_hold_by FROM sessions WHERE id = 's'").get() as {
-      queue_hold_by: string | null;
-    };
-    assert.equal(row.queue_hold_by, null);
-    assert.throws(() => db.prepare("UPDATE sessions SET queue_hold_by = 'agent'").run());
-  }));
-
-// docs/message-queue.md, "Holds": every row of the table, through the one write.
-const USER = { reason: "interrupt", by: "user" } as const;
-const SUPERVISOR = { reason: "interrupt", by: "supervisor" } as const;
-const LOOM_HOLDS = [
-  { t: "loom", reason: "crash" },
-  { t: "loom", reason: "restart" },
-  { t: "loom", reason: "rejected" },
-] as const;
-
-test("Holds, user row: a user's stop holds even an empty queue, and lands on any hold as the user's", () =>
-  withStore((q) => {
-    assert.deepEqual(q.applyHold("s", { t: "stop", by: "user", empty: true }).after, USER);
-    // On a supervisor's stop, a crash, a restart, a doubtful hand-over, or
-    // Loom's own interrupt: the reason stays, the hold becomes the user's.
-    const existing = [
-      { t: "stop", by: "supervisor", empty: true },
-      { t: "stop", by: null, empty: true },
-      ...LOOM_HOLDS,
-    ] as const;
-    for (const first of existing) {
-      q.applyHold("other", { t: "lift" });
-      const set = q.applyHold("other", first).after!;
-      const after = q.applyHold("other", { t: "stop", by: "user", empty: false }).after;
-      assert.deepEqual(after, { reason: set.reason, by: "user" }, JSON.stringify(first));
+    const holds: Hold[] = [
+      { kind: "free" },
+      { kind: "supervisor" },
+      ...(["interrupt", "restart", "crash", "rejected"] as const).flatMap((reason): Hold[] => [
+        { kind: "loom", reason },
+        { kind: "user", reason },
+      ]),
+    ];
+    for (const hold of holds) {
+      q.setHold("s", hold);
+      assert.deepEqual(q.hold("s"), hold);
     }
-  }));
-
-test("Holds, H1: nothing but the user changes a user's hold — no stop, crash, restart or rejection", () =>
-  withStore((q) => {
-    add(q, "a");
-    q.applyHold("s", { t: "stop", by: "user", empty: true });
-    for (const change of [
-      { t: "stop", by: "supervisor", empty: true },
-      { t: "stop", by: null, empty: true },
-      ...LOOM_HOLDS,
-    ] as const) {
-      const r = q.applyHold("s", change);
-      assert.equal(r.changed, false, JSON.stringify(change));
-      assert.deepEqual(q.holdCause("s"), USER);
-    }
-    // Neither does an agent's message: a supervisor's or a child's waits.
-    assert.equal(waitsBehind(q.holdCause("s"), "user"), true);
-    assert.equal(waitsBehind(q.holdCause("s"), "any"), true);
-    assert.deepEqual(q.holdCause("s"), USER);
-    assert.equal(q.applyHold("s", { t: "lift" }).after, null);
-  }));
-
-test("Holds, supervisor row: only while entries wait; first come stays; its message lifts it", () =>
-  withStore((q) => {
-    assert.equal(q.applyHold("s", { t: "stop", by: "supervisor", empty: false }).after, null);
-    add(q, "a");
-    assert.deepEqual(
-      q.applyHold("s", { t: "stop", by: "supervisor", empty: false }).after,
-      SUPERVISOR,
-    );
-    for (const later of LOOM_HOLDS) assert.equal(q.applyHold("s", later).changed, false);
-    assert.equal(waitsBehind(q.holdCause("s"), "any"), true, "a report waits");
-    assert.equal(waitsBehind(q.holdCause("s"), "user"), false);
-    assert.equal(q.applyHold("s", { t: "lift" }).after, null, "its message lifts");
-  }));
-
-test("Holds, crash / restart / rejected rows: Loom's own, set only when unheld, lifted by a supervisor", () =>
-  withStore((q) => {
-    for (const hold of LOOM_HOLDS) {
-      q.applyHold("s", { t: "lift" });
-      assert.deepEqual(q.applyHold("s", hold).after, { reason: hold.reason, by: null });
-      for (const later of LOOM_HOLDS) assert.equal(q.applyHold("s", later).changed, false);
-      assert.equal(
-        q.applyHold("s", { t: "stop", by: "supervisor", empty: true }).changed,
-        false,
-        "a supervisor's stop on it changes nothing",
-      );
-      assert.equal(waitsBehind(q.holdCause("s"), "any"), true);
-      assert.equal(waitsBehind(q.holdCause("s"), "user"), false);
-      assert.equal(q.applyHold("s", { t: "lift" }).after, null);
-    }
-  }));
-
-test("Holds, H5/H6: a restore undoes its own change only while nothing wrote the hold since", () =>
-  withStore((q) => {
-    q.applyHold("s", { t: "stop", by: "supervisor", empty: true });
-    // A close by the user that did not complete: back to the supervisor's.
-    const closing = q.applyHold("s", { t: "stop", by: "user", empty: true });
-    assert.deepEqual(closing.after, USER);
-    assert.equal(q.applyHold("s", { t: "restore", ticket: closing.ticket }).changed, true);
-    assert.deepEqual(q.holdCause("s"), SUPERVISOR);
-    // A lift undone; but not past a later write — even a user's stop that
-    // changed nothing, which re-asserts the user's hold.
-    const lift = q.applyHold("s", { t: "lift" });
-    assert.equal(q.applyHold("s", { t: "restore", ticket: lift.ticket }).changed, true);
-    assert.deepEqual(q.holdCause("s"), SUPERVISOR);
-    const user = q.applyHold("s", { t: "stop", by: "user", empty: true });
-    q.applyHold("s", { t: "stop", by: "user", empty: true });
-    assert.equal(q.applyHold("s", { t: "restore", ticket: user.ticket }).changed, false);
-    assert.deepEqual(q.holdCause("s"), USER);
-  }));
-
-test("Holds, H6: what leaves the hold as it was voids no ticket; a forgotten session matches none", () =>
-  withStore((q) => {
-    add(q, "a");
-    // An archive's stop on an unheld queue; meanwhile a discard is put back,
-    // the adapter crashes, a supervisor stops it: none of them changes the hold.
-    const archive = q.applyHold("s", { t: "stop", by: "user", empty: true });
-    for (const change of [
-      { t: "stop", by: null, empty: true },
-      { t: "stop", by: "supervisor", empty: true },
-      ...LOOM_HOLDS,
-    ] as const)
-      assert.equal(q.applyHold("s", change).changed, false, JSON.stringify(change));
-    // The archive fails: the hold goes back to none.
-    assert.equal(q.applyHold("s", { t: "restore", ticket: archive.ticket }).after, null);
-    // A forgotten session's old ticket matches nothing written after.
-    const stop = q.applyHold("other", { t: "stop", by: "user", empty: true });
-    q.forget("other");
-    q.applyHold("other", { t: "lift" });
-    assert.equal(q.applyHold("other", { t: "restore", ticket: stop.ticket }).changed, false);
-    assert.equal(q.holdCause("other"), null);
-  }));
-
-test("a restart keeps a hold already set: a user's stays the user's", () =>
-  withStore((q) => {
-    add(q, "a");
-    q.markDelivering("s", ["a"]);
-    q.applyHold("s", { t: "stop", by: "user", empty: true });
-    assert.deepEqual(q.recoverAfterRestart(), ["s"]);
-    assert.deepEqual(q.holdCause("s"), USER);
-    assert.equal(q.entry("s", "a")?.uncertain, true);
+    for (const bogus of ["supervisor:crash", "interrupt", "agent"])
+      assert.throws(() => db.prepare("UPDATE sessions SET queue_hold = ?").run(bogus), bogus);
   }));
 
 test("a withdrawn enqueue leaves no trace: the id is new again", () =>
@@ -519,27 +391,54 @@ test("a withdrawn enqueue leaves no trace: the id is new again", () =>
     assert.equal(q.withdraw("s", "a"), false, "a handed-over entry stays");
   }));
 
-test("migration 34 makes an interrupt hold recorded before it the user's", () => {
-  const dir = mkdtempSync(join(tmpdir(), "loom-queue-mig34-"));
+const preHolds = (
+  version: number,
+  rows: ReadonlyArray<readonly [string, string, string | null]>,
+) => {
+  const dir = mkdtempSync(join(tmpdir(), `loom-queue-mig${version}-`));
+  const path = join(dir, "loom.db");
+  const old = new DatabaseSync(path);
+  old.exec("PRAGMA foreign_keys = ON");
+  for (let v = 0; v < version; v++) old.exec(MIGRATIONS[v]!);
+  old.exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+  old.prepare("INSERT INTO meta (key, value) VALUES ('schema_version', ?)").run(String(version));
+  const by = version >= 34 ? ", queue_hold_by" : "";
+  const insert = old.prepare(
+    `INSERT INTO sessions (id, provider, mode, status, created_at, updated_at, queue_hold${by}) VALUES (?, 'fake', 'default', 'idle', 1, 1, ?${by ? ", ?" : ""})`,
+  );
+  for (const [id, hold, who] of rows) insert.run(id, hold, ...(by ? [who] : []));
+  old.close();
+  return { dir, db: openDb(path) };
+};
+
+test("migrations 34 and 37: an interrupt hold recorded before 34 is the user's", () => {
+  const { dir, db } = preHolds(33, [
+    ["stopped", "interrupt", null],
+    ["crashed", "crash", null],
+  ]);
   try {
-    const path = join(dir, "loom.db");
-    const old = new DatabaseSync(path);
-    old.exec("PRAGMA foreign_keys = ON");
-    for (let v = 0; v < 33; v++) old.exec(MIGRATIONS[v]!);
-    old.exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
-    old.prepare("INSERT INTO meta (key, value) VALUES ('schema_version', '33')").run();
-    const insert = old.prepare(
-      "INSERT INTO sessions (id, provider, mode, status, created_at, updated_at, queue_hold) VALUES (?, 'fake', 'default', 'idle', 1, 1, ?)",
-    );
-    insert.run("stopped", "interrupt");
-    insert.run("crashed", "crash");
-    old.close();
-    const db = openDb(path);
     const q = new MessageQueueStore(db);
-    assert.deepEqual(q.holdCause("stopped"), { reason: "interrupt", by: "user" });
-    assert.deepEqual(q.holdCause("crashed"), { reason: "crash", by: null });
-    db.close();
+    assert.deepEqual(q.hold("stopped"), { kind: "user", reason: "interrupt" });
+    assert.deepEqual(q.hold("crashed"), { kind: "loom", reason: "crash" });
   } finally {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("migration 37 folds a hold and whose it is into one value", () => {
+  const { dir, db } = preHolds(36, [
+    ["user", "crash", "user"],
+    ["sup", "interrupt", "supervisor"],
+    ["loom", "rejected", null],
+  ]);
+  try {
+    const q = new MessageQueueStore(db);
+    assert.deepEqual(q.hold("user"), { kind: "user", reason: "crash" });
+    assert.deepEqual(q.hold("sup"), { kind: "supervisor" });
+    assert.deepEqual(q.hold("loom"), { kind: "loom", reason: "rejected" });
+  } finally {
+    db.close();
     rmSync(dir, { recursive: true, force: true });
   }
 });

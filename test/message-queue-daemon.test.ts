@@ -303,7 +303,7 @@ describe("message queue", { concurrency: 4 }, () => {
     env.h.daemon.sessions.enqueue(
       id,
       { entryId: "sup", text: "from above", author: "supervisor:x", delivery: "end_of_turn" },
-      { respect: "user" },
+      { sender: "supervisor" },
     );
     const sup = (await entries(c, id)).find((e) => e.id === "sup")!;
     await c.request("session.queueSendNow", { id, entryId: sup.id, revision: sup.revision });
@@ -574,7 +574,7 @@ describe("holds", { concurrency: 4 }, () => {
     const sup = env.h.daemon.sessions.enqueue(
       id,
       { entryId: "sup", text: "from above", author: "supervisor:x", delivery: "next_boundary" },
-      { respect: "user" },
+      { sender: "supervisor" },
     );
     assert.equal(sup.waited, true);
     assert.equal(sup.revive, false);
@@ -851,7 +851,7 @@ describe("holds", { concurrency: 4 }, () => {
     const sup = h.daemon.sessions.enqueue(
       id,
       { entryId: "sup", text: "from above", author: "supervisor:x", delivery: "end_of_turn" },
-      { respect: "any" },
+      { sender: "child" },
     );
     assert.equal(sup.result.ok, true);
     await h.daemon.sessions.dispatch(id);

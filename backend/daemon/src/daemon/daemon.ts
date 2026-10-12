@@ -118,11 +118,8 @@ import { SessionManager } from "./session-manager.ts";
 import { AgentSupervision, agentSessionPlan, profileInfos, type ChildStart } from "./agents.ts";
 import { agentAuthor, SELF_PROFILE, type ChildrenOnClose } from "@loom/core/agents";
 import { archiveReminder, showArchiveReminder } from "./archive-reminder.ts";
-import {
-  type HoldRespect,
-  type QueueDelivery,
-  type QueueHoldCause,
-} from "@loom/core/message-queue";
+import { type QueueDelivery, type QueueHoldCause } from "@loom/core/message-queue";
+import type { Sender } from "./queue-machine.ts";
 import { SessionShells } from "./session-shell.ts";
 import { mkSessionQueue, type SessionQueue } from "./session-queue.ts";
 import { cheapModelFor, generateTitle } from "./titler.ts";
@@ -679,7 +676,8 @@ export class Daemon {
         return row ? this.#enrich(row, false) : undefined;
       },
       status: (id) => this.#registry.get(id)?.status,
-      turn: (id) => this.#registry.statusEpoch(id),
+      settle: (id, settled) => this.#sessions.settleTurn(id, settled),
+      reportReady: (id, turn) => this.#sessions.reportReady(id, turn),
       children: (id) => this.#registry.children(id).map((s) => this.#enrich(s, false)),
       settledTitle: (id) => this.#settledTitle(id),
       providerKnown: (id) => this.#providers.has(id),
@@ -691,9 +689,9 @@ export class Daemon {
       dirty: (path) => this.#worktrees.isDirty(path),
       start: (child) => this.#startChild(child),
       // An agent never lifts a user's stop; which other holds it lifts is
-      // the caller's `respect`.
-      enqueue: (id, text, author, delivery, respect) =>
-        this.#enqueueMessage(id, text, author, delivery, undefined, { respect }),
+      // its sender (H2).
+      enqueue: (id, text, author, delivery, sender) =>
+        this.#enqueueMessage(id, text, author, delivery, undefined, { sender }),
       interrupt: async (id) => {
         await this.#interruptSession(id, "supervisor");
       },
@@ -709,7 +707,11 @@ export class Daemon {
     });
     // `agent_wait` settles on the status writes themselves, whatever path
     // made them, and ends with the turn that made it.
-    this.#registry.watchStatus((id, state) => this.#agents.observe(id, state));
+    // Every status write starts a state spell: a settled turn's identity.
+    this.#registry.watchStatus((id, state) => {
+      this.#sessions.statusWritten(id, state);
+      this.#agents.observe(id, state);
+    });
     this.#idle = new IdleTimer(this.config.daemon.idleShutdownMinutes, () => {
       this.#log.info("idle shutdown");
       void this.stop("idle");
@@ -796,7 +798,7 @@ export class Daemon {
     // Nothing is mid-hand-over after a restart: a queued message that was may
     // or may not have reached the agent, so its session's queue waits for the
     // user. Auto-resume bypasses the queue.
-    for (const id of this.#messageQueue.recoverAfterRestart()) this.#publishState(id);
+    for (const id of this.#sessions.recoverAfterRestart()) this.#publishState(id);
 
     this.#watchConfig();
     this.#environmentPoll = setInterval(() => void this.#checkEnvironment(), 1000);
@@ -2722,7 +2724,7 @@ export class Daemon {
     if (this.#stopping) return;
     const snap = this.#registry.setStatus(id, state, note ?? null);
     // This transition's identity, for a supervisor's one report of it.
-    const turn = this.#registry.statusEpoch(id);
+    const turn = this.#sessions.turnOf(id);
     this.emitEvent({
       type: "status_changed",
       sessionId: id,
@@ -2830,14 +2832,14 @@ export class Daemon {
    *  the user answers, nor of a stop it asked for itself (`cause`). A
    *  finished turn carries its workspace's facts, read now (off the daemon
    *  thread): the supervisor, not a nudge, decides what an uncommitted change
-   *  needs. `turn` identifies the settled turn (`Registry.statusEpoch` as
+   *  needs. `turn` identifies the settled turn (`SessionManager.turnOf` as
    *  it settled, by default now): it is reported once, and not once it has
    *  moved on (`notify`). */
   #notifySupervisor(
     row: SessionSnapshot,
     state: SessionState,
     cause?: StopCause,
-    turn = this.#registry.statusEpoch(row.id),
+    turn = this.#sessions.turnOf(row.id),
   ): void {
     if (this.#stopping || !row.supervisorId) return;
     // Read only once `notify` knows the report goes out.
@@ -3017,18 +3019,18 @@ export class Daemon {
     const ended = () =>
       !this.#stopping &&
       this.#registry.get(id)?.status.kind === "idle" &&
-      this.#registry.statusEpoch(id) === turn;
+      this.#sessions.turnOf(id) === turn;
     const decide = () => {
       const queue = this.#messageQueue;
       const authors = new Set(queue.live(id).map((e) => e.author));
       return archiveReminder(
-        { held: queue.holdCause(id) !== null, queued: authors.size > 0 },
+        { held: this.#sessions.holdOf(id) !== null, queued: authors.size > 0 },
         this.#registry.children(id).map((child) => ({
           id: child.id,
           title: child.title,
           state: child.status.kind,
           reminded: this.#registry.store.archiveReminded(child.id),
-          reportPending: this.#agents.reporting(child.id) || authors.has(agentAuthor(child.id)),
+          reportPending: this.#sessions.reporting(child.id) || authors.has(agentAuthor(child.id)),
           queued: queue.slots(child.id).length > 0,
         })),
       );
@@ -3953,7 +3955,7 @@ export class Daemon {
    * Put a message in `id`'s queue (`docs/message-queue.md`), bringing a cold
    * session back for it: `session.send`, and Loom agents messaging each
    * other. Whether it waits behind a hold or lifts it is the enqueue's
-   * decision (`respect`, "Holds" H2), and so is whether the session is to be
+   * decision (by its `sender`, "Holds" H2), and so is whether the session is to be
    * brought back for it: one that waits wakes nothing, a cold session
    * included. A revival that fails takes the message back (H5).
    *
@@ -3968,11 +3970,11 @@ export class Daemon {
     author: string,
     delivery: QueueDelivery,
     requestedId?: string,
-    opts: { respect?: HoldRespect } = {},
+    opts: { sender?: Sender } = {},
   ): Promise<{ entryId: string; state: string; hold: QueueHoldCause | null; waited: boolean }> {
     const entryId = requestedId ?? randomUUID();
     this.#registry.mustGet(id);
-    if ((opts.respect ?? "none") === "none") this.#refuseBusy(id);
+    if ((opts.sender ?? "user") === "user") this.#refuseBusy(id);
     const queued = this.#sessions.enqueue(id, { entryId, text, author, delivery }, opts);
     const r = queued.result;
     if (!r.ok) throw new RpcError(r.code, r.message, { sessionId: id });
@@ -5342,8 +5344,7 @@ export class Daemon {
           await removeSessionVmProfile(this.repoRoot, id);
           this.#registry.remove(id);
           this.#cloneFacts.delete(id);
-          this.#agents.forget(id);
-          this.#messageQueue.forget(id);
+          this.#sessions.forget(id);
           this.#hooks.forget(id);
           this.#publishState();
           this.#worktrees.prune();

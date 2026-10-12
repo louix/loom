@@ -16,7 +16,6 @@ import type {
   HarnessEvent,
 } from "@loom/core/events";
 import { interactionFor, type SessionInteraction } from "@loom/core/interaction";
-import { isAgentAuthor } from "@loom/core/agents";
 import {
   isLiveState,
   sameSessionState,
@@ -48,20 +47,31 @@ import type {
 import {
   DeliveryUncertainError,
   QUEUE_PREVIEW_CHARS,
-  type HoldRespect,
   type QueueEntry,
   type QueueHoldCause,
   type SessionQueue,
-  waitsBehind,
 } from "@loom/core/message-queue";
+import { absurd } from "@loom/core/absurd";
 import { deriveStatus } from "./status-machine.ts";
 import { RpcError } from "./rpc.ts";
-import { dequeueHints, nextAction, type DispatchView } from "./message-queue.ts";
+import { dequeueHints } from "./message-queue.ts";
+import {
+  holdCause,
+  holdTicket,
+  initialMachine,
+  messageWaits,
+  step,
+  type QueueEffect,
+  type QueueEvent,
+  type QueueMachine,
+  type RunView,
+  type Sender,
+  type SendOutcome,
+  type Stepped,
+  type World,
+} from "./queue-machine.ts";
 import type {
   Enqueued,
-  HoldApplied,
-  HoldChange,
-  HoldTicket,
   MessageQueueStore,
   QueueResult,
   QueueTarget,
@@ -226,32 +236,20 @@ interface Running {
   /** Root tool calls without a result yet, id → tool name: while one runs,
    *  the queue's boundary window is open. */
   rootTools: Map<string, string>;
-  /** A queue hand-over is scheduled on, or running through, the op gate. */
-  handingOver: boolean;
-  /** The provider refused a hand-over; no retry until the state moves. */
-  backoff: boolean;
-  /** What the dispatch policy last read off this run (`#dispatchKey`), or
-   *  null once the queue may have moved under it. An event that leaves the
-   *  key as it was cannot change the policy's answer: no re-evaluation. */
+  /** The dispatch key (`#dispatchKey`) the policy last looked at for a
+   *  drained event: one that leaves it as it was cannot change its answer. */
   evaluated: string | null;
   /** Loom is closing the adapter: its stream ending is no crash. */
   closing: boolean;
-  /** Who asked the current turn to stop (an interrupt, a close), until the
-   *  next turn starts: what the turn ends in is attributed to them. The user
-   *  wins over a supervisor that asked too. */
-  stopBy: StopCause | null;
-  /** The stops asked of this run (an interrupt, joining one, a close by
-   *  someone), counted: what a discard reported later belongs to. */
-  stops: number;
-  /** The stop (`stops` then) whose hold a send, a release or an agent's
-   *  message lifted, if nothing has set a hold since: a discard of that
-   *  stop's reported after it holds nothing (H1). */
-  liftedStop: number | null;
 }
 
-/** A queue entry a person wrote, not a Loom agent's or supervisor's message. */
-const writtenByUser = (author: string): boolean =>
-  !isAgentAuthor(author) && !author.startsWith("supervisor:");
+/** A step of a session's queue machine, run: the machine before and after,
+ *  and when what it started has gone. */
+interface Fired extends Stepped {
+  readonly before: QueueMachine;
+  readonly sending: Promise<void>;
+  readonly trip: Promise<void>;
+}
 
 export class SessionManager {
   readonly #hooks: ManagerHooks;
@@ -260,20 +258,9 @@ export class SessionManager {
   readonly #keepWarm = new Set<string>();
   /** Consecutive keep-warm pings since the last real user message, per session. */
   readonly #warmPings = new Map<string, number>();
-  /**
-   * Per session, the queue entry that goes next and alone, whatever the hold
-   * says: a send-now, or a message sent to a held queue. Runtime-only — a
-   * restart forgets the request and the entry waits under the ordinary rules.
-   */
-  readonly #forced = new Map<string, string>();
-  /**
-   * Per session, the entry last sent now: handed into a live turn, it asks the
-   * provider to deliver it at once ({@link SendOptions.now}). Runtime-only.
-   */
-  readonly #sentNow = new Map<string, string>();
-  /** Sessions whose clone's guest Git runs for the daemon: nothing is
-   *  dispatched to them meanwhile ({@link setBusy}). */
-  readonly #busy = new Set<string>();
+  /** Per session, its queue, hand-over, hold and supervision state
+   *  (`queue-machine.ts`): the one value every queue decision steps. */
+  readonly #machines = new Map<string, QueueMachine>();
 
   constructor(hooks: ManagerHooks) {
     this.#hooks = hooks;
@@ -414,15 +401,11 @@ export class SessionManager {
       userTurn: state.kind === "starting",
       inputReceipts: provider.capabilities.inputReceipts ?? false,
       rootTools: new Map(),
-      handingOver: false,
-      backoff: false,
       evaluated: null,
       closing: false,
-      stopBy: null,
-      stops: 0,
-      liftedStop: null,
     };
     this.#running.set(id, run);
+    void this.#fire(id, { kind: "attached" });
     // The adapter may have landed on another mode than the one it was given:
     // Codex maps `acceptEdits` onto Manual and reports a resumed thread's
     // effective mode.
@@ -463,9 +446,11 @@ export class SessionManager {
             id,
             kinds: ev.items.map((item) => item.kind),
           });
-          run.evaluated = null;
           try {
-            this.#requeueDiscarded(id, ev.items);
+            void this.#fire(id, {
+              kind: "discarded",
+              refs: ev.items.flatMap((item) => (item.ref === undefined ? [] : [item.ref])),
+            });
             this.#hooks.onInputDiscarded?.(id, ev.items);
           } catch (err) {
             this.#hooks.log.error("input-discarded hook threw; continuing drain", {
@@ -491,10 +476,8 @@ export class SessionManager {
         // Neither is a receipt the transcript carries: the message it names
         // enters the log now, as the `user_message` this emits.
         if (ev.type === "input_consumed") {
-          run.evaluated = null;
           try {
-            this.#consume(id, ev.inputId, ev.midTurn);
-            this.#hooks.onOverlay(id);
+            void this.#fire(id, { kind: "consumed", entryId: ev.inputId, midTurn: ev.midTurn });
           } catch (err) {
             this.#hooks.log.error("queue consumption failed; continuing drain", {
               id,
@@ -552,7 +535,11 @@ export class SessionManager {
           // A tool starting, a turn ending: the queue may have something to
           // hand over now. Only an event that moved what the policy reads can
           // change its answer — a text delta never does, and skips the store.
-          if (this.#dispatchKey(id, run) !== run.evaluated) void this.#pumpQueue(id);
+          const key = this.#dispatchKey(id);
+          if (key !== run.evaluated) {
+            run.evaluated = key;
+            void this.#fire(id, { kind: "run_moved" });
+          }
         } catch (err) {
           this.#hooks.log.error("event hook threw; continuing drain", {
             id,
@@ -567,14 +554,14 @@ export class SessionManager {
       // it; one Loom closed (a swap, an idle suspension, teardown) did not.
       const deliberate = run.ended || run.closing;
       run.ended = true;
-      if (!deliberate) this.#holdQueue(id);
+      if (!deliberate) void this.#fire(id, { kind: "crashed" });
       // Whatever was still outstanding can no longer be answered — the adapter
       // session is gone. Drop it so a late respondTo* doesn't forward to a
       // dead session (interrupt() does the same).
       const cleared = this.#clearOverlays(run);
       if (isLiveState(run.state)) {
         // Closed by someone's stop, the turn ended because they asked.
-        const by = run.stopBy ?? "stream_ended";
+        const by = this.#stopBy(id) ?? "stream_ended";
         this.#transition(id, run, stateInterrupted(by), by);
       } else if (cleared) {
         // A settled session whose stream ended still has to tell clients the
@@ -582,7 +569,7 @@ export class SessionManager {
         this.#hooks.onOverlay(id);
       }
     } catch (err) {
-      if (!run.ended && !run.closing) this.#holdQueue(id);
+      if (!run.ended && !run.closing) void this.#fire(id, { kind: "crashed" });
       run.ended = true;
       this.#clearOverlays(run);
       const message = err instanceof Error ? err.message : String(err);
@@ -841,15 +828,19 @@ export class SessionManager {
    *  Returns whether it fired — the caller then knows a snapshot went out. */
   #transition(id: string, run: Running, next: SessionState, note?: string): boolean {
     if (sameSessionState(run.state, next) && note === undefined) return false;
-    // A turn starts, however it came about (a send, the provider waking for a
-    // background task): an earlier stop is not what it ends in.
-    if (!isLiveState(run.state) && isLiveState(next)) run.stopBy = null;
+    const from = run.state;
     run.state = next;
-    // A refused hand-over is retried once the session has moved on.
-    run.backoff = false;
+    void this.#fire(id, { kind: "status_moved", from, to: next });
     const ended = next.kind === "interrupted" || next.kind === "error";
-    this.#hooks.onStatus(id, next, note, (ended && run.stopBy) || undefined);
+    this.#hooks.onStatus(id, next, note, (ended && this.#stopBy(id)) || undefined);
     return true;
+  }
+
+  /** Who asked the current turn to stop, until the next turn starts: what
+   *  the turn ends in is theirs. */
+  #stopBy(id: string): StopCause | null {
+    const stop = this.#machine(id).stop;
+    return stop.kind === "none" ? null : stop.by;
   }
 
   /**
@@ -873,9 +864,9 @@ export class SessionManager {
 
   /** A fatal root error may have taken handed-over input with it. */
   #trackCrash(id: string, ev: HarnessEvent): boolean {
-    return ev.type === "error" && ev.fatal && ev.agentId === undefined
-      ? this.#holdQueue(id)
-      : false;
+    if (ev.type === "error" && ev.fatal && ev.agentId === undefined)
+      void this.#fire(id, { kind: "crashed" });
+    return false;
   }
 
   // --- message queue (docs/message-queue.md) -----------------------------
@@ -884,83 +875,186 @@ export class SessionManager {
     return this.#hooks.queue?.slots(id).some((e) => e.state === "queued") ?? false;
   }
 
-  /** The part of the dispatch view the policy decides on (`handingOver`
-   *  aside: the pump never evaluates while one runs). */
-  #dispatchKey(id: string, run: Running): string {
-    const v = this.#dispatchView(id, run);
-    return `${v.attached}|${v.state.kind}|${v.restructuring}|${v.cancelling}|${v.backoff}|${v.busy}|${v.rootTool !== null}`;
+  /** The session's queue machine, read from the store the first time. */
+  #machine(id: string): QueueMachine {
+    const known = this.#machines.get(id);
+    if (known) return known;
+    const fresh = initialMachine(this.#hooks.queue?.hold(id) ?? { kind: "free" });
+    this.#machines.set(id, fresh);
+    return fresh;
   }
 
-  /** What the dispatch policy reads off the session and its run. */
-  #dispatchView(id: string, run: Running | undefined): DispatchView {
+  /** What the machine reads but does not own: the live entries and the run. */
+  #world(id: string): World {
+    return { slots: this.#hooks.queue?.slots(id) ?? [], run: this.#runView(id) };
+  }
+
+  #runView(id: string): RunView {
+    const run = this.#running.get(id);
     return {
       attached: run !== undefined && !run.ended,
       state: run?.state ?? stateIdle,
       restructuring: (run?.restructuring ?? null) !== null,
       cancelling: run?.cancellation === "stopping" || run?.cancellation === "failed",
-      handingOver: run?.handingOver ?? false,
       rootTool: run ? ([...run.rootTools.values()][0] ?? null) : null,
-      backoff: run?.backoff ?? false,
-      busy: this.#busy.has(id),
+      inputReceipts: run?.inputReceipts ?? false,
+      lifecycle: this.#hooks.lifecycle?.(id) ?? false,
     };
+  }
+
+  /** The part of the run the dispatch policy decides on: an event that leaves
+   *  it as it was cannot change the policy's answer, and skips the store. */
+  #dispatchKey(id: string): string {
+    const v = this.#runView(id);
+    return `${v.attached}|${v.state.kind}|${v.restructuring}|${v.cancelling}|${this.#machine(id).busy}|${v.rootTool !== null}`;
+  }
+
+  /**
+   * Step `id`'s machine through `ev` and run the effects. `sending` settles
+   * once the hand-overs it started have gone (the op gate awaits it);
+   * `trip`, once a hand-over it scheduled has run.
+   */
+  #fire(id: string, ev: QueueEvent): Fired {
+    const before = this.#machine(id);
+    const { machine, effects } = step(before, ev, this.#world(id));
+    this.#machines.set(id, machine);
+    const q = this.#hooks.queue;
+    const sending: Array<Promise<void>> = [];
+    const trips: Array<Promise<void>> = [];
+    for (const e of effects)
+      switch (e.kind) {
+        case "persist_hold":
+          q?.setHold(id, e.hold);
+          break;
+        case "publish":
+          this.#hooks.onOverlay(id);
+          break;
+        case "schedule_handover":
+          trips.push(this.#trip(id, e.op));
+          break;
+        case "mark_delivering":
+          q?.markDelivering(id, e.ids);
+          break;
+        case "send":
+          sending.push(
+            this.#send(id, e).then(
+              (outcome) =>
+                this.#fire(id, { kind: "sent", op: e.op, entryId: e.entryId, outcome }).sending,
+            ),
+          );
+          break;
+        case "requeue":
+          for (const entryId of e.ids) q?.requeue(id, entryId);
+          break;
+        case "mark_uncertain":
+          q?.markUncertain(id, e.ids);
+          break;
+        case "consume":
+          this.#consume(id, e.entryId, e.midTurn);
+          break;
+        case "withdraw":
+          q?.withdraw(id, e.entryId);
+          break;
+        case "warn":
+          this.#hooks.emitEvent({
+            type: "error",
+            sessionId: id,
+            ts: Date.now(),
+            fatal: false,
+            message: e.message,
+          });
+          break;
+        // The caller's to act on.
+        case "revive":
+        case "make_report":
+        case "send_report":
+          break;
+        default:
+          absurd(e);
+      }
+    return {
+      before,
+      machine,
+      effects,
+      sending: Promise.all(sending).then(() => undefined),
+      trip: Promise.all(trips).then(() => undefined),
+    };
+  }
+
+  /** One trip through the op gate: the machine decides again there and hands over. */
+  #trip(id: string, op: number): Promise<void> {
+    const run = this.#running.get(id);
+    const ended = () => void this.#fire(id, { kind: "handover_ended", op });
+    if (!run) {
+      ended();
+      return Promise.resolve();
+    }
+    return this.#enqueue(run, async () => {
+      if (this.#running.get(id) !== run || run.ended) return;
+      await this.#fire(id, { kind: "gate_reached", op }).sending;
+    })
+      .catch((err) => {
+        this.#hooks.log.error("queue hand-over failed", {
+          id,
+          err: err instanceof Error ? err.message : String(err),
+        });
+      })
+      .finally(ended);
+  }
+
+  /** Hand one entry to the adapter, as the machine said. */
+  async #send(id: string, e: Extract<QueueEffect, { kind: "send" }>): Promise<SendOutcome> {
+    const run = this.#running.get(id);
+    const entry = this.#hooks.queue?.entry(id, e.entryId);
+    if (!run || run.ended || !entry) return { kind: "detached" };
+    const before = run.state;
+    if (!e.midTurn) run.firstOutputSince = performance.now();
+    // Armed before the hand-off, as in `send`: a fast turn can report its
+    // outcome before the adapter's `send()` resolves. A fold joins the turn.
+    const armed = run.userTurn;
+    run.userTurn = true;
+    run.cancellation = "none";
+    this.#warmPings.delete(id);
+    try {
+      await run.session.send(entry.text, {
+        inputId: entry.id,
+        midTurn: e.midTurn,
+        ...(e.now ? { now: true } : {}),
+      });
+    } catch (err) {
+      run.userTurn = armed;
+      const message = err instanceof Error ? err.message : String(err);
+      const uncertain = err instanceof DeliveryUncertainError;
+      this.#hooks.log.warn("queued message not handed over", {
+        id,
+        entryId: entry.id,
+        uncertain,
+        err: message,
+      });
+      return { kind: uncertain ? "uncertain" : "refused", message };
+    }
+    if (this.#running.get(id) !== run) return { kind: "detached" };
+    if (!e.midTurn) {
+      this.#hooks.onFreshTurn?.(id, entry.text);
+      // S2, as in `send`: only claim `running` if nothing moved the state yet.
+      if (sameSessionState(run.state, before)) this.#transition(id, run, stateRunning);
+    }
+    return { kind: "ok" };
   }
 
   /**
    * The daemon runs (`busy`) or has finished running a clone's guest Git for
-   * `id` (docs/message-queue.md, "Holds", H7). Dispatch reads it with the
-   * rest of its gates, so nothing is handed over by any path meanwhile —
-   * the pump, a send, a release, send now, a notification — and what waited
-   * is looked at again as it ends. Works on a cold session too.
+   * `id` (docs/message-queue.md, "Holds", H7): nothing is handed over by any
+   * path meanwhile, and what waited is looked at again as it ends. Works on
+   * a cold session too.
    */
   setBusy(id: string, busy: boolean): void {
-    if (busy) {
-      this.#busy.add(id);
-      return;
-    }
-    if (this.#busy.delete(id)) void this.#pumpQueue(id);
+    void this.#fire(id, { kind: "busy", busy });
   }
 
   /** Whether a clone's guest Git runs for `id` ({@link setBusy}). */
   isBusy(id: string): boolean {
-    return this.#busy.has(id);
-  }
-
-  /**
-   * Every hold write the manager makes (docs/message-queue.md, "Holds"):
-   * the store combines `change` with the hold as it is (H1, H2), and a hold
-   * that is set after it drops a forced entry not yet handed over, which
-   * then waits at the head with the rest (H3) — unless `keepForced` (a
-   * requeued discard, which is no one's new stop). Null without a queue.
-   */
-  #applyHold(
-    id: string,
-    change: HoldChange,
-    { keepForced = false }: { keepForced?: boolean } = {},
-  ): HoldApplied | null {
-    const q = this.#hooks.queue;
-    if (!q) return null;
-    const applied = q.applyHold(id, change);
-    if (applied.after !== null && change.t !== "lift" && !keepForced) this.#forced.delete(id);
-    const run = this.#running.get(id);
-    if (applied.changed && run) {
-      run.evaluated = null;
-      run.liftedStop = applied.after === null ? run.stops : null;
-    }
-    return applied;
-  }
-
-  /**
-   * Stop the queue after something that may have lost handed-over input — a
-   * crash, a fatal error: delivering entries become uncertain and the queue
-   * waits for the user (`crash`, unless a hold is already set). Returns
-   * whether anything changed.
-   */
-  #holdQueue(id: string): boolean {
-    const q = this.#hooks.queue;
-    if (!q || q.slots(id).length === 0) return false;
-    q.markUncertain(id);
-    this.#applyHold(id, { t: "loom", reason: "crash" });
-    return true;
+    return this.#machine(id).busy;
   }
 
   /** The agent took entry `entryId`: it enters the log here, as a `user_message`. */
@@ -979,201 +1073,21 @@ export class SessionManager {
   }
 
   /**
-   * A stop discarded input before the agent saw it: the queue's entries go
-   * back to `queued` at their old places, held. Anything else — Loom's own
-   * direct sends, the provider's notifications — is dropped.
-   *
-   * The discard is no stop of its own (H1): on a hold already set it changes
-   * nothing, and it never drops a forced entry — what the user sent goes
-   * first, the discarded entries behind it. Reported after the stop's hold
-   * was lifted (the user's send or release, a supervisor's message), it
-   * holds nothing: it belongs to that stop, and the lift stands.
-   */
-  #requeueDiscarded(id: string, items: readonly DiscardedInput[]): void {
-    const q = this.#hooks.queue;
-    if (!q) return;
-    let back = 0;
-    for (const item of items) if (item.ref !== undefined && q.requeue(id, item.ref)) back++;
-    if (back === 0) return;
-    const run = this.#running.get(id);
-    const lifted = run !== undefined && run.stops > 0 && run.liftedStop === run.stops;
-    if (!lifted && q.holdCause(id) === null)
-      this.#applyHold(
-        id,
-        { t: "stop", by: run?.stopBy ?? null, empty: true },
-        { keepForced: true },
-      );
-    this.#hooks.onOverlay(id);
-    // Unheld, they go behind what lifted the hold.
-    void this.#pumpQueue(id);
-  }
-
-  /**
-   * Evaluate the dispatch policy and, if it says so, run the hand-over on the
-   * op gate. Called after every transition, queue change and op, and after
-   * every event that moved the dispatch key.
-   */
-  #pumpQueue(id: string): Promise<void> | undefined {
-    const q = this.#hooks.queue;
-    const run = this.#running.get(id);
-    if (!q || !run || run.ended || run.handingOver) return undefined;
-    run.evaluated = this.#dispatchKey(id, run);
-    const action = nextAction(
-      q.slots(id),
-      q.hold(id),
-      this.#dispatchView(id, run),
-      this.#forced.get(id) ?? null,
-    );
-    if (action.t === "none") return undefined;
-    run.handingOver = true;
-    return this.#enqueue(run, () => this.#handOver(id, run))
-      .catch((err) => {
-        this.#hooks.log.error("queue hand-over failed", {
-          id,
-          err: err instanceof Error ? err.message : String(err),
-        });
-      })
-      .finally(() => {
-        run.handingOver = false;
-        void this.#pumpQueue(id);
-      });
-  }
-
-  /** On the op gate: decide again (things moved while waiting) and hand over. */
-  async #handOver(id: string, run: Running): Promise<void> {
-    const q = this.#hooks.queue;
-    if (!q || this.#running.get(id) !== run || run.ended) return;
-    const forced = this.#forced.get(id) ?? null;
-    const action = nextAction(
-      q.slots(id),
-      q.hold(id),
-      { ...this.#dispatchView(id, run), handingOver: false },
-      forced,
-    );
-    if (action.t !== "handover") return;
-    const entries = action.ids.flatMap((entryId) => q.entry(id, entryId) ?? []);
-    // Recorded before the provider is called, so a crash in between leaves
-    // them delivering — uncertain after a restart, never silently re-sent.
-    q.markDelivering(
-      id,
-      entries.map((e) => e.id),
-    );
-    this.#hooks.onOverlay(id);
-    for (const [i, entry] of entries.entries()) {
-      // The first of a fresh batch starts the turn; the rest join it.
-      const midTurn = !action.fresh || i > 0;
-      // Only what a person wrote: the provider is told a human typed it.
-      const now = midTurn && this.#sentNow.get(id) === entry.id && writtenByUser(entry.author);
-      // A forced entry stays forced until it has gone: refused, it goes
-      // first again, unless a hold applied meanwhile dropped it (H3).
-      if (await this.#deliver(id, run, entry, midTurn, now)) {
-        if (entry.id === forced && this.#forced.get(id) === forced) this.#forced.delete(id);
-        if (this.#sentNow.get(id) === entry.id) this.#sentNow.delete(id);
-        continue;
-      }
-      for (const rest of entries.slice(i + 1)) q.requeue(id, rest.id);
-      break;
-    }
-    this.#hooks.onOverlay(id);
-  }
-
-  /** Hand one entry to the adapter. False when it did not go. */
-  async #deliver(
-    id: string,
-    run: Running,
-    entry: QueueEntry,
-    midTurn: boolean,
-    now = false,
-  ): Promise<boolean> {
-    const q = this.#hooks.queue!;
-    const before = run.state;
-    if (!midTurn) run.firstOutputSince = performance.now();
-    // Armed before the hand-off, as in `send`: a fast turn can report its
-    // outcome before the adapter's `send()` resolves. A fold joins the turn.
-    const armed = run.userTurn;
-    run.userTurn = true;
-    run.cancellation = "none";
-    run.stopBy = null;
-    this.#warmPings.delete(id);
-    try {
-      await run.session.send(entry.text, { inputId: entry.id, midTurn, ...(now ? { now } : {}) });
-    } catch (err) {
-      run.userTurn = armed;
-      const message = err instanceof Error ? err.message : String(err);
-      const uncertain = err instanceof DeliveryUncertainError;
-      if (uncertain) {
-        // It may have arrived: never retried by itself — the user decides.
-        q.markUncertain(id, [entry.id]);
-        this.#applyHold(id, { t: "loom", reason: "rejected" });
-        this.#hooks.emitEvent({
-          type: "error",
-          sessionId: id,
-          ts: Date.now(),
-          fatal: false,
-          message: `A queued message may not have reached the agent (${message}); the queue is held — review it with q.`,
-        });
-      } else {
-        // Refused, so nothing went out: it waits for the session to move on,
-        // or for the user to touch the queue. Folding into a turn that just
-        // ended is refused routinely (Codex's `expectedTurnId`); a refused
-        // turn start is worth saying.
-        q.requeue(id, entry.id);
-        run.backoff = true;
-        if (!midTurn)
-          this.#hooks.emitEvent({
-            type: "error",
-            sessionId: id,
-            ts: Date.now(),
-            fatal: false,
-            message,
-          });
-      }
-      this.#hooks.log.warn("queued message not handed over", {
-        id,
-        entryId: entry.id,
-        uncertain,
-        err: message,
-      });
-      return false;
-    }
-    if (this.#running.get(id) !== run) return false;
-    if (!midTurn) {
-      this.#hooks.onFreshTurn?.(id, entry.text);
-      // S2, as in `send`: only claim `running` if nothing moved the state yet.
-      if (sameSessionState(run.state, before)) this.#transition(id, run, stateRunning);
-    }
-    // Without receipts the hand-over is all the evidence there will be.
-    if (!run.inputReceipts) this.#consume(id, entry.id, midTurn);
-    return true;
-  }
-
-  /**
-   * Queue a user message (`session.send`). Sent to a held queue it goes first
-   * and alone, and sending it releases the hold; the held entries then follow
-   * the ordinary rules relative to the turn it starts.
-   *
-   * `respect` is for what is not the user speaking (docs/message-queue.md,
-   * "Holds"): a Loom supervisor's message (`user`) waits behind the user's
-   * stop only, and lifts any other hold as the user's send does — its own
-   * stop, a crash, a restart; a child's notification (`any`) waits behind
-   * every hold. A message that waits joins the held queue at the back and
-   * leaves the hold.
-   *
-   * This is where wait-or-lift is decided, once (H2). `hold` is the hold the
-   * message found, and `waited` whether it stays. One that does not wait the
-   * caller then {@link dispatch}es; nothing is handed over before that.
+   * Queue a message (`session.send`, a Loom agent's). Whether it waits behind
+   * the hold or lifts it, going first and alone, is decided here, once, by
+   * who sends it (H2); `hold` is the hold it found and `waited` whether it
+   * stays. Nothing is handed over before the caller {@link dispatch}es.
    * `revive`: it goes, and the session is cold (no adapter, one whose stream
    * ended, or one a start, an idle shutdown or a refresh may stop or
    * replace — `ManagerHooks.lifecycle`), so the caller brings it back (or
-   * waits that out) first. `undo` takes the message back and restores the hold it lifted,
-   * unless the hold was written since — for a revival that failed (H5).
-   * False when the message is no longer queued to take back (handed over,
-   * or settled), which then restores nothing.
+   * waits that out) first. `undo` takes the message back and restores the
+   * hold it lifted, unless the hold was written since — for a revival that
+   * failed (H5); false when it is no longer queued to take back.
    */
   enqueue(
     id: string,
     e: { entryId: string; text: string; author: string; delivery: QueueEntry["delivery"] },
-    opts: { respect?: HoldRespect } = {},
+    opts: { sender?: Sender } = {},
   ): {
     result: QueueResult<Enqueued>;
     hold: QueueHoldCause | null;
@@ -1183,10 +1097,11 @@ export class SessionManager {
   } {
     const q = this.#hooks.queue;
     if (!q) throw new Error("this daemon has no message queue");
-    const respect = opts.respect ?? "none";
-    const hold = q.holdCause(id);
-    const waited = waitsBehind(hold, respect);
-    const lifts = hold !== null && !waited;
+    const sender = opts.sender ?? "user";
+    const found = this.#machine(id).hold;
+    const hold = holdCause(found);
+    const waited = messageWaits(found, sender);
+    const lifts = found.kind !== "free" && !waited;
     const result = q.enqueue(
       id,
       { id: e.entryId, text: e.text, author: e.author, delivery: e.delivery },
@@ -1194,24 +1109,20 @@ export class SessionManager {
     );
     const nothing = () => false;
     if (!result.ok) return { result, hold, waited, revive: false, undo: nothing };
-    const run = this.#running.get(id);
-    const cold = run === undefined || run.ended || (this.#hooks.lifecycle?.(id) ?? false);
-    const revive = cold && !waited && result.value.state === "queued";
+    const fired = this.#fire(id, {
+      kind: "message",
+      entryId: e.entryId,
+      sender,
+      created: result.value.created,
+      state: result.value.state,
+    });
+    const revive = fired.effects.some((x) => x.kind === "revive");
     if (!result.value.created) return { result, hold, waited, revive, undo: nothing };
-    let ticket: HoldTicket | null = null;
-    if (lifts) {
-      ticket = this.#applyHold(id, { t: "lift" })?.ticket ?? null;
-      this.#forced.set(id, e.entryId);
-    }
-    this.#retry(id);
-    this.#hooks.onOverlay(id);
-    const undo = () => {
-      if (!q.withdraw(id, e.entryId)) return false;
-      if (this.#forced.get(id) === e.entryId) this.#forced.delete(id);
-      if (ticket) this.#applyHold(id, { t: "restore", ticket });
-      this.#hooks.onOverlay(id);
-      return true;
-    };
+    const ticket = lifts ? holdTicket(fired.before, fired.machine) : null;
+    const undo = () =>
+      this.#fire(id, { kind: "message_withdrawn", entryId: e.entryId, ticket }).effects.some(
+        (x) => x.kind === "withdraw",
+      );
     return { result, hold, waited, revive, undo };
   }
 
@@ -1221,20 +1132,12 @@ export class SessionManager {
    * message got.
    */
   async dispatch(id: string): Promise<void> {
-    this.#retry(id);
-    this.#hooks.onOverlay(id);
-    await this.#pumpQueue(id);
+    await this.#fire(id, { kind: "touched" }).trip;
   }
 
   /** The queue changed outside the manager (a client edit): publish, re-evaluate. */
   queueChanged(id: string): void {
     void this.dispatch(id);
-  }
-
-  /** The user acted on the queue: a refused hand-over may be tried again. */
-  #retry(id: string): void {
-    const run = this.#running.get(id);
-    if (run) run.backoff = false;
   }
 
   /**
@@ -1255,19 +1158,82 @@ export class SessionManager {
       };
     const r = q.toHead(id, target);
     if (!r.ok) return r;
-    const run = this.#running.get(id);
-    const live = run !== undefined && !run.ended && isLiveState(run.state);
-    if (!live || q.hold(id) !== null) this.#forced.set(id, target.entryId);
-    this.#sentNow.set(id, target.entryId);
-    this.queueChanged(id);
+    void this.#fire(id, { kind: "send_now", entryId: target.entryId }).trip;
     return r;
   }
 
   /** Clear the hold; uncertain entries stay where they are. False when unheld. */
   releaseQueue(id: string): boolean {
-    if (!this.#applyHold(id, { t: "lift" })?.changed) return false;
-    this.queueChanged(id);
-    return true;
+    return this.#fire(id, { kind: "release" }).before.hold.kind !== "free";
+  }
+
+  /** The hold and whose stop it is; null when unheld. */
+  holdOf(id: string): QueueHoldCause | null {
+    return holdCause(this.#machine(id).hold);
+  }
+
+  /**
+   * A stop `by` someone the manager's turn does not hear of — a session
+   * still starting, a cold one: the user's holds the queue even empty, so
+   * nothing queued afterwards (a Loom agent's notification) starts a turn
+   * until the user sends or releases; anyone's while entries wait.
+   */
+  holdForStop(id: string, by: StopCause): void {
+    void this.#fire(id, { kind: "stop", by, scope: "session", interrupt: false });
+  }
+
+  /** The daemon started: entries left delivering may or may not have
+   *  reached their agents. Returns the sessions it held. */
+  recoverAfterRestart(): string[] {
+    const ids = this.#hooks.queue?.sessionsDelivering() ?? [];
+    for (const id of ids) void this.#fire(id, { kind: "restart_recovered" });
+    return ids;
+  }
+
+  // --- supervision (docs/loom-agents.md, "Communication") ----------------
+
+  /** A status write, whichever path made it: the state spell it starts. */
+  statusWritten(id: string, state: SessionState): void {
+    void this.#fire(id, { kind: "status_written", state });
+  }
+
+  /** Which state spell `id` is in: a settled turn's identity, which its next
+   *  turn does not share. 0 before any write. */
+  turnOf(id: string): number {
+    const spell = this.#machine(id).spell;
+    return spell.kind === "in" ? spell.turn : 0;
+  }
+
+  /** A child's turn settled: whether its supervisor is to be told now. */
+  settleTurn(
+    id: string,
+    settled: {
+      turn: number;
+      state: SessionState;
+      cause: StopCause | null;
+      supervisor: "none" | "gone" | "live";
+    },
+  ): boolean {
+    return this.#fire(id, { kind: "turn_settled", ...settled }).effects.some(
+      (e) => e.kind === "make_report",
+    );
+  }
+
+  /** A report's facts are read: whether it still goes (the turn is current). */
+  reportReady(id: string, turn: number): boolean {
+    return this.#fire(id, { kind: "report_ready", turn }).effects.some(
+      (e) => e.kind === "send_report",
+    );
+  }
+
+  /** Is a report of `id`'s settled turn on its way to its supervisor's queue? */
+  reporting(id: string): boolean {
+    return this.#machine(id).report.kind === "making";
+  }
+
+  /** Forget a removed session's machine. */
+  forget(id: string): void {
+    this.#machines.delete(id);
   }
 
   /** The queue as the snapshot carries it; null when empty and unheld. */
@@ -1275,10 +1241,17 @@ export class SessionManager {
     const q = this.#hooks.queue;
     if (!q) return null;
     const entries = q.live(id);
-    const cause = q.holdCause(id);
+    const cause = this.holdOf(id);
     const hold = cause?.reason ?? null;
     if (entries.length === 0 && hold === null) return null;
-    const hints = dequeueHints(entries, hold, this.#dispatchView(id, this.#running.get(id)));
+    const m = this.#machine(id);
+    const run = this.#runView(id);
+    const hints = dequeueHints(entries, hold, {
+      ...run,
+      handingOver: m.delivery.kind === "scheduled" || m.delivery.kind === "handing_over",
+      backoff: m.delivery.kind === "backoff",
+      busy: m.busy,
+    });
     return {
       hold,
       ...(cause?.by ? { holdBy: cause.by } : {}),
@@ -1298,8 +1271,7 @@ export class SessionManager {
 
   /** Something in the queue would be handed over now (keep-warm stays away). */
   queueDispatchable(id: string): boolean {
-    const q = this.#hooks.queue;
-    return q !== undefined && q.hold(id) === null && this.#hasQueued(id);
+    return this.#machine(id).hold.kind === "free" && this.#hasQueued(id);
   }
 
   /** Entries handed over and not yet taken — undo must wait for them. */
@@ -1399,7 +1371,7 @@ export class SessionManager {
       if (run.cancellation === "stopping" || run.cancellation === "failed")
         throw new Error("cancellation is unresolved — retry interrupt before sending");
       run.cancellation = "none";
-      run.stopBy = null;
+      void this.#fire(id, { kind: "direct_send" });
       const injected = isLiveState(run.state);
       const before = run.state;
       if (!injected) run.firstOutputSince = performance.now();
@@ -1449,52 +1421,24 @@ export class SessionManager {
         this.#hooks.onOverlay(id);
         // Messages that waited out the compaction go now (after this op
         // releases the gate: the hand-over queues behind it).
-        void this.#pumpQueue(id);
+        void this.#fire(id, { kind: "run_moved" });
       }
     });
   }
 
   /**
-   * A stop `by` someone holds the queue: the user's always, even with nothing
-   * queued, so that nothing queued afterwards (a Loom agent's notification)
-   * starts a turn until the user sends or releases; anyone's while entries
-   * wait, so nothing is dispatched into the stop. Works on a cold session too.
-   * The hold is `by`'s (docs/message-queue.md): a supervisor's message lifts
-   * its own stop's hold, never the user's.
-   */
-  holdForStop(id: string, by: StopCause): void {
-    this.#holdForStop(id, by === "user", by);
-  }
-
-  /**
-   * Hold the queue for `by`'s stop while entries wait; `empty`, even
-   * without. A hold already set keeps its reason (it came first), but a
-   * user's stop makes it the user's: no agent lifts it after that (H1).
-   * Returns the change, to undo a stop that did not complete (H6). A live
-   * run counts the stop: what it discards from here on is this stop's.
-   */
-  #holdForStop(id: string, empty: boolean, by: StopCause): HoldApplied | null {
-    const run = this.#running.get(id);
-    if (run) run.stops++;
-    const applied = this.#applyHold(id, { t: "stop", by, empty });
-    if (applied?.changed) this.#hooks.onOverlay(id);
-    return applied;
-  }
-
-  /**
    * `by` asked `run` to stop: the turn's end is theirs (the user's over a
-   * supervisor's), and the queue holds for it. A stop that only cancels a
-   * compaction on a settled session stops no turn: it holds only what
-   * already waits — but the hold is still `by`'s, and a user's makes one
-   * already set the user's (H1).
+   * supervisor's), and the queue holds for it (H1). A stop that only cancels
+   * a compaction on a settled session stops no turn.
    */
-  #askedToStop(id: string, run: Running, by: StopCause): void {
-    if (run.restructuring === "compact" && !isLiveState(run.state)) {
-      this.#holdForStop(id, false, by);
-      return;
-    }
-    if (run.stopBy !== "user") run.stopBy = by;
-    this.#holdForStop(id, by === "user", by);
+  #askedToStop(id: string, run: Running, by: StopCause, interrupt: boolean): void {
+    const compactOnly = run.restructuring === "compact" && !isLiveState(run.state);
+    void this.#fire(id, {
+      kind: "stop",
+      by,
+      scope: compactOnly ? "compaction" : "turn",
+      interrupt,
+    });
   }
 
   /**
@@ -1506,7 +1450,7 @@ export class SessionManager {
     const run = this.#require(id);
     if (run.interruptOperation) {
       // Joining a stop under way: a user asking too makes it theirs.
-      this.#askedToStop(id, run, by);
+      this.#askedToStop(id, run, by, false);
       return run.interruptOperation;
     }
     // A fork / rewind is mid-flight — there is no turn to stop and clobbering
@@ -1530,27 +1474,19 @@ export class SessionManager {
     run.cancellation = "stopping";
     // Hold the queue first, so nothing is dispatched into the stop: after an
     // interrupt nothing queued reaches the agent until the user says so.
-    const q = this.#hooks.queue;
-    this.#forced.delete(id);
-    this.#sentNow.delete(id);
-    this.#askedToStop(id, run, by);
-    this.#hooks.onOverlay(id);
+    this.#askedToStop(id, run, by, true);
     const operation = Promise.resolve().then(async () => {
       try {
         await run.session.interrupt();
         run.cancellation = "stopped";
         run.rootTools.clear();
-        // Handed over, and neither taken up nor reported discarded: whether
-        // the agent saw them is unknown. A discard reported after this still
-        // puts one back in the queue. (Without receipts nothing is left
-        // delivering: an entry is consumed at hand-over.)
-        if (q && run.inputReceipts) q.markUncertain(id);
+        void this.#fire(id, { kind: "interrupt_stopped" });
         this.#clearOverlays(run);
         if (!run.ended && !compactOnly) {
           // A confirmed stop is the turn's (interrupted) outcome — unless a
           // trailing result already reported one first.
           this.#turnEnded(id, run, Date.now());
-          const stoppedBy = run.stopBy ?? by;
+          const stoppedBy = this.#stopBy(id) ?? by;
           this.#transition(id, run, stateInterrupted(stoppedBy), stoppedBy);
         }
       } catch (err) {
@@ -1571,7 +1507,7 @@ export class SessionManager {
       } finally {
         run.interruptOperation = null;
         this.#hooks.onOverlay(id);
-        void this.#pumpQueue(id);
+        void this.#fire(id, { kind: "run_moved" });
       }
     });
     run.interruptOperation = operation;
@@ -1791,7 +1727,7 @@ export class SessionManager {
         run.restructuringSince = null;
         this.#hooks.onOverlay(id);
         // The queue survives the swap; the new adapter takes it from here.
-        void this.#pumpQueue(id);
+        void this.#fire(id, { kind: "run_moved" });
       }
     });
   }
@@ -1839,7 +1775,7 @@ export class SessionManager {
         run.restructuringSince = null;
         this.#hooks.onOverlay(id);
         run.rewinding = false;
-        void this.#pumpQueue(id);
+        void this.#fire(id, { kind: "run_moved" });
       }
     });
   }
@@ -1898,15 +1834,16 @@ export class SessionManager {
     reason: HostStopReason = "session_close",
     by?: StopCause,
   ): Promise<() => void> {
-    const held = by ? this.#holdForStop(id, by === "user", by) : null;
-    const undo = () => {
-      if (held && this.#applyHold(id, { t: "restore", ticket: held.ticket })?.changed)
-        this.#hooks.onOverlay(id);
-    };
     const run = this.#running.get(id);
+    const held = by
+      ? this.#fire(id, { kind: "stop", by, scope: run ? "turn" : "session", interrupt: false })
+      : null;
+    const undo = () => {
+      if (held)
+        void this.#fire(id, { kind: "stop_undone", ticket: holdTicket(held.before, held.machine) });
+    };
     if (!run) return undo;
     run.closing = true;
-    if (by && run.stopBy !== "user") run.stopBy = by;
     try {
       await run.session.close(reason);
     } catch (err) {

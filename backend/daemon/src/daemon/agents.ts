@@ -12,7 +12,7 @@
  */
 import type { AgentCallEvent, HarnessEvent } from "@loom/core/events";
 import type { AgentCallResult, McpServerHandle, SessionMode } from "@loom/core/types";
-import type { HoldRespect, QueueDelivery, QueueHoldCause } from "@loom/core/message-queue";
+import type { QueueDelivery, QueueHoldCause } from "@loom/core/message-queue";
 import type { SessionState, StopCause } from "@loom/core/session-state";
 import type { GitFacts, SessionSnapshot, TranscriptEntry } from "@loom/core/wire";
 import type { Logger } from "@loom/core/logger";
@@ -25,6 +25,7 @@ import {
 } from "@loom/core/agents";
 import { isAgentTool, type AgentToolName } from "@loom/runtime/agent-tools";
 import { availableProfiles, type AgentProfileConfig, type LoomConfig } from "../config/config.ts";
+import type { Sender } from "./queue-machine.ts";
 
 /** What the agent rules read from the config: depth, profiles, and which
  *  providers this repository allows ({@link availableProfiles}). */
@@ -295,9 +296,22 @@ export interface AgentHost {
   /** A session's stored status, or undefined when it is gone: cheap, for
    *  checks that run on every status change. */
   status(id: string): SessionState | undefined;
-  /** Which spell in its state a session is in (`Registry.statusEpoch`): a
-   *  settled turn's identity, which its next turn does not share. */
-  turn(id: string): number;
+  /**
+   * A child's turn settled in `state` as spell `turn` (`SessionManager.turnOf`);
+   * `cause`, who asked it to stop. Whether its supervisor is to be told —
+   * once per settled turn, never of a stop it made itself.
+   */
+  settle(
+    id: string,
+    settled: {
+      turn: number;
+      state: SessionState;
+      cause: StopCause | null;
+      supervisor: "none" | "gone" | "live";
+    },
+  ): boolean;
+  /** The report of `turn` is made: whether it goes, the turn still `id`'s. */
+  reportReady(id: string, turn: number): boolean;
   /** The sessions `supervisorId` supervises, as {@link get} reads them. */
   children(supervisorId: string): SessionSnapshot[];
   /**
@@ -316,19 +330,18 @@ export interface AgentHost {
   dirty(path: string): boolean;
   start(child: ChildStart): Promise<SessionSnapshot>;
   /**
-   * Put a message in a session's queue, reviving it when it is cold. A hold
-   * `respect` says it waits behind stays: the message joins the held entries
-   * — a cold session stays cold — and nothing starts until the user sends or
-   * releases them. Any other hold it lifts, going first, as the user's send
-   * does. Only the user lifts the user's stop, never an agent. `hold` is the
-   * hold it found; `waited`, whether it stays.
+   * Put a message in a session's queue, reviving it when it is cold. Whether
+   * it waits behind a hold — joining the held entries, a cold session
+   * staying cold — or lifts it, going first, is the sender's (H2): a
+   * supervisor's message waits behind the user's stop only, a child's report
+   * behind any. `hold` is the hold it found; `waited`, whether it stays.
    */
   enqueue(
     id: string,
     text: string,
     author: string,
     delivery: QueueDelivery,
-    respect: Exclude<HoldRespect, "none">,
+    sender: Exclude<Sender, "user">,
   ): Promise<{ entryId: string; state: string; hold: QueueHoldCause | null; waited: boolean }>;
   /** Interrupt a child for its supervisor: the turn's end is attributed to
    *  the supervisor (`interrupted` by `supervisor`). */
@@ -377,25 +390,8 @@ export class AgentSupervision {
   readonly #host: AgentHost;
   /** `agent_wait` calls in flight, per caller. */
   readonly #waits = new Map<string, Set<Waiter>>();
-  /** Per child, the settled turn (`AgentHost.turn`) last reported. */
-  readonly #notified = new Map<string, number>();
-  /** Per child, the settled turn whose report is being made: decided on,
-   *  not yet in the supervisor's queue (its workspace facts are read first). */
-  readonly #reporting = new Map<string, number>();
-
   constructor(host: AgentHost) {
     this.#host = host;
-  }
-
-  /** Forget a removed session's reports. */
-  forget(id: string): void {
-    this.#notified.delete(id);
-  }
-
-  /** Is a report of `childId`'s settled turn on its way to the supervisor's
-   *  queue? Once queued, the queue says whether the supervisor took it up. */
-  reporting(childId: string): boolean {
-    return this.#reporting.has(childId);
   }
 
   /** Run one `agent_call` and answer it. Never throws. */
@@ -630,7 +626,7 @@ export class AgentSupervision {
       `${from}\n${text}`,
       `supervisor:${caller}`,
       delivery,
-      "user",
+      "supervisor",
     );
     let hold = "";
     if (queued.hold && queued.waited)
@@ -789,13 +785,11 @@ export class AgentSupervision {
    * with the state — `interrupted` by `supervisor`, or `cause` for an error
    * the stop ended in — however late it lands.
    *
-   * A settled turn is reported once, identified by `turn` (`AgentHost.turn`
-   * when it settled), not by the kind of state it settled in: two turns that
-   * both end `idle` are two reports, and two writes of one settled state
-   * one. The turn must still be the child's: one that has moved on since —
-   * now or while its facts were read — is reported when the turn it moved
-   * on to ends. Its final message is read before anything is awaited, so it
-   * is that turn's own.
+   * A settled turn is reported once, identified by `turn` (its state spell),
+   * not by the kind of state it settled in; one the child has moved on from
+   * — now or while its facts were read — is reported when the turn it moved
+   * on to ends (`queue-machine.ts` decides both). Its final message is read
+   * before anything is awaited, so it is that turn's own.
    *
    * A child gets no commit or rebase nudges, so its turn end is its own: the
    * notification says what its workspace holds (`git`, read fresh at the
@@ -807,37 +801,28 @@ export class AgentSupervision {
     state: SessionState,
     opts: { turn: number; cause?: StopCause; git?: () => Promise<GitFacts | null> },
   ): Promise<void> {
-    const { turn, cause } = opts;
-    if (!child.supervisorId) return;
-    let event: string;
-    switch (state.kind) {
-      case "idle":
-        event = "finished a turn";
-        break;
-      case "error":
-        event = `failed: ${state.message}`;
-        break;
-      case "interrupted":
-        event = `was interrupted (${state.reason ?? state.by})`;
-        break;
-      default:
-        return;
-    }
-    const current = () =>
-      this.#host.turn(child.id) === turn && this.#host.status(child.id)?.kind === state.kind;
-    if (!current() || this.#notified.get(child.id) === turn) return;
-    if (cause === "supervisor" || (state.kind === "interrupted" && state.by === "supervisor"))
-      return;
-    const supervisor = this.#host.status(child.supervisorId);
-    if (!supervisor || supervisor.kind === "done") return;
-    this.#notified.set(child.id, turn);
-    this.#reporting.set(child.id, turn);
+    const { turn } = opts;
+    const settled = this.#host.settle(child.id, {
+      turn,
+      state,
+      cause: opts.cause ?? null,
+      supervisor: this.#supervisorOf(child),
+    });
+    if (!settled || !child.supervisorId) return;
     try {
-      await this.#report(child, child.supervisorId, event, current, opts.git);
-    } finally {
-      // A later turn's report may have taken over meanwhile.
-      if (this.#reporting.get(child.id) === turn) this.#reporting.delete(child.id);
+      await this.#report(child, child.supervisorId, reportedEvent(state), turn, opts.git);
+    } catch (err) {
+      // Its transcript could not be read: the report is no longer being made.
+      this.#host.reportReady(child.id, turn);
+      throw err;
     }
+  }
+
+  /** Whether `child` has a supervisor to tell: one archived or gone is not told. */
+  #supervisorOf(child: SessionSnapshot): "none" | "gone" | "live" {
+    if (!child.supervisorId) return "none";
+    const supervisor = this.#host.status(child.supervisorId);
+    return supervisor && supervisor.kind !== "done" ? "live" : "gone";
   }
 
   /** The report `notify` decided on, from the turn's final message and
@@ -846,7 +831,7 @@ export class AgentSupervision {
     child: SessionSnapshot,
     supervisorId: string,
     event: string,
-    current: () => boolean,
+    turn: number,
     read: (() => Promise<GitFacts | null>) | undefined,
   ): Promise<void> {
     const final = finalMessage(this.#host.events(child.id, { limit: 200 }).map((e) => e.event));
@@ -862,7 +847,7 @@ export class AgentSupervision {
             .then(read)
             .catch(() => null)
         : null) ?? child.git;
-    if (!current()) return;
+    if (!this.#host.reportReady(child.id, turn)) return;
     const workspace = git
       ? `Its workspace: ${gitSummary(git)}${git.dirty ? "" : ", nothing uncommitted"}.`
       : null;
@@ -875,7 +860,7 @@ export class AgentSupervision {
     try {
       // Behind any hold: a supervisor the user stopped stays stopped, and a
       // crashed one is not revived by a report.
-      await this.#host.enqueue(supervisorId, body, agentAuthor(child.id), "end_of_turn", "any");
+      await this.#host.enqueue(supervisorId, body, agentAuthor(child.id), "end_of_turn", "child");
     } catch (err) {
       this.#host.log.warn("agent notification failed", {
         child: child.id,
@@ -885,3 +870,15 @@ export class AgentSupervision {
     }
   }
 }
+
+/** The first line of a report: what the settled state says happened. */
+const reportedEvent = (state: SessionState): string => {
+  switch (state.kind) {
+    case "error":
+      return `failed: ${state.message}`;
+    case "interrupted":
+      return `was interrupted (${state.reason ?? state.by})`;
+    default:
+      return "finished a turn";
+  }
+};

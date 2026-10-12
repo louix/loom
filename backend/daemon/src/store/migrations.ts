@@ -467,4 +467,23 @@ export const MIGRATIONS: string[] = [
   // (`[archive_reminder]`, docs/loom-agents.md): each child is named once, a
   // restart included, so it is a row column and not a daemon-instance Map.
   `ALTER TABLE sessions ADD COLUMN archive_reminded INTEGER NOT NULL DEFAULT 0;`,
+  // 37 — a queue hold is one value of the session's hold union
+  // (backend/daemon/src/daemon/queue-machine.ts, `Hold`): the supervisor's
+  // stop, Loom's own hold or the user's, each with its reason. Two columns
+  // could store a supervisor's crash, which no path produces; one cannot.
+  /* sql */ `
+  ALTER TABLE sessions ADD COLUMN queue_hold_v2 TEXT CHECK (queue_hold_v2 IN (
+    'supervisor',
+    'loom:interrupt', 'loom:restart', 'loom:crash', 'loom:rejected',
+    'user:interrupt', 'user:restart', 'user:crash', 'user:rejected'));
+  UPDATE sessions SET queue_hold_v2 = CASE
+    WHEN queue_hold IS NULL THEN NULL
+    WHEN queue_hold_by = 'user' THEN 'user:' || queue_hold
+    WHEN queue_hold_by = 'supervisor' AND queue_hold = 'interrupt' THEN 'supervisor'
+    ELSE 'loom:' || queue_hold
+  END;
+  ALTER TABLE sessions DROP COLUMN queue_hold_by;
+  ALTER TABLE sessions DROP COLUMN queue_hold;
+  ALTER TABLE sessions RENAME COLUMN queue_hold_v2 TO queue_hold;
+  `,
 ];

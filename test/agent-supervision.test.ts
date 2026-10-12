@@ -9,7 +9,16 @@ import { test } from "node:test";
 import type { SessionSnapshot, TranscriptEntry } from "@loom/core/wire";
 import type { HarnessEvent } from "@loom/core/events";
 import type { AgentCallResult, McpServerHandle } from "@loom/core/types";
-import { type HoldRespect, type QueueHoldCause, waitsBehind } from "@loom/core/message-queue";
+import type { QueueHoldCause } from "@loom/core/message-queue";
+import {
+  initialMachine,
+  messageWaits,
+  step,
+  type Hold,
+  type QueueEvent,
+  type QueueMachine,
+  type Sender,
+} from "@loom/daemon/daemon/queue-machine";
 import { stateError, stateIdle, stateInterrupted } from "@loom/core/session-state";
 import { makeLogger, setLogLevel } from "@loom/core/logger";
 import {
@@ -87,6 +96,12 @@ const settledTitle =
   (id: string): string | null =>
     SETTLED.has(id) ? (lookup(id)?.title ?? null) : null;
 
+/** The hold a cause names, as the daemon keeps it. */
+const holdOf = (c: QueueHoldCause): Hold => {
+  if (c.by === "user") return { kind: "user", reason: c.reason };
+  return c.by === "supervisor" ? { kind: "supervisor" } : { kind: "loom", reason: c.reason };
+};
+
 const stub = (
   rows: SessionSnapshot[],
   dirty = false,
@@ -94,18 +109,44 @@ const stub = (
   config: AgentConfig = CONFIG,
 ) => {
   const starts: ChildStart[] = [];
-  const queued: Array<{ id: string; text: string; author: string; respect: HoldRespect }> = [];
+  const queued: Array<{ id: string; text: string; author: string; sender: Sender }> = [];
   /** Queue holds by session; a message lifts one it does not wait behind. */
   const holds = new Map<string, QueueHoldCause>();
   const answers: AgentCallResult[] = [];
   const byId = new Map(rows.map((r) => [r.id, r]));
-  /** Settled-turn identities by session (`AgentHost.turn`). */
+  /** Settled-turn identities by session (`SessionManager.turnOf`). */
   const turns = new Map<string, number>();
+  /** Each session's queue machine; its spell is the stub's current turn. */
+  const machines = new Map<string, QueueMachine>();
+  const fire = (id: string, ev: QueueEvent) => {
+    const status = byId.get(id)?.status ?? stateIdle;
+    const m: QueueMachine = {
+      ...(machines.get(id) ?? initialMachine({ kind: "free" })),
+      spell: { kind: "in", state: status, turn: turns.get(id) ?? 0 },
+    };
+    const r = step(m, ev, {
+      slots: [],
+      run: {
+        attached: false,
+        state: status,
+        restructuring: false,
+        cancelling: false,
+        rootTool: null,
+        inputReceipts: true,
+        lifecycle: false,
+      },
+    });
+    machines.set(id, r.machine);
+    return r.effects;
+  };
   const host: AgentHost = {
     config: () => config,
     get: (id) => byId.get(id),
     status: (id) => byId.get(id)?.status,
-    turn: (id) => turns.get(id) ?? 0,
+    settle: (id, settled) =>
+      fire(id, { kind: "turn_settled", ...settled }).some((e) => e.kind === "make_report"),
+    reportReady: (id, turn) =>
+      fire(id, { kind: "report_ready", turn }).some((e) => e.kind === "send_report"),
     children: (id) => [...byId.values()].filter((r) => r.supervisorId === id),
     settledTitle: settledTitle((id) => byId.get(id)),
     providerKnown: (id) => ["claude", "codex"].includes(id),
@@ -127,10 +168,10 @@ const stub = (
       byId.set(made.id, made);
       return made;
     },
-    enqueue: async (id, text, author, _delivery, respect) => {
-      queued.push({ id, text, author, respect });
+    enqueue: async (id, text, author, _delivery, sender) => {
+      queued.push({ id, text, author, sender });
       const hold = holds.get(id) ?? null;
-      const waited = waitsBehind(hold, respect);
+      const waited = hold !== null && messageWaits(holdOf(hold), sender);
       if (hold && !waited) holds.delete(id);
       return { entryId: "e", state: waited ? "queued" : "delivering", hold, waited };
     },
@@ -154,7 +195,7 @@ const stub = (
     });
     return answers.at(-1)!;
   };
-  return { starts, queued, holds, call, byId, sup, turns };
+  return { starts, queued, holds, call, byId, sup, turns, machines };
 };
 
 test("a VM supervisor's child runs in a VM, in a worktree off the supervisor's branch", async () => {
@@ -384,7 +425,7 @@ test("agent_message waits behind the user's hold only, and its reply names the h
     assert.match(reply, /the message lifted the hold and goes first/);
     assert.ok(!s.holds.has("kid"));
   }
-  assert.ok(s.queued.every((q) => q.respect === "user"));
+  assert.ok(s.queued.every((q) => q.sender === "supervisor"));
 });
 
 test("final message, excerpt bounds and byte cuts", () => {
@@ -583,7 +624,7 @@ test("a dropped report reads no Git; a removed child's reports are forgotten", a
   assert.equal(reads, 1, "a turn already reported reads nothing");
   assert.equal(notes().length, 1);
   // Forgotten (the session was removed): nothing of it is kept.
-  s.sup.forget("kid");
+  s.machines.delete("kid");
   await s.sup.notify(kid, stateIdle, { turn: 2, git });
   assert.equal(notes().length, 2);
 });

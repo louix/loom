@@ -13,9 +13,9 @@ import {
   type QueueEntry,
   type QueueEntryState,
   type QueueHold,
-  type QueueHoldBy,
-  type QueueHoldCause,
 } from "@loom/core/message-queue";
+import type { Hold } from "../daemon/queue-machine.ts";
+import { absurd } from "@loom/core/absurd";
 import { createHash } from "node:crypto";
 import { type Db, withTransaction } from "./db.ts";
 
@@ -51,37 +51,6 @@ export type Enqueued =
       readonly entry: QueueEntry | null;
       readonly state: QueueEntryState;
     };
-
-/**
- * A change to a session's hold, as {@link MessageQueueStore.applyHold}
- * combines it with the hold already there (docs/message-queue.md, "Holds").
- */
-export type HoldChange =
-  /** `by`'s stop, or no one's: `interrupt` on an unheld queue while entries
-   *  wait — or, `empty`, even without. On a hold already set a user's makes
-   *  it the user's; anyone else's changes nothing. */
-  | { readonly t: "stop"; readonly by: QueueHoldBy | null; readonly empty: boolean }
-  /** Loom's own hold: set on an unheld queue, never over one already set. */
-  | { readonly t: "loom"; readonly reason: Exclude<QueueHold, "interrupt"> }
-  /** A message that lifts the hold, or a release: clears it. Whether a
-   *  message lifts or waits is the enqueue's decision (H2), made once. */
-  | { readonly t: "lift" }
-  /** Undo the change `ticket` came from, unless the hold was written since. */
-  | { readonly t: "restore"; readonly ticket: HoldTicket };
-
-/** What undoes a hold change: the hold before it, and the write it was. */
-export interface HoldTicket {
-  readonly prior: QueueHoldCause | null;
-  readonly generation: number;
-}
-
-/** A hold change applied: the hold before and after, and its undo. */
-export interface HoldApplied {
-  readonly before: QueueHoldCause | null;
-  readonly after: QueueHoldCause | null;
-  readonly changed: boolean;
-  readonly ticket: HoldTicket;
-}
 
 /** A live entry as dispatch reads it: no text. */
 export type QueueSlot = Pick<QueueEntry, "id" | "state" | "delivery" | "uncertain" | "author">;
@@ -123,17 +92,38 @@ const SETTLED = "state IN ('consumed', 'cancelled')";
 /** Dispatch order: every `next_boundary` entry before any `end_of_turn` one. */
 const ORDER = "CASE delivery WHEN 'next_boundary' THEN 0 ELSE 1 END, seq";
 
+export /**
+ * A hold as its column stores it (migration 37): one value per member of the
+ * union, so a combination the union cannot hold cannot be stored either.
+ */
+type HoldColumn = "supervisor" | `loom:${QueueHold}` | `user:${QueueHold}`;
+
+const holdColumn = (h: Hold): HoldColumn | null => {
+  switch (h.kind) {
+    case "free":
+      return null;
+    case "supervisor":
+      return "supervisor";
+    case "loom":
+    case "user":
+      return `${h.kind}:${h.reason}`;
+    default:
+      return absurd(h);
+  }
+};
+
+const holdOfColumn = (c: HoldColumn | null): Hold => {
+  if (c === null) return { kind: "free" };
+  if (c === "supervisor") return { kind: "supervisor" };
+  const [kind, reason] = c.split(":") as ["loom" | "user", QueueHold];
+  return { kind, reason };
+};
+
 export const ALREADY_HANDED = "Already handed to the agent.";
 const REUSED = "That message id is already used for different text.";
 
 export class MessageQueueStore {
   readonly #db: Db;
-  /** Per session, the last write of its hold in this process, numbered off
-   *  {@link #writes}: a restore applies only to the write it undoes. */
-  readonly #generations = new Map<string, number>();
-  /** Hold writes numbered across sessions, never reused: a session forgotten
-   *  ({@link forget}) and written again cannot match an older ticket. */
-  #writes = 0;
 
   constructor(db: Db) {
     this.#db = db;
@@ -180,86 +170,18 @@ export class MessageQueueStore {
     );
   }
 
-  /** Session ids with a live entry or a hold — the ones a restart must look at. */
-  sessionsWithQueues(): string[] {
-    const rows = this.#db
-      .prepare(
-        `SELECT DISTINCT session_id AS id FROM session_queue WHERE ${LIVE} ` +
-          "UNION SELECT id FROM sessions WHERE queue_hold IS NOT NULL",
-      )
-      .all() as unknown as Array<{ id: string }>;
-    return rows.map((r) => r.id);
-  }
-
-  /** The hold's reason; null when unheld. Read off {@link holdCause}. */
-  hold(sessionId: string): QueueHold | null {
-    return this.holdCause(sessionId)?.reason ?? null;
-  }
-
-  /** The hold and whose stop it is; null when unheld. */
-  holdCause(sessionId: string): QueueHoldCause | null {
-    const row = this.#db
-      .prepare("SELECT queue_hold, queue_hold_by FROM sessions WHERE id = ?")
-      .get(sessionId) as
-      | { queue_hold: QueueHold | null; queue_hold_by: QueueHoldBy | null }
+  /** The session's hold as stored; the session manager keeps it from here. */
+  hold(sessionId: string): Hold {
+    const row = this.#db.prepare("SELECT queue_hold FROM sessions WHERE id = ?").get(sessionId) as
+      | { queue_hold: HoldColumn | null }
       | undefined;
-    return row?.queue_hold ? { reason: row.queue_hold, by: row.queue_hold_by } : null;
+    return holdOfColumn(row?.queue_hold ?? null);
   }
 
-  /**
-   * The one write of a session's hold (docs/message-queue.md, "Holds"):
-   * `change` combined with the hold as it is. A hold already set keeps its
-   * reason, and only a user's stop changes anything about it — it becomes
-   * the user's (H1); a lift clears it (the enqueue decided it lifts, H2); a
-   * restore undoes an earlier change unless the hold was written since (H5,
-   * H6). Synchronous, so nothing comes between the read and the write.
-   *
-   * "Written" is a change to the hold — and a user's stop, even on the
-   * user's hold already: that re-asserts it, and no older change is undone
-   * past it. Anything else that leaves the hold as it was (a requeued
-   * discard, a crash, a supervisor's stop on a hold already set) is no write,
-   * and voids no ticket.
-   */
-  applyHold(sessionId: string, change: HoldChange): HoldApplied {
-    const before = this.holdCause(sessionId);
-    const generation = this.#generations.get(sessionId) ?? 0;
-    // undefined: the hold stays as it is.
-    let after: QueueHoldCause | null | undefined;
-    switch (change.t) {
-      case "stop":
-        if (before !== null)
-          after =
-            change.by === "user" && before.by !== "user"
-              ? { reason: before.reason, by: "user" }
-              : undefined;
-        else if (change.empty || this.#live(sessionId).length > 0)
-          after = { reason: "interrupt", by: change.by };
-        break;
-      case "loom":
-        if (before === null) after = { reason: change.reason, by: null };
-        break;
-      case "lift":
-        if (before !== null) after = null;
-        break;
-      case "restore":
-        if (change.ticket.generation === generation) after = change.ticket.prior;
-        break;
-    }
-    const now = after === undefined ? before : after;
-    const changed = before?.reason !== now?.reason || before?.by !== now?.by;
-    const wrote = changed || (change.t === "stop" && change.by === "user");
-    const next = wrote ? ++this.#writes : generation;
-    if (wrote) this.#generations.set(sessionId, next);
-    if (changed)
-      this.#db
-        .prepare("UPDATE sessions SET queue_hold = ?, queue_hold_by = ? WHERE id = ?")
-        .run(now?.reason ?? null, now?.by ?? null, sessionId);
-    return { before, after: now, changed, ticket: { prior: before, generation: next } };
-  }
-
-  /** Forget a removed session's hold writes. */
-  forget(sessionId: string): void {
-    this.#generations.delete(sessionId);
+  setHold(sessionId: string, hold: Hold): void {
+    this.#db
+      .prepare("UPDATE sessions SET queue_hold = ? WHERE id = ?")
+      .run(holdColumn(hold), sessionId);
   }
 
   /**
@@ -545,30 +467,15 @@ export class MessageQueueStore {
     });
   }
 
-  /**
-   * After a daemon restart nothing is mid-hand-over any more: every
-   * `delivering` entry may or may not have reached the agent. Marks them
-   * uncertain and holds those sessions (`restart`; a hold already set
-   * stays as it is). Returns their ids.
-   */
-  recoverAfterRestart(): string[] {
-    return withTransaction(this.#db, () => {
-      const rows = this.#db
-        .prepare(
-          "SELECT DISTINCT session_id AS id FROM session_queue WHERE state = 'delivering' AND uncertain = 0",
-        )
-        .all() as unknown as Array<{ id: string }>;
-      for (const { id } of rows) {
-        this.#db
-          .prepare(
-            "UPDATE session_queue SET uncertain = 1, revision = revision + 1 " +
-              "WHERE session_id = ? AND state = 'delivering'",
-          )
-          .run(id);
-        this.applyHold(id, { t: "loom", reason: "restart" });
-      }
-      return rows.map((r) => r.id);
-    });
+  /** Sessions with entries left `delivering` and not yet known uncertain:
+   *  after a daemon restart, each may or may not have reached the agent. */
+  sessionsDelivering(): string[] {
+    const rows = this.#db
+      .prepare(
+        "SELECT DISTINCT session_id AS id FROM session_queue WHERE state = 'delivering' AND uncertain = 0",
+      )
+      .all() as unknown as Array<{ id: string }>;
+    return rows.map((r) => r.id);
   }
 
   /**
