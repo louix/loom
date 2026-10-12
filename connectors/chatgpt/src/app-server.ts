@@ -63,6 +63,9 @@ export const mcpConfig = (servers: McpServerHandle[]): string => {
     `{ ${Object.entries(entries)
       .map(([key, val]) => `${value(key)} = ${value(val)}`)
       .join(", ")} }`;
+  // Codex's own per-server tool-call default is also 60 s.
+  const timeout = (s: McpServerHandle): string[] =>
+    s.requestTimeoutMs ? [`tool_timeout_sec = ${s.requestTimeoutMs / 1000}`] : [];
   const entries = new Map(
     servers.map((s) => {
       if (s.spec.transport === "runtime")
@@ -75,6 +78,7 @@ export const mcpConfig = (servers: McpServerHandle[]): string => {
           ...(spec.args?.length ? [`args = [${spec.args.map(value).join(", ")}]`] : []),
           ...(spec.env ? [`env = ${table(spec.env)}`] : []),
           ...(spec.cwd !== undefined ? [`cwd = ${value(spec.cwd)}`] : []),
+          ...timeout(s),
         ];
         return [s.name, `{ ${fields.join(", ")} }`] as const;
       }
@@ -83,6 +87,7 @@ export const mcpConfig = (servers: McpServerHandle[]): string => {
         `url = ${value(spec.url)}`,
         ...(s.required ? ["required = true"] : []),
         ...(spec.headers ? [`http_headers = ${table(spec.headers)}`] : []),
+        ...timeout(s),
       ];
       return [s.name, `{ ${fields.join(", ")} }`] as const;
     }),

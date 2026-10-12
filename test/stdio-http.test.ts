@@ -3,8 +3,9 @@ import { test } from "node:test";
 import { experimental_createMCPClient } from "@ai-sdk/mcp";
 import { stdioHttp } from "../runtime/src/mcp/stdio-http.ts";
 import { FrameWriter, readFrames } from "../runtime/src/worker/transport.ts";
+import { MCP_REQUEST_TIMEOUT_DEFAULT_MS } from "../core/src/mcp-worker.ts";
 
-const fixture = async () => {
+const fixture = async (requestTimeoutMs: number) => {
   const input = new TransformStream<Uint8Array, Uint8Array>();
   const output = new TransformStream<Uint8Array, Uint8Array>();
   const writer = new FrameWriter(output.writable);
@@ -15,6 +16,14 @@ const fixture = async () => {
         seen.push(f);
         if (f.id === undefined) continue;
         if (f.method === "hang") continue;
+        if (f.method === "slow") {
+          const id = f.id;
+          setTimeout(
+            () => void writer.send({ jsonrpc: "2.0", id, result: {} }).catch(() => {}),
+            f.params.delay_ms,
+          );
+          continue;
+        }
         let result: unknown = {};
         if (f.method === "initialize")
           result = {
@@ -44,7 +53,7 @@ const fixture = async () => {
       await writer.close();
     }
   })();
-  const bridge = await stdioHttp(input.writable, output.readable, "token");
+  const bridge = await stdioHttp(input.writable, output.readable, "token", requestTimeoutMs);
   const url = `http://127.0.0.1:${bridge.port}/mcp`;
   const headers = { Authorization: "Bearer token", "Content-Type": "application/json" };
   return {
@@ -61,7 +70,7 @@ const fixture = async () => {
   };
 };
 test("stdio facade works with real MCP client, preserves schemas and enforces bearer/origin/body bounds", async () => {
-  const f = await fixture();
+  const f = await fixture(MCP_REQUEST_TIMEOUT_DEFAULT_MS);
   try {
     const client = await experimental_createMCPClient({
       transport: { type: "http", url: f.url, headers: f.headers },
@@ -98,7 +107,7 @@ test("stdio facade works with real MCP client, preserves schemas and enforces be
   }
 });
 test("cancellation maps client ids to native ids; closure rejects pending requests", async () => {
-  const f = await fixture();
+  const f = await fixture(MCP_REQUEST_TIMEOUT_DEFAULT_MS);
   const post = (body: unknown) =>
     fetch(f.url, { method: "POST", headers: f.headers, body: JSON.stringify(body) });
   try {
@@ -130,7 +139,7 @@ test("cancellation maps client ids to native ids; closure rejects pending reques
   }
 });
 test("server notifications stream to authenticated clients and close with the MCP", async () => {
-  const f = await fixture();
+  const f = await fixture(MCP_REQUEST_TIMEOUT_DEFAULT_MS);
   try {
     const response = await fetch(f.url, { headers: f.headers });
     assert.match(response.headers.get("content-type")!, /text\/event-stream/);
@@ -144,5 +153,30 @@ test("server notifications stream to authenticated clients and close with the MC
     await reader.cancel();
   } finally {
     await f.close();
+  }
+});
+test("a request slower than the bridge's bound fails and is cancelled; a longer bound lets it finish", async () => {
+  for (const [requestTimeoutMs, status] of [
+    [100, 502],
+    [2000, 200],
+  ] as const) {
+    const f = await fixture(requestTimeoutMs);
+    try {
+      const response = await fetch(f.url, {
+        method: "POST",
+        headers: f.headers,
+        body: JSON.stringify({ jsonrpc: "2.0", id: 7, method: "slow", params: { delay_ms: 400 } }),
+      });
+      assert.equal(response.status, status);
+      if (status === 200)
+        assert.deepEqual(await response.json(), { jsonrpc: "2.0", id: 7, result: {} });
+      else await response.text();
+      assert.equal(
+        f.seen.some((m) => m.method === "notifications/cancelled"),
+        status === 502,
+      );
+    } finally {
+      await f.close();
+    }
   }
 });

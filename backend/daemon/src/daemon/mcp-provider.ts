@@ -66,6 +66,7 @@ export const withExternalMcp = async (
             provider: context.id,
             repo: repoRoot ?? context.config.sessionVm?.repoRoot,
             ...(handle.spec.grants ? { grants: handle.spec.grants } : {}),
+            ...(handle.requestTimeoutMs ? { requestTimeoutMs: handle.requestTimeoutMs } : {}),
           });
         else if (definition?.oauth)
           worker = await startOAuthMcp(
@@ -74,8 +75,13 @@ export const withExternalMcp = async (
             definition.oauth,
             start,
             notice,
+            handle.requestTimeoutMs,
           );
-        else worker = await start(handle.name, handle.spec);
+        else
+          worker = await start(handle.name, {
+            ...handle.spec,
+            ...(handle.requestTimeoutMs ? { requestTimeoutMs: handle.requestTimeoutMs } : {}),
+          });
         workers.push(worker);
         return { ...handle, spec: worker.handle.spec };
       };

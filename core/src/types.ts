@@ -94,6 +94,8 @@ export const mcpServerHandleSchema = z.object({
   defaultFor: z.array(z.enum(MCP_CAPABILITIES)).optional(),
   /** Upstream credential env name to omit from native child environments. */
   credentialEnv: z.string().optional(),
+  /** One request's bound at Loom's relays and the harness's MCP client; absent: relays use 60 s. */
+  requestTimeoutMs: z.number().int().positive().optional(),
   spec: z.union([
     z.object({
       transport: z.literal("runtime"),

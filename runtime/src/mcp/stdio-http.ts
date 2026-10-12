@@ -13,6 +13,7 @@ export const stdioHttp = async (
   input: WritableStream<Uint8Array>,
   output: ReadableStream<Uint8Array>,
   token: string,
+  requestTimeoutMs: number,
 ) => {
   const writer = new FrameWriter(input);
   let sequence = 0;
@@ -84,7 +85,10 @@ export const stdioHttp = async (
       if (clientIds.has(clientId)) throw new Error("Duplicate in-flight MCP request id");
       clientIds.set(clientId, id);
     }
-    const stop = AbortSignal.any([AbortSignal.timeout(60_000), ...(signal ? [signal] : [])]);
+    const stop = AbortSignal.any([
+      AbortSignal.timeout(requestTimeoutMs),
+      ...(signal ? [signal] : []),
+    ]);
     let aborted: () => void = () => {};
     try {
       const response = new Promise<Rpc>((resolve, reject) => {
@@ -156,7 +160,11 @@ export const stdioHttp = async (
           const chunks: Uint8Array[] = [];
           if (req.body)
             for await (const chunk of req.body.pipeThrough(new TransformStream(), {
-              signal: AbortSignal.any([lifetime.signal, req.signal, AbortSignal.timeout(60_000)]),
+              signal: AbortSignal.any([
+                lifetime.signal,
+                req.signal,
+                AbortSignal.timeout(requestTimeoutMs),
+              ]),
             })) {
               size += chunk.length;
               if (size > MAX_BODY) return new Response(null, { status: 413 });

@@ -100,6 +100,7 @@ class OAuthOwner {
   async mount(
     start: typeof startMcpWorker,
     notice: (message: string) => void,
+    requestTimeoutMs: number | undefined,
   ): Promise<ManagedMcp> {
     return await this.serial(async () => {
       if (!this.lease) {
@@ -114,7 +115,12 @@ class OAuthOwner {
         await this.sync();
         if (!this.relay(this.state).accessToken)
           throw new Error(mcpOAuthDiagnostic(this.name, this.lastNotice));
-        const worker = await start(this.name, { transport: "http", url: this.url }, undefined, {
+        const spec = {
+          transport: "http" as const,
+          url: this.url,
+          ...(requestTimeoutMs ? { requestTimeoutMs } : {}),
+        };
+        const worker = await start(this.name, spec, undefined, {
           initial: this.relay(this.state),
           report: (kind, generation) => {
             void this.serial(async () => {
@@ -172,6 +178,7 @@ export const startOAuthMcp = (
   config: McpOAuthConfig,
   start = startMcpWorker,
   notice: (message: string) => void = () => {},
+  requestTimeoutMs?: number,
 ): Promise<ManagedMcp> => {
   const identity = mcpOAuthIdentity(name, url, config);
   const key = JSON.stringify([createMcpOAuthStore(name).directory, identity]);
@@ -180,5 +187,5 @@ export const startOAuthMcp = (
     owner = new OAuthOwner(name, url, config);
     owners.set(key, owner);
   }
-  return owner.mount(start, notice);
+  return owner.mount(start, notice, requestTimeoutMs);
 };

@@ -475,12 +475,14 @@ export const mcpConfig = (handles: McpServerHandle[]): Record<string, McpServerC
               args: ["-c", 'cd -- "$1" && shift && exec "$@"', "sh", cwd, command, ...args],
             }),
         ...(env ? { env } : {}),
+        ...(h.requestTimeoutMs ? { timeout: h.requestTimeoutMs } : {}),
       };
     } else {
       out[h.name] = {
         type: "http",
         url: h.spec.url,
         ...(h.spec.headers ? { headers: h.spec.headers } : {}),
+        ...(h.requestTimeoutMs ? { timeout: h.requestTimeoutMs } : {}),
       };
     }
   }

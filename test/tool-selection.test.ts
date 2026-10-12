@@ -273,3 +273,29 @@ test("a host command's pass_env must be set before a session starts", async () =
     Deno.env.delete("LOOM_TEST_UNSET_PASS_ENV");
   }
 });
+
+test("timeout_seconds bounds every source kind's requests, 1–3600 whole seconds", () => {
+  const config = (timeout: unknown) =>
+    normalizeConfig({
+      mcp_servers: Object.fromEntries(
+        [
+          ["host", { kind: "command", command: "tool" }],
+          ["tilth", { kind: "runtime", ref: "tilth" }],
+          ["docs", { kind: "http", url: "https://docs.example/mcp" }],
+        ].map(([name, source]) => [
+          name,
+          { source, ...(timeout === undefined ? {} : { timeout_seconds: timeout }) },
+        ]),
+      ),
+      session: { mcp_servers: ["host", "tilth", "docs"] },
+    });
+  const set = config(120);
+  assert.deepEqual(
+    [...set.mcp, ...set.httpMcp].map((m) => m.requestTimeoutMs),
+    [120_000, 120_000, 120_000],
+  );
+  const unset = config(undefined);
+  assert.ok([...unset.mcp, ...unset.httpMcp].every((m) => !("requestTimeoutMs" in m)));
+  assert.equal(config(3600).httpMcp[0]!.requestTimeoutMs, 3_600_000);
+  for (const bad of [0, 3601, 1.5, "60"]) assert.throws(() => config(bad), /timeout_seconds/);
+});

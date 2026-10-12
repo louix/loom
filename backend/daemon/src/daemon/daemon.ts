@@ -5660,6 +5660,7 @@ export class Daemon {
           name: m.name,
           ...(m.required ? { required: true } : {}),
           ...(m.defaultFor ? { defaultFor: m.defaultFor } : {}),
+          ...(m.requestTimeoutMs ? { requestTimeoutMs: m.requestTimeoutMs } : {}),
           spec: {
             transport: "runtime",
             runtime: m.runtime,
@@ -5680,6 +5681,7 @@ export class Daemon {
         name: m.name,
         ...(m.required ? { required: true } : {}),
         ...(m.defaultFor ? { defaultFor: m.defaultFor } : {}),
+        ...(m.requestTimeoutMs ? { requestTimeoutMs: m.requestTimeoutMs } : {}),
         spec: {
           transport: "stdio",
           command,
@@ -5700,6 +5702,7 @@ export class Daemon {
         ...(m.required ? { required: true } : {}),
         defaultFor: m.defaultFor,
         ...(credentialEnv ? { credentialEnv } : {}),
+        ...(m.requestTimeoutMs ? { requestTimeoutMs: m.requestTimeoutMs } : {}),
         spec: {
           transport: "http",
           url: m.url,

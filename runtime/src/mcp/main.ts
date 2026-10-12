@@ -49,7 +49,7 @@ try {
         stop.signal,
         authStop.signal,
         request.signal,
-        AbortSignal.timeout(60_000),
+        AbortSignal.timeout(binding.requestTimeoutMs),
       ]);
       try {
         const headers = new Headers();

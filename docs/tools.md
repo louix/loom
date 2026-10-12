@@ -226,6 +226,32 @@ retain their running servers and grants. Restart the daemon to apply changed
 definitions or selections; new/resumed sessions then use the current configuration.
 There is no live tool-list refresh or grant mutation.
 
+## Request timeouts
+
+One MCP request may take 60 seconds unless its server sets `timeout_seconds`,
+a whole number from 1 to 3600:
+
+```jsonc
+{
+  "mcp_servers": {
+    "slow": {
+      "source": { "kind": "http", "url": "https://mcp.example.com/mcp" },
+      "timeout_seconds": 300,
+    },
+  },
+}
+```
+
+For `http`, `nix` and `runtime` sources, Loom's relay enforces it: the HTTP
+relay aborts the upstream request (and its response stream), and a VM server's
+stdio bridge answers the agent with an error and sends the server
+`notifications/cancelled`. Claude and Codex also receive it as that server's
+tool-call timeout (`timeout` and `tool_timeout_sec`). Codex's own default is
+also 60 seconds, so a longer limit has to reach it too.
+A `command` source has no Loom relay; for it the setting only sets the
+Claude or Codex tool-call timeout. AISDK agents' MCP client sets no per-call
+limit, so there the setting applies through Loom's relays alone.
+
 ## Host commands
 
 A `command` source runs an executable on the host, unconfined, as the agent's

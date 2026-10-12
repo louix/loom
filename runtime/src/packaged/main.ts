@@ -1,6 +1,7 @@
 /** One session's VM supervisor. Parent EOF owns its lifetime, including startup. */
 import { FrameWriter, readFrames } from "../worker/transport.ts";
 import { stdioHttp } from "../mcp/stdio-http.ts";
+import { mcpRequestTimeoutMsSchema } from "../../../core/src/mcp-worker.ts";
 import { decodeManifest } from "./artifact.ts";
 import {
   vmCreateArguments,
@@ -24,6 +25,7 @@ try {
   const first = await frames.next();
   if (first.done) throw new Error("Missing VM binding");
   const b = first.value;
+  const requestTimeoutMs = mcpRequestTimeoutMsSchema.safeParse(b?.mcpRequestTimeoutMs);
   if (
     !b ||
     b.version !== 1 ||
@@ -32,7 +34,8 @@ try {
     typeof b.workspace !== "string" ||
     typeof b.state !== "string" ||
     typeof b.smolvm !== "string" ||
-    typeof b.artifact !== "string"
+    typeof b.artifact !== "string" ||
+    !requestTimeoutMs.success
   )
     throw new Error("Invalid VM binding");
   b.manifest = decodeManifest(b.manifest);
@@ -78,7 +81,9 @@ try {
       }),
     )
     .catch(() => {});
-  starting = stdioHttp(child.stdin, child.stdout, b.token).then((value) => (bridge = value));
+  starting = stdioHttp(child.stdin, child.stdout, b.token, requestTimeoutMs.data).then(
+    (value) => (bridge = value),
+  );
   void starting.catch(() => {});
   const ready = await Promise.race([starting, parent.then(() => undefined)]);
   if (ready) {

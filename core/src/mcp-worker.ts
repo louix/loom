@@ -2,7 +2,11 @@ import { z } from "zod";
 import { decode } from "./schema.ts";
 
 /** Private daemon → external MCP worker bootstrap; never supplied by a connector. */
-export const MCP_WORKER_VERSION = 2;
+export const MCP_WORKER_VERSION = 3;
+/** A relay's per-request bound when `mcp_servers.<name>.timeout_seconds` is unset. */
+export const MCP_REQUEST_TIMEOUT_DEFAULT_MS = 60_000;
+/** Bounds what a relay accepts: config allows 1–3600 s, tests use shorter. */
+export const mcpRequestTimeoutMsSchema = z.number().int().positive().max(3_600_000);
 export const mcpOAuthRelayStateSchema = z.strictObject({
   generation: z.number().int().nonnegative(),
   accessToken: z
@@ -40,6 +44,7 @@ export const mcpWorkerBindingSchema = z.object({
     }
   }),
   token: z.string().min(32),
+  requestTimeoutMs: mcpRequestTimeoutMsSchema,
   oauth: mcpOAuthRelayStateSchema.optional(),
 });
 export type McpWorkerBinding = z.infer<typeof mcpWorkerBindingSchema>;

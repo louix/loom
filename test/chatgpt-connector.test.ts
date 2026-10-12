@@ -3178,3 +3178,17 @@ test("a Codex stdin-write approval is its own write_stdin request, answered like
     await rm(resultFile, { force: true });
   }
 });
+
+test("Codex gets a server's request bound as its tool-call timeout", () => {
+  assert.equal(
+    mcpConfig([
+      { name: "host", requestTimeoutMs: 1500, spec: { transport: "stdio", command: "tool" } },
+      {
+        name: "aws",
+        requestTimeoutMs: 120_000,
+        spec: { transport: "http", url: "https://aws.example/mcp" },
+      },
+    ]),
+    '{ "host" = { command = "tool", tool_timeout_sec = 1.5 }, "aws" = { url = "https://aws.example/mcp", tool_timeout_sec = 120 } }',
+  );
+});

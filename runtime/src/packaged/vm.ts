@@ -24,6 +24,8 @@ export interface VmBinding {
   mounts?: string[];
   /** Only command MCPs set this; agent VM policy is separate. */
   mcpGrants?: McpGrants;
+  /** Required by packaged/main.ts, the stdio bridge's per-request bound. */
+  mcpRequestTimeoutMs?: number;
   sessionDirectory?: string;
   mcpRelays?: Array<{ port: number; guestPort: number }>;
   /** Clone sessions: the guest's only Git remote and the clone it prepares. */

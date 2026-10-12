@@ -1,4 +1,5 @@
 import { mcpGrantsSchema, type McpGrants } from "../../../../core/src/mcp-config.ts";
+import { MCP_REQUEST_TIMEOUT_DEFAULT_MS } from "../../../../core/src/mcp-worker.ts";
 import {
   attachDiskTemplates,
   retainDiskTemplates,
@@ -22,6 +23,7 @@ export interface McpVmIdentity {
   provider: string;
   repo?: string | undefined;
   grants?: McpGrants;
+  requestTimeoutMs?: number;
 }
 
 /**
@@ -65,6 +67,7 @@ const startRuntimeMcpOwned = async (
     state,
     token: crypto.randomUUID() + crypto.randomUUID(),
     ...(grants ? { mcpGrants: grants } : {}),
+    mcpRequestTimeoutMs: identity?.requestTimeoutMs ?? MCP_REQUEST_TIMEOUT_DEFAULT_MS,
   };
   let owner: VmOwner | undefined;
   let child: ReturnType<WorkerLauncher>;

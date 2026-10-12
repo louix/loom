@@ -28,7 +28,14 @@ export const resolveToolSelection = (raw: ToolSettings): Pick<LoomConfig, "mcp" 
     if (!Object.hasOwn(raw.mcp_servers, name))
       throw new Error(`Unknown MCP server ${name} selected by session.mcp_servers`);
     const entry = raw.mcp_servers[name]!;
-    const common = { name, required: true, defaultFor: entry.default_for };
+    const common = {
+      name,
+      required: true,
+      defaultFor: entry.default_for,
+      ...(entry.timeout_seconds === undefined
+        ? {}
+        : { requestTimeoutMs: entry.timeout_seconds * 1000 }),
+    };
     switch (entry.source.kind) {
       case "http":
         httpMcp.push({

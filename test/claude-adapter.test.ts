@@ -1662,3 +1662,24 @@ test("mcpConfig starts a host command with a working directory through sh, which
   );
   assert.deepEqual(config["plain"], { type: "stdio", command: "plain", env: { A: "1" } });
 });
+
+test("mcpConfig gives Claude a server's request bound as its tool-call timeout", () => {
+  // when
+  const config = mcpConfig([
+    { name: "host", requestTimeoutMs: 90_000, spec: { transport: "stdio", command: "tool" } },
+    {
+      name: "aws",
+      requestTimeoutMs: 120_000,
+      spec: { transport: "http", url: "https://aws.example/mcp" },
+    },
+    { name: "plain", spec: { transport: "http", url: "https://plain.example/mcp" } },
+  ]);
+  // then
+  assert.deepEqual(config["host"], { type: "stdio", command: "tool", timeout: 90_000 });
+  assert.deepEqual(config["aws"], {
+    type: "http",
+    url: "https://aws.example/mcp",
+    timeout: 120_000,
+  });
+  assert.deepEqual(config["plain"], { type: "http", url: "https://plain.example/mcp" });
+});

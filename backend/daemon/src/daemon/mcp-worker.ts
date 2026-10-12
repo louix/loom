@@ -1,5 +1,6 @@
 import { fileURLToPath } from "node:url";
 import {
+  MCP_REQUEST_TIMEOUT_DEFAULT_MS,
   MCP_WORKER_VERSION,
   decodeMcpBinding,
   mcpOAuthUpdateSchema,
@@ -14,12 +15,19 @@ import {
   type WorkerLaunchSpec,
 } from "./worker-launch.ts";
 
-type HttpSpec = Extract<McpServerHandle["spec"], { transport: "http" }>;
+type HttpSpec = Extract<McpServerHandle["spec"], { transport: "http" }> &
+  Pick<McpServerHandle, "requestTimeoutMs">;
 
 /** Network authority is chosen before launch; initialization cannot enlarge it. */
 export const mcpWorkerSpec = (url: string): WorkerLaunchSpec => {
   const endpoint = new URL(url);
-  decodeMcpBinding({ version: MCP_WORKER_VERSION, url, headers: {}, token: "x".repeat(32) });
+  decodeMcpBinding({
+    version: MCP_WORKER_VERSION,
+    url,
+    headers: {},
+    token: "x".repeat(32),
+    requestTimeoutMs: MCP_REQUEST_TIMEOUT_DEFAULT_MS,
+  });
   const spec = mockLaunchSpec("/");
   return {
     ...spec,
@@ -94,6 +102,7 @@ export const startMcpWorker = async (
           url: spec.url,
           headers: spec.headers ?? {},
           token,
+          requestTimeoutMs: spec.requestTimeoutMs ?? MCP_REQUEST_TIMEOUT_DEFAULT_MS,
           ...(oauth ? { oauth: oauth.initial } : {}),
         });
         const ready = await frames.next();

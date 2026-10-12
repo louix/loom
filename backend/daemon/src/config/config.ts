@@ -346,7 +346,12 @@ export interface LoomConfig {
   };
   mcpServers?: Record<string, z.output<typeof mcpDefinitionSchema>>;
   mcp: Array<
-    { name: string; defaultFor?: McpCapability[]; required?: boolean } & (
+    {
+      name: string;
+      defaultFor?: McpCapability[];
+      required?: boolean;
+      requestTimeoutMs?: number;
+    } & (
       | {
           command: string;
           args?: string[];
@@ -367,6 +372,7 @@ export interface LoomConfig {
     bearerToken?: string;
     oauth?: McpOAuthConfig;
     defaultFor: McpCapability[];
+    requestTimeoutMs?: number;
   }>;
   /**
    * Shell commands the daemon runs when something happens in a session — a

@@ -9,8 +9,10 @@ import {
 } from "../backend/daemon/src/daemon/mcp-worker.ts";
 import {
   launchLocalWorker,
+  type WorkerLaunchSpec,
   type WorkerProcess,
 } from "../backend/daemon/src/daemon/worker-launch.ts";
+import { readFrames } from "../runtime/src/worker/transport.ts";
 import { withExternalMcp } from "../backend/daemon/src/daemon/mcp-provider.ts";
 import type { ConnectorContext } from "@loom/core/connector";
 import { FakeProvider } from "@loom/connector-mock";
@@ -112,6 +114,10 @@ const fixture = () => {
         break;
       case "tools/call":
         result = { content: [{ type: "text", text: `found ${m.params.arguments.query}` }] };
+        break;
+      case "slow":
+        await delay(m.params.delay_ms);
+        result = {};
         break;
       default:
         return new Response(null, { status: 400 });
@@ -416,4 +422,126 @@ test("session construction failure, native stream end and worker crash release M
     await Promise.all(workers.map((w) => w.close()));
     await s.close();
   }
+});
+
+/** Launches a real worker and records the frames the daemon sends it. */
+const recordingLauncher = () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const launch = (spec: WorkerLaunchSpec): WorkerProcess => {
+    const child = launchLocalWorker(spec);
+    const tap = new TransformStream<Uint8Array, Uint8Array>();
+    const [toChild, toTest] = tap.readable.tee();
+    void toChild.pipeTo(child.input).catch(() => {});
+    void (async () => {
+      for await (const frame of readFrames(toTest, (v) => v as Record<string, unknown>))
+        sent.push(frame);
+    })().catch(() => {});
+    return { ...child, input: tap.writable };
+  };
+  return { sent, launch };
+};
+
+test("the relay cuts a request at its bound, 60 s unless the server sets one", async () => {
+  const s = fixture();
+  const slow = (w: ManagedMcp) =>
+    fetch(http(w).url, {
+      method: "POST",
+      headers: { ...http(w).headers, "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "slow", params: { delay_ms: 400 } }),
+    });
+  const unset = recordingLauncher();
+  const short = await startMcpWorker("short", {
+    transport: "http",
+    url: s.url,
+    requestTimeoutMs: 100,
+  });
+  const long = await startMcpWorker("long", {
+    transport: "http",
+    url: s.url,
+    requestTimeoutMs: 2000,
+  });
+  const defaulted = await startMcpWorker(
+    "defaulted",
+    { transport: "http", url: s.url },
+    unset.launch,
+  );
+  try {
+    const cut = await slow(short);
+    assert.equal(cut.status, 502);
+    assert.equal(await cut.text(), "External MCP request failed");
+    const finished = await slow(long);
+    assert.equal(finished.status, 200);
+    assert.deepEqual(await finished.json(), { jsonrpc: "2.0", id: 1, result: {} });
+    assert.equal(unset.sent[0]?.requestTimeoutMs, 60_000);
+  } finally {
+    await Promise.all([short.close(), long.close(), defaulted.close()]);
+    await s.close();
+  }
+});
+
+test("a mount passes the server's request bound to the relay and keeps it on the handle", async () => {
+  const specs: unknown[] = [];
+  const options: CreateSessionOptions[] = [];
+  const fake = new FakeProvider();
+  const provider = await withExternalMcp(
+    () =>
+      new Proxy(fake, {
+        get(target, prop) {
+          if (prop === "createSession")
+            return (opts: CreateSessionOptions) => {
+              options.push(opts);
+              return target.createSession(opts);
+            };
+          const value = Reflect.get(target, prop, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      }),
+    { id: "claude:personal", config: {}, logger: makeLogger("test") },
+    async (name, spec) => {
+      specs.push(spec);
+      return {
+        handle: { name, spec: { transport: "http", url: "http://127.0.0.1:1/mcp" } },
+        pid: 0,
+        exited: new Promise(() => {}),
+        close: async () => {},
+      };
+    },
+    async (name, _runtime, _cwd, _launch, identity) => {
+      specs.push(identity?.requestTimeoutMs);
+      return {
+        handle: { name, spec: { transport: "http", url: "http://127.0.0.1:2/mcp" } },
+        pid: 0,
+        exited: new Promise(() => {}),
+        close: async () => {},
+      };
+    },
+    "/repo",
+  );
+  const session = await provider.createSession({
+    sessionId: "loom-session",
+    cwd: "/repo",
+    prompt: "",
+    mode: "default",
+    mcpServers: [
+      {
+        name: "aws",
+        requestTimeoutMs: 120_000,
+        spec: { transport: "http", url: "https://aws.example/mcp" },
+      },
+      {
+        name: "tilth",
+        requestTimeoutMs: 90_000,
+        spec: { transport: "runtime", runtime: "tilth", isolation: "vm" },
+      },
+    ],
+  });
+  await session.close();
+  assert.deepEqual(specs, [
+    { transport: "http", url: "https://aws.example/mcp", requestTimeoutMs: 120_000 },
+    90_000,
+  ]);
+  assert.deepEqual(
+    options[0]!.mcpServers!.map((h) => h.requestTimeoutMs),
+    [120_000, 90_000],
+  );
 });

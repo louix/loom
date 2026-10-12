@@ -119,6 +119,15 @@ export const mcpDefinitionSchema = z
     source: mcpSourceSchema,
     execution: deprecated("No longer read: a local source always runs in a VM."),
     grants: mcpGrantsConfigSchema.optional(),
+    timeout_seconds: z
+      .number()
+      .int()
+      .min(1)
+      .max(3600)
+      .optional()
+      .describe(
+        "Seconds one MCP request may take, 1–3600. Loom's relays for http, nix and runtime sources stop a request after this (omitted: 60); Claude and Codex get it as the server's tool-call timeout.",
+      ),
     auth: z
       .strictObject({
         bearer_token_env: requiredText.optional(),
