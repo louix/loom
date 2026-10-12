@@ -136,7 +136,7 @@ test("concurrent starts share one build, and a cancelled start leaves it running
       settings,
     );
     const second = ensureRuntimeArtifact("unused", {}, build(), settings);
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await until(async () => seen.length > 0);
     cancel.abort(new Error("stopped"));
     await assert.rejects(first, /stopped/);
     f.release();

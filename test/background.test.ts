@@ -84,8 +84,10 @@ test("background: unread buffer is clamped and reports drops", async () => {
   const bg = spawnTasks();
   const id = bg.start("yes boom", 300);
   // Let it blast past the clamp unread; a read loop here would drain the pipe
-  // in tiny increments and never trigger the live collapse.
-  await new Promise((resolve) => setTimeout(resolve, 400));
+  // in tiny increments and never trigger the live collapse. Any read also
+  // drains, so there is nothing to poll: leave the 300 ms timeout's kill
+  // room to land in a loaded parallel run, where 400 ms was not always enough.
+  await new Promise((resolve) => setTimeout(resolve, 1_500));
   const r = await bg.read(id);
   assert.equal(r.running, false);
   assert.equal(r.timedOut, true);
