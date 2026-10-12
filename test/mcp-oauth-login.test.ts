@@ -5,8 +5,23 @@ import { loginMcpOAuth } from "../backend/daemon/src/daemon/mcp-oauth-login.ts";
 import { createMcpOAuthStore } from "../backend/daemon/src/daemon/mcp-oauth-store.ts";
 import { McpOAuthError } from "../backend/daemon/src/daemon/mcp-oauth-model.ts";
 import { resolveOAuthClientSecret } from "../backend/daemon/src/daemon/mcp-oauth-secret.ts";
+import { safeOAuthText, showOAuthFailure } from "../backend/daemon/src/daemon/mcp-oauth-failure.ts";
+import { OAuthDiscoveryError } from "../backend/daemon/src/daemon/mcp-oauth-challenge.ts";
+import { OAuthTransportError } from "../backend/daemon/src/daemon/mcp-oauth-endpoint.ts";
 const linux = { skip: Deno.build.os !== "linux" };
 const code = (c: string) => (e: unknown) => e instanceof McpOAuthError && e.code === c;
+const reason = (c: string, r: string) => (e: unknown) =>
+  e instanceof McpOAuthError && e.code === c && e.message === "MCP OAuth: " + c + ": " + r;
+const AWS_CLIENT_ID =
+  "arn:aws:signin:us-east-1::external-client/dcr/00000000-0000-0000-0000-000000000000";
+type RegistrationMode =
+  | "echo"
+  | "omit-method"
+  | "omit-method-with-secret"
+  | "aws"
+  | "rejected"
+  | "unexpected-status"
+  | "rewrite-redirect";
 
 const fixture = async (methods = ["none"]) => {
   const root = await Deno.makeTempDir();
@@ -14,7 +29,7 @@ const fixture = async (methods = ["none"]) => {
   const registrations: unknown[] = [];
   const exchanges: { body: URLSearchParams; authorization: string | null }[] = [];
   let tokenMode = "ok";
-  let registrationMode = "echo";
+  let registrationMode: RegistrationMode = "echo";
   let authorization: URL;
   const server = Deno.serve(
     { hostname: "127.0.0.1", port: 0, onListen() {} },
@@ -47,6 +62,35 @@ const fixture = async (methods = ["none"]) => {
         assert.equal(registration.application_type, "native");
         if (registrationMode === "echo")
           return Response.json({ ...registration, client_id: "fixture-client" }, { status: 201 });
+        // Shape of https://us-east-1.oauth.signin.aws/v1/register's reply on 2026-10-12.
+        if (registrationMode === "aws")
+          return Response.json(
+            {
+              client_id: AWS_CLIENT_ID,
+              client_id_issued_at: 1791839369,
+              redirect_uris: registration.redirect_uris,
+              token_endpoint_auth_method: "none",
+              grant_types: ["authorization_code", "refresh_token"],
+              response_types: ["code"],
+            },
+            { status: 200, headers: { "cache-control": "no-store" } },
+          );
+        if (registrationMode === "rejected")
+          return Response.json(
+            { error: "invalid_client_metadata", error_description: "bad\u001b[31m name" },
+            { status: 400 },
+          );
+        if (registrationMode === "unexpected-status")
+          return new Response("<html>busy</html>", { status: 503 });
+        if (registrationMode === "rewrite-redirect")
+          return Response.json(
+            {
+              ...registration,
+              client_id: "fixture-client",
+              redirect_uris: ["http://127.0.0.1:1/callback"],
+            },
+            { status: 201 },
+          );
         const { token_endpoint_auth_method: requested, ...accepted } = registration;
         return Response.json(
           {
@@ -71,7 +115,7 @@ const fixture = async (methods = ["none"]) => {
         );
         if (tokenMode === "rejected")
           return Response.json(
-            { error: "invalid_grant", error_description: "fixture-secret" },
+            { error: "invalid_grant", error_description: "fixture-description" },
             { status: 400 },
           );
         return Response.json({
@@ -110,7 +154,7 @@ const fixture = async (methods = ["none"]) => {
     mode: (mode: string) => {
       tokenMode = mode;
     },
-    registrationMode: (mode: "echo" | "omit-method" | "omit-method-with-secret") => {
+    registrationMode: (mode: RegistrationMode) => {
       registrationMode = mode;
     },
     close: async () => {
@@ -168,10 +212,16 @@ test(
       await loginMcpOAuth(input);
       const prior = await f.store.read();
       f.mode("rejected");
-      await assert.rejects(loginMcpOAuth(input), code("exchange_failed"));
+      await assert.rejects(
+        loginMcpOAuth(input),
+        reason("exchange_failed", "HTTP 400 invalid_grant: fixture-description"),
+      );
       assert.deepEqual(await f.store.read(), prior);
       f.mode("zero");
-      await assert.rejects(loginMcpOAuth(input), code("exchange_failed"));
+      await assert.rejects(
+        loginMcpOAuth(input),
+        reason("exchange_failed", "expires_in is not a positive number"),
+      );
       assert.deepEqual(await f.store.read(), prior);
       const abort = new AbortController();
       await assert.rejects(
@@ -341,3 +391,99 @@ test(
     }
   },
 );
+
+test(
+  "OAuth login accepts AWS sign-in's 200 OK registration of a public client",
+  linux,
+  async () => {
+    const f = await fixture();
+    try {
+      f.registrationMode("aws");
+      await loginMcpOAuth({
+        name: "work",
+        resource: f.origin + "/mcp",
+        config: {},
+        store: f.store,
+        present: f.present,
+      });
+      const client = (await f.store.read()).credential!.client;
+      assert.equal(client.id, AWS_CLIENT_ID);
+      assert.equal(client.authMethod, "none");
+      assert.equal(client.secret, undefined);
+      assert.equal(f.exchanges[0]!.body.get("client_id"), AWS_CLIENT_ID);
+      assert.equal(f.exchanges[0]!.authorization, null);
+    } finally {
+      await f.close();
+    }
+  },
+);
+
+test("OAuth login failures carry the safe cause", linux, async () => {
+  for (const [mode, expected] of [
+    ["rejected", "HTTP 400 invalid_client_metadata: bad?[31m name"],
+    [
+      "unexpected-status",
+      'HTTP 503: "response" is not a conform Dynamic Client Registration Endpoint response (unexpected HTTP status code)',
+    ],
+    ["rewrite-redirect", "redirect_uris changed from the requested loopback URI"],
+    ["omit-method-with-secret", "token_endpoint_auth_method client_secret_basic, requested none"],
+  ] as const) {
+    const f = await fixture();
+    try {
+      f.registrationMode(mode);
+      await assert.rejects(
+        loginMcpOAuth({
+          name: "work",
+          resource: f.origin + "/mcp",
+          config: {},
+          store: f.store,
+          present: f.present,
+        }),
+        reason("registration_failed", expected),
+      );
+      assert.equal(f.exchanges.length, 0);
+    } finally {
+      await f.close();
+    }
+  }
+  const f = await fixture();
+  try {
+    await assert.rejects(
+      loginMcpOAuth({
+        name: "work",
+        resource: f.origin + "/mcp",
+        config: { client_id: "client" },
+        store: f.store,
+        present: async (url) => {
+          const authorization = new URL(url);
+          const callback = new URL(authorization.searchParams.get("redirect_uri")!);
+          callback.search = new URLSearchParams({
+            state: authorization.searchParams.get("state")!,
+            iss: f.origin,
+            error: "access_denied",
+            error_description: "User declined",
+          }).toString();
+          await (await fetch(callback)).text();
+        },
+      }),
+      reason("authorization_rejected", "access_denied: User declined"),
+    );
+    assert.equal(f.exchanges.length, 0);
+  } finally {
+    await f.close();
+  }
+});
+
+test("showOAuthFailure", () => {
+  assert.equal(
+    showOAuthFailure(new OAuthDiscoveryError("issuer_mismatch")),
+    "discovery issuer_mismatch",
+  );
+  assert.equal(showOAuthFailure(new OAuthTransportError("timeout")), "transport timeout");
+  assert.equal(showOAuthFailure(new McpOAuthError("cancelled")), "cancelled");
+  assert.equal(
+    showOAuthFailure(new Error("https://host/?token=fixture-secret")),
+    "unexpected Error",
+  );
+  assert.equal(safeOAuthText("x".repeat(400)), "x".repeat(300) + "...");
+});

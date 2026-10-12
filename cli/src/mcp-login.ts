@@ -2,6 +2,7 @@
 import { loadConfig } from "../../backend/daemon/src/config/config.ts";
 import { loginMcpOAuth } from "../../backend/daemon/src/daemon/mcp-oauth-login.ts";
 import { McpOAuthError } from "../../backend/daemon/src/daemon/mcp-oauth-model.ts";
+import { showOAuthFailure } from "../../backend/daemon/src/daemon/mcp-oauth-failure.ts";
 const [repo, name, ...flags] = Deno.args;
 const stop = new AbortController();
 const cancel = () => stop.abort();
@@ -9,10 +10,10 @@ Deno.addSignalListener("SIGINT", cancel);
 Deno.addSignalListener("SIGTERM", cancel);
 try {
   if (!repo || !name || flags.some((f) => !["--json", "--no-browser"].includes(f)))
-    throw new Error("Invalid MCP login arguments");
+    throw new McpOAuthError("invalid_config", "invalid mcp login arguments");
   const entry = loadConfig(repo).mcpServers?.[name];
   if (!entry || entry.source.kind !== "http" || !entry.auth?.oauth)
-    throw new Error("Named server is not configured for OAuth");
+    throw new McpOAuthError("invalid_config", "named server is not configured for OAuth");
   const resource = entry.source.url;
   const result = await loginMcpOAuth({
     name,
@@ -62,8 +63,11 @@ try {
       : name + ": logged in",
   );
 } catch (error) {
-  const reason = error instanceof McpOAuthError ? error.code : "login_failed";
-  console.error("MCP OAuth: " + reason);
+  console.error(
+    error instanceof McpOAuthError
+      ? error.message
+      : "MCP OAuth: login_failed: " + showOAuthFailure(error),
+  );
   Deno.exitCode = 1;
 } finally {
   Deno.removeSignalListener("SIGINT", cancel);

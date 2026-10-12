@@ -1,4 +1,5 @@
 import * as oauth from "oauth4webapi";
+import type { z } from "zod";
 import { discoverMcpOAuth } from "./mcp-oauth-discovery.ts";
 import { listenOAuthCallback } from "./mcp-oauth-callback.ts";
 import { createOAuthDiscoveryNetwork } from "./mcp-oauth-network.ts";
@@ -18,6 +19,13 @@ import {
   type OAuthEndpoint,
 } from "./mcp-oauth-endpoint.ts";
 import type { OAuthFetch } from "./mcp-oauth-transport.ts";
+import { safeOAuthText, showOAuthFailure } from "./mcp-oauth-failure.ts";
+
+/** Field paths only: values may be tokens or secrets. */
+const invalidFields = (what: string, error: z.ZodError): string =>
+  what +
+  " failed validation: " +
+  [...new Set(error.issues.map((issue) => issue.path.join(".") || "(root)"))].join(", ");
 
 /** Host login engine. Caller presents/opens the URL; never invoke from agent/session startup. */
 export const loginMcpOAuth = async (input: {
@@ -120,42 +128,57 @@ export const loginMcpOAuth = async (input: {
       const endpoint = discovery.endpoints.registration;
       if (!endpoint) throw new McpOAuthError("registration_required");
       const authMethod = methods.includes("none") ? choose(false) : choose(true);
+      const rejected = (reason: string) => new McpOAuthError("registration_failed", reason);
       try {
+        const response = await oauth.dynamicClientRegistrationRequest(
+          as,
+          {
+            client_name: "Loom",
+            application_type: "native",
+            redirect_uris: [listener.redirectUri],
+            response_types: ["code"],
+            grant_types:
+              as.grant_types_supported && !as.grant_types_supported.includes("refresh_token")
+                ? ["authorization_code"]
+                : ["authorization_code", "refresh_token"],
+            token_endpoint_auth_method: authMethod,
+          },
+          options(endpoint),
+        );
+        // RFC 7591 §3.2.1 says 201 Created and oauth4webapi accepts only that,
+        // but AWS sign-in (us-east-1.oauth.signin.aws) registers with 200 OK.
         const registration = await oauth.processDynamicClientRegistrationResponse(
-          await oauth.dynamicClientRegistrationRequest(
-            as,
-            {
-              client_name: "Loom",
-              application_type: "native",
-              redirect_uris: [listener.redirectUri],
-              response_types: ["code"],
-              grant_types:
-                as.grant_types_supported && !as.grant_types_supported.includes("refresh_token")
-                  ? ["authorization_code"]
-                  : ["authorization_code", "refresh_token"],
-              token_endpoint_auth_method: authMethod,
-            },
-            options(endpoint),
-          ),
+          response.status === 200
+            ? new Response(response.body, { status: 201, headers: response.headers })
+            : response,
         );
         const secret = registration.client_secret;
         if (secret !== undefined && typeof secret !== "string")
-          throw new McpOAuthError("registration_failed");
+          throw rejected("client_secret is not a string");
         // RFC 7591 §2 defaults an omitted method to client_secret_basic, but
         // §3.2.1 returns a secret only to a confidential client: a public
         // client with no secret can only be "none". Some servers drop the field.
         const registeredMethod =
           registration.token_endpoint_auth_method ??
           (authMethod === "none" && secret === undefined ? "none" : "client_secret_basic");
+        if (!Array.isArray(registration.redirect_uris)) throw rejected("redirect_uris not echoed");
         if (
-          !Array.isArray(registration.redirect_uris) ||
           registration.redirect_uris.length !== 1 ||
-          registration.redirect_uris[0] !== listener.redirectUri ||
-          registeredMethod !== authMethod ||
-          (authMethod !== "none" && !registration.client_secret) ||
-          (authMethod === "none" && registration.client_secret !== undefined)
+          registration.redirect_uris[0] !== listener.redirectUri
         )
-          throw new McpOAuthError("registration_failed");
+          throw rejected("redirect_uris changed from the requested loopback URI");
+        if (registeredMethod !== authMethod)
+          throw rejected(
+            safeOAuthText(
+              "token_endpoint_auth_method " +
+                String(registeredMethod) +
+                ", requested " +
+                authMethod,
+            ),
+          );
+        if (authMethod !== "none" && !secret) throw rejected("client_secret missing");
+        if (authMethod === "none" && secret !== undefined)
+          throw rejected("client_secret issued to a public client");
         client = {
           id: registration.client_id,
           dynamic: true,
@@ -163,12 +186,13 @@ export const loginMcpOAuth = async (input: {
           authMethod,
           ...(secret === undefined ? {} : { secret }),
         };
-      } catch {
-        throw new McpOAuthError("registration_failed");
+      } catch (error) {
+        throw new McpOAuthError("registration_failed", showOAuthFailure(error));
       }
     }
-    if (!mcpOAuthCredentialSchema.shape.client.safeParse(client).success)
-      throw new McpOAuthError("registration_failed");
+    const checkedClient = mcpOAuthCredentialSchema.shape.client.safeParse(client);
+    if (!checkedClient.success)
+      throw new McpOAuthError("registration_failed", invalidFields("client", checkedClient.error));
     const verifier = oauth.generateRandomCodeVerifier();
     const authorization = new URL(discovery.endpoints.authorization.url);
     for (const [key, value] of Object.entries({
@@ -211,14 +235,18 @@ export const loginMcpOAuth = async (input: {
           },
         ),
       );
+      if (tokens.token_type.toLowerCase() !== "bearer")
+        throw new McpOAuthError(
+          "exchange_failed",
+          safeOAuthText("token_type " + tokens.token_type + " is not Bearer"),
+        );
       if (
-        tokens.token_type.toLowerCase() !== "bearer" ||
-        (tokens.expires_in !== undefined &&
-          (!Number.isFinite(tokens.expires_in) || tokens.expires_in <= 0))
+        tokens.expires_in !== undefined &&
+        (!Number.isFinite(tokens.expires_in) || tokens.expires_in <= 0)
       )
-        throw new McpOAuthError("exchange_failed");
-    } catch {
-      throw new McpOAuthError("exchange_failed");
+        throw new McpOAuthError("exchange_failed", "expires_in is not a positive number");
+    } catch (error) {
+      throw new McpOAuthError("exchange_failed", showOAuthFailure(error));
     }
     const grantedScopes = tokens.scope === undefined ? discovery.scopes : tokens.scope.split(" ");
     const credential = mcpOAuthCredentialSchema.safeParse({
@@ -244,7 +272,8 @@ export const loginMcpOAuth = async (input: {
         : { expiresAt: Date.now() + tokens.expires_in * 1000 }),
       ...(grantedScopes === undefined ? {} : { scopes: grantedScopes }),
     });
-    if (!credential.success) throw new McpOAuthError("exchange_failed");
+    if (!credential.success)
+      throw new McpOAuthError("exchange_failed", invalidFields("token response", credential.error));
     if (input.signal?.aborted) throw new McpOAuthError("cancelled");
     const committed = await store.commit(before.generation, credential.data, input.signal);
     return {

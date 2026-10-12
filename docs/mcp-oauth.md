@@ -15,8 +15,9 @@ with compatibility for 2025-11-25 servers within this subset.
 Device flow, service accounts, automatic scope escalation, client ID metadata
 documents, batch login and provider-specific authentication adapters are not
 supported. Dynamic registration is a compatibility path, not universal automatic
-registration. Discovery has been checked against AWS's MCP server
-([Tools](tools.md#aws)); a full login with a real service remains unverified.
+registration. Discovery and dynamic registration have been checked against
+AWS's MCP server ([Tools](tools.md#aws)); a full login with a real service
+remains unverified.
 
 ## Login and configuration identity
 
@@ -50,13 +51,21 @@ secret method, and the response must register the requested method. A response
 that omits `token_endpoint_auth_method` means `client_secret_basic` (RFC 7591
 §2), except that a `none` request answered without a `client_secret` is taken
 as `none`: §3.2.1 issues a secret only to a confidential client, so a client
-without one is public.
+without one is public. The response must echo exactly the requested loopback
+`redirect_uris`. RFC 7591 §3.2.1 answers with 201 Created; Loom also accepts
+200 OK, which AWS sign-in returns.
 
 Confidential clients support `client_secret_basic` and `client_secret_post`.
 Secret commands execute only during explicit login, without a shell, with a
 60-second timeout and 64 KiB output bound. The resolved client secret is stored
 with tokens for refresh/revocation; changing it requires another login.
 Failed or cancelled login preserves the previous credential.
+
+A failed login prints `MCP OAuth: <code>: <reason>`. The reason is the HTTP
+status with the server's OAuth `error` and `error_description`, the check that
+failed (`redirect_uris not echoed`, a field name), or a discovery/transport
+code. Loom never puts its tokens, secrets, codes or verifiers into a reason;
+server-supplied text is reduced to printable ASCII and bounded.
 
 Each server name has one credential per Loom user-state namespace. Different
 accounts require different names. Records bind the server name, configured

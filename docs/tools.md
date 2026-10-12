@@ -156,8 +156,11 @@ The identity you sign in as needs the `AWSMCPSignInOAuthAccessPolicy` managed
 IAM policy, plus permissions for whatever the tools then call. Access tokens
 last an hour and Loom refreshes them, but AWS's refresh tokens are single-use
 and expire within 12 hours of login, so expect to run `loom mcp login aws` again
-roughly every 12 hours. Loom's discovery has been checked against this server; a full
-login and tool call with it has not been run.
+roughly every 12 hours. Loom's discovery and dynamic registration have been
+checked against this server; a full login and tool call with it has not been run.
+
+A failed login names its cause, for example
+`MCP OAuth: registration_failed: HTTP 400 invalid_client_metadata: …`.
 
 ## Permissions
 

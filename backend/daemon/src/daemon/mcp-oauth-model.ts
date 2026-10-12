@@ -24,10 +24,13 @@ export type McpOAuthErrorCode =
   | "invalidation_incomplete";
 export class McpOAuthError extends Error {
   readonly code: McpOAuthErrorCode;
-  constructor(code: McpOAuthErrorCode) {
-    super("MCP OAuth: " + code);
+  /** Printable cause for the user: status, OAuth error or failed check. Never secrets or tokens. */
+  readonly reason: string | undefined;
+  constructor(code: McpOAuthErrorCode, reason?: string) {
+    super("MCP OAuth: " + code + (reason ? ": " + reason : ""));
     this.name = "McpOAuthError";
     this.code = code;
+    this.reason = reason;
   }
 }
 const text = z

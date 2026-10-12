@@ -1,4 +1,5 @@
 import { McpOAuthError } from "./mcp-oauth-model.ts";
+import { safeOAuthText } from "./mcp-oauth-failure.ts";
 
 export interface OAuthCallback {
   redirectUri: string;
@@ -32,10 +33,13 @@ export const listenOAuthCallback = (options: {
   });
   void result.catch(() => {});
   let settled = false;
-  const fail = (code: "cancelled" | "login_timeout" | "authorization_rejected") => {
+  const fail = (
+    code: "cancelled" | "login_timeout" | "authorization_rejected",
+    reason?: string,
+  ) => {
     if (!settled) {
       settled = true;
-      reject(new McpOAuthError(code));
+      reject(new McpOAuthError(code, reason));
     }
   };
   let server: Deno.HttpServer<Deno.NetAddr>;
@@ -81,7 +85,15 @@ export const listenOAuthCallback = (options: {
           !(params.get("code") || params.get("error"))
         )
           return response(false);
-        if (params.has("error")) fail("authorization_rejected");
+        const error = params.get("error");
+        if (error !== null)
+          fail(
+            "authorization_rejected",
+            safeOAuthText(
+              error +
+                (params.get("error_description") ? ": " + params.get("error_description") : ""),
+            ),
+          );
         else {
           settled = true;
           resolve(params);
