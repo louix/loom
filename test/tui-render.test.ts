@@ -3931,38 +3931,46 @@ test("⌥w cycles the new session's workspace, shows it, and sends it", () => {
     assert.equal(newPromptOf(handle).settings.workspace, undefined);
     assert.match(newModalText(handle), /isolation: none ⌥i change {3}dir: worktree ⌥w change/);
 
-    // A clone runs only in a VM: choosing one brings VM isolation, and says so.
+    // With no isolation, the private clone is skipped.
     handle.handleKey("w", { meta: true } as Key);
     let p = newPromptOf(handle);
-    assert.equal(p.settings.workspace, "clone");
-    assert.equal(p.settings.isolation, "vm");
-    assert.match(p.feedback?.text ?? "", /isolation is now VM/);
+    assert.equal(p.settings.workspace, "in-place");
+    assert.equal(p.settings.isolation, undefined);
+    assert.equal(p.feedback, undefined);
     assert.equal(p.buffer.text, "draft");
-    assert.match(newModalText(handle), /isolation: vm ⌥i change {3}dir: clone ⌥w change/);
+    assert.match(newModalText(handle), /isolation: none ⌥i change {3}dir: in-place ⌥w change/);
 
     handle.handleKey("w", { meta: true } as Key);
     p = newPromptOf(handle);
-    assert.equal(p.settings.workspace, "in-place");
+    assert.equal(p.settings.workspace, "worktree");
     assert.equal(p.feedback, undefined);
-    assert.match(newModalText(handle), /isolation: vm ⌥i change {3}dir: in-place ⌥w change/);
+    assert.match(newModalText(handle), /isolation: none ⌥i change {3}dir: worktree ⌥w change/);
+
+    // ⌥w never changes isolation; ⌥i can then enable the clone.
+    handle.handleKey("i", { meta: true } as Key);
+    handle.handleKey("w", { meta: true } as Key);
+    p = newPromptOf(handle);
+    assert.equal(p.settings.workspace, "clone");
+    assert.equal(p.settings.isolation, "vm");
+    assert.equal(p.feedback, undefined);
+    assert.match(newModalText(handle), /isolation: vm ⌥i change {3}dir: clone ⌥w change/);
 
     handle.handleKey("w", { meta: true } as Key);
-    assert.equal(newPromptOf(handle).settings.workspace, "worktree");
+    assert.equal(newPromptOf(handle).settings.workspace, "in-place");
     handle.handleKey("w", { meta: true } as Key);
-    // Leaving the VM turns a chosen clone back into a worktree.
+    assert.equal(newPromptOf(handle).settings.workspace, "worktree");
     handle.handleKey("i", { meta: true } as Key);
     p = newPromptOf(handle);
     assert.equal(p.settings.isolation, "none");
     assert.equal(p.settings.workspace, "worktree");
-    assert.match(p.feedback?.text ?? "", /workspace is now worktree/);
+    assert.equal(p.feedback, undefined);
 
-    handle.handleKey("w", { meta: true } as Key);
     handle.handleKey("w", { meta: true } as Key);
     assert.equal(newPromptOf(handle).settings.workspace, "in-place");
     handle.handleKey("", { return: true } as Key);
     const sent = fake.of("session.create")[0]?.params;
     assert.equal(sent?.["workspace"], "in-place");
-    assert.equal(sent?.["isolation"], "vm");
+    assert.equal(sent?.["isolation"], "none");
   } finally {
     teardown();
   }
@@ -3995,6 +4003,24 @@ test("the new prompt shows the daemon's default workspace and sends none unless 
   }
 });
 
+test("the new prompt resolves a clone default to worktree without VM isolation", () => {
+  const fake = mkFakeClient();
+  const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+  const teardown = handle.effectStart();
+  try {
+    fake.deliver(
+      workspaceFleet({
+        defaultIsolation: "none",
+        defaultWorkspace: { none: "clone", vm: "clone" },
+      }),
+    );
+    handle.handleKey("n", {} as Key);
+    assert.match(newModalText(handle), /isolation: none ⌥i change {3}dir: worktree ⌥w change/);
+  } finally {
+    teardown();
+  }
+});
+
 test("⌥w passes over workspaces this repository cannot take and says why", () => {
   const fake = mkFakeClient();
   const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
@@ -4008,17 +4034,14 @@ test("⌥w passes over workspaces this repository cannot take and says why", () 
     );
     handle.handleKey("n", {} as Key);
     const command = describeCommand(handle.getView().ui, "newWorkspace", null, "newSession");
-    assert.equal(
-      command?.disabled,
-      "A private clone runs only in a VM: No VM runtime is configured Bare repositories require worktrees.",
-    );
+    assert.equal(command?.disabled, "Bare repositories require worktrees.");
     handle.handleKey("w", { meta: true } as Key);
     const p = newPromptOf(handle);
     assert.equal(p.settings.workspace, undefined);
-    assert.match(p.feedback?.text ?? "", /private clone runs only in a VM: No VM runtime/);
+    assert.match(p.feedback?.text ?? "", /Bare repositories require worktrees/);
     assert.equal(p.feedback?.pending, false);
 
-    // With in place possible, the cycle skips the clone and names why.
+    // With in place possible, the cycle skips the clone without a note.
     fake.deliver(workspaceFleet({ vmUnavailableReason: "No VM runtime is configured" }));
     assert.equal(
       describeCommand(handle.getView().ui, "newWorkspace", null, "newSession")?.label,
@@ -4028,7 +4051,7 @@ test("⌥w passes over workspaces this repository cannot take and says why", () 
     const q = newPromptOf(handle);
     assert.equal(q.settings.workspace, "in-place");
     assert.equal(q.settings.isolation, undefined);
-    assert.match(q.feedback?.text ?? "", /No VM runtime/);
+    assert.equal(q.feedback, undefined);
     // Not a fleet command: the palette never offers it.
     assert.equal(describeCommand(handle.getView().ui, "newWorkspace", null), null);
   } finally {
@@ -4392,7 +4415,7 @@ test("⌥p: a provider with one model and no effort is chosen at once, replacing
       ["plain", "plain-1", null],
     );
     // Where it runs, its base and its mode stay.
-    assert.equal(q.settings.workspace, "clone");
+    assert.equal(q.settings.workspace, "in-place");
     assert.equal(q.settings.base, "default");
     assert.equal(q.settings.mode, "plan");
     handle.handleKey("go", {} as Key);
@@ -4403,7 +4426,7 @@ test("⌥p: a provider with one model and no effort is chosen at once, replacing
     assert.equal(sent?.["effort"], undefined);
     assert.equal(sent?.["profile"], undefined);
     assert.equal(sent?.["base"], "main");
-    assert.equal(sent?.["workspace"], "clone");
+    assert.equal(sent?.["workspace"], "in-place");
   } finally {
     teardown();
   }

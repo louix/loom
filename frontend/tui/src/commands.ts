@@ -328,7 +328,7 @@ const COMMANDS = {
     newSession: "⌥w",
     label: "workspace",
     description:
-      "Cycle where the new session works: its own worktree, a private clone (VM only) or in place in the repository checkout.",
+      "Cycle where the new session works: its own worktree, a private clone (with VM isolation) or in place in the repository checkout.",
   },
   newBase: {
     scope: "app",

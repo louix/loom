@@ -281,11 +281,11 @@ test("narrow new-session settings wrap between settings and keep every key in vi
   );
   for (const [cols, rows, feedback] of [
     [120, 40, undefined],
-    [80, 24, "A private clone runs in a VM — isolation is now VM."],
+    [80, 24, "A private clone needs VM isolation (⌥i)."],
     [44, 18, undefined],
-    [44, 18, "A private clone runs in a VM — isolation is now VM."],
+    [44, 18, "A private clone needs VM isolation (⌥i)."],
     [32, 12, undefined],
-    [32, 12, "A private clone runs in a VM — isolation is now VM."],
+    [32, 12, "A private clone needs VM isolation (⌥i)."],
   ] as const) {
     const frame = modalFrame(
       launchState({ profile: "opus", effort: "high" }, feedback).state,
@@ -297,7 +297,7 @@ test("narrow new-session settings wrap between settings and keep every key in vi
         frame.includes(key),
         `${key} at ${cols}×${rows}${feedback ? " with a notice" : ""}`,
       );
-    if (feedback) assert.match(frame, /isolation is now/);
+    if (feedback) assert.match(frame, /private clone needs VM/);
   }
 });
 

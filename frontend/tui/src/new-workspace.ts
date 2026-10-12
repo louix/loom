@@ -8,8 +8,8 @@
  * The daemon offers three workspaces: a worktree (on the host, or mounted into
  * a VM), a private clone (VM only: the guest reaches the repository through a
  * host relay) and in place in the repository checkout (not in a bare
- * repository). So choosing a clone brings VM isolation with it, and leaving the
- * VM turns a chosen clone back into a worktree; the prompt says so each time.
+ * repository). Isolation takes precedence: a private clone is available only
+ * when VM isolation is selected.
  */
 import { absurd } from "@loom/core/absurd";
 import type { Loadable } from "@loom/core/loadable";
@@ -32,8 +32,11 @@ export const newIsolation = (p: Provider, s: NewSessionSettings): "vm" | "none" 
 
 /** The workspace the session will get: chosen, else the daemon's default for
  *  its isolation. A daemon that names no default makes a worktree. */
-export const newWorkspace = (p: Provider, s: NewSessionSettings): WorkspaceMode =>
-  s.workspace ?? p?.defaultWorkspace?.[newIsolation(p, s)] ?? "worktree";
+export const newWorkspace = (p: Provider, s: NewSessionSettings): WorkspaceMode => {
+  const isolation = newIsolation(p, s);
+  const workspace = s.workspace ?? p?.defaultWorkspace?.[isolation] ?? "worktree";
+  return isolation === "none" && workspace === "clone" ? "worktree" : workspace;
+};
 
 /** Why `w` cannot be chosen for a session on `p`; absent when it can. */
 export const workspaceBlocked = (p: Provider, w: WorkspaceMode): string | undefined => {
@@ -57,30 +60,40 @@ export type SettingsStep =
   | { readonly settings: NewSessionSettings; readonly note?: string }
   | { readonly disabled: string };
 
-const CLONE_NEEDS_VM = "A private clone runs in a VM — isolation is now VM.";
 const CLONE_LEFT_VM = "A private clone runs only in a VM — workspace is now worktree.";
 
 /** `⌥w`: the next workspace after the current one that can be chosen. */
 export const cycleWorkspace = (p: Provider, s: NewSessionSettings): SettingsStep => {
   if (!p?.defaultWorkspace)
     return { disabled: "This daemon cannot choose a workspace; restart it (R) to update it." };
-  const at = WORKSPACE_MODES.indexOf(newWorkspace(p, s));
+  const isolation = newIsolation(p, s);
+  const modes: readonly WorkspaceMode[] =
+    isolation === "none"
+      ? WORKSPACE_MODES.filter((workspace) => workspace !== "clone")
+      : WORKSPACE_MODES;
+  const current = newWorkspace(p, s);
+  const at = modes.indexOf(current);
   const skipped: string[] = [];
-  for (let i = 1; i < WORKSPACE_MODES.length; i++) {
-    const workspace = WORKSPACE_MODES[(at + i) % WORKSPACE_MODES.length]!;
+  for (let i = 1; i < modes.length; i++) {
+    const workspace = modes[(at + i) % modes.length]!;
     const blocked = workspaceBlocked(p, workspace);
     if (blocked) {
       skipped.push(blocked);
       continue;
     }
-    const toVm = workspace === "clone" && newIsolation(p, s) !== "vm";
-    const note = [...skipped, ...(toVm ? [CLONE_NEEDS_VM] : [])].join(" ");
+    const note = skipped.join(" ");
     return {
-      settings: { ...s, workspace, ...(toVm ? { isolation: "vm" as const } : {}) },
+      settings: { ...s, workspace },
       ...(note ? { note } : {}),
     };
   }
-  return { disabled: skipped.join(" ") || "There is no other workspace." };
+  return {
+    disabled:
+      skipped.join(" ") ||
+      (isolation === "none" && modes.length < WORKSPACE_MODES.length
+        ? "A private clone needs VM isolation (⌥i)."
+        : "There is no other workspace."),
+  };
 };
 
 /** `⌥i`: the other isolation, or why not. */
