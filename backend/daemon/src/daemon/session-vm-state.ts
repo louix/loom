@@ -48,18 +48,26 @@ export const stoppedSessionVm = async (repo: string, id: string, remove = false)
     if (remove) await removeSessionVmProfile(repo, id);
     return recovered;
   });
+/**
+ * Startup recovery of one session's VM state: `stopped`, the VM it found running
+ * is stopped; `unsettled`, recovery failed, found the state owned or ran out of
+ * time, so the VM may still run.
+ */
+export type VmRecovery = "stopped" | "unsettled";
+
+/** The sessions recovery acted on; one with no VM to stop is not listed. */
 export const recoverRepositoryVms = async (
   repo: string,
   report: (id: string, error: unknown) => void,
-) => {
-  const handled = new Set<string>();
+): Promise<ReadonlyMap<string, VmRecovery>> => {
+  const handled = new Map<string, VmRecovery>();
   const deadline = Date.now() + 30_000;
   const root = dirname(sessionVmDirectory(repo, "scan"));
   try {
     for await (const entry of Deno.readDir(root)) {
       if (!entry.isDirectory && !entry.isSymlink) continue;
       if (Date.now() > deadline) {
-        handled.add(entry.name);
+        handled.set(entry.name, "unsettled");
         report(
           entry.name,
           new Error("Startup recovery budget reached; retry this session to recover it"),
@@ -67,9 +75,9 @@ export const recoverRepositoryVms = async (
         continue;
       }
       try {
-        if (await stoppedSessionVm(repo, entry.name)) handled.add(entry.name);
+        if (await stoppedSessionVm(repo, entry.name)) handled.set(entry.name, "stopped");
       } catch (error) {
-        handled.add(entry.name);
+        handled.set(entry.name, "unsettled");
         if (!(error instanceof SessionVmBusyError)) report(entry.name, error);
       }
     }

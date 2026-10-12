@@ -798,11 +798,18 @@ export class Daemon {
         this.#registry.setStatus(id, stateError(message), "vm_recovery_failed");
     });
 
+    const vmWorktrees = new Set(
+      [...recoveredVms].flatMap(([id, recovery]) => {
+        const worktree = recovery === "unsettled" ? this.#registry.get(id)?.worktree : null;
+        return worktree ? [worktree] : [];
+      }),
+    );
     this.#hygiene = runStartupHygiene({
       paths: this.paths,
       registry: this.#registry,
       children: this.#children,
       epoch: this.epoch,
+      vmWorktrees,
       log: this.#log.child("hygiene"),
     });
     // A restart that interrupted sessions must tell any reconnecting client.

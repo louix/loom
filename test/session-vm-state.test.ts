@@ -178,3 +178,25 @@ test("startup migrates stopped session disks without marking the session interru
     await Deno.remove(root, { recursive: true });
   }
 });
+
+test("startup recovery reports a session VM it found still owned as unsettled", async () => {
+  const root = await Deno.realPath(await Deno.makeTempDir());
+  const previous = Deno.env.get("XDG_STATE_HOME");
+  Deno.env.set("XDG_STATE_HOME", root);
+  try {
+    // given: another process owns the session's VM state
+    const owner = await lockSessionState(sessionVmDirectory(root, "running"));
+    try {
+      // when
+      const recovered = await recoverRepositoryVms(root, () => {});
+      // then
+      assert.deepEqual([...recovered], [["running", "unsettled"]]);
+    } finally {
+      owner.close();
+    }
+  } finally {
+    if (previous === undefined) Deno.env.delete("XDG_STATE_HOME");
+    else Deno.env.set("XDG_STATE_HOME", previous);
+    await Deno.remove(root, { recursive: true });
+  }
+});

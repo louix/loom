@@ -24,7 +24,7 @@ const git = (cwd: string, ...args: string[]): string =>
 const lockOf = (tree: string): string =>
   git(tree, "rev-parse", "--path-format=absolute", "--git-path", "index.lock");
 
-test("startup hygiene clears old index locks in current and legacy worktrees, not recent ones", () => {
+test("startup hygiene clears old index locks in current and legacy worktrees, not recent or VM-mounted ones", () => {
   const root = mkdtempSync(join(tmpdir(), "loom-hygiene-locks-"));
   const repo = join(root, "repo");
   const env = { HOME: root, XDG_RUNTIME_DIR: "/nonexistent-run", XDG_STATE_HOME: join(root, "st") };
@@ -47,13 +47,20 @@ test("startup hygiene clears old index locks in current and legacy worktrees, no
     const current = join(paths.trees, "current");
     const legacy = join(paths.legacy.dir, "trees", "legacy");
     const recent = join(paths.trees, "recent");
+    const mounted = join(paths.trees, "mounted");
     for (const [tree, branch] of [
       [current, "a"],
       [legacy, "b"],
       [recent, "c"],
+      [mounted, "d"],
     ] as const)
       git(repo, "worktree", "add", "-q", "-b", branch, tree);
-    const locks = { current: lockOf(current), legacy: lockOf(legacy), recent: lockOf(recent) };
+    const locks = {
+      current: lockOf(current),
+      legacy: lockOf(legacy),
+      recent: lockOf(recent),
+      mounted: lockOf(mounted),
+    };
     assert.notEqual(
       locks.current,
       join(current, ".git", "index.lock"),
@@ -62,12 +69,14 @@ test("startup hygiene clears old index locks in current and legacy worktrees, no
     for (const lock of Object.values(locks)) writeFileSync(lock, "");
     utimesSync(locks.current, OLD_s, OLD_s);
     utimesSync(locks.legacy, OLD_s, OLD_s);
+    utimesSync(locks.mounted, OLD_s, OLD_s);
 
     const report = runStartupHygiene({
       paths,
       registry: new Registry(db, makeLogger("test")),
       children: new ChildStore(db),
       epoch: "now",
+      vmWorktrees: new Set([mounted]),
       log: makeLogger("test"),
     });
 
@@ -75,6 +84,7 @@ test("startup hygiene clears old index locks in current and legacy worktrees, no
     assert.equal(existsSync(locks.current), false);
     assert.equal(existsSync(locks.legacy), false);
     assert.equal(existsSync(locks.recent), true, "a recent lock may belong to a running git");
+    assert.equal(existsSync(locks.mounted), true, "a git in a still-running VM may hold it");
   } finally {
     db.close();
     rmSync(root, { recursive: true, force: true });

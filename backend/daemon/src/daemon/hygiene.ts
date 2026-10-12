@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { Logger } from "@loom/core/logger";
 import type { LoomPaths } from "@loom/core/paths";
 import { pidAlive } from "@loom/core/daemon-endpoint";
@@ -14,6 +14,11 @@ export interface HygieneInput {
   children: ChildStore;
   /** Identifier for this daemon run; children tagged with a different one are stale. */
   epoch: string;
+  /**
+   * Worktrees mounted into a session VM that recovery left possibly running: a
+   * `git` in its guest is invisible to the host's lock check.
+   */
+  vmWorktrees: ReadonlySet<string>;
   log: Logger;
 }
 
@@ -35,10 +40,11 @@ export interface HygieneReport {
  *     signalled to exit and their bookkeeping rows dropped
  *   - each worktree's `index.lock`, in its own gitdir, is removed when old and
  *     unused (core/src/git-lock.ts), in the worktree directory and the legacy
- *     `.loom/trees`; then `git worktree prune` drops vanished worktrees
+ *     `.loom/trees`, but not in one a session VM may still have mounted; then
+ *     `git worktree prune` drops vanished worktrees
  */
 export const runStartupHygiene = (input: HygieneInput): HygieneReport => {
-  const { paths, registry, children, epoch, log } = input;
+  const { paths, registry, children, epoch, vmWorktrees, log } = input;
 
   const interruptedSessions = registry.markMidRunInterrupted();
   if (interruptedSessions.length > 0) {
@@ -48,7 +54,7 @@ export const runStartupHygiene = (input: HygieneInput): HygieneReport => {
   }
 
   const reapedChildren = reapChildren(children, epoch, log);
-  const { clearedLocks, worktreePruned } = tidyWorktrees(paths, log);
+  const { clearedLocks, worktreePruned } = tidyWorktrees(paths, vmWorktrees, log);
 
   return { interruptedSessions, reapedChildren, clearedLocks, worktreePruned };
 };
@@ -94,7 +100,12 @@ const reapChildren = (children: ChildStore, epoch: string, log: Logger): number 
 };
 
 /** Paths of the stale `index.lock`s removed from the session worktrees. */
-const clearWorktreeLocks = (paths: LoomPaths, log: Logger): string[] => {
+const clearWorktreeLocks = (
+  paths: LoomPaths,
+  vmWorktrees: ReadonlySet<string>,
+  log: Logger,
+): string[] => {
+  const mounted = new Set([...vmWorktrees].map((tree) => resolve(tree)));
   const clearedLocks: string[] = [];
   for (const trees of new Set([paths.trees, join(paths.legacy.dir, "trees")])) {
     let entries: string[];
@@ -108,6 +119,10 @@ const clearWorktreeLocks = (paths: LoomPaths, log: Logger): string[] => {
       // Without its own `.git`, git would walk up to the repository holding a
       // legacy `.loom/trees` and judge the main checkout's lock instead.
       if (!existsSync(join(treeDir, ".git"))) continue;
+      if (mounted.has(resolve(treeDir))) {
+        log.warn("left a session VM's worktree locks alone: the VM may still run", { treeDir });
+        continue;
+      }
       const check = clearStaleIndexLock(treeDir);
       if (check.kind === "removed") {
         clearedLocks.push(check.path);
@@ -122,9 +137,10 @@ const clearWorktreeLocks = (paths: LoomPaths, log: Logger): string[] => {
 
 const tidyWorktrees = (
   paths: LoomPaths,
+  vmWorktrees: ReadonlySet<string>,
   log: Logger,
 ): { clearedLocks: string[]; worktreePruned: boolean } => {
-  const clearedLocks = clearWorktreeLocks(paths, log);
+  const clearedLocks = clearWorktreeLocks(paths, vmWorktrees, log);
   let worktreePruned = false;
   const res = spawnSync("git", ["-C", paths.repoRoot, "worktree", "prune"], {
     encoding: "utf8",
