@@ -161,6 +161,9 @@ test("idle suspension waits for a guest Git probe instead of stopping its VM und
     await Deno.writeTextFile(join(t.cwd(), "scratch.txt"), "x");
     await t.c.request("session.setComment", { id: t.s.id, comment: "probe me" });
     await until(() => t.gate.waiting > 0, "probe held");
+    // The sweep skips a session with anything on its queue, and under load the
+    // startup can still be there; a queued request settles after it.
+    await t.c.request("session.setMode", { id: t.s.id, mode: t.s.mode });
     const now = Date.now();
     await t.h.daemon.sweepIdleVms(now);
     const sweep = t.h.daemon.sweepIdleVms(now + 11 * 60_000);
