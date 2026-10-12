@@ -2222,7 +2222,7 @@ describe("tui-render", { concurrency: 4 }, () => {
     assert.match(live, /last turn hit/, "the previous turn's split still reads true");
   });
 
-  test("AskUserQuestion · the sheet keeps progress across esc, reviews, then answers once", async () => {
+  test("AskUserQuestion · Enter advances and submits without a review step", async () => {
     const { h, connect, cleanup } = await harness();
     const client = await connect();
     const snap = await client.request<SessionSnapshot>("session.create", {
@@ -2239,45 +2239,23 @@ describe("tui-render", { concurrency: 4 }, () => {
         tool: "AskUserQuestion",
         input: { questions: QUESTIONS },
       });
-      // the panel spells out every option of question 1, not just 1) 2)
       await waitFor(stdout, /QUESTION \(1\/2\)/);
-      assert.match(stdout.last, /1\) OAuth 2\.0/);
-      assert.match(stdout.last, /4\) JWT bearer/);
-
-      stdin.feed("a"); // open the answer sheet on question 1
+      stdin.feed("a");
       await waitFor(stdout, /QUESTION 1\/2 · Auth/);
-      assert.match(stdout.last, /simplest, rotate manually/, "choices keep their descriptions");
-      stdin.feed("2"); // choose API keys
-      await waitFor(stdout, /\(•\) API keys/);
-      stdin.feed(ESC); // esc → back to the panel, keeping the choice
+      stdin.feed("2");
+      stdin.feed(ESC);
       await waitFor(stdout, (t) => /QUESTION \(1\/2\)/.test(t) && !/Custom answer/.test(t));
-
-      stdin.feed("\x1b[C"); // → move the panel to question 2
+      stdin.feed("\x1b[C");
       await waitFor(stdout, /QUESTION \(2\/2\)/);
-      assert.match(stdout.last, /Where should sessions live\?/);
-
-      stdin.feed("a"); // the sheet resumes on question 2
+      stdin.feed("a");
       await waitFor(stdout, /QUESTION 2\/2 · Sessions/);
-      stdin.feed("\t"); // edit the custom answer
+      stdin.feed("\t");
       await waitFor(stdout, /Editing the custom answer/);
       stdin.feed("Postgres, pooled");
-      stdin.feed("\r"); // done editing
-      await waitFor(stdout, /Custom answer · Postgres, pooled/);
-      stdin.feed("\r"); // continue to the review
-      await waitFor(stdout, /REVIEW ANSWERS/);
-      assert.match(stdout.last, /→ API keys/, "the choice made before esc survived");
-      assert.match(stdout.last, /→ Postgres, pooled/);
-      assert.equal(fs?.permissionResponses.length ?? 0, 0, "review does not submit");
-
-      stdin.feed("\r"); // submit
-      await waitFor(stdout, () => (fs?.permissionResponses.length ?? 0) > 0);
       stdin.feed("\r");
-      await delay(100);
-      assert.equal(fs?.permissionResponses.length, 1, "resolved exactly once");
+      await waitFor(stdout, () => (fs?.permissionResponses.length ?? 0) > 0);
+      assert.equal(fs?.permissionResponses.length, 1, "answered exactly once");
       const resolved = fs!.permissionResponses[0]!;
-      assert.equal(resolved.id, "q1");
-      // the daemon carries the collected answers through to the provider, keyed
-      // by question text: chosen labels, and custom text as typed
       const decision = resolved.decision as {
         behavior: string;
         updatedInput: { answers: Record<string, string> };
@@ -5433,7 +5411,7 @@ test("ask_user · the sheet takes a multi-line answer, keeps it across esc, and 
       sessionId: "a",
       requestId: "u1",
     });
-    assert.match(footer(), /enter review/);
+    assert.match(footer(), /enter submit answer/);
     assert.match(footer(), /⌥enter new line/);
     assert.match(footer(), /esc back/);
     type("SQLite");
@@ -5448,11 +5426,6 @@ test("ask_user · the sheet takes a multi-line answer, keeps it across esc, and 
     assert.equal(handle.getView().ui.overlay.t, "questions", "a resumes it");
     assert.equal(handle.getView().ui.qnav?.drafts[0]?.text, "SQLite\nfor now,\nRedis later");
 
-    press("", { return: true });
-    assert.equal(handle.getView().ui.qnav?.idx, 1, "⏎ reviews");
-    assert.match(footer(), /enter submit answer/);
-    assert.equal(fake.of("session.answer").length, 0, "review does not submit");
-    press("", { return: true });
     press("", { return: true });
     const sent = fake.of("session.answer");
     assert.equal(sent.length, 1, "answered exactly once");

@@ -13,9 +13,7 @@
  * Every question offers its options plus a custom answer (the SDK's "Other"):
  * single-select questions take exactly one of the two, multi-select ones any
  * mix of options and text. A free-text question (`ask_user`) has no options:
- * its only step is the answer editor, multi-line, and `Esc` there leaves the
- * sheet rather than the editor. The last step reviews every answer and only an
- * explicit ⏎ there submits.
+ * its only step is the answer editor, multi-line, and Enter submits directly.
  */
 import { applyKey, buffer, layoutWrapped, type Buffer, type KeyLike } from "./editor.ts";
 import type { AskUserQuestionItem } from "./interactions.ts";
@@ -31,7 +29,7 @@ import type { TextRow } from "./text-layout.ts";
 export interface QNav {
   sessionId: string;
   requestId: string;
-  /** Which question is shown; `questions.length` is the review step. */
+  /** Which question is shown. */
   idx: number;
   /** Highlighted row: an option index, or `options.length` for the custom answer. */
   cursor: number;
@@ -92,18 +90,6 @@ export const sheetAnswers = (
   nav: QNav,
 ): Record<string, string> =>
   Object.fromEntries(qs.map((q, qi) => [q.question, answerFor(qs, nav, qi)]));
-
-/** Why these answers cannot be submitted yet, or null when they can: every
- *  question needs an answer, and a single-select one exactly one. */
-export const sheetProblem = (qs: readonly AskUserQuestionItem[], nav: QNav): string | null => {
-  for (const [qi, q] of qs.entries()) {
-    const count = (nav.selected[qi] ?? []).length + Number(draftText(nav, qi).trim() !== "");
-    if (q.freeText && count === 0) return "Write an answer.";
-    if (count === 0 || (!q.multiSelect && count !== 1))
-      return qs.length > 1 ? `Choose an answer for question ${qi + 1}.` : "Choose an answer.";
-  }
-  return null;
-};
 
 // ---- layout ----------------------------------------------------------------
 
@@ -216,33 +202,7 @@ export const sheetLayout = (
       title: `? QUESTION${position(nav.idx)}${q.header ? ` · ${q.header}` : ""}`,
     };
   }
-  if (qs.length === 1 && qs[0]?.freeText) {
-    // The answer is what is under review, so it comes first: a long question
-    // would otherwise push it below the fold. Its lines stay as typed.
-    lines.push(...plainText("Review the answer before submitting.").layout(w));
-    lines.push({ text: "", spans: [] });
-    const answer = answerFor(qs, nav, 0) || "(unanswered)";
-    answer.split("\n").forEach((line, i) => {
-      const lead = i === 0 ? "→ " : "  ";
-      for (const [j, r] of plainText(line || " ")
-        .layout(Math.max(1, w - 2))
-        .entries()) {
-        const pad = j === 0 ? lead : "  ";
-        lines.push({ text: pad + r.text, spans: [{ text: pad }, ...r.spans] });
-      }
-    });
-    lines.push({ text: "", spans: [] });
-    lines.push(...markdownText(qs[0].question).layout(w));
-    return { lines, choiceRows, room, compact, editorRows, title: "? REVIEW ANSWER" };
-  }
-  lines.push(...plainText("Review answers before submitting.").layout(w));
-  for (const [qi, item] of qs.entries()) {
-    lines.push({ text: "", spans: [] });
-    lines.push(...markdownText(item.question).layout(w));
-    const answer = answerFor(qs, nav, qi);
-    lines.push(...indent(plainText(`→ ${answer || "(unanswered)"}`).layout(Math.max(1, w - 2)), 2));
-  }
-  return { lines, choiceRows, room, compact, editorRows, title: "? REVIEW ANSWERS" };
+  return { lines, choiceRows, room, compact, editorRows, title: "? QUESTION" };
 };
 
 // ---- keys ------------------------------------------------------------------
@@ -273,12 +233,38 @@ export const sheetKey = (
   const maxOffset = Math.max(0, layout.lines.length - room);
   const go = (next: Partial<QNav>): SheetResult => ({ t: "nav", nav: { ...nav, ...next } });
   const step = (idx: number): SheetResult =>
-    go({ idx: clamp(idx, 0, qs.length), cursor: 0, offset: 0, editing: false, notice: "" });
-
+    go({
+      idx: clamp(idx, 0, Math.max(0, qs.length - 1)),
+      cursor: 0,
+      offset: 0,
+      editing: false,
+      notice: "",
+    });
+  const answered = (current: QNav, qi: number): boolean => {
+    const question = qs[qi];
+    if (!question) return false;
+    const count =
+      (current.selected[qi] ?? []).length + Number(draftText(current, qi).trim() !== "");
+    return count > 0 && (question.multiSelect === true || count === 1);
+  };
+  const advance = (current: QNav): SheetResult => {
+    const next = current.idx + 1;
+    if (next < qs.length)
+      return {
+        t: "nav",
+        nav: { ...current, idx: next, cursor: 0, offset: 0, editing: false, notice: "" },
+      };
+    const unanswered = qs.findIndex((_, qi) => !answered(current, qi));
+    if (unanswered >= 0)
+      return {
+        t: "nav",
+        nav: { ...current, idx: unanswered, cursor: 0, offset: 0, editing: false, notice: "" },
+      };
+    return { t: "submit", nav: { ...current, notice: "" }, answers: sheetAnswers(qs, current) };
+  };
   if (key.escape) {
     // A free-text question's editor is all it has: esc leaves the sheet.
     if (nav.editing && !q?.freeText) return go({ editing: false });
-    if (!q && qs.length > 0) return step(qs.length - 1);
     return { t: "close", nav: { ...nav, editing: false, notice: "" } };
   }
   if (key.pageUp || key.pageDown) {
@@ -289,9 +275,7 @@ export const sheetKey = (
   if (q && sheetEditing(qs, nav)) {
     const result = applyKey(nav.drafts[nav.idx] ?? buffer(), input, key);
     if (result.kind === "submit") {
-      if (!q.freeText) return go({ editing: false });
-      // ⏎ on a written answer moves on to the review; ⌥⏎ was the newline.
-      if (draftText(nav, nav.idx).trim()) return step(nav.idx + 1);
+      if (draftText(nav, nav.idx).trim()) return advance(nav);
       return go({ notice: "Write an answer before continuing." });
     }
     if (result.kind !== "buffer") return { t: "ignore" };
@@ -305,12 +289,7 @@ export const sheetKey = (
 
   if (key.leftArrow || key.rightArrow) return step(nav.idx + (key.leftArrow ? -1 : 1));
 
-  if (!q) {
-    if (!key.return) return { t: "ignore" };
-    const problem = sheetProblem(qs, nav);
-    if (problem) return go({ notice: problem });
-    return { t: "submit", nav: { ...nav, notice: "" }, answers: sheetAnswers(qs, nav) };
-  }
+  if (!q) return { t: "ignore" };
 
   const custom = q.options.length;
   const pick = (index: number): SheetResult => {
@@ -350,11 +329,9 @@ export const sheetKey = (
     // ⏎ on an option of a single-select question picks it and moves on.
     if (!q.multiSelect && nav.cursor < custom) {
       const picked = pick(nav.cursor);
-      return picked.t === "nav"
-        ? { t: "nav", nav: { ...picked.nav, idx: nav.idx + 1, cursor: 0, offset: 0 } }
-        : picked;
+      return picked.t === "nav" ? advance(picked.nav) : picked;
     }
     return go({ notice: "Choose an answer or enter text before continuing." });
   }
-  return step(nav.idx + 1);
+  return advance(nav);
 };

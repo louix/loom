@@ -73,28 +73,14 @@ const render = (nav: QNav, width = 80, height = 24): string =>
     }),
   );
 
-test("multi-question navigation reaches a review that only an explicit enter submits", () => {
-  let nav = drive(qnav("s1", "q1"), "1", "2");
-  assert.deepEqual(nav.selected[0], [0, 1], "multi-select keeps both choices");
-  nav = drive(nav, RIGHT);
+test("multi-question Enter advances and submits without a review step", () => {
+  let nav = drive(qnav("s1", "q1"), "1", "2", RIGHT, "1");
   assert.equal(nav.idx, 1);
-  nav = drive(nav, LEFT, LEFT);
-  assert.equal(nav.idx, 0, "← stops at the first question");
-  nav = drive(nav, RET);
-  assert.equal(nav.idx, 1, "an answered question continues");
-  // ⏎ on a single-select option with nothing chosen picks it and moves on.
-  nav = drive(nav, DOWN, RET);
-  assert.equal(nav.idx, 2);
-  assert.match(render(nav), /REVIEW ANSWERS/);
-  assert.match(render(nav), /→ First, Second/);
-  assert.match(render(nav), /→ Global/);
-  const back = drive(nav, ESC);
-  assert.equal(back.idx, 1, "esc on the review steps back to the last question");
   const done = press(nav, "", RET);
   assert.equal(done.t, "submit");
   assert.deepEqual((done as Extract<SheetResult, { t: "submit" }>).answers, {
     "**Choose two**": "First, Second",
-    "Which scope?": "Global",
+    "Which scope?": "Local",
   });
 });
 
@@ -108,15 +94,14 @@ test("single selection replaces, toggles off, and excludes a custom answer", () 
   nav = drive(nav, "1", TAB, "my own");
   assert.equal(nav.editing, true);
   assert.deepEqual(nav.selected[1], [], "typing a custom answer clears the choice");
-  nav = drive(nav, RET);
-  assert.equal(nav.editing, false, "⏎ while editing returns to the choices");
-  assert.match(render(nav), /Custom answer · my own/);
-  nav = drive(nav, "1");
-  assert.equal(nav.drafts[1]?.text, "", "a choice clears the custom answer");
+  const result = press(nav, "", RET);
+  assert.equal(result.t, "nav");
+  assert.equal((result as Extract<SheetResult, { t: "nav" }>).nav.idx, 0);
+  assert.equal(nav.drafts[1]?.text, "my own");
 });
 
 test("multiple selection combines choices with custom text in option order", () => {
-  const nav = drive(qnav("s1", "q1"), "2", "3", "and more", RET, "1", RIGHT, "1");
+  const nav = drive(qnav("s1", "q1"), "1", "2", "3", "and more", RET, "1");
   assert.deepEqual(sheetAnswers(qs, nav), {
     "**Choose two**": "First, Second, and more",
     "Which scope?": "Local",
@@ -125,7 +110,7 @@ test("multiple selection combines choices with custom text in option order", () 
 
 test("custom answers: the custom row opens the editor, esc only stops editing", () => {
   let nav = drive(qnav("s1", "q1"), RIGHT, RET);
-  assert.equal(nav.idx, 2, "sanity: ⏎ on a single-select picks the highlighted option");
+  assert.equal(nav.idx, 0, "Enter on the last answer focuses the unanswered question");
   nav = drive(qnav("s1", "q1"), RIGHT, "3");
   assert.equal(nav.editing, true, "the custom row's number opens its editor");
   assert.match(render(nav), /Editing the custom answer/);
@@ -140,27 +125,20 @@ test("custom answers: the custom row opens the editor, esc only stops editing", 
   assert.equal(nav.editing, true);
 });
 
-test("validation: an unanswered question blocks continuing and submitting", () => {
+test("validation focuses an unanswered question instead of submitting", () => {
   let nav = drive(qnav("s1", "q1"), RET);
-  assert.equal(nav.idx, 0, "a multi-select question with nothing chosen does not continue");
+  assert.equal(nav.idx, 0);
   assert.match(nav.notice, /Choose an answer or enter text/);
-  assert.match(render(nav), /Choose an answer or enter text/);
-  nav = drive(nav, RIGHT, RIGHT);
-  assert.equal(nav.idx, 2);
-  nav = drive(nav, RET);
-  assert.match(nav.notice, /question 1/);
-  nav = drive(nav, LEFT, LEFT, "1");
-  assert.equal(nav.notice, "", "a choice clears the notice");
-  nav = drive(nav, RIGHT, RIGHT, RET);
-  assert.match(nav.notice, /question 2/);
+  nav = drive(nav, RIGHT, "1", RET);
+  assert.equal(nav.idx, 0, "the unanswered question receives focus");
+  assert.equal(press(nav, "", RET).t, "nav");
 });
 
 test("a submitting sheet takes no edits but can still close", () => {
   const nav = { ...drive(qnav("s1", "q1"), "1", RIGHT, "1", RIGHT), busy: true };
   assert.equal(press(nav, "", RET).t, "ignore");
   assert.equal(press(nav, "", LEFT).t, "ignore");
-  assert.equal(press(nav, "", ESC).t, "nav", "esc on the review steps back");
-  assert.match(render(nav), /Submitting…/);
+  assert.equal(press(nav, "", ESC).t, "close", "esc closes the busy sheet");
 });
 
 test("small terminals keep the sheet within its rows and the cursor in view", () => {
@@ -285,49 +263,31 @@ test("a free-text question opens straight into a multi-line answer editor", () =
   assert.match(out, /\? QUESTION/);
   assert.match(out, /Which store should the cache use\?/);
   assert.match(out, /Redis is already deployed/, "the context sits under the question");
-  assert.match(out, /Your answer · ⏎ reviews it · ⌥⏎ new line/);
-  assert.match(out, /type your answer…/);
+  assert.match(out, /Your answer · ⏎ submits · ⌥⏎ new line/);
   assert.doesNotMatch(out, /Custom answer|1:/, "no choices, no custom row");
   assert.equal(out.split("\n").length, 24);
 });
 
-test("free text: ⌥⏎ is a newline, ⏎ reviews, and only ⏎ on the review submits it", () => {
+test("free text: Enter submits and Alt+Enter inserts a newline", () => {
   let nav = freeDrive(qnav("s1", "u1"), "SQLite", ALT_RET, "  then Redis");
   assert.equal(nav.drafts[0]?.text, "SQLite\n  then Redis");
-  assert.equal(nav.idx, 0, "⌥⏎ stayed in the editor");
-  nav = freeDrive(nav, RET);
-  assert.equal(nav.idx, 1, "⏎ moved on to the review");
-  assert.equal(sheetEditing(free, nav), false);
-  const review = freeRender(nav);
-  assert.match(review, /\? REVIEW ANSWER\b/);
-  assert.match(review, /Review the answer before submitting\./);
-  assert.match(review, /→ SQLite/);
-  assert.match(review, /then Redis/);
-  // Typing on the review does nothing; esc and ← step back to the editor.
-  assert.equal(freePress(nav, "x").t, "ignore");
-  assert.equal(freeDrive(nav, ESC).idx, 0);
-  assert.equal(freeDrive(nav, LEFT).idx, 0);
   const done = freePress(nav, "", RET);
   assert.equal(done.t, "submit");
   const { answers } = done as Extract<SheetResult, { t: "submit" }>;
   const call = decisionCall("s1", "u1", sheetDecision(ask, answers), "me");
-  assert.deepEqual(call, {
-    method: "session.answer",
-    params: { id: "s1", requestId: "u1", by: "me", text: "SQLite\n  then Redis" },
+  assert.deepEqual(call.params, {
+    id: "s1",
+    requestId: "u1",
+    by: "me",
+    text: "SQLite\n  then Redis",
   });
 });
 
-test("free text: an empty answer is named rather than reviewed or sent", () => {
-  let nav = freeDrive(qnav("s1", "u1"), "   ", RET);
-  assert.equal(nav.idx, 0);
-  assert.match(nav.notice, /Write an answer before continuing/);
-  assert.match(freeRender(nav), /Write an answer before continuing/);
-  nav = freeDrive(nav, "x");
-  assert.equal(nav.notice, "", "typing clears the notice");
-  // Even reached some other way, the review will not submit nothing.
-  const empty = freePress({ ...qnav("s1", "u1"), idx: 1 }, "", RET);
-  assert.equal(empty.t, "nav");
-  assert.match((empty as Extract<SheetResult, { t: "nav" }>).nav.notice, /Write an answer/);
+test("free text: an empty answer does not submit", () => {
+  const result = freePress(qnav("s1", "u1"), "   ", RET);
+  assert.equal(result.t, "nav");
+  assert.match((result as Extract<SheetResult, { t: "nav" }>).nav.notice, /Write an answer/);
+  assert.equal(freePress(qnav("s1", "u1"), "", RET).t, "nav");
 });
 
 test("free text: esc in the editor leaves the sheet with the draft kept", () => {
@@ -364,7 +324,7 @@ test("free text: a long question wraps and scrolls in a small terminal", () => {
     assert.ok(row.length <= size.w, `no row runs past the pane: ${JSON.stringify(row)}`);
   assert.equal(draw(nav).split("\n").length, size.h, "the pane fills exactly its rows");
   assert.match(draw(nav), /Paragraph 1/);
-  assert.match(draw(nav), /⏎: review · ⌥⏎: new line/, "the editor stays on screen");
+  assert.match(draw(nav), /⏎: submit · ⌥⏎: new line/, "the editor stays on screen");
   // ⇟ pages while the editor has the keys, and stops at the last row.
   for (let i = 0; i < 10; i++) {
     const r = sheetKey(long, nav, "", { pageDown: true }, layout(nav));

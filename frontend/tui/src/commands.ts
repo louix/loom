@@ -1160,31 +1160,17 @@ export const footerHints = (ctx: CommandContext): BarItem[] => {
       const { sessionId, requestId } = ctx.overlay;
       const nav = liveQNav(ctx.qnav, sessionId, requestId);
       const qs = questionsOf(fleetSessions(ctx), sessionId, requestId) ?? [];
-      const idx = nav?.idx ?? 0;
-      // A free-text question is its editor, then the review.
-      if (qs[0]?.freeText) {
-        if (idx >= qs.length)
-          return [
-            { keys: "enter", label: "submit answer" },
-            { keys: "esc", label: "edit" },
-          ];
+      if (qs[0]?.freeText)
         return [
-          { keys: "enter", label: "review" },
+          { keys: "enter", label: "submit answer" },
           { keys: "⌥enter", label: "new line" },
           { keys: "PgUp/PgDn", label: "scroll" },
           { keys: "esc", label: "back" },
         ];
-      }
       if (nav && sheetEditing(qs, nav))
         return [
-          { keys: "enter", label: "done" },
+          { keys: "enter", label: "next question" },
           { keys: "esc", label: "stop editing" },
-        ];
-      if (idx >= qs.length)
-        return [
-          { keys: "enter", label: "submit answers" },
-          { keys: "←", label: "questions" },
-          { keys: "esc", label: "back" },
         ];
       return [
         { keys: "↑↓", label: "move" },

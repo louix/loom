@@ -35,8 +35,8 @@ export const QuestionSheetPane = ({
   const notice = plainText(nav.notice).layout(room)[0]?.text ?? "";
   const free = questions[nav.idx]?.freeText === true;
   const captions = free
-    ? { compact: "⏎: review · ⌥⏎: new line", full: "Your answer · ⏎ reviews it · ⌥⏎ new line" }
-    : { compact: "⏎: choices", full: "Editing the custom answer · ⏎ returns to choices" };
+    ? { compact: "⏎: submit · ⌥⏎: new line", full: "Your answer · ⏎ submits · ⌥⏎ new line" }
+    : { compact: "⏎: next question", full: "Editing the custom answer · ⏎ next question" };
   const caption = sheet.compact ? captions.compact : captions.full;
   return (
     <Panel width={width} height={height} tone="await_" title={title} overflow="hidden">
