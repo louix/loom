@@ -19,7 +19,6 @@
     "npm:oxfmt@0.71.0": "0.71.0",
     "npm:oxlint@1.86.0": "1.86.0",
     "npm:react@19.3.0": "19.3.0",
-    "npm:smol-toml@1.9.0": "1.9.0",
     "npm:string-width@8.3.0": "8.3.0",
     "npm:zod@4.6.5": "4.6.5"
   },
@@ -1117,9 +1116,6 @@
         "is-fullwidth-code-point"
       ]
     },
-    "smol-toml@1.9.0": {
-      "integrity": "sha512-hpd+HLON7HdZXqYchMM/+LaTTbdK0AU3NngIJ4KVyWbY9bfQqdL9cD+4yf6dUoU2Ap4VsU0JkQi6FxAI1B2mXQ=="
-    },
     "stack-utils@2.0.6": {
       "integrity": "sha512-XlkWvfIm6RmsWtNJx+uqtKLS8eqFbxUg0ZzLXqY0caEy9l7hruX8IpiDnjsLavoBgqCCR71TqWO8MaXYheJ3RQ==",
       "dependencies": [
@@ -1245,7 +1241,6 @@
       "npm:oxfmt@0.71.0",
       "npm:oxlint@1.86.0",
       "npm:react@19.3.0",
-      "npm:smol-toml@1.9.0",
       "npm:string-width@8.3.0",
       "npm:zod@4.6.5"
     ]
