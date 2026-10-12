@@ -426,7 +426,14 @@ describe("hand-over", () => {
   test("the turn ended: every next-boundary entry goes as one fresh turn, recorded first", () => {
     const { machine, effects } = run(scheduled.machine, [{ kind: "gate_reached", op }], world);
     assert.deepEqual(kinds(effects), ["mark_delivering", "publish", "send"]);
-    assert.deepEqual(effects[2], { kind: "send", op, entryId: "a", midTurn: false, now: false });
+    assert.deepEqual(effects[2], {
+      kind: "send",
+      op,
+      entryId: "a",
+      midTurn: false,
+      now: false,
+      human: true,
+    });
     assert.equal(machine.delivery.kind, "handing_over");
   });
 
@@ -450,10 +457,26 @@ describe("hand-over", () => {
     );
     // then
     assert.deepEqual(first.effects, [
-      { kind: "send", op, entryId: "b", midTurn: true, now: false },
+      { kind: "send", op, entryId: "b", midTurn: true, now: false, human: true },
     ]);
     assert.equal(last.machine.delivery.kind, "ready");
     assert.deepEqual(kinds(last.effects), ["publish"]);
+  });
+
+  test("a send says whether a person wrote it: not a supervisor's message nor a child's report", () => {
+    for (const [author, human] of [
+      ["client-a", true],
+      ["supervisor:x", false],
+      ["agent:child", false],
+    ] as const) {
+      const world = mkWorld([mkSlot("a", { author })]);
+      const s = run(mkMachine(), [{ kind: "touched" }], world);
+      const { effects } = run(s.machine, [{ kind: "gate_reached", op: s.machine.ops }], world);
+      assert.ok(
+        effects.some((e) => e.kind === "send" && e.human === human),
+        author,
+      );
+    }
   });
 
   test("without receipts an entry is consumed as it is handed over", () => {

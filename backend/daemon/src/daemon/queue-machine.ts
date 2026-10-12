@@ -228,6 +228,8 @@ export type QueueEffect =
       readonly entryId: string;
       readonly midTurn: boolean;
       readonly now: boolean;
+      /** A person wrote it: the provider is told so. */
+      readonly human: boolean;
     }
   | { readonly kind: "requeue"; readonly ids: readonly string[] }
   | { readonly kind: "mark_uncertain"; readonly ids: readonly string[] }
@@ -475,6 +477,7 @@ const sendAt = (
         entryId,
         midTurn,
         now: midTurn && sentNow && writtenByUser(author),
+        human: writtenByUser(author),
       },
     ],
   };
