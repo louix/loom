@@ -16,6 +16,7 @@ import {
 } from "@loom/core/message-queue";
 import type { Hold } from "../daemon/queue-machine.ts";
 import { absurd } from "@loom/core/absurd";
+import { loomMessageSchema, type LoomMessage } from "@loom/core/loom-message";
 import { createHash } from "node:crypto";
 import { type Db, withTransaction } from "./db.ts";
 
@@ -60,6 +61,7 @@ interface Row {
   seq: number;
   text: string;
   author: string;
+  loom_message: string | null;
   delivery: QueueDelivery;
   state: QueueEntryState;
   uncertain: number;
@@ -70,11 +72,23 @@ interface Row {
   settled_seq: number | null;
 }
 
+/** A stored message that no longer reads as one (a newer daemon wrote it) is shown as plain text. */
+const optionalLoomMessage = (json: string | null): { loomMessage?: LoomMessage } => {
+  if (json === null) return {};
+  try {
+    const parsed = loomMessageSchema.safeParse(JSON.parse(json));
+    return parsed.success ? { loomMessage: parsed.data } : {};
+  } catch {
+    return {};
+  }
+};
+
 const toEntry = (r: Row): QueueEntry & { seq: number } => ({
   id: r.id,
   seq: r.seq,
   text: r.text,
   author: r.author,
+  ...optionalLoomMessage(r.loom_message),
   delivery: r.delivery,
   state: r.state,
   uncertain: r.uncertain === 1,
@@ -192,7 +206,13 @@ export class MessageQueueStore {
    */
   enqueue(
     sessionId: string,
-    e: { id: string; text: string; author: string; delivery: QueueDelivery },
+    e: {
+      id: string;
+      text: string;
+      author: string;
+      delivery: QueueDelivery;
+      loomMessage?: LoomMessage;
+    },
     opts: { head?: boolean; at?: number } = {},
   ): QueueResult<Enqueued> {
     return withTransaction(this.#db, () => {
@@ -219,8 +239,8 @@ export class MessageQueueStore {
       const seq = opts.head ? this.#minSeq(sessionId) - 1 : this.#maxSeq(sessionId) + 1;
       this.#db
         .prepare(
-          "INSERT INTO session_queue (session_id, id, seq, text, author, delivery, state, created_at) " +
-            "VALUES (?, ?, ?, ?, ?, ?, 'queued', ?)",
+          "INSERT INTO session_queue (session_id, id, seq, text, author, loom_message, delivery, state, created_at) " +
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?)",
         )
         .run(
           sessionId,
@@ -228,6 +248,7 @@ export class MessageQueueStore {
           seq,
           e.text,
           e.author,
+          e.loomMessage ? JSON.stringify(e.loomMessage) : null,
           opts.head ? "next_boundary" : e.delivery,
           opts.at ?? Date.now(),
         );

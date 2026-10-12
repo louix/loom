@@ -11,7 +11,6 @@ import { join } from "node:path";
 import { describe, test as nodeTest } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { LoomClient } from "@loom/client";
-import { agentAuthor, ARCHIVE_REMINDER_AUTHOR } from "@loom/core/agents";
 import type { HistoryPage, SessionSnapshot } from "@loom/core/wire";
 import { FakeProvider, type FakeSession } from "@loom/connector-mock";
 import type { ConnectorContext } from "@loom/core/connector";
@@ -1110,13 +1109,23 @@ describe("loom agents", { concurrency: 4 }, () => {
       reminder.includes(`${ahead.id.slice(0, 8)} "Ahead" (idle, 1 commit not merged into yours)`),
     );
     assert.match(reminder, /\. Archive each with agent_stop once its work is merged /);
-    // Whom a client shows it as: the reminder is Loom's own, each report a child's.
-    const authors = (
-      await env.c.request<HistoryPage>("session.events", { id: lead.id })
-    ).items.flatMap((e) => (e.event.type === "user_message" ? [e.event.author] : []));
-    assert.ok(authors.includes(ARCHIVE_REMINDER_AUTHOR));
-    assert.ok(authors.includes(agentAuthor(merged.id)));
-    assert.ok(authors.includes(agentAuthor(ahead.id)));
+    // What a client shows in their place is stored with them, structured.
+    const structured = (await env.c.request<HistoryPage>("session.events", { id: lead.id })).items
+      .flatMap((e) => (e.event.type === "user_message" ? [e.event.loomMessage] : []))
+      .flatMap((m) => (m ? [m] : []));
+    assert.deepEqual(
+      structured.flatMap((m) => (m.kind === "agent_report" ? [[m.child.id, m.event.kind]] : [])),
+      [
+        [merged.id, "finished"],
+        [ahead.id, "finished"],
+      ],
+    );
+    assert.deepEqual(
+      structured.flatMap((m) =>
+        m.kind === "archive_reminder" ? [m.children.map((c) => c.id).sort()] : [],
+      ),
+      [[merged.id, ahead.id].sort()],
+    );
     lead.fs.finishTurn();
     await waitFor(async () => (await get(env.c, lead.id)).status.kind === "idle");
     await delay(50);

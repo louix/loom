@@ -5,6 +5,7 @@
  * and the same "when will it go" hint — off the session snapshot.
  */
 import { z } from "zod";
+import { loomMessageSchema } from "./loom-message.ts";
 
 /**
  * When an entry may reach the agent. `next_boundary`: at the live turn's next
@@ -49,6 +50,8 @@ export const queueEntrySchema = z.object({
   text: z.string(),
   /** The submitting client's id. */
   author: z.string(),
+  /** Set when Loom wrote the message; `text` is its {@link showLoomMessage}. */
+  loomMessage: loomMessageSchema.optional(),
   delivery: queueDeliverySchema,
   state: queueEntryStateSchema,
   /** Handed over, and whether the provider took it is unknown. */

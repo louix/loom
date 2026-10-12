@@ -52,6 +52,7 @@
     "core/src/git-read.ts",
     "core/src/init-hook.ts",
     "core/src/logger.ts",
+    "core/src/loom-message.ts",
     "core/src/mcp-config.ts",
     "core/src/message-queue.ts",
     "core/src/nix-activation.ts",

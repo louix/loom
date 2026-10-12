@@ -8,6 +8,7 @@
     "./session-order": "./src/session-order.ts",
     "./interaction": "./src/interaction.ts",
     "./loadable": "./src/loadable.ts",
+    "./loom-message": "./src/loom-message.ts",
     "./wire": "./src/wire.ts",
     "./wire-decode": "./src/wire-decode.ts",
     "./cache": "./src/cache.ts",

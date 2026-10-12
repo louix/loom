@@ -2,6 +2,7 @@ import { z } from "zod";
 import { vmTerminationSchema } from "./vm-termination.ts";
 import { opaqueSchema } from "./schema.ts";
 import { cacheCreationSchema } from "./cache.ts";
+import { loomMessageSchema } from "./loom-message.ts";
 /**
  * The normalized event union every provider adapter emits (design spec §3).
  * Milestone 1 has no adapter yet, but the daemon's event log, persistence and
@@ -401,6 +402,8 @@ export const userMessageEventSchema = harnessEventBaseSchema.extend({
   queueEntryId: z.string().optional(),
   /** The client that queued it. */
   author: z.string().optional(),
+  /** What Loom's own message says, structured; absent on any other message. */
+  loomMessage: loomMessageSchema.optional(),
 });
 export type UserMessageEvent = z.infer<typeof userMessageEventSchema>;
 

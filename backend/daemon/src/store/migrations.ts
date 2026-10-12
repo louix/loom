@@ -486,4 +486,8 @@ export const MIGRATIONS: string[] = [
   ALTER TABLE sessions DROP COLUMN queue_hold;
   ALTER TABLE sessions RENAME COLUMN queue_hold_v2 TO queue_hold;
   `,
+  // 38 — a queued message Loom wrote itself (a child's report, the archive
+  // reminder) keeps its structure, JSON of `LoomMessage` (core/src/loom-message.ts),
+  // so the `user_message` it becomes can say what it is. NULL for any other.
+  `ALTER TABLE session_queue ADD COLUMN loom_message TEXT;`,
 ];

@@ -6,10 +6,11 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import {
   archiveReminder,
-  showArchiveReminder,
+  archiveReminderMessage,
   type ReminderChild,
   type ReminderSupervisor,
 } from "@loom/daemon/daemon/archive-reminder";
+import { showLoomMessage } from "@loom/core/loom-message";
 import type { GitFacts } from "@loom/core/wire";
 
 const mkChild = (p: Partial<ReminderChild> & Pick<ReminderChild, "id">): ReminderChild => ({
@@ -126,7 +127,7 @@ describe("archiveReminder", () => {
   });
 });
 
-describe("showArchiveReminder", () => {
+describe("archiveReminderMessage", () => {
   test("merged, unmerged, dirty and unknown workspaces", () => {
     // given
     const git: Record<string, GitFacts | null> = {
@@ -136,7 +137,7 @@ describe("showArchiveReminder", () => {
       "44444444-gone": null,
     };
     // when
-    const text = showArchiveReminder(
+    const message = archiveReminderMessage(
       [
         { id: "11111111-merged", title: "Merged", finished: "idle" },
         { id: "22222222-ahead", title: "Ahead", finished: "failed" },
@@ -147,7 +148,7 @@ describe("showArchiveReminder", () => {
     );
     // then
     assert.equal(
-      text,
+      showLoomMessage(message),
       "[loom] You have 4 sub-agents that have finished and are not archived: " +
         '11111111 "Merged" (idle, branch merged); ' +
         '22222222 "Ahead" (failed, 3 commits not merged into yours, uncommitted changes); ' +
@@ -160,10 +161,14 @@ describe("showArchiveReminder", () => {
 
   test("one agent", () => {
     // when
-    const text = showArchiveReminder([{ id: "abcdefgh-1", title: "W", finished: "idle" }], () =>
-      mkGit({}),
+    const message = archiveReminderMessage(
+      [{ id: "abcdefgh-1", title: "W", finished: "idle" }],
+      () => mkGit({}),
     );
     // then
-    assert.match(text, /^\[loom\] You have 1 sub-agent that has finished and is not archived: /);
+    assert.match(
+      showLoomMessage(message),
+      /^\[loom\] You have 1 sub-agent that has finished and is not archived: /,
+    );
   });
 });

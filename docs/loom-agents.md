@@ -171,13 +171,14 @@ sub-agents inside the supervisor's VM is a later shared-VM feature.
   message, cut at 2 KB and labelled `Summary (truncated):` when longer, and
   left out when there is no final message; Loom writes no summary of its own.
   A sub-agent's instructions ask it to make that line a one-sentence summary of
-  the outcome, with the details after it. In the TUI, the `chat` log filter
-  shows each notification, once taken up, as one dim line (`⤴ sub-agent finished · <title>`,
-  `failed` or `interrupted`; the notification is queued with the author
-  `agent:<sub-agent id>`, and the event and title are read from its first line)
-  and hides it while it is still queued; the more detailed filters show it in
-  full. The archive reminder, which carries the author `loom:archive-reminder`,
-  is shortened the same way (`⤴ 2 finished sub-agents not archived`).
+  the outcome, with the details after it. The notification is built from one structured value (`LoomMessage`,
+  `core/src/loom-message.ts`): its text and the `loomMessage` field stored with
+  the queue entry and the `user_message` event come from it. In the TUI, the `chat` log filter
+  shows the message, once taken up, as one dim line (`⤴ sub-agent finished · <title>`,
+  `failed` or `interrupted`) drawn from that field, and hides it while it is still
+  queued; the more detailed filters show it in full, as does any message recorded
+  without the field. The archive reminder is a `LoomMessage` too and is shortened
+  the same way (`⤴ 2 finished sub-agents not archived`).
 
   It is queued as an end-of-turn entry labelled as coming from the sub-agent: a busy supervisor is not interrupted, an idle one is
   woken (a cold one revived), and one the user stopped stays stopped. A user's

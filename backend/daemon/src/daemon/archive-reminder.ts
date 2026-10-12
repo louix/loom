@@ -4,7 +4,7 @@
  * children that have finished and are not archived, each child at most once.
  * The decision is pure; the daemon reads the facts and sends the message.
  */
-import { showArchiveReminderLead } from "@loom/core/agents";
+import type { LoomMessage } from "@loom/core/loom-message";
 import type { SessionState } from "@loom/core/session-state";
 import type { GitFacts } from "@loom/core/wire";
 
@@ -85,19 +85,18 @@ const showWorkspace = (git: GitFacts): string =>
     ...(git.dirty ? ["uncommitted changes"] : []),
   ].join(", ");
 
-/** The reminder's text; `git`, each child's workspace facts where they could be read. */
-export const showArchiveReminder = (
+/** The reminder; `git`, each child's workspace facts where they could be read. */
+export const archiveReminderMessage = (
   children: readonly FinishedChild[],
   git: (id: string) => GitFacts | null,
-): string => {
-  const named = children.map((c) => {
+): LoomMessage => ({
+  kind: "archive_reminder",
+  children: children.map((c) => {
     const facts = git(c.id);
-    const about = [c.finished, ...(facts ? [showWorkspace(facts)] : [])].join(", ");
-    return `${c.id.slice(0, 8)} "${c.title ?? ""}" (${about})`;
-  });
-  return (
-    `${showArchiveReminderLead(children.length)}: ` +
-    `${named.join("; ")}. Archive each with agent_stop once its work is merged or no longer ` +
-    "needed, or keep it if you will message it again. You won't be reminded about these again."
-  );
-};
+    return {
+      id: c.id,
+      title: c.title,
+      about: [c.finished, ...(facts ? [showWorkspace(facts)] : [])].join(", "),
+    };
+  }),
+});

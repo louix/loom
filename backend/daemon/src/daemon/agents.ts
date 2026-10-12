@@ -16,14 +16,13 @@ import type { QueueDelivery, QueueHoldCause } from "@loom/core/message-queue";
 import type { SessionState, StopCause } from "@loom/core/session-state";
 import type { GitFacts, SessionSnapshot, TranscriptEntry } from "@loom/core/wire";
 import type { Logger } from "@loom/core/logger";
+import { showLoomMessage, type AgentReportEvent, type LoomMessage } from "@loom/core/loom-message";
 import {
   agentAuthor,
   LOOM_AGENTS_SERVER,
   SELF_PROFILE,
-  showAgentReportHead,
   supervisionDepth,
   type AgentProfileInfo,
-  type AgentReportEvent,
 } from "@loom/core/agents";
 import { isAgentTool, type AgentToolName } from "@loom/runtime/agent-tools";
 import {
@@ -369,6 +368,7 @@ export interface AgentHost {
     author: string,
     delivery: QueueDelivery,
     sender: Exclude<Sender, "user">,
+    loomMessage?: LoomMessage,
   ): Promise<{ entryId: string; state: string; hold: QueueHoldCause | null; waited: boolean }>;
   /** Interrupt a child for its supervisor: the turn's end is attributed to
    *  the supervisor (`interrupted` by `supervisor`). */
@@ -852,7 +852,7 @@ export class AgentSupervision {
   async #report(
     child: SessionSnapshot,
     supervisorId: string,
-    event: ReportedEvent,
+    event: AgentReportEvent,
     turn: number,
     read: (() => Promise<GitFacts | null>) | undefined,
   ): Promise<void> {
@@ -870,23 +870,28 @@ export class AgentSupervision {
             .catch(() => null)
         : null) ?? child.git;
     if (!this.#host.reportReady(child.id, turn)) return;
-    const workspace = git
-      ? `Its workspace: ${gitSummary(git)}${git.dirty ? "" : ", nothing uncommitted"}.`
-      : null;
-    const body = [
-      showAgentReportHead(
-        { id: child.id, title: child.title ?? null, profile: child.agentProfile ?? SELF_PROFILE },
-        event.kind,
-        event.cause,
-      ),
-      ...(workspace ? [workspace] : []),
-      ...(firstLine ? [`Summary${summary.cut ? " (truncated)" : ""}: ${summary.text}`] : []),
-      `For full details: run \`agent_read\` with id \`${child.id}\``,
-    ].join("\n");
+    const message: LoomMessage = {
+      kind: "agent_report",
+      child: {
+        id: child.id,
+        title: child.title ?? null,
+        profile: child.agentProfile ?? SELF_PROFILE,
+      },
+      event,
+      workspace: git ? `${gitSummary(git)}${git.dirty ? "" : ", nothing uncommitted"}` : null,
+      summary: firstLine ? { text: summary.text, cut: summary.cut } : null,
+    };
     try {
       // Behind any hold: a supervisor the user stopped stays stopped, and a
       // crashed one is not revived by a report.
-      await this.#host.enqueue(supervisorId, body, agentAuthor(child.id), "end_of_turn", "child");
+      await this.#host.enqueue(
+        supervisorId,
+        showLoomMessage(message),
+        agentAuthor(child.id),
+        "end_of_turn",
+        "child",
+        message,
+      );
     } catch (err) {
       this.#host.log.warn("agent notification failed", {
         child: child.id,
@@ -897,19 +902,14 @@ export class AgentSupervision {
   }
 }
 
-interface ReportedEvent {
-  readonly kind: AgentReportEvent;
-  readonly cause: string;
-}
-
-/** The first line of a report: what the settled state says happened. */
-const reportedEvent = (state: SessionState): ReportedEvent => {
+/** What the settled state says happened, for a report. */
+const reportedEvent = (state: SessionState): AgentReportEvent => {
   switch (state.kind) {
     case "error":
-      return { kind: "failed", cause: `: ${state.message}` };
+      return { kind: "failed", message: state.message };
     case "interrupted":
-      return { kind: "interrupted", cause: ` (${state.reason ?? state.by})` };
+      return { kind: "interrupted", reason: state.reason ?? state.by };
     default:
-      return { kind: "finished", cause: "" };
+      return { kind: "finished" };
   }
 };

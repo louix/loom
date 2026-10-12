@@ -9,6 +9,7 @@ import { MIGRATIONS } from "@loom/daemon/store/migrations";
 import { MessageQueueStore, type QueueResult } from "@loom/daemon/store/message-queue";
 import { QUEUE_LIMITS, type QueueEntry } from "@loom/core/message-queue";
 import type { Hold } from "@loom/daemon/daemon/queue-machine";
+import type { LoomMessage } from "@loom/core/loom-message";
 import { setLogLevel } from "@loom/core/logger";
 
 setLogLevel("error");
@@ -441,4 +442,32 @@ test("migration 37 folds a hold and whose it is into one value", () => {
     db.close();
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("a Loom message's structure is stored with its entry and comes back when it is consumed", () => {
+  withStore((q) => {
+    // given
+    const loomMessage: LoomMessage = {
+      kind: "agent_report",
+      child: { id: "kid-1", title: "Kid", profile: "self" },
+      event: { kind: "failed", message: "boom" },
+      workspace: null,
+      summary: null,
+    };
+    value(
+      q.enqueue("s", {
+        id: "r",
+        text: "report",
+        author: "agent:kid-1",
+        delivery: "end_of_turn",
+        loomMessage,
+      }),
+    );
+    add(q, "plain");
+    // when
+    const consumed = q.markConsumed("s", "r");
+    // then
+    assert.deepEqual(consumed?.loomMessage, loomMessage);
+    assert.equal(q.live("s").find((e) => e.id === "plain")?.loomMessage, undefined);
+  });
 });

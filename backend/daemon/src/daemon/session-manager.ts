@@ -55,6 +55,7 @@ import { absurd } from "@loom/core/absurd";
 import { deriveStatus } from "./status-machine.ts";
 import { RpcError } from "./rpc.ts";
 import { dequeueHints } from "./message-queue.ts";
+import type { LoomMessage } from "@loom/core/loom-message";
 import {
   holdCause,
   holdTicket,
@@ -1074,6 +1075,7 @@ export class SessionManager {
       injected: midTurn,
       queueEntryId: entry.id,
       author: entry.author,
+      ...(entry.loomMessage ? { loomMessage: entry.loomMessage } : {}),
     });
   }
 
@@ -1091,7 +1093,13 @@ export class SessionManager {
    */
   enqueue(
     id: string,
-    e: { entryId: string; text: string; author: string; delivery: QueueEntry["delivery"] },
+    e: {
+      entryId: string;
+      text: string;
+      author: string;
+      delivery: QueueEntry["delivery"];
+      loomMessage?: LoomMessage;
+    },
     opts: { sender?: Sender } = {},
   ): {
     result: QueueResult<Enqueued>;
@@ -1109,7 +1117,13 @@ export class SessionManager {
     const lifts = found.kind !== "free" && !waited;
     const result = q.enqueue(
       id,
-      { id: e.entryId, text: e.text, author: e.author, delivery: e.delivery },
+      {
+        id: e.entryId,
+        text: e.text,
+        author: e.author,
+        delivery: e.delivery,
+        ...(e.loomMessage ? { loomMessage: e.loomMessage } : {}),
+      },
       { head: lifts },
     );
     const nothing = () => false;

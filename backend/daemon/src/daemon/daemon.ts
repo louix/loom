@@ -123,13 +123,9 @@ import {
   type AgentSessionPlanned,
   type ChildStart,
 } from "./agents.ts";
-import {
-  agentAuthor,
-  ARCHIVE_REMINDER_AUTHOR,
-  SELF_PROFILE,
-  type ChildrenOnClose,
-} from "@loom/core/agents";
-import { archiveReminder, showArchiveReminder } from "./archive-reminder.ts";
+import { agentAuthor, SELF_PROFILE, type ChildrenOnClose } from "@loom/core/agents";
+import { archiveReminder, archiveReminderMessage } from "./archive-reminder.ts";
+import { showLoomMessage, type LoomMessage } from "@loom/core/loom-message";
 import { type QueueDelivery, type QueueHoldCause } from "@loom/core/message-queue";
 import type { Sender } from "./queue-machine.ts";
 import { SessionShells } from "./session-shell.ts";
@@ -707,8 +703,11 @@ export class Daemon {
       start: (child) => this.#startChild(child),
       // An agent never lifts a user's stop; which other holds it lifts is
       // its sender (H2).
-      enqueue: (id, text, author, delivery, sender) =>
-        this.#enqueueMessage(id, text, author, delivery, undefined, { sender }),
+      enqueue: (id, text, author, delivery, sender, loomMessage) =>
+        this.#enqueueMessage(id, text, author, delivery, undefined, {
+          sender,
+          ...(loomMessage ? { loomMessage } : {}),
+        }),
       interrupt: async (id) => {
         await this.#interruptSession(id, "supervisor");
       },
@@ -3104,7 +3103,8 @@ export class Daemon {
       if (!ended()) return;
       const now = decide();
       if (now.kind !== "remind" || !this.#sessions.has(id)) return;
-      const text = showArchiveReminder(now.children, (child) => facts.get(child) ?? null);
+      const message = archiveReminderMessage(now.children, (child) => facts.get(child) ?? null);
+      const text = showLoomMessage(message);
       const store = this.#registry.store;
       for (const child of now.children) store.setArchiveReminded(child.id, true);
       // Loom's own message, like the commit reminder: kept out of `#lastSend`.
@@ -3114,7 +3114,7 @@ export class Daemon {
         ts: Date.now(),
         text,
         injected: false,
-        author: ARCHIVE_REMINDER_AUTHOR,
+        loomMessage: message,
       });
       await this.#sessions.send(id, text, { automated: true }).catch((err: unknown) => {
         // Not delivered: named again at a later turn end.
@@ -4050,12 +4050,22 @@ export class Daemon {
     author: string,
     delivery: QueueDelivery,
     requestedId?: string,
-    opts: { sender?: Sender } = {},
+    opts: { sender?: Sender; loomMessage?: LoomMessage } = {},
   ): Promise<{ entryId: string; state: string; hold: QueueHoldCause | null; waited: boolean }> {
     const entryId = requestedId ?? randomUUID();
     this.#registry.mustGet(id);
     if ((opts.sender ?? "user") === "user") this.#refuseBusy(id);
-    const queued = this.#sessions.enqueue(id, { entryId, text, author, delivery }, opts);
+    const queued = this.#sessions.enqueue(
+      id,
+      {
+        entryId,
+        text,
+        author,
+        delivery,
+        ...(opts.loomMessage ? { loomMessage: opts.loomMessage } : {}),
+      },
+      opts,
+    );
     const r = queued.result;
     if (!r.ok) throw new RpcError(r.code, r.message, { sessionId: id });
     if (queued.revive) {

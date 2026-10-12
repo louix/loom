@@ -3,13 +3,8 @@ import { describe, test } from "node:test";
 import { createElement } from "react";
 import { Box, renderToString, Text } from "ink";
 import { EventLog } from "@loom/tui/components";
-import {
-  agentAuthor,
-  ARCHIVE_REMINDER_AUTHOR,
-  showAgentReportHead,
-  showArchiveReminderLead,
-  type AgentReportEvent,
-} from "@loom/core/agents";
+import { agentAuthor } from "@loom/core/agents";
+import { showLoomMessage, type AgentReportEvent, type LoomMessage } from "@loom/core/loom-message";
 import {
   filterLog,
   logContext,
@@ -99,24 +94,55 @@ test("summary-only event text is normalized before row layout", () => {
 
 const CHILD_ID = "1ebeafe0-aaaa-bbbb-cccc-000000000000";
 
-const note = (title: string, event: AgentReportEvent, cause: string): LogLine =>
-  toLogLine(1, {
+const AT = Date.UTC(2026, 9, 12, 15, 56, 10);
+
+const note = (title: string | null, event: AgentReportEvent): LogLine => {
+  const message: LoomMessage = {
+    kind: "agent_report",
+    child: { id: CHILD_ID, title, profile: "sonnet" },
+    event,
+    workspace: "1 commit ahead of its base, nothing uncommitted",
+    summary: { text: "all done", cut: false },
+  };
+  return toLogLine(1, {
     type: "user_message",
     sessionId: "s",
-    ts: Date.UTC(2026, 9, 12, 15, 56, 10),
-    text: `${showAgentReportHead({ id: CHILD_ID, title, profile: "sonnet" }, event, cause)}\nIts workspace: 1 commit ahead of its base, nothing uncommitted.\nSummary: all done\nFor full details: run \`agent_read\` with id \`${CHILD_ID}\``,
+    ts: AT,
+    text: showLoomMessage(message),
     injected: false,
     author: agentAuthor(CHILD_ID),
+    loomMessage: message,
   });
+};
 
-const reminder = (count: number): LogLine =>
-  toLogLine(2, {
+const reminder = (count: number): LogLine => {
+  const message: LoomMessage = {
+    kind: "archive_reminder",
+    children: Array.from({ length: count }, (_, i) => ({
+      id: `${i}ebeafe0-aaaa`,
+      title: "T",
+      about: "idle",
+    })),
+  };
+  return toLogLine(2, {
     type: "user_message",
     sessionId: "s",
-    ts: Date.UTC(2026, 9, 12, 15, 56, 10),
-    text: `${showArchiveReminderLead(count)}: 1ebeafe0 "T" (idle). Archive each with agent_stop.`,
+    ts: AT,
+    text: showLoomMessage(message),
     injected: false,
-    author: ARCHIVE_REMINDER_AUTHOR,
+    loomMessage: message,
+  });
+};
+
+/** A report recorded before messages carried their structure. */
+const legacyNote = (): LogLine =>
+  toLogLine(3, {
+    type: "user_message",
+    sessionId: "s",
+    ts: AT,
+    text: '[from your sub-agent 1ebeafe0 "Old" (profile self)] It finished a turn.\nSummary: ok',
+    injected: false,
+    author: agentAuthor(CHILD_ID),
   });
 
 const renderedAt = (lines: readonly LogLine[], filter: LogFilter, width: number): string[] => {
@@ -124,13 +150,13 @@ const renderedAt = (lines: readonly LogLine[], filter: LogFilter, width: number)
   return windowRows(ctx, 0, totalRows(ctx)).map((r) => r.seg);
 };
 
-describe("chat verbosity shows a sub-agent report as one marker line", () => {
-  test("each event kind", () => {
+describe("chat verbosity shows a Loom message as one marker line", () => {
+  test("each report event kind", () => {
     // given
     const lines = [
-      note("Fix the picker", "finished", ""),
-      note("Fix the picker", "failed", ": the build broke"),
-      note("Fix the picker", "interrupted", " (supervisor)"),
+      note("Fix the picker", { kind: "finished" }),
+      note("Fix the picker", { kind: "failed", message: "the build broke" }),
+      note("Fix the picker", { kind: "interrupted", reason: "supervisor" }),
     ];
     // when
     const rows = renderedAt(lines, "chat", 80);
@@ -142,10 +168,32 @@ describe("chat verbosity shows a sub-agent report as one marker line", () => {
     ]);
   });
 
+  test("a failed report is drawn in the bad tone, the others dim", () => {
+    // given
+    const lines = [
+      note("T", { kind: "finished" }),
+      note("T", { kind: "failed", message: "x" }),
+      note("T", { kind: "interrupted", reason: "user" }),
+    ];
+    // when
+    const tones = filterLog(lines, "chat", null).map((l) => l.tone);
+    // then
+    assert.deepEqual(tones, ["dim", "bad", "dim"]);
+  });
+
+  test("a child without a title is named by its short id", () => {
+    // given
+    const lines = [note(null, { kind: "finished" })];
+    // when
+    const rows = renderedAt(lines, "chat", 80);
+    // then
+    assert.deepEqual(rows, ["sub-agent finished · 1ebeafe0"]);
+  });
+
   test("a long title is cut to one line, wrapped at a narrow pane", () => {
     // given
     const title = "New session ⌥p: agent profile rows don't fit ".repeat(4).trim();
-    const lines = [note(title, "finished", "")];
+    const lines = [note(title, { kind: "finished" })];
     // when
     const rows = renderedAt(lines, "chat", 40);
     // then
@@ -168,18 +216,35 @@ describe("chat verbosity shows a sub-agent report as one marker line", () => {
     ]);
   });
 
-  test("fuller verbosity keeps the whole message", () => {
+  test("a report recorded without its structure is shown in full", () => {
     // given
-    const lines = [note("Fix the picker", "finished", ""), reminder(1)];
+    const lines = [legacyNote()];
     // when
-    const rows = renderedAt(lines, "everything", 100).join("\n");
+    const rows = renderedAt(lines, "chat", 100).join("\n");
     // then
     assert.match(
       rows,
-      /\[from your sub-agent 1ebeafe0 "Fix the picker" \(profile sonnet\)\] It finished a turn\./,
+      /\[from your sub-agent 1ebeafe0 "Old" \(profile self\)\] It finished a turn\./,
     );
-    assert.match(rows, /Summary: all done/);
-    assert.match(rows, /For full details: run `agent_read`/);
-    assert.match(rows, /\[loom\] You have 1 sub-agent that has finished/);
+    assert.match(rows, /Summary: ok/);
   });
+});
+
+describe("fuller verbosity keeps the whole message", () => {
+  for (const filter of ["chat_and_tools", "everything"] as const) {
+    test(filter, () => {
+      // given
+      const lines = [note("Fix the picker", { kind: "finished" }), reminder(1)];
+      // when
+      const rows = renderedAt(lines, filter, 100).join("\n");
+      // then
+      assert.match(
+        rows,
+        /\[from your sub-agent 1ebeafe0 "Fix the picker" \(profile sonnet\)\] It finished a turn\./,
+      );
+      assert.match(rows, /Summary: all done/);
+      assert.match(rows, /For full details: run `agent_read`/);
+      assert.match(rows, /\[loom\] You have 1 sub-agent that has finished/);
+    });
+  }
 });

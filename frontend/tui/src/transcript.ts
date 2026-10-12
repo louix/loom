@@ -14,12 +14,8 @@ import type { TaskTailView } from "./task-tail.ts";
 import { markdownText, plainText } from "./markdown.ts";
 import type { TextDocument, TextSpan } from "./text-layout.ts";
 import { absurd } from "@loom/core/absurd";
-import {
-  ARCHIVE_REMINDER_AUTHOR,
-  isAgentAuthor,
-  parseAgentReportHead,
-  parseArchiveReminderCount,
-} from "@loom/core/agents";
+import { isAgentAuthor } from "@loom/core/agents";
+import type { LoomMessage } from "@loom/core/loom-message";
 import type { BackgroundTaskEndedEvent, HarnessEvent } from "@loom/core/events";
 import type { QueueDelivery, QueueEntryView } from "@loom/core/message-queue";
 import { sessionStateLabel } from "@loom/core/session-state";
@@ -98,6 +94,8 @@ export interface LogLine {
   /** For a `user_message`: who queued it. For a queued-message marker, the
    *  agent's author when it counts only Loom agents' notifications. */
   author?: string;
+  /** For a `user_message` Loom wrote itself: what it says, structured. */
+  loomMessage?: LoomMessage;
   glyph: string;
   /** Compact one-liner for the log pane (may be truncated). */
   text: string;
@@ -157,6 +155,7 @@ export const toLogLine = (
     kind: ev.type,
     ...(ev.agentId ? { agentId: ev.agentId } : {}),
     ...(ev.type === "user_message" && ev.author ? { author: ev.author } : {}),
+    ...(ev.type === "user_message" && ev.loomMessage ? { loomMessage: ev.loomMessage } : {}),
     glyph: f.glyph,
     text: f.text,
     ...(f.full !== undefined && f.full !== f.text ? { full: f.full } : {}),
@@ -1010,15 +1009,28 @@ export const olderFailed = (tr: Transcript, sessionId: string, error: string): T
   return { ...tr, older: { t: "failed", error } };
 };
 
-/**
- * A notification from a child, or Loom's archive reminder, as the one-line
- * marker `chat` shows in its place; any other line as it is.
- */
+/** The marker line `chat` shows for a message Loom wrote. */
+const loomMessageMarker = (m: LoomMessage): { text: string; tone: Tone } => {
+  switch (m.kind) {
+    case "agent_report":
+      return {
+        text: `sub-agent ${m.event.kind} · ${oneLine(m.child.title || m.child.id.slice(0, 8), 80)}`,
+        tone: m.event.kind === "failed" ? "bad" : "dim",
+      };
+    case "archive_reminder": {
+      const n = m.children.length;
+      return { text: `${n} finished sub-agent${n === 1 ? "" : "s"} not archived`, tone: "dim" };
+    }
+    default:
+      return absurd(m);
+  }
+};
+
+/** A message Loom wrote, as the one-line marker `chat` shows in its place; any other line as it is. */
 export const agentMarker = (line: LogLine): LogLine => {
-  if (line.kind !== "user_message") return line;
-  // `text` is cut to one line; the head of a report with a long title is not whole in it.
-  const body = line.full ?? line.text;
-  const marker = (text: string, tone: Tone): LogLine => ({
+  if (line.loomMessage === undefined) return line;
+  const { text, tone } = loomMessageMarker(line.loomMessage);
+  return {
     id: line.id,
     sessionId: line.sessionId,
     kind: line.kind,
@@ -1026,20 +1038,7 @@ export const agentMarker = (line: LogLine): LogLine => {
     text,
     tone,
     ts: line.ts,
-  });
-  if (line.author === ARCHIVE_REMINDER_AUTHOR) {
-    const n = parseArchiveReminderCount(body);
-    return n === null
-      ? marker("finished sub-agents not archived", "dim")
-      : marker(`${n} finished sub-agent${n === 1 ? "" : "s"} not archived`, "dim");
-  }
-  if (!isAgentAuthor(line.author)) return line;
-  const report = parseAgentReportHead(body);
-  if (report === null) return marker("sub-agent reported", "dim");
-  return marker(
-    `sub-agent ${report.event} · ${oneLine(report.title === "" ? report.id : report.title, 80)}`,
-    report.event === "failed" ? "bad" : "dim",
-  );
+  };
 };
 
 /**
@@ -1051,10 +1050,10 @@ export const agentMarker = (line: LogLine): LogLine => {
  * child-tagged frames are hidden: they live in the child's subtree, and the
  * main stream keeps only the ⤷/⤴ markers that announce a sub-agent.
  *
- * `chat` also shrinks the notifications a Loom agent's children send it,
- * and Loom's archive reminder, to one dim marker line each (`agentMarker`);
- * while they are still queued it hides them, since the marker comes when
- * they are taken up. The fleet already shows how each child is doing.
+ * `chat` also shrinks the messages Loom writes a supervising agent — its
+ * children's reports and the archive reminder — to one dim marker line each
+ * (`agentMarker`); a report still queued is hidden, since the marker comes
+ * when it is taken up. Messages recorded without their structure show in full. The fleet already shows how each child is doing.
  */
 export const filterLog = (
   lines: readonly LogLine[],

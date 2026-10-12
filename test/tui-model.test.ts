@@ -1062,7 +1062,23 @@ test("chat view shrinks a child's notification to a marker once taken up and hid
     { type: "user_message", text: "start the kids", injected: false, author: "client-a" },
     1_000,
   );
-  at(2, { type: "user_message", text: note, injected: false, author: "agent:kid-1" }, 2_000);
+  at(
+    2,
+    {
+      type: "user_message",
+      text: note,
+      injected: false,
+      author: "agent:kid-1",
+      loomMessage: {
+        kind: "agent_report",
+        child: { id: "kid12345", title: "Kid", profile: "self" },
+        event: { kind: "finished" },
+        workspace: null,
+        summary: null,
+      },
+    },
+    2_000,
+  );
   at(3, { type: "assistant_text", text: "kid 1 is done" }, 3_000);
 
   s = reduce(s, { t: "logFilter", value: "chat" });
