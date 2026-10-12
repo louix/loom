@@ -1242,7 +1242,10 @@ test("every Claude session, on the host or in a session VM, hides commit and PR 
       await session.close();
     }
   assert.equal(captured.length, 4);
-  for (const options of captured) assert.deepEqual(options.settings, { attribution: false });
+  for (const options of captured)
+    assert.deepEqual(options.settings, {
+      attribution: { commit: "", pr: "", sessionUrl: false },
+    });
 });
 
 test("Claude registers async init on a new fork but does not retain it across query restarts", async () => {
@@ -1272,14 +1275,19 @@ test("Claude registers async init on a new fork but does not retain it across qu
       /Initialization is running: echo setup/,
     );
     assert.match(JSON.stringify(captured[0]?.settings), /"async":true/);
-    assert.match(JSON.stringify(captured[0]?.settings), /"attribution":false/);
+    assert.match(
+      JSON.stringify(captured[0]?.settings),
+      /"attribution":{"commit":"","pr":"","sessionUrl":false}/,
+    );
     const end = Date.now() + 2000;
     while (!session.providerRef) {
       assert(Date.now() < end);
       await delay(10);
     }
     await session.rewind(0, "keep-this");
-    assert.deepEqual(captured[1]?.settings, { attribution: false });
+    assert.deepEqual(captured[1]?.settings, {
+      attribution: { commit: "", pr: "", sessionUrl: false },
+    });
   } finally {
     await session.close();
   }

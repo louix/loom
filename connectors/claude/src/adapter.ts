@@ -203,6 +203,9 @@ const asFlagEffort = (effort: EffortLevel): "low" | "medium" | "high" | "xhigh" 
  */
 export const NATIVE_SUBAGENT_TOOLS = ["Agent", "Task"] as const;
 
+/** The `attribution` setting that hides the commit trailer, the PR line and the session link. */
+const NO_ATTRIBUTION = { commit: "", pr: "", sessionUrl: false } as const;
+
 /** Built-in file-mutating tools — the target path rides in `file_path` /
  *  `notebook_path`. */
 const BUILTIN_WRITE_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
@@ -766,8 +769,10 @@ class ClaudeSession implements AgentSession {
     const queryEffort = opts.effort ? asQueryEffort(opts.effort) : undefined;
     const options: Options = {
       // Flag settings: no `Co-Authored-By` trailer or PR line, whatever the
-      // user's settings say. Loom's Git identity decides authorship.
-      settings: { ...init?.settings, attribution: false },
+      // user's settings say. Loom's Git identity decides authorship. Not
+      // `attribution: false`: CLIs before 2.1.281 (a user's `cli_path`) report
+      // it as an invalid setting; every version takes empty strings.
+      settings: { ...init?.settings, attribution: NO_ATTRIBUTION },
       cwd: opts.cwd,
       permissionMode: toPermissionMode(opts.mode),
       canUseTool,
