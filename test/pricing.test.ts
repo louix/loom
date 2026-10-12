@@ -1,26 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { test } from "node:test";
-import {
-  costOf,
-  derivedCacheWrite,
-  loadPriceTable,
-  parsePriceTable,
-} from "@loom/daemon/config/pricing";
-
-const TABLE = `
-["claude-sonnet-5"]
-input       = 3.00
-output      = 15.00
-cache_read  = 0.30
-cache_write = 3.75
-
-["fake-1"]
-input  = 1.0
-output = 2.0
-`;
+import { costOf, derivedCacheWrite, parsePriceTable } from "@loom/daemon/config/pricing";
 
 test("parsePriceTable reads per-model rows and skips empty ones", () => {
   const t = parsePriceTable({
@@ -31,23 +11,6 @@ test("parsePriceTable reads per-model rows and skips empty ones", () => {
   assert.deepEqual(t.get("m-a"), { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 0.5 });
   assert.ok(!t.has("m-b"));
   assert.ok(!t.has("m-c"));
-});
-
-test("loadPriceTable: missing file is not an error", () => {
-  assert.equal(loadPriceTable(join(tmpdir(), "does-not-exist-xyz.toml")).size, 0);
-});
-
-test("loadPriceTable parses a real file", () => {
-  const dir = mkdtempSync(join(tmpdir(), "loom-price-"));
-  try {
-    const p = join(dir, "models.toml");
-    writeFileSync(p, TABLE);
-    const t = loadPriceTable(p);
-    assert.equal(t.get("claude-sonnet-5")?.output, 15);
-    assert.equal(t.get("fake-1")?.input, 1);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
 });
 
 test("costOf multiplies token deltas by the per-million price", () => {

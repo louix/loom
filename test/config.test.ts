@@ -1651,3 +1651,19 @@ test("a removed session.isolation.launcher still parses, is ignored and is repor
     assert(!lintConfig(cfg).some((line) => line.includes("launcher")));
   }
 });
+test("a removed db setting still parses, is ignored and is reported", () => {
+  assert(!("db" in normalizeConfig({})));
+  const cfg = normalizeConfig({
+    db: ".loom/loom.db",
+    session: { isolation: { launcher: "legacy" } },
+  });
+  assert(!("db" in cfg));
+  assert.deepEqual(cfg.removedKeys, ["session.isolation.launcher", "db"]);
+  const warnings = removedConfigWarnings(cfg);
+  assert.equal(warnings.length, 2);
+  assert.match(
+    warnings[1]!,
+    /^db is no longer read \(the database lives in \$XDG_STATE_HOME\/loom\/repos\/<repo>\/loom\.db\)/,
+  );
+  assert(!lintConfig(cfg).some((line) => line.includes("db")));
+});

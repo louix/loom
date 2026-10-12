@@ -2854,10 +2854,11 @@ test("archive and delete retain the worktree and session when adapter cleanup fa
 });
 
 test("startup recovery failure leaves the daemon usable and retains the affected session", async () => {
-  const hh = await makeHarness();
+  // Before the daemon starts: its database lives in the state directory too.
   const previous = Deno.env.get("XDG_STATE_HOME");
   const state = await Deno.makeTempDir();
   Deno.env.set("XDG_STATE_HOME", state);
+  const hh = await makeHarness();
   let c = await LoomClient.connect({
     repoRoot: hh.repoRoot,
     sockPath: hh.sockPath,

@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync, rmSync, statSync } from "node:fs";
+import { readdirSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { Logger } from "@loom/core/logger";
 import type { LoomPaths } from "@loom/core/paths";
@@ -98,44 +98,42 @@ const tidyWorktrees = (
   log: Logger,
 ): { clearedLocks: string[]; worktreePruned: boolean } => {
   const clearedLocks: string[] = [];
-  for (const trees of new Set([paths.trees, join(paths.dir, "trees")])) {
-    if (!existsSync(trees)) continue;
-    let entries: string[] = [];
+  const trees = paths.trees;
+  let entries: string[] = [];
+  try {
+    entries = readdirSync(trees);
+  } catch {
+    entries = [];
+  }
+  for (const name of entries) {
+    const treeDir = join(trees, name);
     try {
-      entries = readdirSync(trees);
+      if (!statSync(treeDir).isDirectory()) continue;
     } catch {
-      entries = [];
+      continue;
     }
-    for (const name of entries) {
-      const treeDir = join(trees, name);
+    // A worktree's .git is a file pointing at the real gitdir; the index.lock
+    // that a killed git process leaves behind lives in that gitdir. Check the
+    // common in-tree location too. Only clear a lock that's been sitting for a
+    // while — a fresh one may belong to a git command an operator is running
+    // in the worktree right now, and yanking it mid-operation corrupts the index.
+    for (const lock of [join(treeDir, ".git", "index.lock"), join(treeDir, "index.lock")]) {
+      let ageMs = Infinity;
       try {
-        if (!statSync(treeDir).isDirectory()) continue;
+        ageMs = Date.now() - statSync(lock).mtimeMs;
       } catch {
+        continue; // not there
+      }
+      if (ageMs < LOCK_STALE_MS) {
+        log.debug("leaving a recent git lock alone", { lock, ageMs });
         continue;
       }
-      // A worktree's .git is a file pointing at the real gitdir; the index.lock
-      // that a killed git process leaves behind lives in that gitdir. Check the
-      // common in-tree location too. Only clear a lock that's been sitting for a
-      // while — a fresh one may belong to a git command an operator is running
-      // in the worktree right now, and yanking it mid-operation corrupts the index.
-      for (const lock of [join(treeDir, ".git", "index.lock"), join(treeDir, "index.lock")]) {
-        let ageMs = Infinity;
-        try {
-          ageMs = Date.now() - statSync(lock).mtimeMs;
-        } catch {
-          continue; // not there
-        }
-        if (ageMs < LOCK_STALE_MS) {
-          log.debug("leaving a recent git lock alone", { lock, ageMs });
-          continue;
-        }
-        try {
-          rmSync(lock);
-          clearedLocks.push(lock);
-          log.warn("cleared stale git lock", { lock });
-        } catch {
-          /* leave it; git will complain later, loudly */
-        }
+      try {
+        rmSync(lock);
+        clearedLocks.push(lock);
+        log.warn("cleared stale git lock", { lock });
+      } catch {
+        /* leave it; git will complain later, loudly */
       }
     }
   }

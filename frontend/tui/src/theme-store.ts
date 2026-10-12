@@ -1,6 +1,6 @@
 /**
  * The theme choice (`t`) outlives the TUI: the mode is written to a small JSON
- * file in the repo's `.loom/` (the daemon's runtime dir) on every change and
+ * file in the repo's Loom state directory (beside the daemon's log) on every change and
  * read back when the fleet handle is built. Reads return `null` on anything
  * unusual — absent file, corrupt JSON, an unknown mode — and the caller falls
  * back to the default; writes are best-effort, since the palette is already

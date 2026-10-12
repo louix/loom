@@ -9,7 +9,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { daemonEndpoint, legacyDaemonPid } from "@loom/core/daemon-endpoint";
-import { ensureLoomDir, loomPaths, type LoomPaths } from "@loom/core/paths";
+import { ensureLoomDirectories, loomPaths, type LoomPaths } from "@loom/core/paths";
 import { Daemon } from "@loom/daemon/daemon/daemon";
 import { LegacyDaemonRunning } from "@loom/daemon/daemon/lifecycle";
 
@@ -24,7 +24,7 @@ const mkFixture = (): Fixture => {
   execFileSync("git", ["init", "-q", "-b", "main", repo]);
   execFileSync("git", ["-C", repo, "commit", "-q", "--allow-empty", "-m", "base"]);
   const paths = loomPaths(repo);
-  ensureLoomDir(paths);
+  ensureLoomDirectories(paths);
   return {
     repo,
     paths,
@@ -40,7 +40,7 @@ const mkFakeLoomd = (): Deno.ChildProcess =>
   new Deno.Command("sh", { args: ["-c", "sleep 60; :", "loomd"], stdin: "null" }).spawn();
 
 const writeLegacyDaemon = (paths: LoomPaths, pid: number): void => {
-  mkdirSync(paths.dir, { recursive: true });
+  mkdirSync(paths.legacy.dir, { recursive: true });
   writeFileSync(paths.legacy.pid, JSON.stringify({ pid, epoch: "old", startedAt: 0 }));
   writeFileSync(paths.legacy.sock, ""); // A file stands in for the socket node.
 };

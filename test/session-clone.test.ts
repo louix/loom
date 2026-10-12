@@ -57,7 +57,7 @@ Deno.test("clone sessions mount the clone and the relay socket, never the reposi
   for (const broken of [
     { ...b, mounts: ["/home/test/repo"] },
     { ...b, mounts: undefined },
-    { ...b, packageCache: "/home/test/repo/.loom/package-cache" },
+    { ...b, packageCache: "/home/test/.cache/loom/repo-0123456789abcdef/package-cache" },
     { ...b, preparationOnly: true },
     { ...b, workspace: "/home/test/repo" },
     { ...b, sessionDirectory: undefined },

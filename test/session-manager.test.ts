@@ -2,8 +2,6 @@ import { VmTerminationError, type VmTermination } from "../core/src/vm-terminati
 import { signalOf } from "../backend/daemon/src/daemon/startup.ts";
 import assert from "node:assert/strict";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { describe, test as nodeTest } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { LoomClient } from "@loom/client";
@@ -1174,11 +1172,7 @@ describe("session-manager", { concurrency: 4 }, () => {
     await c.close();
   });
 
-  test("reported cost wins over a legacy local price table", async () => {
-    writeFileSync(
-      join(harness().repoRoot, ".loom", "models.toml"),
-      `["fake-1"]\ninput = 3.0\noutput = 15.0\n`,
-    );
+  test("reported cost wins, and a repository has no local price table", async () => {
     const c = await client();
     const reloaded = await c.request<{ models: string[] }>("pricing.reload");
     assert.ok(!reloaded.models.includes("fake-1"));
@@ -1203,14 +1197,7 @@ describe("session-manager", { concurrency: 4 }, () => {
     await c.close();
   });
 
-  test("missing reported or endpoint prices remain unknown despite a legacy table", async () => {
-    // The table prices input but no cache write — the normal case, since no
-    // endpoint catalogue advertises one. The turn reports the ephemeral bucket
-    // it wrote into, and that is what sets the multiple.
-    writeFileSync(
-      join(harness().repoRoot, ".loom", "models.toml"),
-      `["fake-1"]\ninput = 3.0\noutput = 15.0\n`,
-    );
+  test("missing reported or endpoint prices remain unknown", async () => {
     const c = await client();
     await c.request("pricing.reload");
 

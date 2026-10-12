@@ -13,7 +13,13 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { ensureLoomDir, findRepoRoot, loomPaths, worktreeDirectory } from "@loom/core/paths";
+import {
+  ensureLoomDirectories,
+  findRepoRoot,
+  loomPaths,
+  readRepoRecord,
+  worktreeDirectory,
+} from "@loom/core/paths";
 import { WorktreeManager } from "@loom/daemon/daemon/worktrees";
 import { makeLogger } from "@loom/core/logger";
 import { loadConfig } from "@loom/daemon/config/config";
@@ -97,7 +103,7 @@ test("repository discovery handles checkouts, linked worktrees, and bare reposit
     const manager = new WorktreeManager({
       repoRoot: bare,
       treesDir: paths.trees,
-      hooksDir: join(paths.dir, "hooks"),
+      hooksDir: paths.hooks,
       baseBranch: "main",
       log: makeLogger("test"),
     });
@@ -140,20 +146,44 @@ test("worktree directories use persistent XDG storage with distinct canonical re
   }
 });
 
-test("loomPaths puts the socket and pidfile in a per-repository runtime directory", () => {
+test("loomPaths keys runtime, state and cache directories by repository", () => {
   const root = realpathSync(mkdtempSync("/tmp/loom-run-paths-"));
   try {
     const repo = join(root, "project");
     mkdirSync(repo);
     const key = basename(worktreeDirectory(repo, "", { HOME: root }));
-    const xdg = loomPaths(repo, "", { HOME: root, XDG_RUNTIME_DIR: join(root, "run") });
+    const xdg = loomPaths(repo, "", {
+      HOME: root,
+      XDG_RUNTIME_DIR: join(root, "run"),
+      XDG_STATE_HOME: join(root, "state"),
+      XDG_CACHE_HOME: join(root, "cache"),
+    });
     assert.equal(xdg.runtime, join(root, "run", "loom", key));
     assert.equal(xdg.sock, join(xdg.runtime, "daemon.sock"));
     assert.equal(xdg.pid, join(xdg.runtime, "daemon.pid"));
+    const state = join(root, "state", "loom", "repos", key);
+    assert.deepEqual(
+      [xdg.state, xdg.record, xdg.db, xdg.log, xdg.startupLog, xdg.tuiLog, xdg.tuiState, xdg.hooks],
+      [
+        state,
+        join(state, "repo.json"),
+        join(state, "loom.db"),
+        join(state, "daemon.log"),
+        join(state, "daemon-startup.log"),
+        join(state, "tui.log"),
+        join(state, "tui.json"),
+        join(state, "hooks"),
+      ],
+    );
+    assert.equal(xdg.packageCache, join(root, "cache", "loom", key, "package-cache"));
     assert.deepEqual(xdg.legacy, {
+      dir: join(repo, ".loom"),
       sock: join(repo, ".loom", "daemon.sock"),
       pid: join(repo, ".loom", "daemon.pid"),
     });
+    // Nothing of Loom's own is in the checkout any more.
+    for (const path of Object.values(xdg))
+      if (typeof path === "string" && path !== repo) assert.ok(!path.startsWith(repo + "/"), path);
     // macOS has no XDG_RUNTIME_DIR; a relative one is ignored like any XDG variable.
     for (const env of [{ HOME: root }, { HOME: root, XDG_RUNTIME_DIR: "run" }])
       assert.equal(loomPaths(repo, "", env).runtime, join(`/tmp/loom-${Deno.uid()}`, key));
@@ -174,7 +204,7 @@ test("loomPaths refuses a socket path over the sun_path limit", () => {
   assert.ok(loomPaths(deep, "", { HOME: tmpdir(), XDG_RUNTIME_DIR: "/run/user/1000" }).sock);
 });
 
-test("ensureLoomDir refuses a runtime base other users can enter", () => {
+test("ensureLoomDirectories refuses a runtime base other users can enter", () => {
   const root = realpathSync(mkdtempSync("/tmp/loom-run-shared-"));
   try {
     const repo = join(root, "project");
@@ -183,12 +213,15 @@ test("ensureLoomDir refuses a runtime base other users can enter", () => {
     mkdirSync(dirname(paths.runtime), { mode: 0o755 });
     chmodSync(dirname(paths.runtime), 0o755);
     assert.throws(
-      () => ensureLoomDir(paths),
+      () => ensureLoomDirectories(paths),
       /must be a directory owned by this user with mode 0700/,
     );
     chmodSync(dirname(paths.runtime), 0o700);
-    ensureLoomDir(paths);
+    ensureLoomDirectories(paths);
     assert.equal(statSync(paths.runtime).mode & 0o777, 0o700);
+    assert.equal(statSync(paths.state).mode & 0o777, 0o700);
+    // The state directory records its repository, for `loom repo move`.
+    assert.equal(readRepoRecord(paths.record), repo);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -85,7 +85,7 @@ export type RebaseOutcome =
 
 export interface WorktreeManagerOptions {
   repoRoot: string;
-  /** Absolute directory that holds the trees (`<repo>/.loom/trees`). */
+  /** Absolute directory that holds the trees (`$XDG_DATA_HOME/loom/worktrees/<repo-key>`). */
   treesDir: string;
   /** Absolute directory for the shared, worktree-scoped hooks. */
   hooksDir: string;
@@ -231,6 +231,30 @@ export class WorktreeManager {
       }
     }
     this.#setupDone = true;
+  }
+
+  /**
+   * Point every linked worktree whose `core.hooksPath` is `from` at this
+   * manager's hooks, after the hooks directory moved. Call {@link ensureSetup}
+   * first: a hooks path naming a missing directory runs no hooks, so the push
+   * block would lapse. Returns the worktrees that could not be repointed.
+   */
+  repointHooks(from: string): string[] {
+    const old = canonicalHostPath(from);
+    const list = this.#git(["worktree", "list", "--porcelain"], undefined, { readOnly: true });
+    if (!list.ok) return [this.#repoRoot];
+    const failed: string[] = [];
+    for (const line of list.stdout.split("\n")) {
+      if (!line.startsWith("worktree ")) continue;
+      const path = line.slice("worktree ".length);
+      if (!existsSync(path) || this.isClone(path)) continue;
+      const current = this.#git(["config", "--worktree", "--get", "core.hooksPath"], path);
+      if (!current.ok || canonicalHostPath(current.stdout.trim()) !== old) continue;
+      const set = this.#git(["config", "--worktree", "core.hooksPath", this.#hooksDir], path);
+      if (!set.ok) failed.push(path);
+      else this.#log.info("worktree hooks repointed", { path, hooks: this.#hooksDir });
+    }
+    return failed;
   }
 
   // --- lifecycle ----------------------------------------------------
@@ -506,8 +530,8 @@ export class WorktreeManager {
     ])
       .split("\0")
       .filter(Boolean)) {
-      // In-place parents contain Loom's own database, sockets and worktrees.
-      // These are runtime state, even in a repo that forgot to ignore them.
+      // In-place parents may contain Loom's worktrees, and `.loom` left by an
+      // older version. These are runtime state, even in a repo that forgot to ignore them.
       const from = join(source, name);
       if (
         source === this.#repoRoot &&

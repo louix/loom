@@ -16,6 +16,7 @@ import { normalizeExtraHosts } from "./network-policy.ts";
 import { spawn } from "node:child_process";
 import { Readable, Writable } from "node:stream";
 import { join } from "node:path";
+import { repoCacheDirectory } from "../../../core/src/paths.ts";
 import { fileURLToPath } from "node:url";
 import { inspectArtifact } from "../packaged/artifact.ts";
 import { vmMaintenanceLock } from "../packaged/maintenance.ts";
@@ -133,15 +134,13 @@ const launchSessionVmOwned = async (
   );
   if (options.clone && (!options.repoRoot || !options.sessionDirectory || options.preparationOnly))
     throw new Error("Clone sessions need a repository and a session directory");
-  // The shared package cache lives inside the repository, which clone sessions never mount.
-  const packageCache =
-    options.repoRoot && !options.clone && !options.privateWorkspace
-      ? join(await Deno.realPath(options.repoRoot), ".loom/package-cache")
-      : undefined;
-  if (packageCache) {
-    await Deno.mkdir(packageCache, { recursive: true, mode: 0o700 });
-    if ((await Deno.realPath(packageCache)) !== packageCache)
-      throw new Error("Package cache must not be a symlink");
+  // Shared by the repository's mounted sessions; a clone session keeps its own.
+  let packageCache: string | undefined;
+  if (options.repoRoot && !options.clone && !options.privateWorkspace) {
+    const cache = join(repoCacheDirectory(await Deno.realPath(options.repoRoot)), "package-cache");
+    await Deno.mkdir(cache, { recursive: true, mode: 0o700 });
+    if ((await Deno.lstat(cache)).isSymlink) throw new Error("Package cache must not be a symlink");
+    packageCache = await Deno.realPath(cache);
   }
   let git: VmBinding["git"];
   if (options.clone) {
@@ -167,7 +166,13 @@ const launchSessionVmOwned = async (
   )
     throw new Error("Clone session workspace must be the session clone");
   // workspaceMounts runs Git in the workspace; host Git never opens a session clone.
-  const mounts = git || privateWorkspace ? [] : await workspaceMounts(workspace, options.repoRoot);
+  const mounts =
+    git || privateWorkspace
+      ? []
+      : [
+          ...(await workspaceMounts(workspace, options.repoRoot)),
+          ...(packageCache ? [packageCache] : []),
+        ];
   const manifest = await inspectArtifact(artifact);
   try {
     if (

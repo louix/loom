@@ -547,8 +547,8 @@
       "type": "string"
     },
     "db": {
-      "default": ".loom/loom.db",
-      "type": "string"
+      "deprecated": true,
+      "description": "No longer read. The database lives in $XDG_STATE_HOME/loom/repos/<repo>/loom.db; remove this setting."
     },
     "git": {
       "type": "object",
@@ -2022,8 +2022,8 @@
             "type": "string"
           },
           "db": {
-            "default": ".loom/loom.db",
-            "type": "string"
+            "deprecated": true,
+            "description": "No longer read. The database lives in $XDG_STATE_HOME/loom/repos/<repo>/loom.db; remove this setting."
           },
           "git": {
             "type": "object",

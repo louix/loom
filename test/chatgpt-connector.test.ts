@@ -178,13 +178,12 @@ test("codeModeInstructions rules out Codex's own sub-agent tools, naming loom-ag
   }
 });
 
-test("codeModeInstructions splices in the caller's repoInstructions instead of reading LOOM.md itself", async () => {
-  // A directory with no `.loom/LOOM.md` on disk at all — proves the text
+test("codeModeInstructions splices in the caller's repoInstructions instead of reading files itself", async () => {
+  // A directory with no instruction files on disk at all — proves the text
   // below reached the output only because it was passed in, not because the
-  // connector went and read the filesystem (which is the whole point of
-  // threading `repoInstructions` through instead of calling `loomInstructions`
-  // locally: only the daemon knows the `cwd`-then-repoRoot fallback).
-  const dir = await mkdtemp(join(tmpdir(), "loom-chatgpt-codemode-noloommd-"));
+  // connector went and read the filesystem: the daemon decides which
+  // providers need the repository's instructions.
+  const dir = await mkdtemp(join(tmpdir(), "loom-chatgpt-codemode-noinstructions-"));
   try {
     const withInstructions = codeModeInstructions(
       dir,

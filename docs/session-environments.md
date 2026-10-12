@@ -328,10 +328,11 @@ mounted sessions retain their original layout.
 
 ## Host package caches (legacy mounted sessions)
 
-Session and preparation VMs use `<repo>/.loom/package-cache`, through the
-existing repository mount. It is shared by the repo's VMs and survives failed
+Session and preparation VMs use `$XDG_CACHE_HOME/loom/<repo>-<hash>/package-cache`,
+mounted at the same path. It is shared by the repo's VMs and survives failed
 preparation, VM replacement and daemon restarts. It contains no shared installed
-project environment.
+project environment. (Older versions kept it in `<repo>/.loom/package-cache`;
+the daemon moves it on its first start.)
 
 Loom sets `XDG_DATA_HOME`, `DENO_DIR`, `npm_config_cache`, `PIP_CACHE_DIR` and
 `UV_CACHE_DIR` to subdirectories there. `XDG_CACHE_HOME` uses guest-owned

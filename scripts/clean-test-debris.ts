@@ -20,6 +20,7 @@ import { realpathSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { basename, dirname, join, resolve } from "node:path";
 import { userDirectory } from "../core/src/user-dirs.ts";
+import { readRepoRecord, repoStateDirectory } from "../core/src/paths.ts";
 
 type Category = "delete" | "uncertain" | "keep";
 type Kind = "session-vms" | "environments" | "vms" | "worktrees" | "model-catalogues";
@@ -147,6 +148,10 @@ const loadContext = (): Context => {
   // Known repositories: the recent list, their linked worktrees, existing
   // non-temp repositories named by VM records or session worktrees.
   const candidates = new Set(repos);
+  for (const entry of children(join(state, "repos"))) {
+    const repo = readRepoRecord(join(state, "repos", entry.name, "repo.json"));
+    if (repo && exists(repo)) candidates.add(repo);
+  }
   for (const entry of children(ROOTS.vms)) {
     const repo = recordOf(join(ROOTS.vms, entry.name))?.repo;
     if (repo && exists(repo)) candidates.add(repo);
@@ -158,14 +163,18 @@ const loadContext = (): Context => {
     }
   for (const repo of candidates) {
     addRepo(ctx, repo);
+    // .loom/trees: session worktrees from before the XDG data directory.
     for (const sub of [".loom/trees", ".claude/worktrees"])
       for (const tree of children(join(repo, sub))) addRepo(ctx, join(repo, sub, tree.name));
     for (const linked of children(join(repo, ".git/worktrees"))) {
       const gitfile = readText(join(repo, ".git/worktrees", linked.name, "gitdir"))?.trim();
       if (gitfile) addRepo(ctx, dirname(gitfile));
     }
-    const db = join(repo, ".loom/loom.db");
-    if (!exists(db)) continue;
+    // The legacy location until the repository's daemon migrates it.
+    const db = [join(repoStateDirectory(repo), "loom.db"), join(repo, ".loom/loom.db")].find(
+      exists,
+    );
+    if (!db) continue;
     try {
       const handle = new DatabaseSync(db, { readOnly: true });
       try {

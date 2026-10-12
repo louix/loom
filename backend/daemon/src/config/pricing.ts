@@ -1,19 +1,8 @@
-import type { CacheCreation } from "@loom/core/cache";
 /**
- * Per-model price table (M7b). Loaded from `[pricing] table` (default
- * `.loom/models.toml`); a missing file is not an error — the daemon just falls
- * back to whatever cost the provider reports. Prices are USD per million tokens.
- *
- * ```toml
- * ["claude-sonnet-5"]
- * input       = 3.00
- * output      = 15.00
- * cache_read  = 0.30
- * cache_write = 3.75
- * ```
+ * Per-model price table, filled from endpoint catalogues that advertise prices
+ * (`endpoint-pricing.ts`). Prices are USD per million tokens.
  */
-import { readFileSync } from "node:fs";
-import { parse as parseToml } from "smol-toml";
+import type { CacheCreation } from "@loom/core/cache";
 import type { TokenUsage } from "@loom/core/events";
 
 export interface PriceRow {
@@ -31,7 +20,7 @@ const num = (v: unknown): number => {
   return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : 0;
 };
 
-/** Parse a raw TOML tree into a price table. Unknown / malformed rows are skipped. */
+/** Rows keyed by model (`input`, `output`, `cache_read`, `cache_write`). Malformed rows are skipped. */
 export const parsePriceTable = (raw: unknown): PriceTable => {
   const table: PriceTable = new Map();
   if (!raw || typeof raw !== "object") return table;
@@ -49,18 +38,6 @@ export const parsePriceTable = (raw: unknown): PriceTable => {
     }
   }
   return table;
-};
-
-/** Load and parse the table; returns an empty table if the file is absent. */
-export const loadPriceTable = (path: string): PriceTable => {
-  let raw: unknown = {};
-  try {
-    raw = parseToml(readFileSync(path, "utf8"));
-  } catch (err) {
-    const e = err as NodeJS.ErrnoException;
-    if (e.code !== "ENOENT") throw new Error(`failed to read price table ${path}: ${e.message}`);
-  }
-  return parsePriceTable(raw);
 };
 
 /**

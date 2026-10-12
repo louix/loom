@@ -1,5 +1,6 @@
 import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { pidAlive } from "@loom/core/daemon-endpoint";
+import { legacyDaemonPid, pidAlive } from "@loom/core/daemon-endpoint";
+import type { LoomPaths } from "@loom/core/paths";
 
 export interface PidfileInfo {
   pid: number;
@@ -62,6 +63,23 @@ export const acquirePidfile = (path: string, epoch: string): PidfileInfo => {
     }
   }
   throw new Error(`could not acquire pidfile at ${path}`);
+};
+
+/** This run's identity, and the pidfile it holds unless it is standalone. */
+export interface RepositoryClaim {
+  epoch: string;
+  pidfile: PidfileInfo | null;
+}
+
+/** Take the pidfile, then refuse if a daemon from before the XDG layout still runs. */
+export const claimRepository = (paths: LoomPaths, epoch: string): PidfileInfo => {
+  const info = acquirePidfile(paths.pid, epoch);
+  const legacy = legacyDaemonPid(paths);
+  if (legacy !== null) {
+    releasePidfile(paths.pid);
+    throw new LegacyDaemonRunning(legacy, paths.legacy.dir);
+  }
+  return info;
 };
 
 export const releasePidfile = (path: string): void => {

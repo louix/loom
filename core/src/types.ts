@@ -170,14 +170,12 @@ export const createSessionOptionsSchema = z.object({
   effort: effortLevelSchema.optional(),
   mode: sessionModeSchema,
   parentId: z.string().optional(),
-  /** Steering text for the provider's system prompt — tool steer plus the repo's `.loom/LOOM.md`. */
+  /** Steering text for the provider's system prompt — tool steer plus `repoInstructions`. */
   systemPromptAppend: z.string().optional(),
-  /** Pre-resolved `.loom/LOOM.md` repository instructions (the daemon's own
-   *  `cwd`-then-repoRoot fallback already applied), or `null`/absent when
-   *  none exist. A connector that builds its own system-prompt append
-   *  instead of using `systemPromptAppend` verbatim (chatgpt) splices this
-   *  in directly rather than reading the file itself — only the daemon knows
-   *  the repo root a worktree `cwd` falls back to. */
+  /** The repository's AGENTS.md, framed, when this provider would not read it
+   *  itself (`repoInstructionsFor` in the daemon), or `null`/absent. A
+   *  connector that builds its own system-prompt append instead of using
+   *  `systemPromptAppend` verbatim (chatgpt) splices this in directly. */
   repoInstructions: z.union([z.string(), z.null()]).optional(),
   /** The directory to describe to the model as its workspace root (e.g. in
    *  tool-steer text), kept distinct from `cwd` (where the provider's own

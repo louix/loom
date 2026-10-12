@@ -78,6 +78,25 @@ The [example config](backend/daemon/config.example.jsonc) covers providers,
 named accounts, repository overrides, hooks and MCP servers.
 Configuration is user-owned; repository-local config files are not read.
 
+Agents see the repository's `AGENTS.md` once each: Codex and Claude Code read it
+themselves (Claude Code unless a `CLAUDE.md` takes precedence without importing
+it), and Loom adds it to the system prompt of every other session.
+
+Loom writes nothing into your checkout. Per repository, keyed by its path:
+
+| What                                     | Where                                                                                             |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| Daemon socket and pidfile                | `$XDG_RUNTIME_DIR/loom/<repo>-<hash>/` (`/tmp/loom-<uid>/<repo>-<hash>/` without it, as on macOS) |
+| Database, logs, TUI theme, session hooks | `$XDG_STATE_HOME/loom/repos/<repo>-<hash>/` (`~/.local/state`)                                    |
+| VM package cache                         | `$XDG_CACHE_HOME/loom/<repo>-<hash>/package-cache/` (`~/.cache`)                                  |
+| Session worktrees                        | `$XDG_DATA_HOME/loom/worktrees/<repo>-<hash>/` (`~/.local/share`), or `worktree_dir`              |
+
+Older versions kept this in `<repo>/.loom/`. The first daemon of this version
+moves it there (keeping the database where it was if the copy cannot be
+verified) and removes `.loom` once it is empty. A daemon an older version
+started keeps running from `.loom` until you stop it with `loom stop`. After
+moving a checkout, run `loom repo move <old> <new>` to carry its state along.
+
 Then run Loom from your project:
 
 ```sh

@@ -67,7 +67,7 @@ export interface AisdkProfile {
   /**
    * Per-model USD-per-million prices advertised by the endpoint's `/models`
    * (`pricing` rows — sference, OpenRouter). Filled from the probe; feeds the
-   * cost table for models the user's `models.toml` doesn't price.
+   * cost table for turns whose provider reports no cost.
    */
   modelPricing: Record<string, PriceRow>;
   /** Per-model display names advertised by the endpoint (`display_name`). */
@@ -290,7 +290,6 @@ export interface LoomConfig {
    * itself; in-place sessions (no isolated worktree) are exempt.
    */
   commitReminder: { enabled: boolean };
-  db: string;
   /**
    * Session commit identity overrides; absent uses the user's ordinary Git
    * identity. A matching `repos[].git` merges over the global `git` field by field.
@@ -452,7 +451,6 @@ export const DEFAULT_CONFIG: LoomConfig = {
   autoRebase: { enabled: false, mode: "rebase" },
   autoResume: { enabled: true },
   commitReminder: { enabled: true },
-  db: ".loom/loom.db",
   defaultProvider: "claude",
   daemon: {
     idleShutdownMinutes: 30,
@@ -632,7 +630,11 @@ export const resolveApiKey = (
 /** Why each removed setting is no longer read. */
 export const removedConfigKeys: Record<string, string> = {
   "session.isolation.launcher": "session VMs always start through the isolation library",
+  db: "the database lives in $XDG_STATE_HOME/loom/repos/<repo>/loom.db",
 };
+
+const removedKeys = (keys: string[]): Pick<LoomConfig, "removedKeys"> =>
+  keys.length > 0 ? { removedKeys: keys } : {};
 
 /** One line per removed setting the config still sets; it parses and is ignored. */
 export const removedConfigWarnings = (cfg: LoomConfig): string[] =>
@@ -822,7 +824,10 @@ export const normalizeConfig = (
   });
 
   return {
-    ...(isolation.launcher !== undefined ? { removedKeys: ["session.isolation.launcher"] } : {}),
+    ...removedKeys([
+      ...(isolation.launcher !== undefined ? ["session.isolation.launcher"] : []),
+      ...(settings.db !== undefined ? ["db"] : []),
+    ]),
     autoNix: settings.session.auto_nix,
     tui: {
       includeEventLogInEditor: settings.tui.include_event_log_in_editor,
@@ -854,7 +859,6 @@ export const normalizeConfig = (
     autoRebase: settings.session.auto_rebase,
     autoResume: settings.session.auto_resume,
     commitReminder: settings.session.commit_reminder,
-    db: settings.db,
     ...(settings.git ? { git: settings.git } : {}),
     defaultProvider,
     daemon: {
@@ -1098,11 +1102,6 @@ export const mergeRepoOverride = (
     ...((selected.hooks as unknown[] | undefined) ?? []),
   ];
   return merged;
-};
-
-/** Resolve a possibly-relative config path against the repo root. */
-export const resolveAgainstRepo = (repoRoot: string, p: string): string => {
-  return isAbsolute(p) ? p : resolve(repoRoot, p);
 };
 
 /** Global cache pruning must also respect paths pinned by other trusted repositories. */

@@ -325,6 +325,6 @@ content-addressed store across every git worktree of the repo, so
 worktree and `DENO_DIR` are on the same filesystem — a worktree on a different
 volume falls back to copying.
 
-Loom's own session worktrees (`.loom/trees/<slug>`) never run an install: the
+Loom's own session worktrees (`$XDG_DATA_HOME/loom/worktrees/<repo>-<hash>/<slug>`) never run an install: the
 daemon resolves its imports from where it was launched, and an agent's `bash` /
 `git` calls just need a working directory.

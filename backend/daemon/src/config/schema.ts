@@ -316,7 +316,14 @@ export const createConfigSchema = (d: LoomConfig, events: readonly HookEvent[]) 
     worktree_dir: text(d.worktreeDir).describe(
       "Exact worktree directory (absolute, ~/ or relative to the repository). Empty uses $XDG_DATA_HOME/loom/worktrees/<repo>-<hash>, defaulting to ~/.local/share. Existing sessions keep their paths. Restart to apply.",
     ),
-    db: text(d.db),
+    // Removed: older configs keep parsing, and Loom reports the key once.
+    db: z
+      .unknown()
+      .optional()
+      .meta({ deprecated: true })
+      .describe(
+        "No longer read. The database lives in $XDG_STATE_HOME/loom/repos/<repo>/loom.db; remove this setting.",
+      ),
     git: gitIdentitySchema.optional(),
     default_provider: text(d.defaultProvider),
     daemon: section({ idle_shutdown_minutes: nonNegative(d.daemon.idleShutdownMinutes) }),

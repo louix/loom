@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gitFixture } from "./lib/git-fixture.ts";
+import { repoCacheDirectory } from "../core/src/paths.ts";
 import { launchTestSessionVm } from "./lib/session-launch.ts";
 import { sessionVmDirectory } from "../backend/daemon/src/daemon/session-vm-state.ts";
 import { RemoteWorkerSession } from "../backend/daemon/src/daemon/worker-provider.ts";
@@ -293,7 +294,9 @@ try {
     assert.notEqual(await currentRepoBase(home, artifact), selected);
   });
   assert.equal(
-    await Deno.readTextFile(join(f.repo, ".loom/package-cache/deno/persistent-marker")),
+    await Deno.readTextFile(
+      join(repoCacheDirectory(await Deno.realPath(f.repo)), "package-cache/deno/persistent-marker"),
+    ),
     "cached\n",
   );
   // A new launch uses the new base and retains its host worktree.

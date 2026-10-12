@@ -1,5 +1,14 @@
 import { spawnSync } from "node:child_process";
-import { accessSync, constants, lstatSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
+import {
+  accessSync,
+  constants,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
 import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
@@ -65,26 +74,34 @@ export const findRepoRoot = (start: string = Deno.cwd()): string => {
 
 export interface LoomPaths {
   repoRoot: string;
-  /** `<repoRoot>/.loom` */
-  dir: string;
   /** `$XDG_RUNTIME_DIR/loom/<repo-key>`: socket and pidfile, private to the user. */
   runtime: string;
   /** Unix domain socket the daemon listens on. */
   sock: string;
   /** Pidfile guarding single-daemon-per-repo. */
   pid: string;
-  /** Where Loom kept this repository's socket and pidfile before the XDG layout. */
-  legacy: { sock: string; pid: string };
+  /** `$XDG_STATE_HOME/loom/repos/<repo-key>`: the database, logs and generated hooks. */
+  state: string;
+  /** `repo.json`: the repository this state belongs to, for `loom repo move`. */
+  record: string;
   /** SQLite database. */
   db: string;
   /** Rolling daemon log. */
   log: string;
+  /** A spawned daemon's stderr until its own log starts. */
+  startupLog: string;
   /** TUI client log — one client per repo, truncated each launch. */
   tuiLog: string;
   /** TUI preference file — the persisted theme, read on boot / written on `t`. */
   tuiState: string;
+  /** Push-blocking hooks every session worktree's `core.hooksPath` names. */
+  hooks: string;
+  /** `$XDG_CACHE_HOME/loom/<repo-key>/package-cache`, shared by the repository's VMs. */
+  packageCache: string;
   /** Directory holding one git worktree per session. */
   trees: string;
+  /** `<repoRoot>/.loom`, where Loom kept all of this before the XDG layout. */
+  legacy: { dir: string; sock: string; pid: string };
 }
 
 /** Longest socket path, without its NUL: `sun_path` is 104 bytes on macOS, 108 on Linux. */
@@ -121,13 +138,23 @@ export const worktreeDirectory = (
   return join(userDirectory("data", env), "loom", "worktrees", repoKey(repoRoot));
 };
 
+export const repoStateDirectory = (
+  repoRoot: string,
+  env: Record<string, string | undefined> = Deno.env.toObject(),
+): string => join(userDirectory("state", env), "loom", "repos", repoKey(repoRoot));
+
+export const repoCacheDirectory = (
+  repoRoot: string,
+  env: Record<string, string | undefined> = Deno.env.toObject(),
+): string => join(userDirectory("cache", env), "loom", repoKey(repoRoot));
+
 /** Throws when the daemon socket would not fit in `sun_path`. */
 export const loomPaths = (
   repoRoot: string,
   configuredTrees = "",
   env: Record<string, string | undefined> = Deno.env.toObject(),
 ): LoomPaths => {
-  const dir = join(repoRoot, ".loom");
+  const legacy = join(repoRoot, ".loom");
   const runtime = join(loomRuntimeDirectory(env), repoKey(repoRoot));
   const sock = join(runtime, "daemon.sock");
   const sockBytes = new TextEncoder().encode(sock).length;
@@ -135,28 +162,49 @@ export const loomPaths = (
     throw new Error(
       `The daemon socket path ${sock} is ${sockBytes} bytes, over the ${SOCKET_PATH_MAX_BYTES}-byte Unix socket limit. Set XDG_RUNTIME_DIR to a shorter directory.`,
     );
+  const state = repoStateDirectory(repoRoot, env);
   return {
     repoRoot,
-    dir,
     runtime,
     sock,
     pid: join(runtime, "daemon.pid"),
-    legacy: { sock: join(dir, "daemon.sock"), pid: join(dir, "daemon.pid") },
-    db: join(dir, "loom.db"),
-    log: join(dir, "daemon.log"),
-    tuiLog: join(dir, "tui.log"),
-    tuiState: join(dir, "tui.json"),
+    state,
+    record: join(state, "repo.json"),
+    db: join(state, "loom.db"),
+    log: join(state, "daemon.log"),
+    startupLog: join(state, "daemon-startup.log"),
+    tuiLog: join(state, "tui.log"),
+    tuiState: join(state, "tui.json"),
+    hooks: join(state, "hooks"),
+    packageCache: join(repoCacheDirectory(repoRoot, env), "package-cache"),
     trees: worktreeDirectory(repoRoot, configuredTrees, env),
+    legacy: { dir: legacy, sock: join(legacy, "daemon.sock"), pid: join(legacy, "daemon.pid") },
   };
 };
 
+/** The repository a state directory belongs to, from its `repo.json`; null when unreadable. */
+export const readRepoRecord = (record: string): string | null => {
+  try {
+    // Loom's own JSON; anything else names no repository.
+    const { path } = JSON.parse(readFileSync(record, "utf8")) as { path?: unknown };
+    return typeof path === "string" ? path : null;
+  } catch {
+    return null;
+  }
+};
+
+export const writeRepoRecord = (record: string, repoRoot: string): void => {
+  const temporary = `${record}.${Deno.pid}.tmp`;
+  writeFileSync(temporary, JSON.stringify({ path: repoRoot }) + "\n", { mode: 0o600 });
+  renameSync(temporary, record);
+};
+
 /**
- * Create the repository's state and runtime directories. The runtime base may be
- * the shared `/tmp`, so it must be a real directory only this user can enter.
- * WorktreeManager creates its directory on demand.
+ * Create the repository's runtime and state directories and its `repo.json`. The
+ * runtime base may be the shared `/tmp`, so it must be a real directory only this
+ * user can enter. WorktreeManager and VM launches create theirs on demand.
  */
-export const ensureLoomDir = (paths: LoomPaths): void => {
-  mkdirSync(paths.dir, { recursive: true });
+export const ensureLoomDirectories = (paths: LoomPaths): void => {
   const base = dirname(paths.runtime);
   mkdirSync(base, { recursive: true, mode: 0o700 });
   const info = lstatSync(base);
@@ -165,19 +213,7 @@ export const ensureLoomDir = (paths: LoomPaths): void => {
       `Refusing to use ${base} for the daemon socket: it must be a directory owned by this user with mode 0700.`,
     );
   mkdirSync(paths.runtime, { recursive: true, mode: 0o700 });
-};
-
-/**
- * The repo's steering file: `<dir>/.loom/LOOM.md`. Operators record
- * repo-specific instructions there — init commands, how to typecheck, house
- * conventions — and the daemon injects the content into every session's
- * system prompt. Returns the framed block, or null when absent or empty.
- */
-export const loomInstructions = (dir: string): string | null => {
-  try {
-    const md = readFileSync(join(dir, ".loom", "LOOM.md"), "utf8").trim();
-    return md ? `# Repository instructions (.loom/LOOM.md)\n\n${md}` : null;
-  } catch {
-    return null; // no file (or unreadable) — nothing to inject
-  }
+  mkdirSync(paths.state, { recursive: true, mode: 0o700 });
+  if (readRepoRecord(paths.record) !== paths.repoRoot)
+    writeRepoRecord(paths.record, paths.repoRoot);
 };

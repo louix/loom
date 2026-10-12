@@ -49,7 +49,7 @@ test("every per-user Loom location resolves inside the test roots", { skip: !roo
   const repo = join(tmpdir(), "repo");
   for (const path of [
     worktreeDirectory(repo),
-    loomPaths(repo).runtime,
+    ...(({ runtime, state, packageCache }) => [runtime, state, packageCache])(loomPaths(repo)),
     userConfigPath(),
     defaultCatalogueDirectory(),
     mcpOAuthStateDirectory(),

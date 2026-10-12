@@ -40,13 +40,12 @@ import { join, resolve } from "node:path";
 import { absurd } from "@loom/core/absurd";
 import { makeLogger, setLogFile, type Logger } from "@loom/core/logger";
 import {
-  ensureLoomDir,
+  ensureLoomDirectories,
   loomPaths,
   onPath,
   tryFindRepoRoot,
   type LoomPaths,
 } from "@loom/core/paths";
-import { legacyDaemonPid } from "@loom/core/daemon-endpoint";
 import { scaffoldUserConfig, userConfigPath } from "../scaffold.ts";
 import { runtimeMcpDiagnostic } from "./mcp-runtime-diagnostics.ts";
 import { preflightTools } from "./tool-preflight.ts";
@@ -58,7 +57,6 @@ import {
   removedConfigWarnings,
   loadConfig,
   resolveApiKey,
-  resolveAgainstRepo,
   type LoomConfig,
 } from "../config/config.ts";
 import { readClaudeAccount } from "../config/claude-profile.ts";
@@ -144,13 +142,14 @@ import {
   type SessionRef,
 } from "@loom/core/types";
 import {
-  acquirePidfile,
+  claimRepository,
   IdleTimer,
-  LegacyDaemonRunning,
   releasePidfile,
   type PidfileInfo,
+  type RepositoryClaim,
 } from "./lifecycle.ts";
-import { repoInstructionsFor, systemPromptAppendFor } from "./prompt.ts";
+import { adoptLegacyLog, finishLegacyMigration, migrateLegacyState } from "./legacy-state.ts";
+import { repoInstructionsFor, systemPromptAppendFor, type InstructionReader } from "./prompt.ts";
 import { providerColor } from "./provider-color.ts";
 
 const EFFORT_LEVELS: readonly EffortLevel[] = ["low", "medium", "high", "xhigh", "max"];
@@ -305,7 +304,7 @@ export class Daemon {
   readonly paths: LoomPaths;
   readonly config: LoomConfig;
   readonly #configFile: string;
-  readonly epoch: string = randomUUID();
+  readonly epoch: string;
   readonly startedAt: number = Date.now();
 
   readonly #startups = new Map<string, AbortController>();
@@ -394,7 +393,7 @@ export class Daemon {
   #resolveClosed!: () => void;
   #signalHandlers: Array<[Deno.Signal, () => void]> = [];
 
-  private constructor(opts: DaemonStartOptions) {
+  private constructor(opts: DaemonStartOptions, claim: RepositoryClaim) {
     this.#guestCommand =
       opts.guestCommand ??
       (async (session, command, timeoutMs, signal, env) => {
@@ -406,12 +405,13 @@ export class Daemon {
           throw new Error("The session VM is not running. Resume it first.");
         return executions.command(command, timeoutMs, stop, env);
       });
-    opts = { ...opts, repoRoot: tryFindRepoRoot(opts.repoRoot) ?? opts.repoRoot };
     this.repoRoot = opts.repoRoot;
     this.#configFile = resolve(opts.configFile ?? userConfigPath());
     this.#standalone = opts.standalone ?? false;
     this.paths = loomPaths(opts.repoRoot);
-    ensureLoomDir(this.paths);
+    this.epoch = claim.epoch;
+    this.#pidfile = claim.pidfile;
+    adoptLegacyLog(this.paths);
     setLogFile(this.paths.log);
     this.#log = makeLogger("daemon");
 
@@ -424,8 +424,7 @@ export class Daemon {
     }
     this.config = loadConfig(this.repoRoot, this.#configFile);
     this.paths.trees = loomPaths(this.repoRoot, this.config.worktreeDir).trees;
-    const dbPath = resolveAgainstRepo(opts.repoRoot, this.config.db);
-    this.#db = openDb(dbPath);
+    this.#db = openDb(migrateLegacyState(this.paths, this.#log.child("migration")));
     this.#registry = new Registry(this.#db, this.#log.child("registry"));
     // Legacy sessions predate the mode column. Saved VM state is evidence of
     // their actual environment; current defaults must not reclassify them.
@@ -451,11 +450,12 @@ export class Daemon {
     this.#worktrees = new WorktreeManager({
       repoRoot: opts.repoRoot,
       treesDir: this.paths.trees,
-      hooksDir: join(this.paths.dir, "hooks"),
+      hooksDir: this.paths.hooks,
       baseBranch: legacyBaseBranch(this.config),
       cloneRoot: sessionCloneRoot(opts.repoRoot),
       log: this.#log.child("worktrees"),
     });
+    finishLegacyMigration(this.paths, this.#worktrees, this.#log.child("migration"));
     this.#providers = new ProviderRegistry(
       this.config,
       this.#pmsgs,
@@ -716,7 +716,20 @@ export class Daemon {
   }
 
   static async start(opts: DaemonStartOptions): Promise<Daemon> {
-    const d = new Daemon(opts);
+    const repoRoot = tryFindRepoRoot(opts.repoRoot) ?? opts.repoRoot;
+    const paths = loomPaths(repoRoot);
+    ensureLoomDirectories(paths);
+    const epoch = randomUUID();
+    // Own the repository before touching its state: the migration from
+    // `<repo>/.loom` moves files another daemon would hold open.
+    const pidfile = opts.standalone ? null : claimRepository(paths, epoch);
+    let d: Daemon;
+    try {
+      d = new Daemon({ ...opts, repoRoot }, { epoch, pidfile });
+    } catch (err) {
+      if (pidfile) releasePidfile(paths.pid);
+      throw err;
+    }
     try {
       await d.#bringUp();
     } catch (err) {
@@ -756,13 +769,6 @@ export class Daemon {
   // -------------------------------------------------------------------------
 
   async #bringUp(): Promise<void> {
-    if (!this.#standalone) {
-      this.#pidfile = acquirePidfile(this.paths.pid, this.epoch);
-      // Never a second daemon for the repo: an older one keeps its old socket.
-      const legacy = legacyDaemonPid(this.paths);
-      if (legacy !== null) throw new LegacyDaemonRunning(legacy, this.paths.dir);
-    }
-
     const recoveredVms = await recoverRepositoryVms(this.repoRoot, (id, error) => {
       const message = `VM recovery for ${id} failed: ${error instanceof Error ? error.message : String(error)}. Retry resume/archive/delete after fixing the reported problem.`;
       this.#log.warn("session VM recovery", { id, message });
@@ -1029,10 +1035,25 @@ export class Daemon {
     else this.#worktrees.remove(path, { force });
   }
 
-  /** Where repo instructions are read from. A clone is agent-written: a symlinked LOOM.md
-   *  there would pull a host file into the prompt, so clone sessions read the host checkout. */
-  #instructionsDir(cwd: string): string {
-    return this.#worktrees.isClone(cwd) ? this.repoRoot : cwd;
+  /**
+   * The repository's AGENTS.md for `provider`, when it would not read the file
+   * itself (see repoInstructionsFor). A clone is agent-written: a symlinked
+   * AGENTS.md there would pull a host file into the prompt, so clone sessions
+   * read the host checkout.
+   */
+  #repoInstructions(
+    provider: string,
+    cwd: string,
+    claudeSettingSources: string[] | undefined,
+  ): string | null {
+    const dir = this.#worktrees.isClone(cwd) ? this.repoRoot : cwd;
+    return repoInstructionsFor(this.#instructionReader(provider), dir, claudeSettingSources);
+  }
+
+  #instructionReader(provider: string): InstructionReader {
+    if (isClaudeId(provider)) return "claude";
+    if (this.config.providers.aisdk[provider]?.sdk === "chatgpt") return "codex";
+    return "aisdk";
   }
 
   #cloneGit(snap: SessionSnapshot): CloneGit {
@@ -1868,16 +1889,20 @@ export class Daemon {
         const agent = this.#agentPlan(newId);
         const mcpHandles = agent.mcpServers;
         const isAisdk = this.config.providers.aisdk[providerId] !== undefined;
+        const repoInstructions = this.#repoInstructions(
+          providerId,
+          wt.path,
+          this.config.providers.claude.settingSources,
+        );
         const promptAppend = systemPromptAppendFor(
           isAisdk,
           mcpHandles.length > 0,
           wt.path,
-          this.repoRoot,
-          this.#instructionsDir(wt.path),
+          repoInstructions,
         );
         const instructions = {
           systemPromptAppend: promptAppend,
-          repoInstructions: repoInstructionsFor(this.#instructionsDir(wt.path), this.repoRoot),
+          repoInstructions,
           workspaceRoot: wt.path,
           ...this.#agentBase(newId, true),
         };
@@ -2279,12 +2304,16 @@ export class Daemon {
         const isClaude = isClaudeId(o.providerId);
         const isAisdk = aisdkProfile !== undefined;
         const agent = this.#agentPlan(id);
+        const repoInstructions = this.#repoInstructions(
+          o.providerId,
+          cwd,
+          this.config.providers.claude.settingSources,
+        );
         const promptAppend = systemPromptAppendFor(
           isAisdk,
           agent.mcpServers.length > 0,
           cwd,
-          this.repoRoot,
-          this.#instructionsDir(cwd),
+          repoInstructions,
         );
         const opts: CreateSessionOptions = {
           sessionId: id,
@@ -2299,7 +2328,7 @@ export class Daemon {
             ? {
                 loomServer: true,
                 systemPromptAppend: promptAppend,
-                repoInstructions: repoInstructionsFor(this.#instructionsDir(cwd), this.repoRoot),
+                repoInstructions,
                 workspaceRoot: cwd,
               }
             : {}),
@@ -2585,12 +2614,13 @@ export class Daemon {
     const mcpHandles = agent.mcpServers;
     const isClaude = isClaudeId(row.provider);
     const isAisdk = prof !== undefined;
+    // A resume passes Claude no settingSources: it loads every source.
+    const repoInstructions = this.#repoInstructions(row.provider, cwd, undefined);
     const promptAppend = systemPromptAppendFor(
       isAisdk,
       mcpHandles.length > 0,
       cwd,
-      this.repoRoot,
-      this.#instructionsDir(cwd),
+      repoInstructions,
     );
     const base = this.#agentBase(id, true);
     try {
@@ -2608,7 +2638,7 @@ export class Daemon {
         ...(isClaude || isAisdk
           ? {
               systemPromptAppend: promptAppend,
-              repoInstructions: repoInstructionsFor(this.#instructionsDir(cwd), this.repoRoot),
+              repoInstructions,
               workspaceRoot: cwd,
             }
           : {}),
@@ -3883,7 +3913,6 @@ export class Daemon {
       JSON.stringify(next.isolation) !== JSON.stringify(this.config.isolation) ||
       next.baseBranch !== before.baseBranch ||
       next.worktreeDir !== before.worktreeDir ||
-      next.db !== before.db ||
       JSON.stringify(next.mcp) !== JSON.stringify(before.mcp) ||
       JSON.stringify(next.httpMcp) !== JSON.stringify(before.httpMcp);
 
@@ -5134,8 +5163,7 @@ export class Daemon {
             true,
             mcpHandles.length > 0,
             cwd,
-            this.repoRoot,
-            this.#instructionsDir(cwd),
+            this.#repoInstructions(provider, cwd, undefined),
           ),
           model,
           ...(effort ? { effort } : {}),

@@ -6,7 +6,7 @@ import type { McpServerHandle } from "@loom/core/types";
  * and the tool steer pointing the model at whichever Loom tools are actually
  * mounted. Relocated (mostly verbatim) from
  * `backend/daemon/src/daemon/prompt.ts`, which still owns combining these with
- * a repo's `.loom/LOOM.md` and deciding what applies to which provider.
+ * the repository's AGENTS.md and deciding what applies to which provider.
  */
 
 /** Which of Loom's own tools are mounted for this session — drives which bullets `toolSteer` includes. */

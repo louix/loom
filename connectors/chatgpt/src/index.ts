@@ -53,12 +53,10 @@ export const subAgentInstructions = (agentTools: boolean): string =>
  * tools shaped differently than what's actually mounted here — recompute the
  * tool-steer for what's actually mounted instead of forwarding it verbatim.
  *
- * `repoInstructions` is the daemon's own pre-resolved `.loom/LOOM.md` text
- * (`repoInstructionsFor` in `backend/daemon/src/daemon/prompt.ts`, already
- * applying its `cwd`-then-`repoRoot` fallback) — this connector splices it
- * in rather than reading the file itself, since only the daemon knows the
- * repo root a worktree `cwd` falls back to. `workspaceRoot` is the directory
- * described to the model as "the workspace root" for tool-steer purposes;
+ * `repoInstructions` is the daemon's pre-resolved repository instructions
+ * (`repoInstructionsFor` in `backend/daemon/src/daemon/prompt.ts`); null for
+ * Codex today, which reads AGENTS.md itself. `workspaceRoot` is the
+ * directory described to the model as "the workspace root" for tool-steer purposes;
  * kept distinct from the provider's own `cwd` (where Codex's process and
  * sandbox actually run), even though the daemon passes the same value for
  * both today.

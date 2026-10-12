@@ -3,10 +3,9 @@ import { relaunchForIpc } from "@loom/core/network-permissions";
 import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
 import { writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { ensureLoomDir, findRepoRoot, loomPaths } from "@loom/core/paths";
+import { ensureLoomDirectories, findRepoRoot, loomPaths } from "@loom/core/paths";
 import { daemonEndpoint, showLegacyDaemonNotice } from "@loom/core/daemon-endpoint";
-import { setLogFile, setLogStderr } from "@loom/core/logger";
+import { setLogFile, setLogLevel, setLogStderr } from "@loom/core/logger";
 import { LoomClient, showConnectionError, type ConnectionError } from "@loom/client";
 import { cacheHitRate } from "@loom/core/cache";
 import { foldLoadable } from "@loom/core/loadable";
@@ -37,6 +36,7 @@ commands:
   runtime prepare|status|update|prune [runtime]  manage packaged VM and MCP runtimes
   vm                     prepare, inspect and manage VM lifecycles
   relink-provider <old> <new>  repoint sessions stuck on a renamed/removed provider id
+  repo move <old> <new>  carry Loom's state to a checkout's new path, after moving it
   ping                   round-trip latency to the daemon
   tail                   stream the live event feed (Ctrl-C to stop)
 
@@ -68,6 +68,15 @@ Run 'loom <command> --help' for detail on one command.`;
 /** Longer per-command help, shown by `loom <cmd> --help`. Commands not listed
  *  here fall back to the top-level HELP. */
 const USAGE: Record<string, string> = {
+  repo: `loom repo move <old> <new> [--json]  — after moving a checkout from <old> to <new>
+
+  Loom keeps a repository's state under keys derived from its path: the database,
+  logs and session hooks in $XDG_STATE_HOME/loom/repos/, the VM package cache in
+  $XDG_CACHE_HOME/loom/, session VM state and prepared environments. This moves
+  them to <new>'s keys, updates session paths that named <old>, repairs Git's
+  worktree links and repoints every session worktree's hooks. Stop the daemon
+  for both paths first. Session worktrees stay where they are.`,
+
   shell: `loom shell <id>  — open a shell in the session's environment
 
   Uses your shell locally, or a guest shell in the session's running VM.
@@ -260,6 +269,16 @@ const main = async (): Promise<void> => {
     return;
   }
   if (values.out !== undefined) throw new Error("--out applies only to loom config convert");
+  // Re-keys per-user state between two paths; refuses while a daemon runs for either.
+  if (cmd === "repo") {
+    if (positionals[1] !== "move" || positionals.length !== 4)
+      throw new Error("usage: loom repo move <old> <new>");
+    setLogLevel("warn");
+    const { moveRepository, showRepoMoveReport } = await import("./repo-move.ts");
+    const report = await moveRepository(positionals[2]!, positionals[3]!);
+    writeOut(values.json ? JSON.stringify(report, null, 2) + "\n" : showRepoMoveReport(report));
+    return;
+  }
 
   const isTty = Deno.stdout.isTerminal() && Deno.stdin.isTerminal();
   const wantTui = cmd === "tui" || (!cmd && isTty);
@@ -342,7 +361,7 @@ const main = async (): Promise<void> => {
     repoRoot,
     sockPath: endpoint.sock,
     daemonEntry: fileURLToPath(new URL("./loomd.ts", import.meta.url)),
-    startupLog: join(repoPaths.dir, "daemon-startup.log"),
+    startupLog: repoPaths.startupLog,
     reconnect,
     // A legacy daemon holds the repository; spawning would only race it.
     autospawn: cmd !== "stop" && !endpoint.legacy,
@@ -369,12 +388,12 @@ const main = async (): Promise<void> => {
     // below, which is the first thing to pull in React.
     if (!Deno.env.get("NODE_ENV")) Deno.env.set("NODE_ENV", "production");
 
-    // The TUI owns the screen, so its logs go to a file only — a fresh
-    // <repo>/.loom/tui.log per launch, in the daemon's own .loom/ so both logs
-    // sit together. Never stderr: a stray line would corrupt the frame.
+    // The TUI owns the screen, so its logs go to a file only — a fresh tui.log
+    // per launch, in the repository's state directory beside the daemon's log.
+    // Never stderr: a stray line would corrupt the frame.
     const logRoot = client.daemonInfo?.repoRoot ?? repoRoot;
     const paths = loomPaths(logRoot);
-    ensureLoomDir(paths);
+    ensureLoomDirectories(paths);
     try {
       writeFileSync(paths.tuiLog, "");
     } catch {

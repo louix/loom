@@ -175,7 +175,7 @@ export interface TuiState {
 
 export const initialState = (): TuiState => {
   return {
-    // The active theme — a theme restored from `.loom/tui.json` was applied
+    // The active theme — a theme restored from `tui.json` was applied
     // via `setThemeMode` before the handle built its initial state.
     sessionTab: "chat",
     theme: themeMode(),

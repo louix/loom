@@ -54,6 +54,12 @@ export const legacyDaemonPid = (paths: LoomPaths): number | null => {
     : null;
 };
 
+/** The pid of any daemon running for this repository, current or pre-XDG. */
+export const runningDaemonPid = (paths: LoomPaths): number | null => {
+  const current = pidfileOwner(paths.pid);
+  return current !== null && pidAlive(current) ? current : legacyDaemonPid(paths);
+};
+
 /**
  * The current daemon when one runs, else a pre-XDG daemon that still does, else
  * the current location for a new daemon. Clients never autospawn beside a legacy
@@ -67,5 +73,5 @@ export const daemonEndpoint = (paths: LoomPaths): DaemonEndpoint => {
 };
 
 export const showLegacyDaemonNotice = (paths: LoomPaths): string =>
-  `loom: a daemon from an older Loom version is still running from ${paths.dir}. ` +
-  `This client uses it; run \`loom stop\`, then start Loom again to move the repository's state to ${paths.runtime} and the XDG state directory.\n`;
+  `loom: a daemon from an older Loom version is still running from ${paths.legacy.dir}. ` +
+  `This client uses it; run \`loom stop\`, then start Loom again to move the repository's state to ${paths.state}.\n`;
