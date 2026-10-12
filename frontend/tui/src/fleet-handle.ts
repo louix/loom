@@ -74,7 +74,6 @@ import { cycleLogFilter, mkTranscript, transcriptText } from "./transcript.ts";
 import type { ChildrenOnClose } from "@loom/core/agents";
 import {
   agentsOf,
-  fleetAgentProfiles,
   fleetProviders,
   fleetSessions,
   defaultModelOf,
@@ -89,6 +88,7 @@ import {
   providerInfo,
   selectModel,
   startModelSelection,
+  startNewSessionPicker,
   type ModelSelection,
   reduce,
   selectedSession,
@@ -130,6 +130,7 @@ import {
   type Prompt,
   type NewSessionSettings,
   type PickerDest,
+  type PickerStep,
   type PlanReview,
   type RequestPromptKind,
   type SessionPromptKind,
@@ -155,7 +156,6 @@ import {
   startingForkOf,
 } from "./fork-flow.ts";
 import {
-  cycleProfile,
   cycleWorkspace,
   newBase,
   toggleBase,
@@ -510,7 +510,7 @@ const deriveView = (
       const width = isNew ? cols : eventsW;
       const originX = isNew || body.t === "sessionPane" ? 1 : leftW + 2;
       const padding = isNew ? 1 : 2;
-      const modal = isNew ? newSessionLayout(prompt, cols, rows) : null;
+      const modal = prompt.t === "new" ? newSessionLayout(state, prompt, cols, rows) : null;
       const x0 = modal?.modeX ?? originX + padding + [...prompt.label].length + 1;
       const chip = isNew ? modeChipText(prompt.settings.mode) : modeChipText(sel?.mode, mode);
       const y = modal?.modeY ?? 3 + detailH + splitLogH;
@@ -1438,19 +1438,6 @@ export const mkFleetHandle = ({
           prompt: newPrompt(newSettings(state, null, null, null), state.drafts.last),
         });
         return loadBases();
-      case "newProfile": {
-        const p = openPrompt(state.overlay);
-        if (p?.t !== "new") return;
-        return showNewStep(
-          p,
-          cycleProfile(
-            fleetAgentProfiles(state),
-            fleetProviders(state),
-            p.settings,
-            newSettings(state, null, null, null),
-          ),
-        );
-      }
       case "newWorkspace": {
         const p = openPrompt(state.overlay);
         if (p?.t !== "new") return;
@@ -1769,7 +1756,11 @@ export const mkFleetHandle = ({
    * switch on an existing session, or folding the choice into the `new`-session
    * prompt waiting behind it.
    */
-  const finalizeModelChoice = (dest: PickerDest, selection: ModelSelection): void => {
+  const finalizeModelChoice = (
+    dest: PickerDest,
+    selection: ModelSelection,
+    from: PickerStep,
+  ): void => {
     const { provider, effort } = selection;
     const model = selection.model ?? "";
     // A fork stages its handoff model and effort, then picks a workspace.
@@ -1782,19 +1773,25 @@ export const mkFleetHandle = ({
           effort,
         }),
       );
-    if (dest.t === "newSession")
+    if (dest.t === "newSession") {
+      // Where it runs stays. A provider picked from the list replaces any
+      // profile; `⌥m` / `⌥t` only adjust the one chosen.
+      const { isolation, workspace, base, profile } = dest.settings;
       return show({
         t: "prompt",
         prompt: newPrompt(
           {
             ...newSettings(state, provider, selection.model, effort),
             mode: dest.settings.mode,
-            ...(dest.settings.isolation ? { isolation: dest.settings.isolation } : {}),
-            ...(dest.settings.workspace ? { workspace: dest.settings.workspace } : {}),
+            ...(isolation ? { isolation } : {}),
+            ...(workspace ? { workspace } : {}),
+            ...(base ? { base } : {}),
+            ...(profile !== undefined && from !== "provider" ? { profile } : {}),
           },
           dest.draft,
         ),
       });
+    }
     if (dest.t === "planImpl")
       return show({
         t: "plan",
@@ -1895,7 +1892,7 @@ export const mkFleetHandle = ({
         case "show":
           return show(result.overlay);
         case "selected":
-          return finalizeModelChoice(result.dest, result.selection);
+          return finalizeModelChoice(result.dest, result.selection, p.from);
         default:
           return absurd(result);
       }
@@ -1933,12 +1930,6 @@ export const mkFleetHandle = ({
       default:
         return absurd(p.step);
     }
-  };
-
-  /** `⌃P` in the new-session prompt: pick the provider (skipped when there's
-   *  only one), then the model, then land back on the prompt. */
-  const pickProviderModel = (settings: NewSessionSettings, draft: string): void => {
-    show(startModelSelection(state, { t: "newSession", settings, draft }, settings));
   };
 
   // The live switchers below open their pickers unconditionally: whether the
@@ -2690,7 +2681,8 @@ export const mkFleetHandle = ({
         return;
       }
       if (key.meta && input === "p") {
-        if (p.t === "new") return void pickProviderModel(p.settings, p.buffer.text);
+        if (p.t === "new")
+          return void show(startNewSessionPicker(state, p.settings, p.buffer.text));
         return;
       }
       // ⌥q (the composer's `enqueueEndOfTurn`, above) queues for turn end —

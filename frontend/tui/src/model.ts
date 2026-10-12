@@ -27,6 +27,7 @@ import { buffer, type Buffer } from "./editor.ts";
 import {
   browse,
   makePicker,
+  newPrompt,
   openPrompt,
   pickerCurrent,
   pickerVisible,
@@ -41,6 +42,7 @@ import {
   type Prompt,
 } from "./overlay.ts";
 import { nextMode } from "./mode-control.ts";
+import { applyProfile, profileBlocked } from "./new-workspace.ts";
 import type { QNav } from "./interactions.ts";
 import { noDrafts, recalled, recorded, type Drafts } from "./composer.ts";
 import type { QueueEntryView } from "@loom/core/message-queue";
@@ -91,7 +93,7 @@ export const fleetSessions = (s: Pick<TuiState, "fleet">): SessionSnapshot[] =>
 export const fleetProviders = (s: Pick<TuiState, "fleet">): ProviderInfo[] =>
   s.fleet.tag === "data" ? s.fleet.value.providers : [];
 
-/** The configured agent profiles, for the new-session prompt's `⌥a`. */
+/** The agent profiles this repository offers, for the new-session `⌥p` list. */
 export const fleetAgentProfiles = (s: Pick<TuiState, "fleet">): AgentProfileInfo[] =>
   s.fleet.tag === "data" ? (s.fleet.value.agentProfiles ?? []) : [];
 
@@ -961,6 +963,49 @@ export const providerPickItems = (s: TuiState): PickItem[] => {
   }));
 };
 
+/** The heading over the providers in the new-session `⌥p` list, and the one
+ *  over the agent profiles under them. */
+export const PROVIDERS_SECTION = "providers";
+export const PROFILES_SECTION = "agent profiles";
+
+/** The picker id of a profile row: apart from every provider id. */
+export const profileItemId = (name: string): string => `profile:${name}`;
+
+/**
+ * The new-session `⌥p` list: the providers, then the agent profiles this
+ * repository offers, each under its heading. A profile row says what it sets;
+ * one on a provider this daemon lacks stays listed and says why it cannot be
+ * picked. With no profiles it is the plain provider list.
+ */
+export const newSessionPickItems = (s: TuiState): PickItem[] => {
+  const profiles = fleetAgentProfiles(s);
+  if (profiles.length === 0) return providerPickItems(s);
+  const providers = fleetProviders(s);
+  return [
+    ...providerPickItems(s).map((it) => ({ ...it, section: PROVIDERS_SECTION })),
+    ...profiles.map((p): PickItem => {
+      const blocked = profileBlocked(p, providers);
+      const target = [p.provider ? (providerInfo(s, p.provider)?.tag ?? p.provider) : "", p.model]
+        .filter(Boolean)
+        .join(" / ");
+      const hint = [p.description, target, p.effort, p.mode].filter(Boolean).join(" · ");
+      return {
+        id: profileItemId(p.name),
+        label: p.name,
+        section: PROFILES_SECTION,
+        profile: p.name,
+        blob: hint,
+        ...(hint ? { hint } : {}),
+        ...(blocked ? { disabled: blocked } : {}),
+      };
+    }),
+  ];
+};
+
+/** The provider step's rows for `dest`: the new session's carry the profiles. */
+const providerStepItems = (s: TuiState, dest: PickerDest): PickItem[] =>
+  dest.t === "newSession" ? newSessionPickItems(s) : providerPickItems(s);
+
 /**
  * The model rows every selector shows for `providerId` — new session, live
  * switch and plan retarget alike — straight from that provider's catalogue:
@@ -1048,7 +1093,7 @@ export const rederiveOpenPicker = (s: TuiState): Overlay => {
   const items =
     p.step === "model"
       ? modelPickItems(s, providerId, keptModel(s, p.dest, providerId))
-      : providerPickItems(s);
+      : providerStepItems(s, p.dest);
   const cur = pickerCurrent(p)?.id;
   const at = cur ? items.findIndex((it) => it.id === cur) : -1;
   // The list loaded — the empty-state note is dead.
@@ -1104,7 +1149,7 @@ const stepItems = (
   chosen: { provider: string | null; model: string | null },
   dest: PickerDest,
 ): PickItem[] => {
-  if (step === "provider") return providerPickItems(s);
+  if (step === "provider") return providerStepItems(s, dest);
   if (step === "model")
     return modelPickItems(s, chosen.provider ?? "", keptModel(s, dest, chosen.provider ?? ""));
   return effortPickItems(s, chosen.provider ?? "", chosen.model ?? "");
@@ -1136,13 +1181,17 @@ export const pickerStep = (
   // review rather than switching anything live.
   const lead = { planImpl: "retarget · ", fork: "fork · " }[o.dest.t as string] ?? "";
   const items = stepItems(s, step, o.chosen, o.dest);
+  const withProfiles = items.some((it) => it.profile !== undefined);
   const note = step === "model" ? modelPickNote(s, pid) : undefined;
   const at = o.pick ? items.findIndex((it) => it.id === o.pick) : -1;
   return {
     t: "picker",
     picker: makePicker({
       step,
-      title: step === "provider" ? `${lead}provider` : `${lead}${step} · ${tag}`,
+      title:
+        step === "provider"
+          ? `${lead}provider${withProfiles ? " or agent profile" : ""}`
+          : `${lead}${step} · ${tag}`,
       items,
       dest: o.dest,
       chosen: o.chosen,
@@ -1165,6 +1214,20 @@ export const pickerStep = (
  * the `new` prompt with its settings, or the fleet.
  */
 export const escapePicker = (p: Picker, s: TuiState): Overlay => {
+  // A new session's single-model provider had no model step: back to the list.
+  if (
+    p.step === "effort" &&
+    p.from === "provider" &&
+    p.dest.t === "newSession" &&
+    onlyModel(s, p.chosen.provider ?? "") !== null
+  ) {
+    return pickerStep(s, "provider", {
+      dest: p.dest,
+      chosen: { provider: null, model: null },
+      from: p.from,
+      pick: p.chosen.provider,
+    });
+  }
   if (p.step === "effort" && p.from !== "effort") {
     return pickerStep(s, "model", {
       dest: p.dest,
@@ -1194,11 +1257,29 @@ export type ModelSelectionStep =
   | { tag: "show"; overlay: Overlay }
   | { tag: "selected"; dest: PickerDest; selection: ModelSelection };
 
+/** The one model `providerId`'s catalogue lists, when it lists exactly one —
+ *  a new session picking that provider has no model to choose. */
+const onlyModel = (s: TuiState, providerId: string): string | null => {
+  const models = modelPickItems(s, providerId);
+  return models.length === 1 ? models[0]!.id : null;
+};
+
 export const selectModel = (s: TuiState, p: Picker): ModelSelectionStep => {
   const item = pickerCurrent(p);
+  const show = (overlay: Overlay): ModelSelectionStep => ({ tag: "show", overlay });
+  // A row that says why it cannot be picked stays put, saying so.
+  if (item?.disabled) return show({ t: "picker", picker: p });
+  // An agent profile, from the new session's list: applied whole, and done.
+  if (item?.profile !== undefined && p.dest.t === "newSession") {
+    const profile = fleetAgentProfiles(s).find((x) => x.name === item.profile);
+    const step = profile
+      ? applyProfile(profile, fleetProviders(s), p.dest.settings, newSettings(s, null, null, null))
+      : null;
+    if (!step || "disabled" in step) return show(unwind({ t: "picker", picker: p }));
+    return show({ t: "prompt", prompt: newPrompt(step.settings, p.dest.draft) });
+  }
   const provider = p.step === "provider" && item ? item.id : p.chosen.provider;
   const model = p.step === "model" && item ? item.id : p.chosen.model;
-  const show = (overlay: Overlay): ModelSelectionStep => ({ tag: "show", overlay });
   if (!item && (provider === null || (p.dest.t === "session" && p.step !== "effort")))
     return show(unwind({ t: "picker", picker: p }));
   const next = (step: WizardStep) =>
@@ -1209,6 +1290,21 @@ export const selectModel = (s: TuiState, p: Picker): ModelSelectionStep => {
         from: p.from,
       }),
     );
+  // A new session on a provider with one model goes straight to its effort.
+  const fresh = p.dest.t === "newSession" ? p.dest.settings : null;
+  const only = fresh ? onlyModel(s, provider ?? "") : null;
+  if (item && p.step === "provider" && only !== null) {
+    if (modelSupportsEffort(s, provider ?? "", only))
+      return show(
+        pickerStep(s, "effort", {
+          dest: p.dest,
+          chosen: { provider, model: only },
+          from: p.from,
+          pick: fresh?.provider === provider ? fresh.effort : null,
+        }),
+      );
+    return { tag: "selected", dest: p.dest, selection: { provider, model: only, effort: null } };
+  }
   if (item && p.step === "provider") return next("model");
   if (item && p.step === "model" && modelSupportsEffort(s, provider ?? "claude", model!))
     return next("effort");
@@ -1246,6 +1342,26 @@ export const startModelSelection = (
     pick: { provider: current.provider, model: current.model, effort: current.effort ?? null }[
       step
     ],
+  });
+};
+
+/**
+ * `⌥p` in the new-session prompt: the providers and, under them, the agent
+ * profiles, with the current choice highlighted. With no profiles it is the
+ * ordinary provider → model → effort wizard (which skips a lone provider).
+ */
+export const startNewSessionPicker = (
+  s: TuiState,
+  settings: NewSessionSettings,
+  draft: string,
+): Overlay => {
+  const dest: PickerDest = { t: "newSession", settings, draft };
+  if (fleetAgentProfiles(s).length === 0) return startModelSelection(s, dest, settings);
+  return pickerStep(s, "provider", {
+    dest,
+    from: "provider",
+    chosen: { provider: null, model: null },
+    pick: settings.profile !== undefined ? profileItemId(settings.profile) : settings.provider,
   });
 };
 

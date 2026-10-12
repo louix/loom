@@ -1,7 +1,7 @@
 /**
- * Loom agents in the TUI (docs/loom-agents.md): the new-session prompt's
- * profile toggle, agents nested under their supervisor in the fleet with full
- * session controls, the supervisor's summary and combined cost, and the
+ * Loom agents in the TUI (docs/loom-agents.md): the agent profiles in the
+ * new-session prompt's ⌥p list, agents nested under their supervisor in the
+ * fleet with full session controls, the supervisor's summary and combined cost, and the
  * archive / delete choice for its agents.
  */
 import { fleet, snap } from "./tui-fixtures.ts";
@@ -13,7 +13,7 @@ import { renderToString } from "ink";
 import { loadableLoaded } from "@loom/core/loadable";
 import type { AgentProfileInfo } from "@loom/core/agents";
 import type { ProviderInfo, SessionSnapshot } from "@loom/core/wire";
-import { describeCommand, describeCommands, footerHints } from "@loom/tui/commands";
+import { describeCommands, footerHints } from "@loom/tui/commands";
 import {
   agentSummary,
   fleetEntries,
@@ -28,7 +28,7 @@ import {
   type TuiState,
 } from "@loom/tui/model";
 import { newPrompt, openPrompt } from "@loom/tui/overlay";
-import { cycleProfile } from "@loom/tui/new-workspace";
+import { applyProfile, profileBlocked } from "@loom/tui/new-workspace";
 import { fleetPaneView } from "@loom/tui/views";
 import { Fleet } from "@loom/tui/components";
 import { entryAuthor } from "@loom/tui/queue-view";
@@ -61,63 +61,56 @@ const withFleet = (
   } as Action);
 };
 
-test("⌥a cycles the new session's profile, setting what it names, and back to none", () => {
+test("a profile from ⌥p sets what it names, follows the provider otherwise, and replaces another", () => {
   const state = withFleet([]);
+  const providers = [provider("claude"), provider("codex")];
   const defaults = newSettings(state, null, null, null);
   const s0 = { ...defaults, isolation: "vm" as const, workspace: "worktree" as const };
-  const first = cycleProfile(PROFILES, [provider("claude"), provider("codex")], s0, defaults);
+  const [implementer, reviewer, elsewhere] = PROFILES as [
+    AgentProfileInfo,
+    AgentProfileInfo,
+    AgentProfileInfo,
+  ];
+  const first = applyProfile(implementer, providers, s0, defaults);
   assert.ok("settings" in first);
   assert.equal(first.settings.profile, "implementer");
   assert.equal(first.settings.provider, "codex");
   assert.equal(first.settings.model, "codex-m2");
   assert.equal(first.settings.mode, "auto");
   assert.equal(first.settings.isolation, "vm", "where it runs stays");
-  assert.equal(first.note, "implementer: Cheap");
-  const second = cycleProfile(
-    PROFILES,
-    [provider("claude"), provider("codex")],
-    first.settings,
-    defaults,
-  );
+
+  // A profile without a provider follows the prompt's — today's, not the
+  // replaced profile's, whose model and mode go with it.
+  const second = applyProfile(reviewer, providers, first.settings, defaults);
   assert.ok("settings" in second);
   assert.equal(second.settings.profile, "reviewer");
-  assert.equal(
-    second.settings.provider,
-    "codex",
-    "a profile without a provider keeps the prompt's",
-  );
+  assert.equal(second.settings.provider, defaults.provider);
+  assert.equal(second.settings.model, defaults.model);
+  assert.equal(second.settings.mode, defaults.mode);
   assert.equal(second.settings.effort, "high");
-  // The third runs on a provider this daemon lacks: passed over, back to none.
-  const none = cycleProfile(
-    PROFILES,
-    [provider("claude"), provider("codex")],
-    second.settings,
+  // On a provider the user picked first, it keeps that provider.
+  const picked = applyProfile(
+    reviewer,
+    providers,
+    { ...s0, provider: "codex", model: null },
     defaults,
   );
-  assert.ok("settings" in none);
-  assert.equal(none.settings.profile, undefined);
-  assert.equal(none.settings.provider, defaults.provider);
-  assert.equal(none.settings.mode, defaults.mode);
-  assert.match(none.note!, /elsewhere runs on gemini, which is not available\. No profile/);
-  assert.deepEqual(cycleProfile([], [], s0, defaults), {
-    disabled: "No agent profiles are available in this repository (agents.profiles).",
-  });
+  assert.ok("settings" in picked);
+  assert.equal(picked.settings.provider, "codex");
 
-  // The prompt's own command, under ⌥a, says where the next press goes.
+  // One on a provider this daemon lacks is listed but cannot be chosen.
+  assert.equal(profileBlocked(elsewhere, providers), "runs on gemini, which is not available");
+  assert.deepEqual(applyProfile(elsewhere, providers, s0, defaults), {
+    disabled: "elsewhere runs on gemini, which is not available.",
+  });
+  // ⌥a is gone from the new prompt: profiles are picked with the providers.
   const prompted = reduce(state, {
     t: "overlay",
     overlay: { t: "prompt", prompt: newPrompt(defaults, "") },
   });
-  const action = describeCommand(prompted, "newProfile", null, "newSession");
-  assert.equal(action?.keys, "⌥a");
-  assert.equal(action?.label, "profile → implementer");
-  const bare = reduce(withFleet([], []), {
-    t: "overlay",
-    overlay: { t: "prompt", prompt: newPrompt(defaults, "") },
-  });
-  assert.match(
-    describeCommand(bare, "newProfile", null, "newSession")?.disabled ?? "",
-    /No agent profiles/,
+  assert.deepEqual(
+    describeCommands(prompted, { target: null, surface: "newSession" }).map((a) => a.keys),
+    ["⌥w", "⌥b"],
   );
   assert.equal(openPrompt(prompted.overlay)?.t, "new");
 });

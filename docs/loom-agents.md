@@ -61,8 +61,8 @@ and MCP servers:
 Fields: `description` (what other agents read when choosing), provider/profile,
 model, effort, mode, enabled MCP servers and skills, tool allow/deny lists, and
 an inline `prompt` appended to the agent's own. A separate prompt file may come
-later. The new-session prompt gets a profile toggle; no profile means today's
-settings.
+later. The new-session prompt lists the profiles under the providers (`⌥p`);
+no profile means today's settings.
 
 A built-in `self` profile is always offered: the spawning session's own
 provider, model, effort and mode, with no extra prompt. It is what a session
@@ -72,7 +72,7 @@ A profile is available in a repository only when `session.provider_access`
 there allows its provider — its own, or the spawner's when it names none. A
 global profile on a provider a repository does not allow is simply absent
 there: `agents_profiles` does not list it, `agent_start` refuses it, the
-new-session toggle does not offer it, and it is not checked against that
+new-session `⌥p` list does not offer it, and it is not checked against that
 provider. A profile in a repository's own `repos[]` entry that names a
 provider the same repository disables contradicts itself and is a config
 error. `self` is always available.
@@ -273,7 +273,7 @@ messages, interrupts and outcomes are ordinary session events.
 ## Stages
 
 1. Native sub-agents disabled for all sessions; profiles in config with the
-   built-in `self`; profile toggle in the new-session prompt; `supervisor_id`,
+   built-in `self`; profiles in the new-session prompt's `⌥p` list; `supervisor_id`,
    depth limit and nested fleet; `agents_profiles`, `agent_start`,
    `agent_message`, `agent_status`, `agent_read`, `agent_interrupt`,
    `agent_stop`; supervisor notifications; lifecycle defaults. Children of

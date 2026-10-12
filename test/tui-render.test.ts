@@ -34,6 +34,7 @@ import {
   Detail,
   FooterArea,
   NewSessionModal,
+  Picker,
   PromptPane,
   promptPaneRows,
   promptRows,
@@ -3817,7 +3818,7 @@ test("⌥w cycles the new session's workspace, shows it, and sends it", () => {
     handle.handleKey("n", {} as Key);
     handle.handleKey("draft", {} as Key);
     assert.equal(newPromptOf(handle).settings.workspace, undefined);
-    assert.match(newModalText(handle), /\[Local · worktree\][^\n]*⌥i ⌥w ⌥b change/);
+    assert.match(newModalText(handle), /isolation: none ⌥i change {3}dir: worktree ⌥w change/);
 
     // A clone runs only in a VM: choosing one brings VM isolation, and says so.
     handle.handleKey("w", { meta: true } as Key);
@@ -3826,13 +3827,13 @@ test("⌥w cycles the new session's workspace, shows it, and sends it", () => {
     assert.equal(p.settings.isolation, "vm");
     assert.match(p.feedback?.text ?? "", /isolation is now VM/);
     assert.equal(p.buffer.text, "draft");
-    assert.match(newModalText(handle), /\[VM · clone\]/);
+    assert.match(newModalText(handle), /isolation: vm ⌥i change {3}dir: clone ⌥w change/);
 
     handle.handleKey("w", { meta: true } as Key);
     p = newPromptOf(handle);
     assert.equal(p.settings.workspace, "in-place");
     assert.equal(p.feedback, undefined);
-    assert.match(newModalText(handle), /\[VM · in-place\]/);
+    assert.match(newModalText(handle), /isolation: vm ⌥i change {3}dir: in-place ⌥w change/);
 
     handle.handleKey("w", { meta: true } as Key);
     assert.equal(newPromptOf(handle).settings.workspace, "worktree");
@@ -3868,11 +3869,11 @@ test("the new prompt shows the daemon's default workspace and sends none unless 
       }),
     );
     handle.handleKey("n", {} as Key);
-    assert.match(newModalText(handle), /\[VM · clone\]/);
+    assert.match(newModalText(handle), /isolation: vm ⌥i change {3}dir: clone ⌥w change/);
     // The default follows the isolation; nothing explicit is recorded.
     handle.handleKey("i", { meta: true } as Key);
     assert.equal(newPromptOf(handle).settings.workspace, undefined);
-    assert.match(newModalText(handle), /\[Local · in-place\]/);
+    assert.match(newModalText(handle), /isolation: none ⌥i change {3}dir: in-place ⌥w change/);
     handle.handleKey("go", {} as Key);
     handle.handleKey("", { return: true } as Key);
     const sent = fake.of("session.create")[0]?.params;
@@ -3938,7 +3939,7 @@ test("⌥w says an older daemon cannot take a workspace choice", () => {
     const p = newPromptOf(handle);
     assert.equal(p.settings.workspace, undefined);
     assert.match(p.feedback?.text ?? "", /cannot choose a workspace/);
-    assert.match(newModalText(handle), /\[Local · worktree\]/);
+    assert.match(newModalText(handle), /isolation: none ⌥i change {3}dir: worktree ⌥w change/);
   } finally {
     teardown();
   }
@@ -3966,7 +3967,7 @@ test("⌥b switches the new session between the checked-out branch and the defau
     fake.deliver(workspaceFleet());
     handle.handleKey("n", {} as Key);
     // Before the daemon answers, nothing is claimed and nothing is sent.
-    assert.doesNotMatch(newModalText(handle), /from /);
+    assert.match(newModalText(handle), /base: reading… ⌥b change/);
     assert.equal(
       describeCommand(handle.getView().ui, "newBase", null, "newSession")?.disabled,
       "Still reading the repository's branches.",
@@ -3977,19 +3978,16 @@ test("⌥b switches the new session between the checked-out branch and the defau
       current: { ref: "feature-x", detached: false },
       default: { ref: "main" },
     });
-    assert.match(
-      newModalText(handle),
-      /\[Local · worktree · from feature-x\] {2}⇧⇥ mode · ⌥i ⌥w ⌥b change/,
-    );
+    assert.match(newModalText(handle), /\n *│ *base: feature-x ⌥b change *│/);
     assert.equal(
       describeCommand(handle.getView().ui, "newBase", null, "newSession")?.label,
       "base → main",
     );
     handle.handleKey("b", { meta: true } as Key);
     assert.equal(newPromptOf(handle).settings.base, "default");
-    assert.match(newModalText(handle), /from main\]/);
+    assert.match(newModalText(handle), /base: main ⌥b change/);
     handle.handleKey("b", { meta: true } as Key);
-    assert.match(newModalText(handle), /from feature-x\]/);
+    assert.match(newModalText(handle), /base: feature-x ⌥b change/);
     handle.handleKey("b", { meta: true } as Key);
     handle.handleKey("go", {} as Key);
     handle.handleKey("", { return: true } as Key);
@@ -4010,7 +4008,7 @@ test("⌥b keeps a detached commit whole and says when there is nothing to switc
       current: { ref: sha, detached: true },
       default: { ref: "trunk", unavailableReason: 'The default branch "trunk" does not exist.' },
     });
-    assert.match(newModalText(handle), /from detached 1a2b3c4\]/);
+    assert.match(newModalText(handle), /base: detached 1a2b3c4 ⌥b change/);
     handle.handleKey("b", { meta: true } as Key);
     let p = newPromptOf(handle);
     assert.equal(p.settings.base, undefined);
@@ -4043,12 +4041,366 @@ test("⌥b tells an older daemon apart and leaves the base to it", async () => {
       code: "method_not_found",
       message: "unknown method: session.baseChoices",
     });
-    assert.doesNotMatch(newModalText(handle), /from /);
+    assert.match(newModalText(handle), /base: daemon default ⌥b change/);
     handle.handleKey("b", { meta: true } as Key);
     assert.match(newPromptOf(handle).feedback?.text ?? "", /cannot choose a base/);
     handle.handleKey("go", {} as Key);
     handle.handleKey("", { return: true } as Key);
     assert.equal(fake.of("session.create")[0]?.params["base"], undefined);
+  } finally {
+    teardown();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// the new-session ⌥p list: providers, then agent profiles
+// ---------------------------------------------------------------------------
+
+const launchProvider = (id: string, tag: string, over: Partial<ProviderInfo>): ProviderInfo => ({
+  id,
+  models: [],
+  defaultModel: "",
+  defaultEffort: "",
+  defaultMode: "default",
+  defaultIsolation: "local",
+  defaultWorkspace: { local: "worktree", vm: "worktree" },
+  tag,
+  color: "",
+  isDefault: false,
+  ...over,
+});
+
+/** Three providers — two models with an effort on one, one model with an
+ *  effort, one model without — and three profiles, one on a missing provider. */
+const launchFleet = (): ClientState =>
+  loadableLoaded({
+    daemon: testDaemon,
+    sessions: [],
+    providers: [
+      launchProvider("claude:personal", "claude personal", {
+        models: ["claude-opus-5-5", "claude-haiku-4-5-20251001"],
+        modelChoices: [
+          {
+            id: "claude-opus-5-5",
+            label: "Opus 5.5",
+            supportsEffort: true,
+            effortLevels: ["low", "medium", "high"],
+          },
+          { id: "claude-haiku-4-5-20251001", label: "Haiku 4.5" },
+        ],
+        defaultModel: "claude-haiku-4-5-20251001",
+        isDefault: true,
+      }),
+      launchProvider("solo", "solo", {
+        models: ["solo-1"],
+        modelChoices: [
+          { id: "solo-1", label: "Solo 1", supportsEffort: true, effortLevels: ["low", "high"] },
+        ],
+        defaultModel: "solo-1",
+      }),
+      launchProvider("plain", "plain", { models: ["plain-1"], defaultModel: "plain-1" }),
+    ],
+    agentProfiles: [
+      {
+        name: "opus",
+        description: "Careful",
+        provider: "claude:personal",
+        model: "claude-opus-5-5",
+        effort: "high",
+        mode: "auto",
+      },
+      { name: "away", description: "Elsewhere", provider: "gemini" },
+      { name: "reviewer", description: "Sceptical", mode: "plan" },
+    ],
+  });
+
+const pickerOf = (handle: FleetHandle) => {
+  const o = handle.getView().ui.overlay;
+  assert.equal(o.t, "picker", "a picker is open");
+  return (o as Extract<typeof o, { t: "picker" }>).picker;
+};
+
+/** Highlight the row `id` of the open picker and press ⏎. */
+const pickRow = (handle: FleetHandle, id: string): void => {
+  const p = pickerOf(handle);
+  const at = p.items.findIndex((it) => it.id === id);
+  assert.ok(at >= 0, `${id} is listed`);
+  const delta = at - p.index;
+  for (let i = 0; i < Math.abs(delta); i++)
+    handle.handleKey("", (delta > 0 ? { downArrow: true } : { upArrow: true }) as unknown as Key);
+  assert.equal(pickerCurrent(pickerOf(handle))?.id, id);
+  handle.handleKey("", { return: true } as Key);
+};
+
+const pickerText = (handle: FleetHandle): string =>
+  stripVTControlCharacters(
+    renderToString(createElement(Picker, { picker: pickerOf(handle), width: 96, height: 24 }), {
+      columns: 96,
+    }),
+  );
+
+const openLaunch = (fake: ReturnType<typeof mkFakeClient>, handle: FleetHandle): void => {
+  fake.deliver(launchFleet());
+  handle.handleKey("n", {} as Key);
+  handle.handleKey("draft", {} as Key);
+};
+
+test("the new prompt reads as provider / model and mode, then where it runs and its base", async () => {
+  const fake = mkFakeClient();
+  const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+  const teardown = handle.effectStart();
+  try {
+    fake.deliver(launchFleet());
+    await openNewWithBases(fake, handle, {
+      current: { ref: "feature-x", detached: false },
+      default: { ref: "main" },
+    });
+    const rows = newModalText(handle)
+      .split("\n")
+      .map((l) => l.replace(/^[^│]*│ */, "").replace(/ *│[^│]*$/, ""));
+    const at = rows.findIndex((l) => l.startsWith("claude personal"));
+    assert.deepEqual(rows.slice(at, at + 4), [
+      "claude personal / claude-haiku-4-5-20251001  ⌥p change  [manual] ⇧⇥ change",
+      "",
+      "isolation: none ⌥i change   dir: worktree ⌥w change",
+      "base: feature-x ⌥b change",
+    ]);
+    assert.doesNotMatch(newModalText(handle), /⌥a/);
+  } finally {
+    teardown();
+  }
+});
+
+test("⌥p lists providers, then agent profiles; a profile applies whole and closes", () => {
+  const fake = mkFakeClient();
+  const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+  const teardown = handle.effectStart();
+  try {
+    openLaunch(fake, handle);
+    handle.handleKey("p", { meta: true } as Key);
+    const p = pickerOf(handle);
+    assert.equal(p.title, "provider or agent profile");
+    assert.deepEqual(
+      p.items.map((it) => [it.id, it.section, it.disabled]),
+      [
+        ["claude:personal", "providers", undefined],
+        ["solo", "providers", undefined],
+        ["plain", "providers", undefined],
+        ["profile:opus", "agent profiles", undefined],
+        ["profile:away", "agent profiles", "runs on gemini, which is not available"],
+        ["profile:reviewer", "agent profiles", undefined],
+      ],
+    );
+    // The current provider is highlighted; each group sits under its heading.
+    assert.equal(pickerCurrent(p)?.id, "claude:personal");
+    const frame = pickerText(handle);
+    assert.match(frame, /── providers ─+[\s\S]*claude personal[\s\S]*── agent profiles ─+/);
+    assert.match(frame, /opus\s+Careful · claude personal \/ claude-opus-5-5 · high · auto/);
+
+    pickRow(handle, "profile:opus");
+    const q = newPromptOf(handle);
+    assert.equal(q.buffer.text, "draft");
+    assert.deepEqual(
+      [
+        q.settings.profile,
+        q.settings.provider,
+        q.settings.model,
+        q.settings.effort,
+        q.settings.mode,
+      ],
+      ["opus", "claude:personal", "claude-opus-5-5", "high", "auto"],
+    );
+    assert.match(
+      newModalText(handle),
+      /opus · claude personal \/ claude-opus-5-5 · high {2}⌥p ⌥t change {2}\[auto\] ⇧⇥ change/,
+    );
+
+    // Reopened, the profile is the highlighted row. `⌥m` adjusts its model
+    // and keeps it.
+    handle.handleKey("p", { meta: true } as Key);
+    assert.equal(pickerCurrent(pickerOf(handle))?.id, "profile:opus");
+    handle.handleKey("", { escape: true } as Key);
+    handle.handleKey("m", { meta: true } as Key);
+    pickRow(handle, "claude-haiku-4-5-20251001");
+    assert.equal(newPromptOf(handle).settings.profile, "opus");
+    assert.equal(newPromptOf(handle).settings.model, "claude-haiku-4-5-20251001");
+
+    handle.handleKey("", { return: true } as Key);
+    const sent = fake.of("session.create")[0]?.params;
+    assert.equal(sent?.["profile"], "opus");
+    assert.equal(sent?.["provider"], "claude:personal");
+    assert.equal(sent?.["model"], "claude-haiku-4-5-20251001");
+    assert.equal(sent?.["mode"], "auto");
+  } finally {
+    teardown();
+  }
+});
+
+test("⌥p: a profile that cannot run here stays listed, says why, and does nothing", () => {
+  const fake = mkFakeClient();
+  const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+  const teardown = handle.effectStart();
+  try {
+    openLaunch(fake, handle);
+    handle.handleKey("p", { meta: true } as Key);
+    pickRow(handle, "profile:away");
+    assert.equal(pickerCurrent(pickerOf(handle))?.id, "profile:away", "still open on it");
+    assert.match(pickerText(handle), /runs on gemini, which is not available/);
+    // Esc steps back out to the prompt, untouched.
+    handle.handleKey("", { escape: true } as Key);
+    const q = newPromptOf(handle);
+    assert.equal(q.settings.profile, undefined);
+    assert.equal(q.settings.provider, "claude:personal");
+    assert.equal(q.buffer.text, "draft");
+  } finally {
+    teardown();
+  }
+});
+
+test("⌥p: a provider with one model and no effort is chosen at once, replacing a profile", async () => {
+  const fake = mkFakeClient();
+  const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+  const teardown = handle.effectStart();
+  try {
+    fake.deliver(launchFleet());
+    await openNewWithBases(fake, handle, {
+      current: { ref: "feature-x", detached: false },
+      default: { ref: "main" },
+    });
+    handle.handleKey("b", { meta: true } as Key);
+    handle.handleKey("w", { meta: true } as Key);
+    handle.handleKey("p", { meta: true } as Key);
+    pickRow(handle, "profile:reviewer");
+    assert.equal(newPromptOf(handle).settings.mode, "plan");
+    handle.handleKey("p", { meta: true } as Key);
+    pickRow(handle, "plain");
+    const q = newPromptOf(handle);
+    assert.equal(q.settings.profile, undefined, "a provider replaces the profile");
+    assert.deepEqual(
+      [q.settings.provider, q.settings.model, q.settings.effort],
+      ["plain", "plain-1", null],
+    );
+    // Where it runs, its base and its mode stay.
+    assert.equal(q.settings.workspace, "clone");
+    assert.equal(q.settings.base, "default");
+    assert.equal(q.settings.mode, "plan");
+    handle.handleKey("go", {} as Key);
+    handle.handleKey("", { return: true } as Key);
+    const sent = fake.of("session.create")[0]?.params;
+    assert.equal(sent?.["provider"], "plain");
+    assert.equal(sent?.["model"], "plain-1");
+    assert.equal(sent?.["effort"], undefined);
+    assert.equal(sent?.["profile"], undefined);
+    assert.equal(sent?.["base"], "main");
+    assert.equal(sent?.["workspace"], "clone");
+  } finally {
+    teardown();
+  }
+});
+
+test("⌥p: a provider with one model that takes an effort asks for it; Esc steps back to the list", () => {
+  const fake = mkFakeClient();
+  const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+  const teardown = handle.effectStart();
+  try {
+    openLaunch(fake, handle);
+    handle.handleKey("p", { meta: true } as Key);
+    pickRow(handle, "solo");
+    assert.equal(pickerOf(handle).step, "effort");
+    assert.equal(pickerOf(handle).title, "effort · solo");
+    handle.handleKey("", { escape: true } as Key);
+    assert.equal(pickerOf(handle).step, "provider");
+    assert.equal(pickerCurrent(pickerOf(handle))?.id, "solo");
+    handle.handleKey("", { return: true } as Key);
+    pickRow(handle, "high");
+    const q = newPromptOf(handle);
+    assert.deepEqual(
+      [q.settings.provider, q.settings.model, q.settings.effort],
+      ["solo", "solo-1", "high"],
+    );
+    handle.handleKey("", { return: true } as Key);
+    const sent = fake.of("session.create")[0]?.params;
+    assert.deepEqual(
+      [sent?.["provider"], sent?.["model"], sent?.["effort"]],
+      ["solo", "solo-1", "high"],
+    );
+  } finally {
+    teardown();
+  }
+});
+
+test("⌥p: provider → model → effort, Esc stepping back one level at a time", () => {
+  const fake = mkFakeClient();
+  const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+  const teardown = handle.effectStart();
+  try {
+    openLaunch(fake, handle);
+    handle.handleKey("p", { meta: true } as Key);
+    pickRow(handle, "claude:personal");
+    assert.equal(pickerOf(handle).step, "model");
+    assert.deepEqual(
+      pickerOf(handle).items.map((it) => it.label),
+      ["Opus 5.5", "Haiku 4.5"],
+      "the catalogue's rows",
+    );
+    handle.handleKey("", { escape: true } as Key);
+    assert.equal(pickerOf(handle).step, "provider");
+    handle.handleKey("", { return: true } as Key);
+    pickRow(handle, "claude-opus-5-5");
+    assert.equal(pickerOf(handle).step, "effort");
+    handle.handleKey("", { escape: true } as Key);
+    assert.equal(pickerOf(handle).step, "model");
+    assert.equal(pickerCurrent(pickerOf(handle))?.id, "claude-opus-5-5");
+    handle.handleKey("", { return: true } as Key);
+    pickRow(handle, "medium");
+    const q = newPromptOf(handle);
+    assert.deepEqual(
+      [q.settings.provider, q.settings.model, q.settings.effort],
+      ["claude:personal", "claude-opus-5-5", "medium"],
+    );
+    assert.match(
+      newModalText(handle),
+      /claude personal \/ claude-opus-5-5 · medium {2}⌥p ⌥t change/,
+    );
+    // Esc on the list itself goes back to the prompt.
+    handle.handleKey("p", { meta: true } as Key);
+    handle.handleKey("", { escape: true } as Key);
+    assert.equal(newPromptOf(handle).settings.effort, "medium");
+    handle.handleKey("", { return: true } as Key);
+    const sent = fake.of("session.create")[0]?.params;
+    assert.deepEqual(
+      [sent?.["provider"], sent?.["model"], sent?.["effort"]],
+      ["claude:personal", "claude-opus-5-5", "medium"],
+    );
+  } finally {
+    teardown();
+  }
+});
+
+test("⌥p without profiles is the plain provider wizard, and ⌥a does nothing", () => {
+  const fake = mkFakeClient();
+  const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+  const teardown = handle.effectStart();
+  try {
+    const { agentProfiles: _, ...bare } = (launchFleet() as { value: object }).value as {
+      agentProfiles: unknown;
+    };
+    fake.deliver(loadableLoaded(bare as never));
+    handle.handleKey("n", {} as Key);
+    handle.handleKey("a", { meta: true } as Key);
+    assert.equal(newPromptOf(handle).feedback, undefined);
+    handle.handleKey("p", { meta: true } as Key);
+    const p = pickerOf(handle);
+    assert.equal(p.title, "provider");
+    assert.deepEqual(
+      p.items.map((it) => [it.id, it.section]),
+      [
+        ["claude:personal", undefined],
+        ["solo", undefined],
+        ["plain", undefined],
+      ],
+    );
+    assert.doesNotMatch(pickerText(handle), /── (providers|agent profiles)/);
   } finally {
     teardown();
   }

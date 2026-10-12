@@ -1,7 +1,7 @@
 /**
  * Where a new session will run and work, as the `new` prompt settles it:
  * isolation (`⌥i`), workspace (`⌥w`) and base (`⌥b`), and the agent profile it
- * starts on (`⌥a`). Pure functions of the prompt's settings and the daemon's
+ * starts on (picked with the providers, `⌥p`). Pure functions of the prompt's settings and the daemon's
  * facts, so the prompt line, the commands' descriptions and the submit all
  * read one answer.
  *
@@ -97,52 +97,44 @@ export const toggleIsolation = (p: Provider, s: NewSessionSettings): SettingsSte
 // agent profile
 // ---------------------------------------------------------------------------
 
+/** Why `profile` cannot start a session here; absent when it can. A profile on
+ *  a provider this daemon does not offer is listed, but not choosable. */
+export const profileBlocked = (
+  profile: AgentProfileInfo,
+  providers: readonly ProviderInfo[],
+): string | undefined =>
+  profile.provider && !providers.some((x) => x.id === profile.provider)
+    ? `runs on ${profile.provider}, which is not available`
+    : undefined;
+
 /**
- * `⌥a`: the next agent profile, after the last back to none. Choosing one sets
- * what it names — provider, model, effort, mode — over the prompt's settings;
- * none puts back `defaults`, today's settings. Where, isolation and base stay.
- * A profile on a provider this daemon does not offer is passed over.
+ * Start the new session on `profile` (picked from `⌥p`): it sets what it names
+ * — provider, model, effort, mode — over the prompt's settings, and what it
+ * leaves out follows the provider it runs on. Another profile chosen before it
+ * is replaced whole, from `defaults` (today's settings), so nothing of it
+ * lingers. Where, isolation and base stay.
  */
-export const cycleProfile = (
-  profiles: readonly AgentProfileInfo[],
+export const applyProfile = (
+  profile: AgentProfileInfo,
   providers: readonly ProviderInfo[],
   s: NewSessionSettings,
   defaults: NewSessionSettings,
 ): SettingsStep => {
-  if (profiles.length === 0)
-    return { disabled: "No agent profiles are available in this repository (agents.profiles)." };
-  const at = profiles.findIndex((p) => p.name === s.profile);
-  const skipped: string[] = [];
-  for (let i = at + 1; i < profiles.length; i++) {
-    const p = profiles[i]!;
-    if (p.provider && !providers.some((x) => x.id === p.provider)) {
-      skipped.push(`${p.name} runs on ${p.provider}, which is not available.`);
-      continue;
-    }
-    const provider = p.provider ?? s.provider;
-    const same = provider === s.provider;
-    return {
-      settings: {
-        ...s,
-        profile: p.name,
-        provider,
-        model: p.model ?? (same ? s.model : null),
-        effort: p.effort ?? (same && !p.model ? s.effort : null),
-        mode: p.mode ?? s.mode,
-      },
-      note: [...skipped, `${p.name}: ${p.description}`].join(" "),
-    };
-  }
-  const { profile: _, ...rest } = s;
+  const blocked = profileBlocked(profile, providers);
+  if (blocked) return { disabled: `${profile.name} ${blocked}.` };
+  const { provider: p0, model, effort, mode } = defaults;
+  const from = s.profile === undefined ? s : { provider: p0, model, effort, mode };
+  const provider = profile.provider ?? from.provider;
+  const same = provider === from.provider;
   return {
     settings: {
-      ...rest,
-      provider: defaults.provider,
-      model: defaults.model,
-      effort: defaults.effort,
-      mode: defaults.mode,
+      ...s,
+      profile: profile.name,
+      provider,
+      model: profile.model ?? (same ? from.model : null),
+      effort: profile.effort ?? (same && !profile.model ? from.effort : null),
+      mode: profile.mode ?? from.mode,
     },
-    note: [...skipped, "No profile: today's settings."].join(" "),
   };
 };
 

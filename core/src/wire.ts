@@ -262,7 +262,7 @@ export const daemonSnapshotSchema = z.object({
   providers: z.array(z.lazy(() => providerInfoSchema)),
   sessions: z.array(z.lazy(() => sessionSnapshotSchema)),
   /** The configured agent profiles (`agents.profiles`), for the new-session
-   *  prompt's profile toggle. Absent from a daemon that predates them. */
+   *  prompt's `⌥p` list. Absent from a daemon that predates them. */
   agentProfiles: z.array(agentProfileInfoSchema).optional(),
 });
 export type DaemonSnapshot = z.infer<typeof daemonSnapshotSchema>;

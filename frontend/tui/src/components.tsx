@@ -41,11 +41,9 @@ import type { ClientState } from "@loom/client";
 import type { ModeChoices } from "./mode-control.ts";
 import type { FleetPaneView, HeaderView, LogView } from "./views.ts";
 import {
-  fleetAgentProfiles,
   fleetSessions,
   cacheHeat,
   cacheStatus,
-  providerInfo,
   providerAccountOf,
   providerColorOf,
   type CacheStatus,
@@ -56,7 +54,7 @@ import {
 import { parseAskUserQuestions, type AskUserQuestionItem } from "./interactions.ts";
 import { pendingMode } from "./mode-control.ts";
 import { forkIsolationLocked } from "./fork-flow.ts";
-import { newBase, newIsolation, newWorkspace } from "./new-workspace.ts";
+import { newSessionHeader } from "./new-session-header.ts";
 import {
   openPrompt,
   pickerCurrent,
@@ -1113,31 +1111,46 @@ export const promptRows = (state: TuiState): number => {
   return p.t === "new" ? 2 : 1;
 };
 
-/** Shared geometry for the floating composer and its clickable mode chip. */
-export const newSessionLayout = (p: Prompt, cols: number, rows: number) => {
+/** Shared geometry for the floating composer, its settings rows and its
+ *  clickable mode chip. */
+export const newSessionLayout = (
+  state: TuiState,
+  p: Extract<Prompt, { t: "new" }>,
+  cols: number,
+  rows: number,
+) => {
   const compact = rows < 22;
   const width = modalWidth(cols);
   const padding = compact || width < 60 ? 1 : 2;
-  const room = Math.max(1, width - 2 - padding * 2 - 2);
-  const feedback = feedbackLines(p, Math.max(1, width - 2 - padding * 2));
-  const maxRows = Math.max(
-    1,
-    Math.min(MAX_EDITOR_ROWS, rows - (compact ? 6 : 13) - feedback.length),
-  );
+  const inner = Math.max(1, width - 2 - padding * 2);
+  const room = Math.max(1, inner - 2);
+  const feedback = feedbackLines(p, inner);
+  // Border and title, with the subtitle, hints and spacing when not compact.
+  const chrome = compact ? 4 : 11;
+  const wrapped = newSessionHeader(state, p.settings, inner, { compact, tight: false });
+  // Too short for the wrapped rows and a line to type in: who runs it on one row.
+  const header =
+    chrome + wrapped.rows.length + 1 + feedback.length > rows
+      ? newSessionHeader(state, p.settings, inner, { compact, tight: true })
+      : wrapped;
+  const fixed = chrome + header.rows.length;
+  const maxRows = Math.max(1, Math.min(MAX_EDITOR_ROWS, rows - fixed - feedback.length));
   const editorRows = Math.min(maxRows, layoutWrapped(p.buffer, room).rows.length);
-  const height = Math.min(rows, (compact ? 6 : 13) + editorRows + feedback.length);
+  const height = Math.min(rows, fixed + editorRows + feedback.length);
   const { left, top } = modalPosition(cols, rows, width, height);
   return {
     compact,
     width,
     padding,
     room,
+    header,
     maxRows,
     height,
     left,
     top,
-    modeY: top + (compact ? 4 : 7),
-    modeX: left + padding + 2,
+    // 1-based: the border, the top padding, title, subtitle and spacer.
+    modeY: top + (compact ? 3 : 6) + header.mode.row,
+    modeX: left + padding + 2 + header.mode.col,
   };
 };
 
@@ -1156,13 +1169,7 @@ export const NewSessionModal = ({
   const palette = useTheme();
   const p = openPrompt(state.overlay);
   if (p?.t !== "new") return null;
-  const g = newSessionLayout(p, cols, rows);
-  const prov = providerInfo(state, p.settings.provider ?? "");
-  const model = p.settings.model || prov?.defaultModel || "auto";
-  const isolation = newIsolation(prov, p.settings) === "vm" ? "VM" : "Local";
-  const workspace = newWorkspace(prov, p.settings);
-  const base = newBase(state.bases, p.settings);
-  const facts = [isolation, workspace, ...(base ? [`from ${base.label}`] : [])].join(" · ");
+  const g = newSessionLayout(state, p, cols, rows);
   return (
     <FloatingLayer left={g.left} top={g.top} width={g.width} height={g.height}>
       <Box
@@ -1182,21 +1189,24 @@ export const NewSessionModal = ({
         </Line>
         {!g.compact && <Line tone="dim">Start a fresh conversation</Line>}
         {!g.compact && <Box height={1} flexShrink={0} />}
-        <Line tone="dim">
-          <Text {...(prov?.color ? { color: prov.color } : {})}>
-            {prov?.tag ?? p.settings.provider ?? "auto"}
-          </Text>
-          {` / ${model}${p.settings.effort ? ` · ${p.settings.effort}` : ""}`}
-          {p.settings.profile ? <Text tone="accent">{` · ${p.settings.profile}`}</Text> : null}
-          <Text tone="faint">
-            {fleetAgentProfiles(state).length > 0 ? "  ⌥p change · ⌥a profile" : "  ⌥p change"}
-          </Text>
-        </Line>
-        <Box gap={1}>
-          <Box flexShrink={0}>{modeChip(p.settings.mode, null, hover)}</Box>
-          {/* ⌥i ⌥w ⌥b change the facts in the order shown. */}
-          <Line tone="dim">{`[${facts}]  ⇧⇥ mode · ⌥i ⌥w ⌥b change`}</Line>
-        </Box>
+        {g.header.rows.map((row, i) =>
+          row.length === 0 ? (
+            <Box key={i} height={1} flexShrink={0} />
+          ) : (
+            <Line key={i}>
+              {row.map((seg, j) => (
+                <Text
+                  key={j}
+                  tone={seg.tone}
+                  {...(seg.color ? { color: seg.color } : {})}
+                  underline={seg.mode === true && hover}
+                >
+                  {seg.text}
+                </Text>
+              ))}
+            </Line>
+          ),
+        )}
         {!g.compact && <Box height={1} flexShrink={0} />}
         <InputLine
           buf={p.buffer}
@@ -1858,6 +1868,21 @@ const PaletteRow = ({
   </Box>
 );
 
+/** A picker's list as drawn: its items, each with its index into the visible
+ *  ones, and a heading wherever they move into a new section. */
+type PickerLine =
+  | { readonly t: "section"; readonly text: string }
+  | { readonly t: "item"; readonly item: PickItem; readonly index: number };
+
+const pickerLines = (vis: readonly PickItem[]): PickerLine[] =>
+  vis.flatMap((item, index): PickerLine[] => {
+    const heading = item.section !== undefined && item.section !== vis[index - 1]?.section;
+    return [
+      ...(heading ? [{ t: "section" as const, text: item.section! }] : []),
+      { t: "item", item, index },
+    ];
+  });
+
 export const Picker = ({
   picker,
   width,
@@ -1876,11 +1901,16 @@ export const Picker = ({
   const columns = picker.step === "command" ? paletteColumns(picker.items, room) : null;
   const header = columns !== null && !compact;
   const rows = Math.max(1, height - (compact ? 9 : 11) - (header ? 1 : 0));
-  const start = Math.max(
+  // The visible items with a heading wherever they move into a new section;
+  // the window keeps the highlighted item in view, headings counted.
+  const lines = pickerLines(vis);
+  const at = Math.max(
     0,
-    Math.min(Math.max(0, vis.length - rows), picker.index - Math.floor(rows / 2)),
+    lines.findIndex((l) => l.t === "item" && l.index === picker.index),
   );
-  const shown = vis.slice(start, start + rows);
+  const start = Math.max(0, Math.min(Math.max(0, lines.length - rows), at - Math.floor(rows / 2)));
+  const shown = lines.slice(start, start + rows);
+  const hidden = vis.length - shown.filter((l) => l.t === "item").length;
 
   return (
     <Panel
@@ -1934,8 +1964,15 @@ export const Picker = ({
                 ).slice(0, rows)}
               />,
             ]
-          : shown.map((it, i) => {
-              const on = start + i === picker.index;
+          : shown.map((line) => {
+              if (line.t === "section")
+                return (
+                  <Line key={`§${line.text}`} tone="faint">
+                    {`── ${line.text} ${"─".repeat(Math.max(0, room - line.text.length - 4))}`}
+                  </Line>
+                );
+              const { item: it } = line;
+              const on = line.index === picker.index;
               if (columns) return <PaletteRow key={it.id} item={it} on={on} columns={columns} />;
               return (
                 <Box key={it.id}>
@@ -1957,8 +1994,8 @@ export const Picker = ({
               );
             })}
       </Box>
-      {start + shown.length < vis.length || start > 0 ? (
-        <Line tone="faint">{`  … ${vis.length - shown.length} more`}</Line>
+      {hidden > 0 ? (
+        <Line tone="faint">{`  … ${hidden} more`}</Line>
       ) : (
         <Box height={1} flexShrink={0} />
       )}

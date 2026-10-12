@@ -44,9 +44,10 @@ export interface NewSessionSettings {
   /** What it branches from (⌥b): the checked-out branch, or the default
    *  branch. Omitted is the checked-out branch. */
   base?: "current" | "default";
-  /** The agent profile it starts on (⌥a): its prompt and tools come with it,
-   *  and choosing it set provider, model, effort and mode, which stay
-   *  changeable. Omitted is none: today's settings. */
+  /** The agent profile it starts on (picked under the providers, ⌥p): its
+   *  prompt and tools come with it, and choosing it set provider, model,
+   *  effort and mode; ⌥m / ⌥t still adjust the model and effort. Omitted is
+   *  none: today's settings. */
   profile?: string;
 }
 
@@ -90,7 +91,10 @@ const ed = (label: string, text: string): PromptEditor => ({
   draft: "",
 });
 
-export const newPrompt = (settings: NewSessionSettings, text = ""): Prompt => ({
+export const newPrompt = (
+  settings: NewSessionSettings,
+  text = "",
+): Extract<Prompt, { t: "new" }> => ({
   t: "new",
   settings,
   ...ed("new session", text),
@@ -235,6 +239,12 @@ export interface PickItem {
   description?: string;
   /** Why the item cannot be chosen now; shown, but Enter does nothing. */
   disabled?: string;
+  /** The heading of the group this row belongs to; a heading is drawn where
+   *  the visible rows move into a new one. Absent: an ungrouped list. */
+  section?: string;
+  /** The agent profile this row starts the new session on — the profile rows
+   *  under the providers in the new-session `⌥p` list. */
+  profile?: string;
 }
 
 /** Which list the picker is showing. */

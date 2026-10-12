@@ -3,8 +3,12 @@ import { test } from "node:test";
 import { createElement as h } from "react";
 import { Box, Text, renderToString } from "ink";
 import { NewSessionModal, newSessionLayout, SelectionModal } from "@loom/tui/components";
-import { initialState } from "@loom/tui/model";
-import { newPrompt, makePicker, type PickerStep } from "@loom/tui/overlay";
+import { stripVTControlCharacters } from "node:util";
+import { loadableLoaded } from "@loom/core/loadable";
+import { initialState, reduce } from "@loom/tui/model";
+import { headerText, newSessionHeader } from "@loom/tui/new-session-header";
+import { newPrompt, makePicker, type NewSessionSettings, type PickerStep } from "@loom/tui/overlay";
+import { fleet } from "./tui-fixtures.ts";
 
 test("every picker floats over the fleet with the selected row and actions in view", () => {
   const steps: PickerStep[] = ["provider", "model", "effort", "command", "repository", "undo"];
@@ -142,7 +146,7 @@ test("new-session modal covers the background and keeps its mode hit aligned aft
         draft,
       );
       const state = { ...initialState(), overlay: { t: "prompt" as const, prompt } };
-      const g = newSessionLayout(prompt, cols!, rows!);
+      const g = newSessionLayout(state, prompt, cols!, rows!);
       const frame = renderToString(
         h(
           Box,
@@ -172,5 +176,118 @@ test("new-session modal covers the background and keeps its mode hit aligned aft
       }
       if (g.left > 0) assert.equal(lines[g.top]?.[0], "Z", "fleet remains visible beside modal");
     }
+  }
+});
+
+/** A state with one provider that takes an effort, a checked-out base, and the
+ *  `new` prompt open on `settings`. */
+const launchState = (settings: Partial<NewSessionSettings>, feedback?: string) => {
+  const s = reduce(
+    initialState(),
+    fleet(
+      [],
+      [
+        {
+          id: "claude:personal",
+          tag: "claude personal",
+          color: "",
+          models: ["claude-opus-5-5"],
+          modelChoices: [{ id: "claude-opus-5-5", label: "Opus 5.5", supportsEffort: true }],
+          defaultModel: "claude-opus-5-5",
+          defaultEffort: "",
+          defaultMode: "default",
+          isDefault: true,
+          defaultIsolation: "local",
+          defaultWorkspace: { local: "worktree", vm: "clone" },
+        },
+      ],
+    ),
+  );
+  const prompt = newPrompt(
+    { mode: "auto", provider: "claude:personal", model: null, effort: null, ...settings },
+    "hello",
+  );
+  if (feedback) prompt.feedback = { pending: false, text: feedback };
+  return {
+    prompt,
+    state: {
+      ...s,
+      bases: loadableLoaded({
+        current: { ref: "main", detached: false },
+        default: { ref: "main" },
+      }),
+      overlay: { t: "prompt" as const, prompt },
+    },
+  };
+};
+
+const modalFrame = (state: ReturnType<typeof launchState>["state"], cols: number, rows: number) =>
+  stripVTControlCharacters(
+    renderToString(
+      h(Box, { width: cols, height: rows }, h(NewSessionModal, { state, cols, rows })),
+      { columns: cols },
+    ),
+  );
+
+test("the new-session settings: who runs it and its mode, then where it runs and its base", () => {
+  const { state, prompt } = launchState({ profile: "opus", effort: "high", isolation: "vm" });
+  const header = newSessionHeader(state, prompt.settings, 90, { compact: false, tight: false });
+  assert.deepEqual(header.rows.map(headerText), [
+    "opus · claude personal / claude-opus-5-5 · high  ⌥p ⌥t change  [auto] ⇧⇥ change",
+    "",
+    "isolation: vm ⌥i change   dir: clone ⌥w change",
+    "base: main ⌥b change",
+  ]);
+  // The clickable chip, where it is drawn.
+  assert.deepEqual(header.mode, { row: 0, col: headerText(header.rows[0]!).indexOf("[auto]") });
+  const frame = modalFrame(state, 120, 40);
+  for (const row of header.rows.filter((r) => r.length > 0))
+    assert.ok(frame.includes(headerText(row)), headerText(row));
+
+  // No effort shown where the model takes none, nor its key.
+  const plain = launchState({ effort: null });
+  assert.equal(
+    headerText(
+      newSessionHeader(plain.state, plain.prompt.settings, 90, { compact: false, tight: false })
+        .rows[0]!,
+    ),
+    "claude personal / claude-opus-5-5  ⌥p change  [auto] ⇧⇥ change",
+  );
+});
+
+test("narrow new-session settings wrap between settings and keep every key in view", () => {
+  const { state, prompt } = launchState({ profile: "opus", effort: "high" });
+  assert.deepEqual(
+    newSessionHeader(state, prompt.settings, 32, { compact: true, tight: false }).rows.map(
+      headerText,
+    ),
+    [
+      "opus · claude personal",
+      "/ claude-opus-5-5 · high",
+      "⌥p ⌥t change  [auto] ⇧⇥ change",
+      "isolation: none ⌥i change",
+      "dir: worktree ⌥w change",
+      "base: main ⌥b change",
+    ],
+  );
+  for (const [cols, rows, feedback] of [
+    [120, 40, undefined],
+    [80, 24, "A private clone runs in a VM — isolation is now VM."],
+    [44, 18, undefined],
+    [44, 18, "A private clone runs in a VM — isolation is now VM."],
+    [32, 12, undefined],
+    [32, 12, "A private clone runs in a VM — isolation is now VM."],
+  ] as const) {
+    const frame = modalFrame(
+      launchState({ profile: "opus", effort: "high" }, feedback).state,
+      cols,
+      rows,
+    );
+    for (const key of ["⌥p", "⇧⇥", "⌥i", "⌥w", "⌥b", "[auto]", "▍ hello", "enter start session"])
+      assert.ok(
+        frame.includes(key),
+        `${key} at ${cols}×${rows}${feedback ? " with a notice" : ""}`,
+      );
+    if (feedback) assert.match(frame, /isolation is now/);
   }
 });
