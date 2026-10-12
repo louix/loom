@@ -394,6 +394,8 @@ export class Daemon {
   /** In-flight auto-title jobs — awaited at shutdown so their one-shot titler
    *  sessions (untracked by SessionManager) don't outlive the daemon. */
   readonly #titleJobs = new Set<Promise<void>>();
+  /** Aborted as shutdown begins: a titler mid-reply gives up rather than outlive the store. */
+  readonly #titleStop = new AbortController();
 
   /** The lifecycle operation (start, suspend or refresh) in flight, per session. */
   readonly #lifecycles = new Map<string, Lifecycle>();
@@ -894,6 +896,7 @@ export class Daemon {
     if (this.#stopping) return this.#closed;
     this.#stopping = true;
     this.#guestStop.abort();
+    this.#titleStop.abort();
     this.#hooks.close();
     this.#log.info("daemon stopping", { reason });
 
@@ -917,8 +920,9 @@ export class Daemon {
       await this.#providers.close().catch((error) => {
         this.#log.warn("provider shutdown failed", { error: String(error) });
       });
-      // Give in-flight auto-title jobs (one-shot titler sessions live outside
-      // the SessionManager) a brief window to finish before the DB closes.
+      // In-flight auto-title jobs were aborted above; give their one-shot
+      // titler sessions (outside the SessionManager) a brief window to close.
+      // Bounded: a job that outlasts it still reads no store once #stopping.
       if (this.#titleJobs.size > 0) {
         await Promise.race([
           Promise.allSettled(this.#titleJobs),
@@ -3138,6 +3142,7 @@ export class Daemon {
     try {
       if (needsTitle && this.#providers.has(snap.provider)) {
         const provider = await this.#providers.get(snap.provider, snap.isolation);
+        if (this.#stopping) return;
         const model =
           (isClaudeId(snap.provider)
             ? this.config.providers.claude.titleModel
@@ -3148,10 +3153,13 @@ export class Daemon {
           prompt: snap.title,
           cwd: snap.worktree ?? this.repoRoot,
           log: this.#log.child("titler"),
+          signal: this.#titleStop.signal,
           ...(model ? { model } : {}),
         });
+        // Checked before the read below: by now shutdown may have closed the store.
+        if (this.#stopping) return;
         const current = this.#registry.get(id);
-        if (this.#stopping || !current || current.status.kind === "done") return;
+        if (!current || current.status.kind === "done") return;
         if (title && !store.titleLocked(id)) {
           this.#registry.setFields(id, { title, autoTitleDone: true });
         }
@@ -3163,7 +3171,7 @@ export class Daemon {
       this.#titling.delete(id);
       if (!this.#stopping) {
         await this.#maybeNameBranch(id);
-        if (this.#registry.get(id)) this.#publishState(id);
+        if (!this.#stopping && this.#registry.get(id)) this.#publishState(id);
       }
     }
   }
@@ -3171,8 +3179,9 @@ export class Daemon {
   /** Naming the branch must not depend on a successful model request. */
   async #maybeNameBranch(id: string): Promise<void> {
     const rename = async () => {
+      if (this.#stopping) return;
       const snap = this.#registry.get(id);
-      if (this.#stopping || !snap?.title || !snap.worktree || snap.status.kind === "done") return;
+      if (!snap?.title || !snap.worktree || snap.status.kind === "done") return;
       if (snap.branch !== `loom/${id.slice(0, 8)}` && snap.branch !== `loom/${id}`) return;
       const branch = this.#worktrees.renameBranch(snap.title, snap.branch);
       if (branch === snap.branch) return;

@@ -81,19 +81,21 @@ export interface TitleRequest {
   log: Logger;
   /** Abort the one-shot after this long. */
   timeoutMs?: number;
+  /** Abort the one-shot now, e.g. at shutdown; resolves `null`. */
+  signal?: AbortSignal;
 }
 
 /** Run the one-shot and return a cleaned title, or `null` on any failure. */
 export const generateTitle = async (req: TitleRequest): Promise<string | null> => {
   const { provider, prompt, cwd, model, log } = req;
-  if (!provider.capabilities.oneShot) return null;
+  if (!provider.capabilities.oneShot || req.signal?.aborted) return null;
   // A single word (a greeting, "hi", "help") has nothing to summarise and tends
   // to make the model converse — keep the clipped message as the title.
   if (prompt.trim().split(/\s+/).filter(Boolean).length < 2) return null;
 
   let session: AgentSession | undefined;
   let closing: Promise<void> | undefined;
-  let timedOut = false;
+  let abandoned = false;
   const close = (): Promise<void> => {
     if (!session) return Promise.resolve();
     return (closing ??= Promise.resolve()
@@ -102,15 +104,17 @@ export const generateTitle = async (req: TitleRequest): Promise<string | null> =
   };
   // Bound startup, streaming AND cleanup. Closing a broken provider need not
   // unblock its iterator; racing the whole job keeps naming/shutdown bounded.
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<null>((resolve) => {
-    timer = setTimeout(() => {
-      timedOut = true;
-      log.warn("titler: timed out", { timeoutMs: req.timeoutMs ?? 30_000 });
-      void close();
-      resolve(null);
-    }, req.timeoutMs ?? 30_000);
-  });
+  const deadline = Promise.withResolvers<null>();
+  const abandon = () => {
+    abandoned = true;
+    void close();
+    deadline.resolve(null);
+  };
+  const timer = setTimeout(() => {
+    log.warn("titler: timed out", { timeoutMs: req.timeoutMs ?? 30_000 });
+    abandon();
+  }, req.timeoutMs ?? 30_000);
+  req.signal?.addEventListener("abort", abandon, { once: true });
   const run = async (): Promise<string | null> => {
     try {
       session = await provider.createSession({
@@ -126,10 +130,10 @@ export const generateTitle = async (req: TitleRequest): Promise<string | null> =
         ...(model ? { model } : {}),
       });
       // A startup that resolves after the deadline still owns cleanup.
-      if (timedOut) return null;
+      if (abandoned) return null;
       let text = "";
       for await (const ev of session.events()) {
-        if (timedOut) return null;
+        if (abandoned) return null;
         if (ev.type === "assistant_text") text += ev.text;
         else if (ev.type === "result") {
           const title = ev.kind === "ok" ? cleanTitle(text) : null;
@@ -147,8 +151,9 @@ export const generateTitle = async (req: TitleRequest): Promise<string | null> =
     }
   };
   try {
-    return await Promise.race([run(), deadline]);
+    return await Promise.race([run(), deadline.promise]);
   } finally {
     clearTimeout(timer);
+    req.signal?.removeEventListener("abort", abandon);
   }
 };

@@ -6,6 +6,7 @@ import { LoomClient } from "@loom/client";
 import type { SessionSnapshot } from "@loom/core/wire";
 import { FakeProvider, FakeSession } from "../connectors/mock/src/fake.ts";
 import { makeHarness } from "@loom/harness";
+import { setLogFile, setLogLevel, setLogStderr } from "@loom/core/logger";
 
 const waitFor = async (pred: () => boolean | Promise<boolean>) => {
   const until = Date.now() + 3000;
@@ -164,6 +165,44 @@ test("removal during generation does not rename the retained branch", async () =
     }).trim();
     assert.equal(refs, t.s.branch);
   } finally {
+    await t.cleanup();
+  }
+});
+
+test("a title still generating at shutdown is abandoned before the store closes", async () => {
+  const t = await setup();
+  const logFile = await Deno.makeTempFile();
+  try {
+    // given a titler that has not answered
+    const pending = new FakeSession("pending-title", { mode: "auto" });
+    let started = false;
+    t.fake.createSession = async () => {
+      started = true;
+      return pending;
+    };
+    t.session.finishTurn();
+    await waitFor(() => started);
+    await t.c.close();
+    setLogStderr(false);
+    setLogFile(logFile);
+    setLogLevel("warn");
+    // when the daemon stops, and the titler answers only afterwards
+    const begun = Date.now();
+    await t.h.daemon.stop("test-stop");
+    const stopped_millis = Date.now() - begun;
+    pending.emit({ type: "assistant_text", text: "Too late to use this title" });
+    pending.finishTurn();
+    pending.endStream();
+    await delay(20);
+    // then the job gave up at once, and never read the closed store
+    assert.equal(pending.closed, true);
+    assert.ok(stopped_millis < 2_000, `stop waited ${stopped_millis}ms for the titler`);
+    assert.doesNotMatch(await Deno.readTextFile(logFile), /auto-title failed/);
+  } finally {
+    setLogLevel("error");
+    setLogFile(null);
+    setLogStderr(true);
+    await Deno.remove(logFile);
     await t.cleanup();
   }
 });
