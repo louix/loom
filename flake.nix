@@ -235,7 +235,7 @@
             outputHash = {
               x86_64-linux = "sha256-JeIYu9P/hvvJsejrwiVw1nGobF5d9ZtHXZZv96Gopz0=";
               aarch64-linux = "sha256-x3tIH+zPXoL1hmzWZ+qU0WhBx/tUQULdq3Iduu4gC60=";
-              aarch64-darwin = "sha256-vLbmxETUBJNJxiNx9YcQf23fuCacfXqIJqRImWSe4Fg=";
+              aarch64-darwin = "sha256-MnOiIETqzptsamM3jNAyFXmTmvmhKVVGNUFM2TZCVRA=";
             }.${hostSystem};
           };
 
