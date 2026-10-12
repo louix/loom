@@ -134,13 +134,30 @@ children inside the supervisor's VM is a later shared-VM feature.
   `agent_message`'s answer names the hold it found and whether the message
   waits behind it.
 - Up: event-driven, never streamed output. The supervisor gets a short
-  notification when a child calls `report`, finishes a turn (its final message,
-  cut to about 2 KB with a pointer to `agent_read`; no model-written summary;
-  and its workspace's state), or fails or is interrupted — once per settled
-  turn, identified by the turn rather than the state it settled in, with that
-  turn's own final message; a turn the child has already moved on from is
-  reported when the one it moved on to ends. It is queued as an end-of-turn entry labelled as
-  coming from the child: a busy supervisor is not interrupted, an idle one is
+  notification when a child calls `report`, finishes a turn, or fails or is
+  interrupted — once per settled turn, identified by the turn rather than the
+  state it settled in, with that turn's own final message; a turn the child
+  has already moved on from is reported when the one it moved on to ends. It
+  reads:
+
+  ```text
+  [from your agent 7ea89088 "Title" (profile self)] It finished a turn.
+  Its workspace: 1 commit ahead of its base, nothing uncommitted.
+  Summary: <first line of the child's final message>
+  For full details: run `agent_read` with id `<full child id>`
+  ```
+
+  The first line names the event (`It failed: <message>.`,
+  `It was interrupted (user).`). The summary is the first non-empty line of the final
+  message, cut at 2 KB and labelled `Summary (truncated):` when longer, and
+  left out when there is no final message; Loom writes no summary of its own.
+  A child's instructions ask it to make that line a one-sentence summary of
+  the outcome, with the details after it. In the TUI, the `chat` log filter
+  hides these notifications (they are queued with the author
+  `agent:<child id>`, and the fleet already shows each child's state); the
+  more detailed filters show them.
+
+  It is queued as an end-of-turn entry labelled as coming from the child: a busy supervisor is not interrupted, an idle one is
   woken (a cold one revived), and one the user stopped stays stopped. A user's
   stop — an interrupt, an archive, a VM stop — always holds the supervisor's
   queue, empty or not, before the close awaits anything
@@ -154,6 +171,7 @@ children inside the supervisor's VM is a later shared-VM feature.
   notified: both go to the user, so the supervisor could not act on it, and
   the fleet already shows the child waiting. Waits stay unnotified until
   supervisor question handling is designed.
+
 - Nor is a stop the supervisor made itself (`agent_interrupt`, `agent_stop`)
   notified: the tool's answer already says so. Who asked for a stop travels
   with what it ends in: the child is `interrupted` by `supervisor` (not

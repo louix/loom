@@ -1041,6 +1041,45 @@ test("chat view collapses tool traffic and thinking; chat_and_tools keeps calls 
   assert.equal(visibleLog(s).length, 8);
 });
 
+test("chat view hides a child's notifications, taken up or queued; the other filters show them", () => {
+  const note = '[from your agent kid12345 "Kid" (profile self)] It finished a turn.';
+  const a = snap({
+    id: "a",
+    status: "running",
+    queue: queueOf([
+      queueEntry("n2", { author: "agent:kid-2", preview: note }),
+      queueEntry("u2", { preview: "mine too" }),
+    ]),
+  });
+  let s = reduce(initialState(), fleet([a]));
+  s = tailing(reduce(s, { t: "select", id: "a" }), "a");
+  const at = (n: number, e: Parameters<typeof ev>[0], ts: number) =>
+    (s = pushed(s, push(n, { ...ev(e), sessionId: "a", ts })));
+  at(
+    1,
+    { type: "user_message", text: "start the kids", injected: false, author: "client-a" },
+    1_000,
+  );
+  at(2, { type: "user_message", text: note, injected: false, author: "agent:kid-1" }, 2_000);
+  at(3, { type: "assistant_text", text: "kid 1 is done" }, 3_000);
+
+  s = reduce(s, { t: "logFilter", value: "chat" });
+  assert.deepEqual(
+    visibleLog(s).map((l) => l.text),
+    ["start the kids", "kid 1 is done", "next boundary · mine too · at the next tool boundary"],
+  );
+  for (const value of ["chat_and_tools", "everything"] as const) {
+    s = reduce(s, { t: "logFilter", value });
+    const shown = visibleLog(s);
+    assert.deepEqual(
+      shown.map((l) => l.author),
+      ["client-a", "agent:kid-1", undefined, "agent:kid-2", "client-a"],
+      value,
+    );
+    assert.equal(shown[1]!.text, note, value);
+  }
+});
+
 test("chat view: tool calls with an input `description` get their own line; those without still collapse to a count", () => {
   const a = snap({ id: "a", status: "running" });
   let s = reduce(initialState(), fleet([a]));

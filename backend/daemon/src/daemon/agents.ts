@@ -17,6 +17,7 @@ import type { SessionState, StopCause } from "@loom/core/session-state";
 import type { GitFacts, SessionSnapshot, TranscriptEntry } from "@loom/core/wire";
 import type { Logger } from "@loom/core/logger";
 import {
+  agentAuthor,
   LOOM_AGENTS_SERVER,
   SELF_PROFILE,
   supervisionDepth,
@@ -29,7 +30,8 @@ import { availableProfiles, type AgentProfileConfig, type LoomConfig } from "../
  *  providers this repository allows ({@link availableProfiles}). */
 export type AgentConfig = Pick<LoomConfig, "agents" | "providerAccess">;
 
-/** A notification carries the child's final message up to this many bytes. */
+/** A notification's summary — the first line of the child's final message —
+ *  is cut at this many bytes. */
 export const NOTIFY_MESSAGE_BYTES = 2048;
 /** `agent_read` returns at most this much text per call. */
 export const READ_BUDGET_BYTES = 16 * 1024;
@@ -145,7 +147,7 @@ export const agentSessionPlan = (
 const childNote = (supervisorId: string, title: string | null): string =>
   [
     `You are a Loom sub-agent: session ${short(supervisorId)}${title ? ` ("${title}")` : ""} started you with a task and supervises you.`,
-    "Your final message at the end of each turn is sent to it, so end every turn with a clear report: what you did, how you verified it, and what is left or failed.",
+    "End every turn with a final message for it: make its first line a single sentence summarizing the outcome (your supervisor is notified with that line), then add the details if useful: what you did, how you verified it, and what is left or failed.",
     "Commit your work before you report: your supervisor sees your branch, not your uncommitted files.",
     "Questions and permission requests go to the user, as usual.",
   ].join(" ");
@@ -813,7 +815,12 @@ export class AgentSupervision {
     if (!supervisor || supervisor.kind === "done") return;
     this.#notified.set(child.id, turn);
     const final = finalMessage(this.#host.events(child.id, { limit: 200 }).map((e) => e.event));
-    const { text, cut } = cutBytes(final, NOTIFY_MESSAGE_BYTES);
+    const firstLine =
+      final
+        .split("\n")
+        .find((line) => line.trim() !== "")
+        ?.trim() ?? "";
+    const summary = cutBytes(firstLine, NOTIFY_MESSAGE_BYTES);
     const read = opts.git;
     const git =
       (read
@@ -828,21 +835,19 @@ export class AgentSupervision {
     const body = [
       `[from your agent ${short(child.id)} "${child.title ?? ""}" (profile ${child.agentProfile ?? SELF_PROFILE})] It ${event}.`,
       ...(workspace ? [workspace] : []),
-      ...(final
-        ? [
-            "",
-            "Final message:",
-            text,
-            ...(cut
-              ? [`[… cut at 2 KB; agent_read with id ${child.id} for the whole message]`]
-              : []),
-          ]
-        : []),
+      ...(firstLine ? [`Summary${summary.cut ? " (truncated)" : ""}: ${summary.text}`] : []),
+      `For full details: run \`agent_read\` with id \`${child.id}\``,
     ].join("\n");
     try {
       // Behind any hold: a supervisor the user stopped stays stopped, and a
       // crashed one is not revived by a report.
-      await this.#host.enqueue(child.supervisorId, body, `agent:${child.id}`, "end_of_turn", "any");
+      await this.#host.enqueue(
+        child.supervisorId,
+        body,
+        agentAuthor(child.id),
+        "end_of_turn",
+        "any",
+      );
     } catch (err) {
       this.#host.log.warn("agent notification failed", {
         child: child.id,

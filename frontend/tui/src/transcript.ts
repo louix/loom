@@ -13,6 +13,7 @@ import { mkStore, type Store } from "./store.ts";
 import { markdownText, plainText } from "./markdown.ts";
 import type { TextDocument, TextSpan } from "./text-layout.ts";
 import { absurd } from "@loom/core/absurd";
+import { isAgentAuthor } from "@loom/core/agents";
 import type { HarnessEvent } from "@loom/core/events";
 import { describeDequeue, type QueueEntryView } from "@loom/core/message-queue";
 import { sessionStateLabel } from "@loom/core/session-state";
@@ -88,6 +89,8 @@ export interface LogLine {
   kind: HarnessEvent["type"] | "echo";
   /** Sub-agent that produced the event, when applicable. */
   agentId?: string;
+  /** For a `user_message` or a queued-message marker: who queued it. */
+  author?: string;
   glyph: string;
   /** Compact one-liner for the log pane (may be truncated). */
   text: string;
@@ -132,6 +135,7 @@ export const toLogLine = (
     sessionId: ev.sessionId,
     kind: ev.type,
     ...(ev.agentId ? { agentId: ev.agentId } : {}),
+    ...(ev.type === "user_message" && ev.author ? { author: ev.author } : {}),
     glyph: f.glyph,
     text: f.text,
     ...(f.full !== undefined && f.full !== f.text ? { full: f.full } : {}),
@@ -618,6 +622,7 @@ export const queuedLine = (sessionId: string, entry: QueueEntryView): LogLine =>
     id: null,
     sessionId,
     kind: "echo",
+    author: entry.author,
     glyph: "⧗",
     text: `${where} · ${preview} · ${when}`,
     full: `${where} · ${when}\n\n${entry.preview}`,
@@ -897,6 +902,10 @@ export const olderFailed = (tr: Transcript, sessionId: string, error: string): T
  * within the child rather than across the whole session. Unfocused, those
  * child-tagged frames are hidden: they live in the child's subtree, and the
  * main stream keeps only the ⤷/⤴ markers that announce a sub-agent.
+ *
+ * `chat` also hides the notifications a Loom agent's children send it
+ * (queued or taken up): they are for the agent, and the fleet already shows
+ * how each child is doing.
  */
 export const filterLog = (
   lines: readonly LogLine[],
@@ -908,7 +917,7 @@ export const filterLog = (
     : lines.filter((l) => !l.agentId);
   switch (filter) {
     case "chat":
-      return condenseLog(base);
+      return condenseLog(base.filter((l) => !isAgentAuthor(l.author)));
     case "chat_and_tools":
       return condenseToolResults(base);
     case "everything":

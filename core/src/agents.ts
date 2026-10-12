@@ -15,6 +15,13 @@ export const SELF_PROFILE = "self";
 /** `agents.max_depth` when the config does not say: a supervisor and its children. */
 export const DEFAULT_MAX_DEPTH = 2;
 
+/** The queue author of a notification a child sends its supervisor. */
+export const agentAuthor = (childId: string): string => `agent:${childId}`;
+
+/** Whether a queued message's author is a child's notification ({@link agentAuthor}). */
+export const isAgentAuthor = (author: string | undefined): boolean =>
+  author?.startsWith("agent:") ?? false;
+
 /** A profile as clients see it — what choosing one sets, never its prompt. */
 export const agentProfileInfoSchema = z.object({
   name: z.string(),

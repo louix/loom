@@ -10,13 +10,14 @@ import type { SessionSnapshot, TranscriptEntry } from "@loom/core/wire";
 import type { HarnessEvent } from "@loom/core/events";
 import type { AgentCallResult, McpServerHandle } from "@loom/core/types";
 import { type HoldRespect, type QueueHoldCause, waitsBehind } from "@loom/core/message-queue";
-import { stateError, stateIdle } from "@loom/core/session-state";
+import { stateError, stateIdle, stateInterrupted } from "@loom/core/session-state";
 import { makeLogger, setLogLevel } from "@loom/core/logger";
 import {
   AgentSupervision,
   agentSessionPlan,
   cutBytes,
   finalMessage,
+  NOTIFY_MESSAGE_BYTES,
   renderExcerpt,
   type AgentConfig,
   type AgentHost,
@@ -309,6 +310,7 @@ test("a session's plan: loom-agents below the depth limit, and its profile's ser
   );
   assert.equal(kid.agentTools, undefined);
   assert.match(kid.agentPrompt!, /^You are a Loom sub-agent: session lead \("Lead"\)/);
+  assert.match(kid.agentPrompt!, /final message[^.]*first line a single sentence summarizing/);
   assert.match(kid.agentPrompt!, /\n\nVerify\.$/);
   assert.deepEqual(kid.denyTools, ["WebFetch"]);
   const user = agentSessionPlan(row({ id: "u", agentProfile: "claudeish" }), ctx);
@@ -470,14 +472,14 @@ test("a child's turn is reported once per settled turn, by its identity, with it
   facts.resolve(null);
   await a;
   assert.equal(notes().length, 1);
-  assert.match(notes()[0]!, /It finished a turn\.[\s\S]*answer A$/);
+  assert.match(notes()[0]!, /It finished a turn\.\nSummary: answer A\n/);
 
   // Turn B, also idle: a report of its own, with its own final message.
   s.turns.set("kid", 3);
   log = ["answer B"];
   await s.sup.notify(kid, stateIdle, { turn: 3 });
   assert.equal(notes().length, 2);
-  assert.match(notes()[1]!, /answer B$/);
+  assert.match(notes()[1]!, /Summary: answer B\n/);
 
   // Turn C settles, but the child moves on while its facts are read: not
   // reported here (its next turn's end is), and never with that turn's text.
@@ -493,6 +495,71 @@ test("a child's turn is reported once per settled turn, by its identity, with it
   // A report for a turn already gone is dropped at once.
   await s.sup.notify(kid, stateIdle, { turn: 5 });
   assert.equal(notes().length, 2);
+});
+
+test("a notification carries the first line of the final message as its summary, and points at agent_read", async () => {
+  let log: string[] = [];
+  const events: AgentHost["events"] = () =>
+    log.map((text, i) => ({
+      id: i + 1,
+      event: { type: "assistant_text", sessionId: "kid", ts: 0, text } as HarnessEvent,
+    }));
+  const kid = row({ id: "kid", supervisorId: "lead", title: "Kid", agentProfile: "verifier" });
+  const s = stub([row({ id: "lead" }), kid], false, events);
+  const notes = () => s.queued.filter((q) => q.author === "agent:kid").map((q) => q.text);
+  const git = () =>
+    Promise.resolve({ aheadOfBase: 1, behindBase: 0, dirty: false } as SessionSnapshot["git"]);
+  const settle = async (turn: number, state: SessionSnapshot["status"]) => {
+    s.byId.set("kid", { ...kid, status: state });
+    s.turns.set("kid", turn);
+    await s.sup.notify(kid, state, { turn, git });
+    return notes().at(-1)!;
+  };
+  const pointer = "For full details: run `agent_read` with id `kid`";
+
+  log = ["\n  Widget added; tests pass.  \nDetails:\n- one\n- two"];
+  assert.equal(
+    await settle(1, stateIdle),
+    [
+      '[from your agent kid "Kid" (profile verifier)] It finished a turn.',
+      "Its workspace: 1 commit ahead of its base, nothing uncommitted.",
+      "Summary: Widget added; tests pass.",
+      pointer,
+    ].join("\n"),
+  );
+
+  // A first line over the budget is cut, and says so.
+  log = ["é".repeat(NOTIFY_MESSAGE_BYTES) + "\nmore"];
+  const long = await settle(2, stateIdle);
+  const summary = long.split("\n")[2]!;
+  assert.ok(summary.startsWith("Summary (truncated): é"));
+  assert.equal(
+    new TextEncoder().encode(summary.slice("Summary (truncated): ".length)).length,
+    NOTIFY_MESSAGE_BYTES,
+  );
+  assert.equal(long.split("\n")[3], pointer);
+
+  // A failure and an interrupt keep their cause, with the summary when there
+  // is a final message and without it when there is none.
+  log = ["Halfway: the build broke."];
+  assert.equal(
+    await settle(3, stateError("the worker crashed")),
+    [
+      '[from your agent kid "Kid" (profile verifier)] It failed: the worker crashed.',
+      "Its workspace: 1 commit ahead of its base, nothing uncommitted.",
+      "Summary: Halfway: the build broke.",
+      pointer,
+    ].join("\n"),
+  );
+  log = [];
+  assert.equal(
+    await settle(4, stateInterrupted("user")),
+    [
+      '[from your agent kid "Kid" (profile verifier)] It was interrupted (user).',
+      "Its workspace: 1 commit ahead of its base, nothing uncommitted.",
+      pointer,
+    ].join("\n"),
+  );
 });
 
 test("a dropped report reads no Git; a removed child's reports are forgotten", async () => {

@@ -281,8 +281,8 @@ describe("loom agents", { concurrency: 4 }, () => {
     assert.match(note, new RegExp(`^\\[from your agent ${child.id.slice(0, 8)} "Widget"`));
     assert.match(note, /It finished a turn\./);
     assert.match(note, /Its workspace: 0 commits ahead of its base, nothing uncommitted\./);
-    assert.match(note, /Widget added; tests pass\./);
-    assert.doesNotMatch(note, /cut at 2 KB/);
+    assert.match(note, /\nSummary: Widget added; tests pass\.\n/);
+    assert.match(note, new RegExp(`For full details: run \`agent_read\` with id \`${child.id}\`$`));
   });
 
   test("a supervisor stays idle while its agents run, so their reports still reach it", async (env) => {
@@ -333,7 +333,8 @@ describe("loom agents", { concurrency: 4 }, () => {
     await waitFor(() => lead.fs.sends.length > sendsBefore);
     const note = lead.fs.sends.at(-1)!;
     assert.ok(new TextEncoder().encode(note).length < 2600, "cut to about 2 KB");
-    assert.match(note, new RegExp(`cut at 2 KB; agent_read with id ${child.id}`));
+    assert.match(note, /\nSummary \(truncated\): x+\n/);
+    assert.match(note, new RegExp(`with id \`${child.id}\`$`));
   });
 
   test("a wait for input is not reported; failures are", async (env) => {
@@ -573,7 +574,7 @@ describe("loom agents", { concurrency: 4 }, () => {
     assert.equal(notes().length, 1);
     assert.match(
       notes()[0]!,
-      /It finished a turn\.\nIts workspace: 0 commits ahead of its base, uncommitted changes\.\n\nFinal message:\nWidget added; tests pass\.$/,
+      /It finished a turn\.\nIts workspace: 0 commits ahead of its base, uncommitted changes\.\nSummary: Widget added; tests pass\.\nFor full details: /,
     );
 
     // The supervisor, a root session, is still reminded of its own.
