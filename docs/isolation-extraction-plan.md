@@ -75,15 +75,15 @@ Silicon before the flip, and on the single launcher on Linux after B6.
 
 Outstanding:
 
-- Apple Silicon evidence for B6 beyond `scripts/test-isolated-worker-vm.ts`,
-  which passed on an M1 with a runtime Loom built on demand. A refreshed
-  `packaging/macos/runtime-hashes.json` is no longer needed: without a matching
-  pin, Loom builds the guest runtime on the Mac at the first VM session start
-  and reuses it until the guest source changes
-  ([packaging](packaged-runtimes.md#host-and-guest-packaging-boundary)). There,
-  with a stale pin, the first start built it in 15 minutes and a second start
-  reused it (`scripts/test-on-demand-runtime-vm.ts`). Pinning stays optional,
-  to spare users that build for a release.
+- Apple Silicon (M1, 2026-10-12, at `9ff070fa`): every real-VM script
+  (`plain-exec`, `isolated-worker`, `daemon-shell`, `claude-vm-lifecycle`,
+  `clone-git`, `aisdk-vm-fixture`, `loom-isolate`), the daemon lock, process-group
+  teardown and the full suite pass. The on-demand runtime built in about 24
+  minutes at the first VM session start, a second start reused it, and a
+  concurrent start waited on the builder lock. A refreshed
+  `packaging/macos/runtime-hashes.json` is not needed
+  ([packaging](packaged-runtimes.md#host-and-guest-packaging-boundary));
+  pinning stays optional, to spare users that build for a release.
 - B6 is done. The default flipped first (`7ca2eb0e`): a session suspended on
   either launcher resumed on the other in the same state directory, on a real VM
   across a daemon restart (`scripts/test-launcher-continuity-vm.ts` in that
@@ -103,6 +103,15 @@ Outstanding:
   interrupt without `-t`; the Loom dev shell needs `static.crates.io` for the
   patched smolvm on x86_64-linux; an isolation-launcher preparation records
   `stdout_closed` where legacy records `guest_exit`.
+- On-demand runtime build: Loom finds a missing `nix-store` only when it
+  registers the result, after a 15–60 minute build, and discards the build
+  (Loom run from source without Nix on PATH; the package puts Nix on PATH).
+  Check `nix-store --version` before starting the builder VM.
+- `loom runtime update` prunes the per-user `/tmp/loom-vm-templates-<uid>`
+  cache down to the templates pinned by the current data dir and config
+  (`cli/src/runtime.ts`), though every Loom data dir of that user shares it; a
+  second install (or a private-state test run) evicts the other's templates,
+  making its next VM start slower.
 - Daemon upgrades (after the `.loom` → XDG move): a version-stable control
   channel answered before the protocol check (`hello` with version, pid and
   attached clients; `shutdown`; a `quit` push). `loom daemon stop|restart`
