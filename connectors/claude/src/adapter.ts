@@ -849,9 +849,14 @@ class ClaudeSession implements AgentSession {
         options,
       });
     } catch (error) {
-      if (init && this.#initDirectory) Deno.removeSync(this.#initDirectory, { recursive: true });
-      if (this.#skillsPlugin && !this.#query)
+      if (init && this.#initDirectory) {
+        Deno.removeSync(this.#initDirectory, { recursive: true });
+        this.#initDirectory = undefined;
+      }
+      if (this.#skillsPlugin && !this.#query) {
         Deno.removeSync(this.#skillsPlugin, { recursive: true });
+        this.#skillsPlugin = undefined;
+      }
       throw error;
     }
     this.#seeding = seeded?.promise ?? null;
