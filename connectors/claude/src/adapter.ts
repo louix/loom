@@ -760,7 +760,9 @@ class ClaudeSession implements AgentSession {
     const env = queryEnv({ promptCacheTtl, configDir });
     const queryEffort = opts.effort ? asQueryEffort(opts.effort) : undefined;
     const options: Options = {
-      ...(init ? { settings: init.settings } : {}),
+      // Flag settings: no `Co-Authored-By` trailer or PR line, whatever the
+      // user's settings say. Loom's Git identity decides authorship.
+      settings: { ...init?.settings, attribution: false },
       cwd: opts.cwd,
       permissionMode: toPermissionMode(opts.mode),
       canUseTool,

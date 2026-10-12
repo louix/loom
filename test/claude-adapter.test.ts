@@ -10,8 +10,9 @@ import {
   mcpConfig,
   outOfTreeWriteReason,
 } from "@loom/connector-claude/adapter";
+import { createProvider } from "@loom/connector-claude";
 import { execFileSync } from "node:child_process";
-import { setLogLevel } from "@loom/core/logger";
+import { makeLogger, setLogLevel } from "@loom/core/logger";
 
 setLogLevel("error");
 
@@ -1212,6 +1213,37 @@ test("setEffort rejects a value the CLI's live flag settings don't support, with
   await s.close();
 });
 
+test("every Claude session, on the host or in a session VM, hides commit and PR attribution", async () => {
+  const captured: Array<Record<string, unknown>> = [];
+  __setClaudeSdk({
+    query: (args) => {
+      captured.push(args.options as Record<string, unknown>);
+      return fakeQuery() as never;
+    },
+  });
+  for (const executionEnvironment of ["host", "session-vm"] as const)
+    for (const oneShot of [false, true]) {
+      const provider = createProvider({
+        id: "claude",
+        config: {},
+        executionEnvironment,
+        logger: makeLogger("test"),
+      });
+      const session = await provider.createSession({
+        sessionId: `attribution-${executionEnvironment}-${oneShot}`,
+        cwd: "/tmp",
+        prompt: "go",
+        mode: "default",
+        mcpServers: [],
+        loomServer: false,
+        ...(oneShot ? { oneShot } : {}),
+      });
+      await session.close();
+    }
+  assert.equal(captured.length, 4);
+  for (const options of captured) assert.deepEqual(options.settings, { attribution: false });
+});
+
 test("Claude registers async init on a new fork but does not retain it across query restarts", async () => {
   const captured: Array<Record<string, unknown>> = [];
   __setClaudeSdk({
@@ -1239,13 +1271,14 @@ test("Claude registers async init on a new fork but does not retain it across qu
       /Initialization is running: echo setup/,
     );
     assert.match(JSON.stringify(captured[0]?.settings), /"async":true/);
+    assert.match(JSON.stringify(captured[0]?.settings), /"attribution":false/);
     const end = Date.now() + 2000;
     while (!session.providerRef) {
       assert(Date.now() < end);
       await delay(10);
     }
     await session.rewind(0, "keep-this");
-    assert.equal(captured[1]?.settings, undefined);
+    assert.deepEqual(captured[1]?.settings, { attribution: false });
   } finally {
     await session.close();
   }
