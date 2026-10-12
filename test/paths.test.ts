@@ -1,10 +1,19 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { findRepoRoot, loomPaths, worktreeDirectory } from "@loom/core/paths";
+import { basename, dirname, join } from "node:path";
+import { ensureLoomDir, findRepoRoot, loomPaths, worktreeDirectory } from "@loom/core/paths";
 import { WorktreeManager } from "@loom/daemon/daemon/worktrees";
 import { makeLogger } from "@loom/core/logger";
 import { loadConfig } from "@loom/daemon/config/config";
@@ -126,6 +135,60 @@ test("worktree directories use persistent XDG storage with distinct canonical re
     assert.equal(worktreeDirectory(repo, "~/trees", env), join(env.HOME, "trees"));
     assert.equal(worktreeDirectory(repo, ".loom/trees", env), join(repo, ".loom", "trees"));
     assert.equal(loomPaths(repo, "/mnt/ssd/trees").trees, "/mnt/ssd/trees");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("loomPaths puts the socket and pidfile in a per-repository runtime directory", () => {
+  const root = realpathSync(mkdtempSync("/tmp/loom-run-paths-"));
+  try {
+    const repo = join(root, "project");
+    mkdirSync(repo);
+    const key = basename(worktreeDirectory(repo, "", { HOME: root }));
+    const xdg = loomPaths(repo, "", { HOME: root, XDG_RUNTIME_DIR: join(root, "run") });
+    assert.equal(xdg.runtime, join(root, "run", "loom", key));
+    assert.equal(xdg.sock, join(xdg.runtime, "daemon.sock"));
+    assert.equal(xdg.pid, join(xdg.runtime, "daemon.pid"));
+    assert.deepEqual(xdg.legacy, {
+      sock: join(repo, ".loom", "daemon.sock"),
+      pid: join(repo, ".loom", "daemon.pid"),
+    });
+    // macOS has no XDG_RUNTIME_DIR; a relative one is ignored like any XDG variable.
+    for (const env of [{ HOME: root }, { HOME: root, XDG_RUNTIME_DIR: "run" }])
+      assert.equal(loomPaths(repo, "", env).runtime, join(`/tmp/loom-${Deno.uid()}`, key));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("loomPaths refuses a socket path over the sun_path limit", () => {
+  const repo = join(tmpdir(), "project");
+  const long = join("/tmp", "x".repeat(80));
+  assert.throws(
+    () => loomPaths(repo, "", { HOME: tmpdir(), XDG_RUNTIME_DIR: long }),
+    /Unix socket limit\. Set XDG_RUNTIME_DIR to a shorter directory/,
+  );
+  // The repository's own path length never matters: its key is bounded.
+  const deep = join(tmpdir(), "y".repeat(200), "z".repeat(200));
+  assert.ok(loomPaths(deep, "", { HOME: tmpdir(), XDG_RUNTIME_DIR: "/run/user/1000" }).sock);
+});
+
+test("ensureLoomDir refuses a runtime base other users can enter", () => {
+  const root = realpathSync(mkdtempSync("/tmp/loom-run-shared-"));
+  try {
+    const repo = join(root, "project");
+    mkdirSync(repo);
+    const paths = loomPaths(repo, "", { HOME: root, XDG_RUNTIME_DIR: root });
+    mkdirSync(dirname(paths.runtime), { mode: 0o755 });
+    chmodSync(dirname(paths.runtime), 0o755);
+    assert.throws(
+      () => ensureLoomDir(paths),
+      /must be a directory owned by this user with mode 0700/,
+    );
+    chmodSync(dirname(paths.runtime), 0o700);
+    ensureLoomDir(paths);
+    assert.equal(statSync(paths.runtime).mode & 0o777, 0o700);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

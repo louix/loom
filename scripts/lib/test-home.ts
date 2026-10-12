@@ -17,7 +17,6 @@ const DIRECTORIES = {
   XDG_DATA_HOME: "data",
   XDG_CACHE_HOME: "cache",
   XDG_CONFIG_HOME: "config",
-  XDG_RUNTIME_DIR: "runtime",
 };
 
 /**
@@ -71,6 +70,10 @@ export const createTestHome = async (): Promise<TestHome> => {
     env[variable] = join(root, name);
     await Deno.mkdir(env[variable]!, { mode: 0o700 });
   }
+  // Daemon sockets live here. Under /tmp, not the home: on macOS a home in $TMPDIR
+  // is long enough to push a socket path past the sun_path limit.
+  const runtime = await Deno.realPath(await Deno.makeTempDir({ dir: "/tmp", prefix: "loom-run-" }));
+  env["XDG_RUNTIME_DIR"] = runtime;
   // A neutral global identity: commits work without the developer's ~/.gitconfig,
   // and tests that resolve identity from Git config still see config, not env.
   await Deno.writeTextFile(
@@ -88,6 +91,7 @@ export const createTestHome = async (): Promise<TestHome> => {
       // Git and Nix leave read-only files and directories behind.
       await new Deno.Command("chmod", { args: ["-R", "u+w", root] }).output();
       await Deno.remove(root, { recursive: true });
+      await Deno.remove(runtime, { recursive: true });
     },
   };
 };

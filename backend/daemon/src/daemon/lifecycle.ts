@@ -1,5 +1,5 @@
 import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { pidAlive } from "./hygiene.ts";
+import { pidAlive } from "@loom/core/daemon-endpoint";
 
 export interface PidfileInfo {
   pid: number;
@@ -13,6 +13,17 @@ export class DaemonAlreadyRunning extends Error {
     super(`a Loom daemon is already running for this repo (pid ${info.pid})`);
     this.name = "DaemonAlreadyRunning";
     this.info = info;
+  }
+}
+
+/** A daemon from before the XDG layout still serves this repository from `<repo>/.loom`. */
+export class LegacyDaemonRunning extends Error {
+  constructor(pid: number, dir: string) {
+    super(
+      `a Loom daemon from an older version is still running for this repo (pid ${pid}, ${dir}); ` +
+        "stop it with `loom stop`, then start Loom again",
+    );
+    this.name = "LegacyDaemonRunning";
   }
 }
 

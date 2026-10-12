@@ -19,7 +19,7 @@ test("stop waits for disconnection and repo ownership release before a restart",
     // Standalone harnesses skip pidfiles; hold one to model cleanup after socket close.
     await Deno.writeTextFile(pid, JSON.stringify(c.daemonInfo));
     let finished = false;
-    const stopping = stopDaemon(c).then(() => {
+    const stopping = stopDaemon(c, pid).then(() => {
       finished = true;
     });
     await h.daemon.whenClosed();
@@ -55,8 +55,9 @@ test("stop reports a bounded failure if the daemon retains repo ownership", asyn
     reconnect: false,
   });
   try {
-    await Deno.writeTextFile(loomPaths(h.repoRoot).pid, JSON.stringify(c.daemonInfo));
-    await assert.rejects(stopDaemon(c, 100), /shutdown timed out/);
+    const { pid } = loomPaths(h.repoRoot);
+    await Deno.writeTextFile(pid, JSON.stringify(c.daemonInfo));
+    await assert.rejects(stopDaemon(c, pid, 100), /shutdown timed out/);
   } finally {
     await c.close();
     await h.cleanup();

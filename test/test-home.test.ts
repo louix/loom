@@ -2,8 +2,13 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { homedir, tmpdir } from "node:os";
 import { join, relative } from "node:path";
-import { worktreeDirectory } from "@loom/core/paths";
-import { TEST_HOME_VARIABLE, temporaryRoots, userDirectory } from "@loom/core/user-dirs";
+import { loomPaths, worktreeDirectory } from "@loom/core/paths";
+import {
+  loomRuntimeDirectory,
+  TEST_HOME_VARIABLE,
+  temporaryRoots,
+  userDirectory,
+} from "@loom/core/user-dirs";
 import { userConfigPath } from "../backend/daemon/src/config-path.ts";
 import { defaultCatalogueDirectory } from "../backend/daemon/src/daemon/model-catalogue-cache.ts";
 import { mcpOAuthStateDirectory } from "../backend/daemon/src/daemon/mcp-oauth-store.ts";
@@ -32,6 +37,7 @@ test("the suite runs inside a throwaway HOME and XDG root", () => {
     "XDG_DATA_HOME",
     "XDG_CACHE_HOME",
     "XDG_CONFIG_HOME",
+    "XDG_RUNTIME_DIR",
   ])
     assert.ok(within(Deno.env.get(variable) ?? "/"), `${variable} escapes ${root}`);
   assert.ok(!relative(root, homedir()).startsWith(".."), `HOME escapes ${root}`);
@@ -43,6 +49,7 @@ test("every per-user Loom location resolves inside the test roots", { skip: !roo
   const repo = join(tmpdir(), "repo");
   for (const path of [
     worktreeDirectory(repo),
+    loomPaths(repo).runtime,
     userConfigPath(),
     defaultCatalogueDirectory(),
     mcpOAuthStateDirectory(),
@@ -74,6 +81,10 @@ test("a test run refuses per-user paths outside its roots", () => {
   }
   // Outside a test run, resolution follows the XDG spec untouched.
   assert.equal(userDirectory("state", { HOME: "/home/someone" }), "/home/someone/.local/state");
+  assert.throws(
+    () => loomRuntimeDirectory({ ...env, XDG_RUNTIME_DIR: "/run/user/1000" }),
+    /outside LOOM_TEST_HOME/,
+  );
   assert.equal(
     userDirectory("data", { HOME: "/home/someone", XDG_DATA_HOME: "relative" }),
     "/home/someone/.local/share",

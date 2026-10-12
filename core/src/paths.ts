@@ -1,9 +1,9 @@
 import { spawnSync } from "node:child_process";
-import { accessSync, constants, mkdirSync, readFileSync, realpathSync } from "node:fs";
-import { basename, delimiter, join, resolve } from "node:path";
+import { accessSync, constants, lstatSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
+import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
-import { userDirectory } from "./user-dirs.ts";
+import { loomRuntimeDirectory, userDirectory } from "./user-dirs.ts";
 
 /**
  * Is `cmd` runnable — an executable on `$PATH`, or an executable file if `cmd`
@@ -67,10 +67,14 @@ export interface LoomPaths {
   repoRoot: string;
   /** `<repoRoot>/.loom` */
   dir: string;
+  /** `$XDG_RUNTIME_DIR/loom/<repo-key>`: socket and pidfile, private to the user. */
+  runtime: string;
   /** Unix domain socket the daemon listens on. */
   sock: string;
   /** Pidfile guarding single-daemon-per-repo. */
   pid: string;
+  /** Where Loom kept this repository's socket and pidfile before the XDG layout. */
+  legacy: { sock: string; pid: string };
   /** SQLite database. */
   db: string;
   /** Rolling daemon log. */
@@ -82,6 +86,25 @@ export interface LoomPaths {
   /** Directory holding one git worktree per session. */
   trees: string;
 }
+
+/** Longest socket path, without its NUL: `sun_path` is 104 bytes on macOS, 108 on Linux. */
+const SOCKET_PATH_MAX_BYTES = Deno.build.os === "linux" ? 107 : 103;
+
+/** `<name>-<hash>`: the repository's directory name in every per-user Loom directory. */
+export const repoKey = (repoRoot: string): string => {
+  let identity = resolve(repoRoot);
+  try {
+    identity = realpathSync(identity);
+  } catch {
+    // Paths are also used before a repository has been created.
+  }
+  const name =
+    basename(identity)
+      .replace(/[^a-zA-Z0-9._-]/g, "-")
+      .slice(0, 48) || "repo";
+  const hash = createHash("sha256").update(identity).digest("hex").slice(0, 16);
+  return `${name}-${hash}`;
+};
 
 /** Resolve an exact configured directory, or a repository-specific XDG data path. */
 export const worktreeDirectory = (
@@ -95,38 +118,53 @@ export const worktreeDirectory = (
     if (configured.startsWith("~/")) return resolve(home, configured.slice(2));
     return resolve(repoRoot, configured);
   }
-  let identity = resolve(repoRoot);
-  try {
-    identity = realpathSync(identity);
-  } catch {
-    // Paths are also used before a repository has been created.
-  }
-  const name =
-    basename(identity)
-      .replace(/[^a-zA-Z0-9._-]/g, "-")
-      .slice(0, 48) || "repo";
-  const hash = createHash("sha256").update(identity).digest("hex").slice(0, 16);
-  return join(userDirectory("data", env), "loom", "worktrees", `${name}-${hash}`);
+  return join(userDirectory("data", env), "loom", "worktrees", repoKey(repoRoot));
 };
 
-export const loomPaths = (repoRoot: string, configuredTrees = ""): LoomPaths => {
+/** Throws when the daemon socket would not fit in `sun_path`. */
+export const loomPaths = (
+  repoRoot: string,
+  configuredTrees = "",
+  env: Record<string, string | undefined> = Deno.env.toObject(),
+): LoomPaths => {
   const dir = join(repoRoot, ".loom");
+  const runtime = join(loomRuntimeDirectory(env), repoKey(repoRoot));
+  const sock = join(runtime, "daemon.sock");
+  const sockBytes = new TextEncoder().encode(sock).length;
+  if (sockBytes > SOCKET_PATH_MAX_BYTES)
+    throw new Error(
+      `The daemon socket path ${sock} is ${sockBytes} bytes, over the ${SOCKET_PATH_MAX_BYTES}-byte Unix socket limit. Set XDG_RUNTIME_DIR to a shorter directory.`,
+    );
   return {
     repoRoot,
     dir,
-    sock: join(dir, "daemon.sock"),
-    pid: join(dir, "daemon.pid"),
+    runtime,
+    sock,
+    pid: join(runtime, "daemon.pid"),
+    legacy: { sock: join(dir, "daemon.sock"), pid: join(dir, "daemon.pid") },
     db: join(dir, "loom.db"),
     log: join(dir, "daemon.log"),
     tuiLog: join(dir, "tui.log"),
     tuiState: join(dir, "tui.json"),
-    trees: worktreeDirectory(repoRoot, configuredTrees),
+    trees: worktreeDirectory(repoRoot, configuredTrees, env),
   };
 };
 
-/** Create repository-local state. WorktreeManager creates its directory on demand. */
+/**
+ * Create the repository's state and runtime directories. The runtime base may be
+ * the shared `/tmp`, so it must be a real directory only this user can enter.
+ * WorktreeManager creates its directory on demand.
+ */
 export const ensureLoomDir = (paths: LoomPaths): void => {
   mkdirSync(paths.dir, { recursive: true });
+  const base = dirname(paths.runtime);
+  mkdirSync(base, { recursive: true, mode: 0o700 });
+  const info = lstatSync(base);
+  if (!info.isDirectory() || info.uid !== Deno.uid() || (info.mode & 0o077) !== 0)
+    throw new Error(
+      `Refusing to use ${base} for the daemon socket: it must be a directory owned by this user with mode 0700.`,
+    );
+  mkdirSync(paths.runtime, { recursive: true, mode: 0o700 });
 };
 
 /**

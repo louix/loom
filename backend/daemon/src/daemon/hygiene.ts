@@ -3,6 +3,7 @@ import { existsSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { Logger } from "@loom/core/logger";
 import type { LoomPaths } from "@loom/core/paths";
+import { pidAlive } from "@loom/core/daemon-endpoint";
 import type { ChildStore, MidRunSession } from "../store/sessions.ts";
 import type { Registry } from "./registry.ts";
 
@@ -25,21 +26,6 @@ export interface HygieneReport {
   clearedLocks: string[];
   worktreePruned: boolean;
 }
-
-/** Is `pid` a live process (whether or not we can signal it)? */
-export const pidAlive = (pid: number): boolean => {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    // Signal 0 sends nothing — it only probes whether `pid` exists and is
-    // signalable. Deno's Signal type is a name union with no "0" member, but
-    // the underlying syscall (and Deno's kill()) accepts it identically to
-    // Node's `process.kill(pid, 0)`.
-    Deno.kill(pid, 0 as unknown as Deno.Signal);
-    return true;
-  } catch (err) {
-    return err instanceof Deno.errors.PermissionDenied;
-  }
-};
 
 /**
  * Bring a freshly-started daemon into a clean state after a previous instance

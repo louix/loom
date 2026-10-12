@@ -30,6 +30,8 @@ export interface ConnectOptions {
    * when `autospawn` fires. Required unless `autospawn` is false.
    */
   daemonEntry?: string;
+  /** Where a spawned daemon's stderr goes until its own log starts. Default: beside the socket. */
+  startupLog?: string;
   /** Spawn a daemon if none is listening. Default true. */
   autospawn?: boolean;
   /** Reconnect with a fresh snapshot if the connection drops. Default true. */
@@ -220,6 +222,7 @@ export class LoomClient {
       autospawn: true,
       reconnect: true,
       daemonEntry: "",
+      startupLog: join(dirname(opts.sockPath), "daemon-startup.log"),
       clientId: this.clientId,
       // The daemon subscribes and enqueues its opening snapshot in one
       // synchronous step *before* answering `hello`, so in the ordinary case
@@ -481,9 +484,8 @@ export class LoomClient {
   async #spawnDaemon(): Promise<Deno.Conn> {
     const entry = this.#opts.daemonEntry;
     if (!entry) throw new Error("LoomClient: autospawn needs `daemonEntry` (path to loomd)");
-    const dir = dirname(this.#opts.sockPath);
-    mkdirSync(dir, { recursive: true });
-    const logPath = join(dir, "daemon-startup.log");
+    const logPath = this.#opts.startupLog;
+    mkdirSync(dirname(logPath), { recursive: true });
     // A file survives client exit without keeping a stderr pipe (or the client)
     // alive. Preserve failures that occur before the daemon's logger starts.
     const stderr = openSync(logPath, "w", 0o600);

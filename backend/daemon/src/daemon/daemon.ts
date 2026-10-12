@@ -46,6 +46,7 @@ import {
   tryFindRepoRoot,
   type LoomPaths,
 } from "@loom/core/paths";
+import { legacyDaemonPid } from "@loom/core/daemon-endpoint";
 import { scaffoldUserConfig, userConfigPath } from "../scaffold.ts";
 import { runtimeMcpDiagnostic } from "./mcp-runtime-diagnostics.ts";
 import { preflightTools } from "./tool-preflight.ts";
@@ -142,7 +143,13 @@ import {
   type SessionMode,
   type SessionRef,
 } from "@loom/core/types";
-import { acquirePidfile, IdleTimer, releasePidfile, type PidfileInfo } from "./lifecycle.ts";
+import {
+  acquirePidfile,
+  IdleTimer,
+  LegacyDaemonRunning,
+  releasePidfile,
+  type PidfileInfo,
+} from "./lifecycle.ts";
 import { repoInstructionsFor, systemPromptAppendFor } from "./prompt.ts";
 import { providerColor } from "./provider-color.ts";
 
@@ -751,6 +758,9 @@ export class Daemon {
   async #bringUp(): Promise<void> {
     if (!this.#standalone) {
       this.#pidfile = acquirePidfile(this.paths.pid, this.epoch);
+      // Never a second daemon for the repo: an older one keeps its old socket.
+      const legacy = legacyDaemonPid(this.paths);
+      if (legacy !== null) throw new LegacyDaemonRunning(legacy, this.paths.dir);
     }
 
     const recoveredVms = await recoverRepositoryVms(this.repoRoot, (id, error) => {

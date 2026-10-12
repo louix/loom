@@ -7,7 +7,8 @@ test(
   "public CLI logs in without a browser, reports safe status and logs out removed definitions",
   { skip: Deno.build.os !== "linux" },
   async () => {
-    const root = await Deno.makeTempDir();
+    // Under /tmp: the runtime directory holds a daemon socket, bounded by sun_path.
+    const root = await Deno.makeTempDir({ dir: "/tmp" });
     let exchanges = 0;
     const server = Deno.serve(
       { hostname: "127.0.0.1", port: 0, onListen() {} },

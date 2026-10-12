@@ -3,7 +3,9 @@ import { relaunchForIpc } from "@loom/core/network-permissions";
 import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
 import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { ensureLoomDir, findRepoRoot, loomPaths } from "@loom/core/paths";
+import { daemonEndpoint, showLegacyDaemonNotice } from "@loom/core/daemon-endpoint";
 import { setLogFile, setLogStderr } from "@loom/core/logger";
 import { LoomClient, showConnectionError, type ConnectionError } from "@loom/client";
 import { cacheHitRate } from "@loom/core/cache";
@@ -302,11 +304,14 @@ const main = async (): Promise<void> => {
     Deno.exitCode = await launchRepositoryTui(fileURLToPath(import.meta.url), repoRoot);
     return;
   }
+  const repoPaths = loomPaths(repoRoot);
+  const endpoint = daemonEndpoint(repoPaths);
   await relaunchForIpc(
     fileURLToPath(import.meta.url),
-    loomPaths(repoRoot).sock,
+    endpoint.sock,
     wantTui ? ["--repo", repoRoot, "tui"] : Deno.args,
   );
+  if (endpoint.legacy) writeErr(showLegacyDaemonNotice(repoPaths));
   const { scaffoldUserConfig } = await import("@loom/daemon/scaffold");
   scaffoldUserConfig();
   if (cmd === "mcp") {
@@ -330,17 +335,17 @@ const main = async (): Promise<void> => {
     );
     return;
   }
-  const { sock } = loomPaths(repoRoot);
-
   // `tail` and the TUI are the long-lived commands that want reconnect; the TUI
   // also replays the daemon's buffered history so re-opening it isn't a blank log.
   const reconnect = cmd === "tail" || wantTui;
   const client = await LoomClient.connect({
     repoRoot,
-    sockPath: sock,
+    sockPath: endpoint.sock,
     daemonEntry: fileURLToPath(new URL("./loomd.ts", import.meta.url)),
+    startupLog: join(repoPaths.dir, "daemon-startup.log"),
     reconnect,
-    autospawn: cmd !== "stop",
+    // A legacy daemon holds the repository; spawning would only race it.
+    autospawn: cmd !== "stop" && !endpoint.legacy,
   }).catch((error) => {
     if (
       cmd === "stop" &&
@@ -768,7 +773,7 @@ const main = async (): Promise<void> => {
       }
       case "stop": {
         const { stopDaemon } = await import("./stop.ts");
-        await stopDaemon(client);
+        await stopDaemon(client, endpoint.pid);
         writeOut("daemon stopped\n");
         break;
       }

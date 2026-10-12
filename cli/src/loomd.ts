@@ -5,7 +5,7 @@ import { parseArgs } from "node:util";
 import { findRepoRoot, loomPaths } from "@loom/core/paths";
 import { setLogLevel } from "@loom/core/logger";
 import { Daemon } from "@loom/daemon/daemon/daemon";
-import { DaemonAlreadyRunning } from "@loom/daemon/daemon/lifecycle";
+import { DaemonAlreadyRunning, LegacyDaemonRunning } from "@loom/daemon/daemon/lifecycle";
 import { LOOM_VERSION } from "@loom/core/version";
 import { CONNECTORS } from "./connectors.ts";
 
@@ -47,6 +47,10 @@ const main = async (): Promise<void> => {
     if (err instanceof DaemonAlreadyRunning) {
       writeErr(`${err.message}\n`);
       Deno.exit(3);
+    }
+    if (err instanceof LegacyDaemonRunning) {
+      writeErr(`${err.message}\n`);
+      Deno.exit(1);
     }
     throw err;
   }

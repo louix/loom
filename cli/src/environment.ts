@@ -21,6 +21,7 @@ import { ipcPermissions } from "../../core/src/network-permissions.ts";
 import { inspectArtifact, runtimeBuildFor } from "../../runtime/src/packaged/artifact.ts";
 import { ensureRuntimeArtifact } from "../../runtime/src/packaged/build.ts";
 import { loomPaths } from "../../core/src/paths.ts";
+import { daemonEndpoint } from "../../core/src/daemon-endpoint.ts";
 import { pruneRuntimeCaches } from "./maintenance.ts";
 import { pruneRepositorySessionDisks } from "../../backend/daemon/src/daemon/session-vm-state.ts";
 
@@ -47,7 +48,7 @@ export const prepareEnvironmentInTerminal = async (
         "--cached-only",
         "--frozen",
         "--node-modules-dir=manual",
-        ...ipcPermissions(loomPaths(repo).sock),
+        ...ipcPermissions(daemonEndpoint(loomPaths(repo)).sock),
         entry,
         "--repo",
         repo,

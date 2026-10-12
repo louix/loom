@@ -1,12 +1,17 @@
 import { setTimeout as delay } from "node:timers/promises";
 import type { LoomClient } from "@loom/client";
-import { loomPaths } from "@loom/core/paths";
 
-/** The shutdown RPC acknowledges the request before the daemon releases its repo. */
-export const stopDaemon = async (client: LoomClient, timeoutMs = 30_000): Promise<void> => {
+/**
+ * The shutdown RPC acknowledges the request before the daemon releases its repo.
+ * `pid` is the pidfile of the endpoint the client dialled: a legacy daemon's is in `<repo>/.loom`.
+ */
+export const stopDaemon = async (
+  client: LoomClient,
+  pid: string,
+  timeoutMs = 30_000,
+): Promise<void> => {
   const daemon = client.daemonInfo;
   if (!daemon) throw new Error("Daemon identity is unavailable");
-  const { pid } = loomPaths(daemon.repoRoot);
   let disconnected = false;
   const unsubscribe = client.on("disconnect", () => {
     disconnected = true;

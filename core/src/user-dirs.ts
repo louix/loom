@@ -61,3 +61,18 @@ export const userDirectory = (
   const dir = xdg && isAbsolute(xdg) ? xdg : join(env["HOME"] || homedir(), fallback);
   return assertTestHome(dir, env);
 };
+
+/**
+ * Loom's base for sockets and pidfiles: `$XDG_RUNTIME_DIR/loom`, or `/tmp/loom-<uid>`
+ * where the variable is unset (macOS). Not `$TMPDIR`: macOS's per-user one is long
+ * enough to push a socket path past the sun_path limit.
+ */
+export const loomRuntimeDirectory = (
+  env: Record<string, string | undefined> = Deno.env.toObject(),
+): string => {
+  const xdg = env["XDG_RUNTIME_DIR"]?.trim();
+  return assertTestHome(
+    xdg && isAbsolute(xdg) ? join(xdg, "loom") : `/tmp/loom-${Deno.uid() ?? 0}`,
+    env,
+  );
+};

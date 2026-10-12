@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { findRepoRoot, loomPaths } from "@loom/core/paths";
 import { runWithIpc } from "@loom/core/network-permissions";
+import { daemonEndpoint } from "@loom/core/daemon-endpoint";
 
 export const TUI_HANDOFF = "LOOM_TUI_HANDOFF";
 
@@ -12,9 +13,14 @@ export const launchRepositoryTui = async (entry: string, initial: string): Promi
     let repo = initial;
     while (true) {
       await Deno.writeTextFile(handoff, "");
-      const code = await runWithIpc(entry, loomPaths(repo).sock, ["--repo", repo, "tui"], {
-        [TUI_HANDOFF]: handoff,
-      });
+      const code = await runWithIpc(
+        entry,
+        daemonEndpoint(loomPaths(repo)).sock,
+        ["--repo", repo, "tui"],
+        {
+          [TUI_HANDOFF]: handoff,
+        },
+      );
       if (code !== 0) return code;
       const next = await Deno.readTextFile(handoff);
       if (!next) return code;

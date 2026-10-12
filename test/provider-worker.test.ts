@@ -1,6 +1,7 @@
 import { gitFixture } from "../scripts/lib/git-fixture.ts";
 import { join } from "node:path";
 import { ipcPermissions } from "../core/src/network-permissions.ts";
+import { loomPaths } from "../core/src/paths.ts";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 Deno.test("a network-denied host runs provider turns in a worker with host transcript persistence", async () => {
@@ -77,7 +78,7 @@ Deno.test("a network-denied host runs provider turns in a worker with host trans
       const daemon = await new Deno.Command(Deno.execPath(), {
         args: [
           "run",
-          ...ipcPermissions(join(fixture.repo, ".loom/daemon.sock")),
+          ...ipcPermissions(loomPaths(fixture.repo).sock),
           fileURLToPath(new URL("../scripts/test-daemon-network.ts", import.meta.url)),
           `http://127.0.0.1:${server.addr.port}/v1`,
           fixture.repo,

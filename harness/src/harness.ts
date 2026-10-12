@@ -27,6 +27,8 @@ setLogLevel("error"); // keep test output quiet
 Deno.env.set("XDG_CONFIG_HOME", mkdtempSync(join(tmpdir(), "loom-xdg-")));
 Deno.env.set("XDG_DATA_HOME", mkdtempSync(join(tmpdir(), "loom-data-")));
 Deno.env.set("XDG_STATE_HOME", mkdtempSync(join(tmpdir(), "loom-state-")));
+// Under /tmp, not $TMPDIR: macOS's is long enough to push daemon sockets past sun_path.
+Deno.env.set("XDG_RUNTIME_DIR", mkdtempSync("/tmp/loom-run-"));
 
 export interface Harness {
   repoRoot: string;
@@ -60,7 +62,7 @@ export const makeHarness = async (
     // A base commit so per-session `git worktree add -b … main` has a ref.
     execFileSync("git", ["-C", repoRoot, "commit", "-q", "--allow-empty", "-m", "base"]);
   }
-  const { sock } = loomPaths(repoRoot);
+  const paths = loomPaths(repoRoot);
 
   let daemon = await Daemon.start({
     repoRoot,
@@ -73,7 +75,7 @@ export const makeHarness = async (
   const h: Harness = {
     repoRoot,
     configPath,
-    sockPath: sock,
+    sockPath: paths.sock,
     get daemon() {
       return daemon;
     },
@@ -91,7 +93,8 @@ export const makeHarness = async (
     async cleanup() {
       await daemon.stop("test-cleanup").catch(() => {});
       rmSync(configDir, { recursive: true, force: true });
-      rmSync(loomPaths(repoRoot).trees, { recursive: true, force: true });
+      rmSync(paths.trees, { recursive: true, force: true });
+      rmSync(paths.runtime, { recursive: true, force: true });
       rmSync(repoRoot, { recursive: true, force: true });
     },
   } as Harness;

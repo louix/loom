@@ -5,7 +5,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { LoomClient } from "@loom/client";
 import type { SessionSnapshot } from "@loom/core/wire";
 import { ChildStore } from "@loom/daemon/store/sessions";
-import { pidAlive } from "@loom/daemon/daemon/hygiene";
+import { pidAlive } from "@loom/core/daemon-endpoint";
 import { makeHarness, type Harness } from "@loom/harness";
 
 let h: Harness;

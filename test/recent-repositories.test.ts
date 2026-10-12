@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
+import { loomPaths } from "@loom/core/paths";
 import {
   availableRepositories,
   readRecentRepositories,
@@ -54,7 +55,7 @@ test("repository launcher replaces scoped clients across switches", async () => 
       entry,
       `
       const repo = Deno.args[1];
-      const socket = repo + "/.loom/daemon.sock";
+      const socket = ${JSON.stringify(Object.fromEntries(repos.map((r) => [r, loomPaths(r).sock])))}[repo];
       const exact = await Deno.permissions.query({ name: "net", host: "unix:" + socket });
       const broad = await Deno.permissions.query({ name: "net" });
       if (exact.state !== "granted" || broad.state === "granted") Deno.exit(9);
