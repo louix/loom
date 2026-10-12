@@ -137,8 +137,9 @@ children inside the supervisor's VM is a later shared-VM feature.
   notification when a child calls `report`, finishes a turn, or fails or is
   interrupted — once per settled turn, identified by the turn rather than the
   state it settled in, with that turn's own final message; a turn the child
-  has already moved on from is reported when the one it moved on to ends. It
-  reads:
+  has already moved on from is reported when the one it moved on to ends
+  (the child's queue machine decides both: `turn_settled` and
+  `report_ready` in [message-queue.md](message-queue.md#holds)). It reads:
 
   ```text
   [from your agent 7ea89088 "Title" (profile self)] It finished a turn.
@@ -332,12 +333,6 @@ detach` on `session.markDone` / `session.remove`, `--children` in the CLI,
   reach its supervisor, which has no tool to answer or escalate it.
 - Clone children (a worktree off the supervisor's clone) are stage 2, not
   built.
-- Hold and supervision races (the queue's holds, notifications, agents'
-  messages, stops, revivals) found across six review rounds were each fixed
-  on their own (`docs/message-queue.md`, Holds, H1–H7). A refactor is
-  planned: queue holds and supervision as one closed tagged-union state with
-  a single total, pure, tested `step(state, event)` transition, so the
-  remaining illegal combinations cannot be represented.
 
 ## Open
 

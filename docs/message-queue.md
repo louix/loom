@@ -72,8 +72,9 @@ interface QueueEntry {
   deliveredAt?: number;
   consumedAt?: number;
 }
-type QueueHold = "interrupt" | "restart" | "crash" | "rejected" | null;
+type QueueHold = "interrupt" | "restart" | "crash" | "rejected"; // on the wire, with
 type QueueHoldBy = "user" | "supervisor"; // whose stop; absent for Loom's own
+// The daemon holds it as one union, `Hold` (see Holds).
 ```
 
 - `queued`: in Loom; editable, deletable, movable, switchable, sendable now.
@@ -240,22 +241,89 @@ follow the ordinary rules relative to the turn it started, so a held
 
 ## Holds
 
-A hold is a cause: a reason and whose it is (`by`: `user`, `supervisor`, or
-none for Loom's own). Every write of it goes through one function,
-`MessageQueueStore.applyHold`, which applies the combine rule (H1) to the hold
-as it is, in one step. `SessionManager` reaches it through `#applyHold`, which
-also drops a pending forced entry (H3); the restart recovery calls it inside
-the store. Nothing else writes the hold, and `hold()` is read off
-`holdCause()`.
+A session's queue, hand-over, hold and supervision state is one value,
+`QueueMachine` (`backend/daemon/src/daemon/queue-machine.ts`), and every
+decision about it is one pure, total function:
+`step(machine, event, world) → { machine, effects }`. `world` is what it reads
+but does not own: the live entries without their text, and what the run is
+doing. `SessionManager` keeps the machines, reads the world, steps, and runs
+the effects (persist the hold, publish, hand over, requeue, mark uncertain,
+consume, withdraw, warn); it decides nothing itself. The hold is persisted
+as one column whose values are the union's members (migration 37).
 
-| Cause                    | Set by                                                                                                                                                                                                   | Lifted by                                            | A child's notification behind it | A supervisor's `agent_message` behind it | Arriving on an existing hold (H1)                    |
-| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- | -------------------------------- | ---------------------------------------- | ---------------------------------------------------- |
-| `interrupt` · user       | The user's stop — `session.interrupt` (joining one under way, or of a session still starting), a VM stop, an archive — even with nothing queued; the user stopping a compaction, only while entries wait | The user's send or release (`r`)                     | waits                            | waits                                    | Keeps the existing reason; makes the hold the user's |
-| `interrupt` · supervisor | `agent_interrupt`, `agent_stop`, the supervisor stopping a compaction — only while entries wait                                                                                                          | The user's send or release; the supervisor's message | waits                            | lifts it and goes first                  | Changes nothing                                      |
-| `interrupt` · Loom's own | Input the adapter discarded with no one's stop under way, put back in the queue                                                                                                                          | The user's send or release; the supervisor's message | waits                            | lifts it and goes first                  | Changes nothing                                      |
-| `crash`                  | A fatal root error, or the stream ending unexpectedly, while entries wait                                                                                                                                | The user's send or release; the supervisor's message | waits                            | lifts it and goes first, reviving        | Changes nothing                                      |
-| `restart`                | The daemon starting with entries left `delivering` (`recoverAfterRestart`)                                                                                                                               | The user's send or release; the supervisor's message | waits                            | lifts it and goes first, reviving        | Changes nothing                                      |
-| `rejected`               | A hand-over whose outcome is unknown (`DeliveryUncertainError`): the entry turns `uncertain`                                                                                                             | The user's send or release; the supervisor's message | waits                            | lifts it and goes first, reviving        | Changes nothing                                      |
+```ts
+type Hold =
+  | { kind: "free" }
+  | { kind: "supervisor" } // interrupt · the supervisor's
+  | { kind: "loom"; reason: QueueHold } // no one's: interrupt (a requeued discard), crash, restart, rejected
+  | { kind: "user"; reason: QueueHold }; // the user's stop, or a hold it landed on (H1)
+type Push = none | forced { entryId, now } | now { entryId }; // H3, H4
+type Delivery = ready | backoff | scheduled { op } | handing_over { op, ids, fresh, at };
+type Stop = none | holding { by } | lifted { by }; // `by`: whom the turn's end is attributed to
+type Spell = unwritten | in { state, turn }; // a settled turn's identity
+type Report = idle { last } | making { turn }; // as a Loom agent's child
+```
+
+The tables below are the code's tables: `WAITS` (H2), `stopOn` / `loomOn`
+(H1), and the event cases of `step`.
+
+**H2 — who waits behind which hold** (`WAITS`). A message that does not wait
+lifts the hold and goes first, alone (`push: forced`).
+
+| Hold         | Set by                                                                                                                                                                                                   | The user's send | A supervisor's `agent_message` | A child's report |
+| ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- | ------------------------------ | ---------------- |
+| `free`       |                                                                                                                                                                                                          | goes            | goes                           | goes             |
+| `user`       | The user's stop — `session.interrupt` (joining one under way, or of a session still starting), a VM stop, an archive — even with nothing queued; the user stopping a compaction, only while entries wait | lifts           | waits                          | waits            |
+| `supervisor` | `agent_interrupt`, `agent_stop`, the supervisor stopping a compaction — only while entries wait                                                                                                          | lifts           | lifts, reviving a cold child   | waits            |
+| `loom`       | `interrupt`: input the adapter discarded with no one's stop under way; `crash`: a fatal root error or the stream ending unexpectedly, while entries wait; `restart`; `rejected`                          | lifts           | lifts, reviving a cold child   | waits            |
+
+The user's release (`r`) lifts any hold.
+
+**H1 — what a hold change does to the hold already there** (`stopOn`, `loomOn`,
+`writeHold`). "Holds" means: entries wait, or (the user's stop of a turn or a
+session) even none.
+
+| Change                                                               | On `free`                                              | On a hold already set                                   | A write (voids older tickets, H6) |
+| -------------------------------------------------------------------- | ------------------------------------------------------ | ------------------------------------------------------- | --------------------------------- |
+| The user's stop                                                      | `user · interrupt`, if it holds                        | `user`, keeping the reason (`supervisor` → `interrupt`) | always                            |
+| A supervisor's stop                                                  | `supervisor`, if it holds                              | unchanged                                               | if changed                        |
+| A requeued discard, no stop lifted since                             | the stop's: `user`, `supervisor` or `loom · interrupt` | unchanged                                               | if changed                        |
+| A requeued discard after its stop's hold was lifted (`stop: lifted`) | unchanged                                              | unchanged                                               | no                                |
+| A crash, a restart, a doubtful hand-over                             | `loom · crash / restart / rejected`                    | unchanged                                               | if changed                        |
+| A lifting message, a release                                         | —                                                      | `free`                                                  | yes                               |
+| A restore (`ticket`)                                                 | the ticket's hold, if its write is the last            | the ticket's hold, if its write is the last             | if changed                        |
+
+**The other events** (`step`; every row also publishes when the hold or the
+queue changed). "Evaluates": dispatch rules 1–6 run on the entries as the
+effects leave them, and a hand-over is scheduled (`delivery: scheduled`) if
+they say so.
+
+| Event                                        | Machine                                                                                                                                | Effects                                                                    | Evaluates  |
+| -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- | ---------- |
+| `message` (H2)                               | lifts or waits; a lift forces the message; `backoff` → `ready`                                                                         | `revive` if it goes and the session is cold or a lifecycle op is under way | no         |
+| `message_withdrawn` (H5)                     | if still `queued`: unforced, the ticket restored                                                                                       | `withdraw`                                                                 | no         |
+| `release`                                    | lift                                                                                                                                   |                                                                            | yes        |
+| `send_now` (H4)                              | `forced {now}` on a settled or held session, else `now`                                                                                |                                                                            | yes        |
+| `touched` (edit, move, remove, `dispatch`)   | `backoff` → `ready`                                                                                                                    |                                                                            | yes        |
+| `stop {by, scope}`                           | H1; `stop: holding`, `by` the user over a supervisor (a `compaction` or `session` stop attributes nothing); an interrupt clears `push` |                                                                            | no         |
+| `stop_undone` (H6)                           | the ticket restored                                                                                                                    |                                                                            | no         |
+| `interrupt_stopped`                          |                                                                                                                                        | `mark_uncertain` what is still delivering (with receipts)                  | no         |
+| `attached`                                   | `delivery: ready`, `stop: none`                                                                                                        |                                                                            | no         |
+| `status_moved`                               | a turn start clears `stop.by`; `backoff` → `ready`                                                                                     |                                                                            | yes        |
+| `run_moved` (a tool, the gate, a stop ended) |                                                                                                                                        |                                                                            | yes        |
+| `direct_send` (Loom's own message)           | clears `stop.by`                                                                                                                       |                                                                            | no         |
+| `busy` (H7)                                  | `busy`                                                                                                                                 |                                                                            | as it ends |
+| `crashed`, `restart_recovered`               | H1 (`crash`, `restart`) while entries wait                                                                                             | `mark_uncertain` what was delivering                                       | yes        |
+| `consumed`                                   |                                                                                                                                        | `consume` (the `user_message`)                                             | yes        |
+| `discarded`                                  | H1 (a requeued discard; never unforces)                                                                                                | `requeue` the queue's entries; anything else is dropped                    | yes        |
+| `gate_reached {op}`                          | decides again; `handing_over`                                                                                                          | `mark_delivering`, then `send` the first                                   | no         |
+| `sent {op}` ok                               | unforced if it was forced                                                                                                              | `consume` without receipts; `send` the next; the last ends the trip        | at the end |
+| `sent` refused                               | `backoff`                                                                                                                              | `requeue` it and the rest; `warn` for a turn start                         | no         |
+| `sent` uncertain                             | H1 (`rejected`)                                                                                                                        | `mark_uncertain` it, `requeue` the rest, `warn`                            | yes        |
+| `handover_ended {op}`                        | `ready` if still that trip                                                                                                             |                                                                            | yes        |
+| `status_written`                             | a new spell when the state changed                                                                                                     |                                                                            | no         |
+| `turn_settled {turn}`                        | `report: making` — see [loom-agents.md](loom-agents.md#communication)                                                                  | `make_report`                                                              | no         |
+| `report_ready {turn}`                        | `report: idle`                                                                                                                         | `send_report` if the spell is still `turn`                                 | no         |
 
 - **H1 Combine.** A hold already set keeps its reason. Only a user's stop
   changes anything about it: it becomes the user's. Everything else that
@@ -265,26 +333,23 @@ the store. Nothing else writes the hold, and `hold()` is read off
   re-attributed by any path but the user lifting it (or H5 and H6 undoing a
   hold that never took effect). A requeued discard is no stop of its own: it
   belongs to the stop that discarded it (the latest one asked of the run),
-  and reported after that stop's hold was lifted — the user's send or
-  release, a supervisor's message — it holds nothing: the lift stands, and
-  its entries go back behind what lifted it.
-- **H2 Wait or lift** is decided once, by `SessionManager.enqueue`, as the
-  message is queued: the user's send lifts any hold; a supervisor's message
-  any but the user's; a child's notification none. `applyHold`'s lift then
-  clears the hold unconditionally. A message that lifts goes first and alone
-  (at the head, forced); one that waits joins the held entries at the back
-  and wakes nothing, a cold session included. The enqueue answers whether
-  the session must be revived for the message (it is cold — no adapter, one
-  whose stream ended, or one a start, an idle shutdown or an environment
-  refresh under way may stop or replace, which the revival waits out — and
-  the message does not wait); the daemon revives only then and decides
-  nothing itself. A message that does not wait on a live session is
-  dispatched, never revived for.
+  and reported after that stop's hold was lifted (`stop: lifted`) it holds
+  nothing: the lift stands, and its entries go back behind what lifted it.
+- **H2 Wait or lift** is decided once, as the message is queued
+  (`SessionManager.enqueue`, the `message` event), by who sends it. A message
+  that lifts goes first and alone (at the head, forced); one that waits joins
+  the held entries at the back and wakes nothing, a cold session included.
+  The step answers whether the session must be revived for the message (the
+  `revive` effect: it is cold — no adapter, one whose stream ended, or one a
+  start, an idle shutdown or an environment refresh under way may stop or
+  replace, which the revival waits out — and the message does not wait); the
+  daemon revives only then and decides nothing itself. A message never
+  dispatches by itself: the caller dispatches once any revival is done.
 - **H3 A hold beats a forced entry not yet handed over.** A message that
-  lifted a hold, or one sent now, goes alone whatever the hold; but a hold
-  applied before it is handed over (a stop while a cold session comes back
-  for it) drops that, and the entry waits at the head, held. A requeued
-  discard never drops it (H1): it is no one's new stop.
+  lifted a hold, or one sent now, goes alone whatever the hold; but any hold
+  change that leaves the queue held (a stop while a cold session comes back
+  for it) unforces it, and the entry waits at the head, held; sent now, it
+  keeps its `now` mark. A requeued discard never unforces it (H1).
 - **H4 Send now** delivers one entry through any hold and leaves the hold.
 - **H5 A revival that fails** for a message withdraws the message and puts
   back the hold it lifted, unless the hold was written since: as if it was
@@ -297,24 +362,24 @@ the store. Nothing else writes the hold, and `hold()` is read off
 - **H6 A stop that does not complete.** A close by someone
   (`SessionManager.close(by)`: an archive, a VM stop) applies its stop
   before it awaits anything. If the close fails, or the archive around it
-  does (a worktree that will not go), the hold goes back to what it was,
-  unless it was written since: no user's hold outlives an archive that did
-  not happen. Written since means changed — or re-asserted by a user's stop;
-  anything that leaves the hold as it was (a discard put back as the
-  adapter closes, a crash, a supervisor's stop on it) writes nothing and
-  voids no undo. Write numbers are never reused, so a session forgotten and
-  written again cannot match an older undo.
+  does (a worktree that will not go), the hold goes back to what it was
+  (`stop_undone`), unless it was written since: no user's hold outlives an
+  archive that did not happen. Written since means changed — or re-asserted
+  by a user's stop; anything that leaves the hold as it was (a discard put
+  back as the adapter closes, a crash, a supervisor's stop on it) writes
+  nothing and voids no undo. A ticket names the write it undoes; a removed
+  session's machine is forgotten with its row.
 - **H7 Busy.** While a clone's guest Git runs for the daemon — its turn-end
   sync, a rebase, republishing a renamed branch — the daemon marks the
-  session busy in `SessionManager` (`setBusy`). Dispatch reads it with the
-  rest of rule 1, so it stops every path alike: the pump, a send, a release,
-  send now, notifications and agents' messages. Only the user's
-  `session.send` and `session.queueRelease` are refused as `busy` meanwhile
-  (their contract); everything else is queued as usual and goes when the
-  operation ends, which re-evaluates the queue.
+  session busy (`SessionManager.setBusy`, the `busy` event). Dispatch reads
+  it with the rest of rule 1, so it stops every path alike: the pump, a
+  send, a release, send now, notifications and agents' messages. Only the
+  user's `session.send` and `session.queueRelease` are refused as `busy`
+  meanwhile (their contract); everything else is queued as usual and goes
+  when the operation ends, which re-evaluates the queue.
 
-These rules were reached race by race; the planned refactor into a single
-state transition is under Known issues in `docs/loom-agents.md`.
+The step is tested per row and per race the review rounds found
+(`test/queue-machine.test.ts`).
 
 ## Interactions
 
@@ -421,6 +486,8 @@ ALTER TABLE sessions ADD COLUMN queue_hold TEXT
 -- migration 34: whose stop the hold is
 ALTER TABLE sessions ADD COLUMN queue_hold_by TEXT
   CHECK (queue_hold_by IN ('user','supervisor'));
+-- migration 37: one column, one value per member of the `Hold` union
+--   queue_hold IN ('supervisor', 'loom:<reason>', 'user:<reason>'), NULL when free
 ```
 
 ## TUI and commands (A2)
