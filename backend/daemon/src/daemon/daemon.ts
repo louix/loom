@@ -3861,7 +3861,16 @@ export class Daemon {
             )
               return this.#registry.mustGet(id);
             const planned = this.#agentPlanned(id);
-            if (planned.kind === "refused") return this.#registry.mustGet(id);
+            if (planned.kind === "refused") {
+              // Not retried on every poll: the next prepared environment, or
+              // the session's next resume, tries again.
+              this.#vmGenerations.set(id, generation);
+              this.#emitNotice(
+                `${id.slice(0, 8)} stays on its current environment: ${planned.message}`,
+                "warn",
+              );
+              return this.#registry.mustGet(id);
+            }
             const warm = this.#sessions.keepWarm(id);
             const stopped = this.#sessions.suspendIdle(id);
             this.#registry.setStatus(id, stateStarting, "updating environment");

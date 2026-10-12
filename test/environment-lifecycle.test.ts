@@ -329,3 +329,79 @@ test("provider startup failure preserves files written by init", async () => {
     await h.cleanup();
   }
 });
+
+test("a refresh its agent profile refuses is not retried until the next environment", async () => {
+  const fake = new FakeProvider();
+  let h: Harness;
+  let resumeCount = 0;
+  h = await makeHarness({
+    config: JSON.stringify({ agents: { profiles: { solo: { description: "Works alone" } } } }),
+    connectors: {
+      "@loom/connector-mock": async () => ({
+        createProvider: async (ctx) => {
+          const create = fake.createSession.bind(fake);
+          const resume = fake.resumeSession.bind(fake);
+          fake.createSession = async (opts) => {
+            const s = await create(opts);
+            ctx.onVmStarted?.(
+              s.id,
+              basename((await currentRepoBase(repoBaseDirectory(h.repoRoot)))!),
+            );
+            return s;
+          };
+          fake.resumeSession = (ref) => {
+            resumeCount++;
+            return resume(ref);
+          };
+          return fake;
+        },
+      }),
+    },
+  });
+  const home = repoBaseDirectory(h.repoRoot);
+  const publish = async (name: string) => {
+    const path = join(home, `base-${name}`);
+    await Deno.mkdir(join(path, "disks"), { recursive: true });
+    for (const stem of ["storage", "overlay"])
+      await Deno.writeTextFile(join(path, "disks", `${stem}.raw`), "fixture");
+    await publishRepoBase(home, path, new AbortController().signal);
+  };
+  const c = await LoomClient.connect({
+    repoRoot: h.repoRoot,
+    sockPath: h.sockPath,
+    autospawn: false,
+  });
+  const notices: string[] = [];
+  c.onPush((f) => {
+    if (f.type === "notice") notices.push(f.text);
+  });
+  try {
+    // given: a "solo" session, then a config without "solo"
+    await publish("first");
+    const created = await c.request<SessionSnapshot>("session.create", {
+      provider: "fake",
+      prompt: "work",
+      profile: "solo",
+    });
+    fake.session(created.id)!.finishTurn();
+    await waitFor(() => h.daemon.sessions.canRefresh(created.id));
+    await Deno.writeTextFile(h.configPath, JSON.stringify({ agents: { profiles: {} } }));
+    await waitFor(() => !("solo" in h.daemon.config.agents.profiles));
+    // when
+    await publish("next");
+    await waitFor(() => notices.some((n) => n.includes("stays on its current environment")));
+    await delay(2200);
+    // then
+    assert.equal(
+      notices.filter((n) => n.includes("stays on its current environment")).length,
+      1,
+      "said once, not on every poll",
+    );
+    assert.equal(resumeCount, 0);
+    assert.equal(fake.session(created.id)!.closed, false);
+  } finally {
+    await c.close();
+    await h.cleanup();
+    await Deno.remove(home, { recursive: true });
+  }
+});
