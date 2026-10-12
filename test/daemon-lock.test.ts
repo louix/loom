@@ -38,6 +38,22 @@ test("lockRepository refuses while another daemon holds the lock, and takes it o
   }
 });
 
+test("a lock's release never throws, and says what failed", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "loom-lock-"));
+  const lock = join(dir, "daemon.lock");
+  try {
+    // given
+    const held = await lockRepository(lock, "only");
+    assert.equal(held.release(), null);
+    // when: its file is already closed, so the record cannot be cleared
+    const again = held.release();
+    // then
+    assert.equal(typeof again, "string");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("lockRepository takes a lock nobody holds, whatever live pid it records", async () => {
   const dir = mkdtempSync(join(tmpdir(), "loom-lock-"));
   const lock = join(dir, "daemon.lock");

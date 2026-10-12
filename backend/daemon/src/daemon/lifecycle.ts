@@ -26,7 +26,8 @@ export class LegacyDaemonRunning extends Error {
 /** The repository's lock, held until `release`. */
 export interface RepositoryLock {
   record: DaemonRecord;
-  release: () => void;
+  /** Never throws: why the record could not be cleared or the file closed, else null. */
+  release: () => string | null;
 }
 
 /**
@@ -54,13 +55,21 @@ export const lockRepository = async (lock: string, epoch: string): Promise<Repos
   return {
     record,
     release: () => {
-      try {
-        file.truncateSync(0);
-      } finally {
-        file.close();
-      }
+      const cleared = attempt(() => file.truncateSync(0));
+      const closed = attempt(() => file.close());
+      return cleared ?? closed;
     },
   };
+};
+
+/** `fn`'s error as a message, or null when it returned. */
+const attempt = (fn: () => void): string | null => {
+  try {
+    fn();
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
 };
 
 /** This run's identity, and the lock it holds unless it is standalone. */

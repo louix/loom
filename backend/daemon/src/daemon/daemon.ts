@@ -750,7 +750,8 @@ export class Daemon {
     try {
       d = new Daemon({ ...opts, repoRoot }, { epoch, lock });
     } catch (err) {
-      lock?.release();
+      const failed = lock?.release() ?? null;
+      if (failed !== null) makeLogger("daemon").warn("repository lock release failed", { failed });
       throw err;
     }
     try {
@@ -946,7 +947,8 @@ export class Daemon {
       await settleProcessGroups().catch((error) => {
         this.#log.warn("process group shutdown failed", { error: String(error) });
       });
-      this.#lock?.release();
+      const failed = this.#lock?.release() ?? null;
+      if (failed !== null) this.#log.warn("repository lock release failed", { failed });
       this.#log.info("daemon stopped", { reason });
       this.#resolveClosed();
     }
