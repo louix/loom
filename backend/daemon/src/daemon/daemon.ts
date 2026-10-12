@@ -50,6 +50,7 @@ import { scaffoldUserConfig, userConfigPath } from "../scaffold.ts";
 import { runtimeMcpDiagnostic } from "./mcp-runtime-diagnostics.ts";
 import { preflightTools } from "./tool-preflight.ts";
 import {
+  availableProfiles,
   claudeProfileId,
   legacyBaseBranch,
   lintConfig,
@@ -658,7 +659,7 @@ export class Daemon {
       log: this.#log.child("sessions"),
     });
     this.#agents = new AgentSupervision({
-      agents: () => this.config.agents,
+      config: () => this.config,
       get: (id) => {
         const row = this.#registry.get(id);
         return row ? this.#enrich(row, false) : undefined;
@@ -973,7 +974,7 @@ export class Daemon {
         daemon: this.#daemonInfo(),
         providers: this.#providerList(),
         sessions: rows.map((s) => this.#enrich(s, false)),
-        agentProfiles: profileInfos(this.config.agents),
+        agentProfiles: profileInfos(this.config),
       },
     };
   }
@@ -3061,7 +3062,7 @@ export class Daemon {
   #agentPlan(id: string): ReturnType<typeof agentSessionPlan> {
     const row = this.#registry.mustGet(id);
     return agentSessionPlan(row, {
-      agents: this.config.agents,
+      config: this.config,
       lookup: (other) => this.#registry.get(other) ?? undefined,
       settledTitle: (other) => this.#settledTitle(other),
       handles: this.#mcpHandles(),
@@ -4351,14 +4352,14 @@ export class Daemon {
       // A profile the user picked: what the client left out comes from it,
       // and its prompt and tools follow the session through `#agentPlan`.
       // `self` copies a spawner, and a user-started session has none.
-      const profile =
-        p.profile && p.profile !== SELF_PROFILE
-          ? this.config.agents.profiles[p.profile]
-          : undefined;
-      if (p.profile && !profile)
+      const available = availableProfiles(this.config);
+      const profile = p.profile && p.profile !== SELF_PROFILE ? available[p.profile] : undefined;
+      if (p.profile && p.profile !== SELF_PROFILE && !profile)
         throw new RpcError(
           "bad_request",
-          `no agent profile "${p.profile}"; configured: ${Object.keys(this.config.agents.profiles).join(", ") || "none"}`,
+          this.config.agents.profiles[p.profile]
+            ? `agent profile "${p.profile}" is not available in this repository: session.provider_access does not allow its provider`
+            : `no agent profile "${p.profile}"; configured: ${Object.keys(available).join(", ") || "none"}`,
         );
 
       const providerId = p.provider ?? profile?.provider ?? this.#defaultProviderId();

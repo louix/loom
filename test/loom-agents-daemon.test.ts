@@ -170,6 +170,47 @@ describe("loom agents", { concurrency: 4 }, () => {
     assert.match(unknown.text, /no agent profile "nope"; available: self, implementer, solo/);
   });
 
+  nodeTest("a profile on a provider the repository does not allow is offered nowhere", () =>
+    withEnv(
+      async (env) => {
+        const state = env.c.getState();
+        assert.equal(state.tag, "data");
+        assert.deepEqual(
+          (state.tag === "data" ? (state.value.agentProfiles ?? []) : []).map((p) => p.name),
+          ["implementer"],
+          "the new-session toggle is not offered it",
+        );
+        await assert.rejects(
+          env.c.request("session.create", { prompt: "x", provider: "fake", profile: "mocked" }),
+          /agent profile "mocked" is not available in this repository/,
+        );
+        const lead = await idleSession(env);
+        const listed = await lead.fs.callAgentTool("agents_profiles");
+        assert.match(listed.text, /^self — /);
+        assert.match(listed.text, /\nimplementer — /);
+        assert.doesNotMatch(listed.text, /mocked|mock\b/);
+        const refused = await lead.fs.callAgentTool("agent_start", {
+          profile: "mocked",
+          task: "x",
+          title: "x",
+        });
+        assert.equal(refused.ok, false);
+        assert.match(refused.text, /not available in this repository/);
+        const self = await startChild(env, lead.fs, { profile: "self" });
+        assert.equal((await get(env.c, self.id)).provider, "fake");
+      },
+      JSON.stringify({
+        session: { provider_access: { only: ["fake"] } },
+        agents: {
+          profiles: {
+            implementer: { description: "Follows its spawner" },
+            mocked: { description: "On mock", provider: "mock", skills: ["pdf"] },
+          },
+        },
+      }),
+    ),
+  );
+
   test("an in-place supervisor's children branch from the checked-out HEAD", async (env) => {
     const lead = await idleSession(env, { workspace: "in-place" });
     const child = await startChild(env, lead.fs, { profile: "self" });

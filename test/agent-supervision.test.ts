@@ -18,6 +18,7 @@ import {
   cutBytes,
   finalMessage,
   renderExcerpt,
+  type AgentConfig,
   type AgentHost,
   type ChildStart,
 } from "@loom/daemon/daemon/agents";
@@ -39,6 +40,8 @@ const AGENTS: LoomConfig["agents"] = {
     claudeish: { description: "Claude reviewer", skills: ["pdf"], tools: { allow: ["Read"] } },
   },
 };
+
+const CONFIG: AgentConfig = { agents: AGENTS, providerAccess: { disabled: [] } };
 
 const row = (over: Partial<SessionSnapshot> & { id: string }): SessionSnapshot =>
   ({
@@ -83,7 +86,12 @@ const settledTitle =
   (id: string): string | null =>
     SETTLED.has(id) ? (lookup(id)?.title ?? null) : null;
 
-const stub = (rows: SessionSnapshot[], dirty = false, events: AgentHost["events"] = () => []) => {
+const stub = (
+  rows: SessionSnapshot[],
+  dirty = false,
+  events: AgentHost["events"] = () => [],
+  config: AgentConfig = CONFIG,
+) => {
   const starts: ChildStart[] = [];
   const queued: Array<{ id: string; text: string; author: string; respect: HoldRespect }> = [];
   /** Queue holds by session; a message lifts one it does not wait behind. */
@@ -93,7 +101,7 @@ const stub = (rows: SessionSnapshot[], dirty = false, events: AgentHost["events"
   /** Settled-turn identities by session (`AgentHost.turn`). */
   const turns = new Map<string, number>();
   const host: AgentHost = {
-    agents: () => AGENTS,
+    config: () => config,
     get: (id) => byId.get(id),
     status: (id) => byId.get(id)?.status,
     turn: (id) => turns.get(id) ?? 0,
@@ -184,6 +192,61 @@ test("self copies the supervisor; a clean supervisor gets no warning, a dirty on
   assert.match(res.text, /Warning: you have uncommitted changes/);
 });
 
+test("a profile on a provider the repository does not allow is neither listed nor started", async () => {
+  // Only claude here: verifier (codex) is out; claudeish names no provider
+  // and follows its spawner, so it is out for a codex spawner too.
+  const config: AgentConfig = {
+    agents: AGENTS,
+    providerAccess: { only: ["claude"], disabled: [] },
+  };
+  const s = stub(
+    [row({ id: "lead" }), row({ id: "cx", provider: "codex" })],
+    false,
+    () => [],
+    config,
+  );
+  const listed = await s.call("lead", "agents_profiles");
+  assert.match(listed.text, /^self — /);
+  assert.match(listed.text, /\nclaudeish — /);
+  assert.doesNotMatch(listed.text, /verifier|codex/);
+  const refused = await s.call("lead", "agent_start", {
+    profile: "verifier",
+    task: "t",
+    title: "T",
+  });
+  assert.equal(refused.ok, false);
+  assert.match(
+    refused.text,
+    /^agent profile "verifier" is not available in this repository: session\.provider_access does not allow its provider; available: self, claudeish$/,
+  );
+  assert.doesNotMatch(refused.text, /codex/);
+  assert.doesNotMatch((await s.call("cx", "agents_profiles")).text, /claudeish/);
+  const followed = await s.call("cx", "agent_start", {
+    profile: "claudeish",
+    task: "t",
+    title: "T",
+  });
+  assert.match(followed.text, /not available in this repository/);
+  // self is always there: its provider is the spawner's own.
+  assert.equal(
+    (await s.call("lead", "agent_start", { profile: "self", task: "t", title: "T" })).ok,
+    true,
+  );
+  assert.deepEqual(
+    s.starts.map((c) => c.agentProfile),
+    ["self"],
+  );
+  // A resumed session's plan no longer takes an unavailable profile's settings.
+  const plan = agentSessionPlan(row({ id: "v", provider: "codex", agentProfile: "verifier" }), {
+    config,
+    lookup: () => undefined,
+    settledTitle: () => null,
+    handles: [],
+  });
+  assert.equal(plan.agentPrompt, undefined);
+  assert.equal(plan.denyTools, undefined);
+});
+
 test("agent_start refuses a clone supervisor, the depth limit and missing fields", async () => {
   const s = stub([
     row({ id: "clone", checkout: "clone", isolation: "vm" }),
@@ -234,7 +297,7 @@ test("a session's plan: loom-agents below the depth limit, and its profile's ser
     ["kid", row({ id: "kid", supervisorId: "lead", agentProfile: "verifier" })],
   ]);
   const lookup = (id: string) => rows.get(id);
-  const ctx = { agents: AGENTS, lookup, settledTitle: settledTitle(lookup), handles };
+  const ctx = { config: CONFIG, lookup, settledTitle: settledTitle(lookup), handles };
   assert.deepEqual(agentSessionPlan(rows.get("lead")!, ctx), {
     mcpServers: handles,
     agentTools: true,
@@ -259,7 +322,10 @@ test("a session's plan: loom-agents below the depth limit, and its profile's ser
     { mcpServers: handles, agentTools: true },
     "a removed profile adds nothing",
   );
-  const one = agentSessionPlan(row({ id: "lead" }), { ...ctx, agents: { ...AGENTS, maxDepth: 1 } });
+  const one = agentSessionPlan(row({ id: "lead" }), {
+    ...ctx,
+    config: { ...CONFIG, agents: { ...AGENTS, maxDepth: 1 } },
+  });
   assert.equal(one.agentTools, undefined, "max_depth 1 starts no agents");
 });
 
@@ -273,7 +339,7 @@ test("a supervisor's provisional title, the head of its first prompt, never reac
   ]);
   const lookup = (id: string) => rows.get(id);
   const plan = agentSessionPlan(rows.get("kid")!, {
-    agents: AGENTS,
+    config: CONFIG,
     lookup,
     settledTitle: settledTitle(lookup),
     handles: [],

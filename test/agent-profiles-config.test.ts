@@ -8,7 +8,13 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { loadConfig, normalizeConfig, parseConfig } from "@loom/daemon/config/config";
+import {
+  availableProfiles,
+  loadConfig,
+  normalizeConfig,
+  parseConfig,
+} from "@loom/daemon/config/config";
+import { profileInfos } from "@loom/daemon/daemon/agents";
 
 const cfg = (value: unknown) => normalizeConfig(parseConfig(JSON.stringify(value)));
 
@@ -82,20 +88,102 @@ test("profiles are validated against the configured providers, MCP servers and s
   for (const [profiles, error] of bad)
     assert.throws(() => cfg({ providers: { codex: {} }, agents: { profiles } }), error);
   assert.throws(() => cfg({ agents: { max_depth: 0 } }), /agents\.max_depth/);
-  assert.throws(
-    () =>
-      cfg({
-        session: { provider_access: { disabled: ["codex"] } },
-        providers: { codex: {} },
-        agents: { profiles: { implementer: { description: "x", provider: "codex" } } },
-      }),
-    /"codex" is disabled by session\.provider_access/,
-  );
   // loom-agents is always nameable: it is how a profile lets a child spawn.
   assert.deepEqual(
     cfg({ agents: { profiles: { lead: { description: "x", mcp: ["loom-agents"] } } } }).agents
       .profiles["lead"]?.mcp,
     ["loom-agents"],
+  );
+});
+
+/** `fn` with a user config file and a repository directory under a temp dir. */
+const withUserConfig = (
+  config: Record<string, unknown>,
+  fn: (repo: string, user: string) => void,
+) => {
+  const dir = mkdtempSync(join(tmpdir(), "loom-agents-config-"));
+  try {
+    const repo = join(dir, "repo");
+    mkdirSync(repo);
+    const user = join(dir, "user.jsonc");
+    const repos = (config.repos as Array<Record<string, unknown>> | undefined) ?? [];
+    writeFileSync(
+      user,
+      JSON.stringify({ ...config, repos: repos.map((r) => ({ path: repo, ...r })) }),
+    );
+    fn(repo, user);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+};
+
+test("a global profile on a provider a repository does not allow is unavailable there", () => {
+  withUserConfig(
+    {
+      providers: {
+        claude: { profiles: { personal: { config_dir: "~/.claude-personal" } } },
+        codex: {},
+      },
+      agents: {
+        profiles: {
+          opus: { description: "Opus", provider: "claude:personal", model: "claude-opus-5-5" },
+          // Skills are for Claude only; not checked where codex is not allowed.
+          coder: { description: "Codex", provider: "codex", skills: ["pdf"] },
+          follower: { description: "Follows its spawner" },
+        },
+      },
+      repos: [{ session: { provider_access: { only: ["fake"] } } }],
+    },
+    (repo, user) => {
+      const config = loadConfig(repo, user);
+      assert.deepEqual(Object.keys(availableProfiles(config)), ["follower"]);
+      assert.deepEqual(Object.keys(availableProfiles(config, "fake")), ["follower"]);
+      assert.deepEqual(Object.keys(availableProfiles(config, "codex")), []);
+      assert.deepEqual(
+        profileInfos(config).map((p) => p.name),
+        ["follower"],
+      );
+    },
+  );
+  // Disabled rather than left out of `only`: the same.
+  const c = cfg({
+    session: { provider_access: { disabled: ["codex"] } },
+    providers: { codex: {} },
+    agents: { profiles: { implementer: { description: "x", provider: "codex", skills: ["pdf"] } } },
+  });
+  assert.deepEqual(availableProfiles(c), {});
+  assert.deepEqual(Object.keys(availableProfiles({ ...c, providerAccess: { disabled: [] } })), [
+    "implementer",
+  ]);
+});
+
+test("a repository's own profile on a provider it disables is a config error", () => {
+  withUserConfig(
+    {
+      providers: { codex: {} },
+      agents: { profiles: { coder: { description: "global coder" } } },
+      repos: [
+        {
+          session: { provider_access: { disabled: ["codex"] } },
+          agents: { profiles: { coder: { provider: "codex" } } },
+        },
+      ],
+    },
+    (repo, user) =>
+      assert.throws(
+        () => loadConfig(repo, user),
+        /agents\.profiles\.coder\.provider: this repository's entry names "codex", which its session\.provider_access disables/,
+      ),
+  );
+  // Disabled globally and not re-allowed by the repository: still its own contradiction.
+  withUserConfig(
+    {
+      session: { provider_access: { disabled: ["codex"] } },
+      providers: { codex: {} },
+      repos: [{ agents: { profiles: { coder: { description: "x", provider: "codex" } } } }],
+    },
+    (repo, user) =>
+      assert.throws(() => loadConfig(repo, user), /which its session\.provider_access disables/),
   );
 });
 

@@ -110,7 +110,7 @@ export const cycleProfile = (
   defaults: NewSessionSettings,
 ): SettingsStep => {
   if (profiles.length === 0)
-    return { disabled: "No agent profiles are configured (agents.profiles)." };
+    return { disabled: "No agent profiles are available in this repository (agents.profiles)." };
   const at = profiles.findIndex((p) => p.name === s.profile);
   const skipped: string[] = [];
   for (let i = at + 1; i < profiles.length; i++) {

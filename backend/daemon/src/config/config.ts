@@ -414,6 +414,30 @@ export interface AgentProfileConfig {
  * base, and the agents' own `status` tool: the configured branch, else `main`,
  * as before `base_branch` became optional.
  */
+/** Does `session.provider_access` allow provider `id`? */
+export const providerAllowed = (access: LoomConfig["providerAccess"], id: string): boolean =>
+  (!access.only || access.only.includes(id)) && !access.disabled.includes(id);
+
+/**
+ * The profiles a session in this repository can use: each whose provider —
+ * its own, else the spawner's — `session.provider_access` allows. A global
+ * profile on a provider this repository does not allow is unavailable here,
+ * not an error. Every path that lists or resolves a profile goes through this;
+ * `self` is not among them and is always available. Without a `spawner` (a
+ * user-started session), a profile that names no provider follows the one the
+ * session is given, which is checked on its own.
+ */
+export const availableProfiles = (
+  config: Pick<LoomConfig, "agents" | "providerAccess">,
+  spawner?: string,
+): Record<string, AgentProfileConfig> =>
+  Object.fromEntries(
+    Object.entries(config.agents.profiles).filter(([, p]) => {
+      const provider = p.provider ?? spawner;
+      return provider === undefined || providerAllowed(config.providerAccess, provider);
+    }),
+  );
+
 export const legacyBaseBranch = (config: Pick<LoomConfig, "baseBranch">): string =>
   config.baseBranch ?? "main";
 
@@ -638,9 +662,7 @@ export const lintConfig = (
   env: Record<string, string | undefined> = Deno.env.toObject(),
 ): string[] => {
   const w: string[] = [];
-  const enabled = (id: string) =>
-    (!cfg.providerAccess.only || cfg.providerAccess.only.includes(id)) &&
-    !cfg.providerAccess.disabled.includes(id);
+  const enabled = (id: string) => providerAllowed(cfg.providerAccess, id);
   for (const p of cfg.claudeProfiles) {
     if (!enabled(claudeProfileId(p))) continue;
     if (!existsSync(p.dir)) {
@@ -724,8 +746,13 @@ export const lintConfig = (
  * Parse a raw config object into a fully-populated LoomConfig, filling any missing
  * key from DEFAULT_CONFIG. Unknown keys are ignored. Enum-typed fields fall back
  * to the default when the value is not one of the permitted literals.
+ * `repoProviders` names the profiles whose provider the repository's own
+ * `repos[]` entry sets: one that entry also disables is a config error.
  */
-export const normalizeConfig = (raw: unknown): LoomConfig => {
+export const normalizeConfig = (
+  raw: unknown,
+  repoProviders: ReadonlySet<string> = new Set(),
+): LoomConfig => {
   const r = asRecord(raw);
   if (["command-mcp", "http-mcp", "mcp"].some((key) => key in r))
     throw new Error(
@@ -788,7 +815,8 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
       "mock",
       ...(settings.providers.echo?.enabled === true ? ["echo"] : []),
     ],
-    disabled: (id) => (only !== undefined && !only.includes(id)) || disabled.includes(id),
+    allowed: (id) => providerAllowed({ ...(only ? { only } : {}), disabled }, id),
+    repoProviders,
     codex: (id) => aisdk[id]?.sdk === "chatgpt",
     mcp: [...mcp, ...httpMcp].map((m) => m.name),
   });
@@ -882,6 +910,10 @@ export const normalizeConfig = (raw: unknown): LoomConfig => {
  * configured, enabled provider, MCP servers the session selects, and the
  * settings that provider honours. A profile that cannot work is a config
  * error naming the field, rather than a child that fails when it starts.
+ * A profile on a provider `session.provider_access` does not allow is kept
+ * but unavailable ({@link availableProfiles}), and not checked against that
+ * provider — unless the repository's own entry names the provider it
+ * disables, which contradicts itself.
  */
 const resolveAgents = (
   raw: {
@@ -890,7 +922,9 @@ const resolveAgents = (
   },
   known: {
     providers: readonly string[];
-    disabled: (id: string) => boolean;
+    allowed: (id: string) => boolean;
+    /** Profiles whose provider the repository's own `repos[]` entry names. */
+    repoProviders: ReadonlySet<string>;
     codex: (id: string) => boolean;
     mcp: readonly string[];
   },
@@ -907,17 +941,21 @@ const resolveAgents = (
         throw new Error(
           `${at}.provider: "${p.provider}" is not a configured provider (configured: ${known.providers.join(", ")})`,
         );
-      if (known.disabled(p.provider))
-        throw new Error(`${at}.provider: "${p.provider}" is disabled by session.provider_access`);
+      if (!known.allowed(p.provider) && known.repoProviders.has(name))
+        throw new Error(
+          `${at}.provider: this repository's entry names "${p.provider}", which its session.provider_access disables`,
+        );
     }
     for (const server of p.mcp ?? [])
       if (server !== LOOM_AGENTS_SERVER && !known.mcp.includes(server))
         throw new Error(
           `${at}.mcp: "${server}" is not one of the session's MCP servers (${[...known.mcp, LOOM_AGENTS_SERVER].join(", ")})`,
         );
-    if (p.provider !== undefined && !isClaudeId(p.provider) && p.skills !== undefined)
+    // Checked only against a provider this repository allows.
+    const provider = p.provider !== undefined && known.allowed(p.provider) ? p.provider : undefined;
+    if (provider !== undefined && !isClaudeId(provider) && p.skills !== undefined)
       throw new Error(`${at}.skills: skills are only supported for Claude providers`);
-    if (p.provider !== undefined && known.codex(p.provider) && p.tools !== undefined)
+    if (provider !== undefined && known.codex(provider) && p.tools !== undefined)
       throw new Error(`${at}.tools: tool allow/deny lists are not supported for Codex providers`);
     profiles[name] = {
       description: p.description.trim(),
@@ -1037,7 +1075,10 @@ export const loadConfig = (repoRoot: string, configFile = userConfigPath()): Loo
       selected = overrides;
     }
   }
-  return normalizeConfig(mergeRepoOverride(defaults, selected));
+  const repoProviders = Object.entries(asRecord(asRecord(selected.agents).profiles))
+    .filter(([, p]) => asRecord(p).provider !== undefined)
+    .map(([name]) => name);
+  return normalizeConfig(mergeRepoOverride(defaults, selected), new Set(repoProviders));
 };
 
 /** One repo override over the user defaults, before normalization. */

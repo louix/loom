@@ -23,7 +23,11 @@ import {
   type AgentProfileInfo,
 } from "@loom/core/agents";
 import { isAgentTool, type AgentToolName } from "@loom/runtime/agent-tools";
-import type { AgentProfileConfig, LoomConfig } from "../config/config.ts";
+import { availableProfiles, type AgentProfileConfig, type LoomConfig } from "../config/config.ts";
+
+/** What the agent rules read from the config: depth, profiles, and which
+ *  providers this repository allows ({@link availableProfiles}). */
+export type AgentConfig = Pick<LoomConfig, "agents" | "providerAccess">;
 
 /** A notification carries the child's final message up to this many bytes. */
 export const NOTIFY_MESSAGE_BYTES = 2048;
@@ -100,12 +104,13 @@ export interface AgentSessionPlan {
  * sits at `agents.max_depth`; the profile's MCP servers, skills, tool lists
  * and prompt; and, for a child, a note on who supervises it. Recomputed for
  * every start and resume, so a config change reaches a resumed session. A
- * profile since removed from the config contributes nothing.
+ * profile since removed from the config, or no longer available in this
+ * repository, contributes nothing.
  */
 export const agentSessionPlan = (
-  row: Pick<SessionSnapshot, "id" | "supervisorId" | "agentProfile">,
+  row: Pick<SessionSnapshot, "id" | "supervisorId" | "agentProfile" | "provider">,
   ctx: {
-    agents: LoomConfig["agents"];
+    config: AgentConfig;
     lookup: (id: string) => SessionSnapshot | undefined;
     /** See {@link AgentHost.settledTitle}. */
     settledTitle: (id: string) => string | null;
@@ -114,7 +119,7 @@ export const agentSessionPlan = (
 ): AgentSessionPlan => {
   const profile =
     row.agentProfile && row.agentProfile !== SELF_PROFILE
-      ? ctx.agents.profiles[row.agentProfile]
+      ? availableProfiles(ctx.config, row.provider)[row.agentProfile]
       : undefined;
   const depth = supervisionDepth(row.id, (id) => (id === row.id ? row : ctx.lookup(id)));
   const keeps = (name: string) => profile?.mcp === undefined || profile.mcp.includes(name);
@@ -127,7 +132,9 @@ export const agentSessionPlan = (
     .join("\n\n");
   return {
     mcpServers: ctx.handles.filter((h) => keeps(h.name)),
-    ...(depth < ctx.agents.maxDepth && keeps(LOOM_AGENTS_SERVER) ? { agentTools: true } : {}),
+    ...(depth < ctx.config.agents.maxDepth && keeps(LOOM_AGENTS_SERVER)
+      ? { agentTools: true }
+      : {}),
     ...(prompt ? { agentPrompt: prompt } : {}),
     ...(profile?.skills ? { skills: profile.skills } : {}),
     ...(profile?.tools?.allow ? { allowTools: profile.tools.allow } : {}),
@@ -143,9 +150,9 @@ const childNote = (supervisorId: string, title: string | null): string =>
     "Questions and permission requests go to the user, as usual.",
   ].join(" ");
 
-/** The configured profiles as clients list them. */
-export const profileInfos = (agents: LoomConfig["agents"]): AgentProfileInfo[] =>
-  Object.entries(agents.profiles).map(([name, p]) => ({
+/** The profiles available in this repository, as clients list them. */
+export const profileInfos = (config: AgentConfig): AgentProfileInfo[] =>
+  Object.entries(availableProfiles(config)).map(([name, p]) => ({
     name,
     description: p.description,
     ...(p.provider ? { provider: p.provider } : {}),
@@ -270,7 +277,7 @@ export interface ChildStart {
 
 /** What {@link AgentSupervision} needs from the daemon. */
 export interface AgentHost {
-  agents(): LoomConfig["agents"];
+  config(): AgentConfig;
   /**
    * A session as clients see it — its row, live overlays and last-known git
    * facts (never a fresh `git` run) — or undefined.
@@ -474,7 +481,8 @@ export class AgentSupervision {
 
   #profiles(caller: string): string {
     const me = this.#session(caller);
-    const agents = this.#host.agents();
+    const config = this.#host.config();
+    const { agents } = config;
     const runs = (p: {
       provider?: string;
       model?: string | null;
@@ -490,7 +498,7 @@ export class AgentSupervision {
         .join(", ");
     const lines = [
       `${SELF_PROFILE} — your own settings (${runs({ provider: me.provider, model: me.model, effort: me.effort, mode: me.mode })}), no extra prompt.`,
-      ...Object.entries(agents.profiles).map(([name, p]) => {
+      ...Object.entries(availableProfiles(config, me.provider)).map(([name, p]) => {
         const set = runs(p);
         return `${name} — ${p.description}${set ? ` (${set}; the rest as yours)` : " (runs as you)"}`;
       }),
@@ -511,14 +519,19 @@ export class AgentSupervision {
     name: string,
     me: SessionSnapshot,
   ): { providerId: string; model: string | null; effort: string | null; mode: SessionMode } {
-    const agents = this.#host.agents();
+    const config = this.#host.config();
     let profile: AgentProfileConfig | undefined;
     if (name !== SELF_PROFILE) {
-      profile = agents.profiles[name];
-      if (!profile)
+      const available = availableProfiles(config, me.provider);
+      profile = available[name];
+      const listed = [SELF_PROFILE, ...Object.keys(available)].join(", ");
+      // Configured, but on a provider this repository does not allow: say so
+      // without naming the provider, as agents_profiles does not list it.
+      if (!profile && config.agents.profiles[name])
         refuse(
-          `no agent profile "${name}"; available: ${[SELF_PROFILE, ...Object.keys(agents.profiles)].join(", ")}`,
+          `agent profile "${name}" is not available in this repository: session.provider_access does not allow its provider; available: ${listed}`,
         );
+      if (!profile) refuse(`no agent profile "${name}"; available: ${listed}`);
     }
     const providerId = profile?.provider ?? me.provider;
     if (!this.#host.providerKnown(providerId))
@@ -535,7 +548,7 @@ export class AgentSupervision {
 
   async #start(caller: string, input: Record<string, unknown>): Promise<string> {
     const me = this.#session(caller);
-    const agents = this.#host.agents();
+    const { agents } = this.#host.config();
     const depth = supervisionDepth(caller, (id) => this.#host.get(id));
     if (depth >= agents.maxDepth)
       refuse(

@@ -99,7 +99,7 @@ test("⌥a cycles the new session's profile, setting what it names, and back to 
   assert.equal(none.settings.mode, defaults.mode);
   assert.match(none.note!, /elsewhere runs on gemini, which is not available\. No profile/);
   assert.deepEqual(cycleProfile([], [], s0, defaults), {
-    disabled: "No agent profiles are configured (agents.profiles).",
+    disabled: "No agent profiles are available in this repository (agents.profiles).",
   });
 
   // The prompt's own command, under ⌥a, says where the next press goes.

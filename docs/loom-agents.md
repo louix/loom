@@ -68,6 +68,15 @@ A built-in `self` profile is always offered: the spawning session's own
 provider, model, effort and mode, with no extra prompt. It is what a session
 uses when no profiles are configured, or when none fits.
 
+A profile is available in a repository only when `session.provider_access`
+there allows its provider — its own, or the spawner's when it names none. A
+global profile on a provider a repository does not allow is simply absent
+there: `agents_profiles` does not list it, `agent_start` refuses it, the
+new-session toggle does not offer it, and it is not checked against that
+provider. A profile in a repository's own `repos[]` entry that names a
+provider the same repository disables contradicts itself and is a config
+error. `self` is always available.
+
 ## Agent tools (MCP server `loom-agents`)
 
 | Tool                                          | Purpose                                                                                                                     |
