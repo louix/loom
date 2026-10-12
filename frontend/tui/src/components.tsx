@@ -33,6 +33,7 @@ import { absurd } from "@loom/core/absurd";
 import { cacheHitRate } from "@loom/core/cache";
 import type { DoctorReport, SessionSnapshot } from "@loom/core/wire";
 import type { SessionMode } from "@loom/core/types";
+import type { SessionStateKind } from "@loom/core/events";
 import { foldInteraction, type SessionInteraction } from "@loom/core/interaction";
 import { layout, layoutWrapped, type Buffer } from "./editor.ts";
 import { diffSegColor } from "./transcript.ts";
@@ -262,6 +263,7 @@ export const Fleet = memo(
             case "session":
               return FleetRow({
                 s: entry.s,
+                status: entry.status,
                 ...(entry.nest ? { nest: entry.nest } : {}),
                 ...(entry.agents ? { agents: entry.agents } : {}),
                 selected: entry.s.id === view.selectedId,
@@ -364,6 +366,7 @@ const cacheLede = (cs: CacheStatus): string => {
 
 const FleetRow = ({
   s,
+  status,
   nest,
   agents,
   selected,
@@ -377,6 +380,8 @@ const FleetRow = ({
   hovered = false,
 }: {
   s: SessionSnapshot;
+  /** What the row shows: a supervisor whose agents still work shows as working. */
+  status: SessionStateKind;
   /** A Loom agent under its supervisor: indented behind a tree branch, like
    *  the work rows a session fans out, but a session row in full. */
   nest?: { depth: number; isLast: boolean };
@@ -398,14 +403,15 @@ const FleetRow = ({
   hovered?: boolean;
 }): ReactNode => {
   const C = useTheme();
-  const look = statusLook(s.status.kind);
+  const look = statusLook(status);
   const blocked = s.resumable === false || archiving;
   let glyph = look.glyph;
-  if (["running", "starting"].includes(s.status.kind)) glyph = spinnerFrame(tick);
+  if (["running", "starting"].includes(status)) glyph = spinnerFrame(tick);
   if (blocked) glyph = "○";
   if (s.stopping || archiving) glyph = "◌";
   let titleColor = selected ? C.text : C.dim;
-  if (blocked) titleColor = C.faint;
+  // An archived agent, drawn while its supervisor is entered, stays dimmed.
+  if (blocked || (nest && status === "done" && !selected)) titleColor = C.faint;
   const id = shortId(s.id);
   // A supervisor's figure is its spend with its agents'.
   const cost = agents ? `Σ${sessionCost(agents.cost)}` : sessionCost(s);
@@ -428,7 +434,7 @@ const FleetRow = ({
     archiving ? "archiving… " + titleLine(s.title) : titleLine(s.title),
     room,
   ).padEnd(room);
-  let glyphTone: ThemeColor = s.status.kind === "running" ? "accent" : statusTone(s.status.kind);
+  let glyphTone: ThemeColor = status === "running" ? "accent" : statusTone(status);
   if (archiving) glyphTone = "dim";
 
   return (

@@ -63,15 +63,15 @@ host/daemon resource counters, refreshed while visible. `PgUp`/`PgDn`, `Home`/`E
 and the mouse wheel scroll the active tab. Opening a reply or drilling into a child
 returns to Chat. Large inspection output is bounded and marked when truncated.
 
-| key                  | action                                                                                                                                             |
-| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `↑` / `↓`, `j` / `k` | move the selection                                                                                                                                 |
-| `→` / `←`, `l` / `h` | drill into the selected session's sub-agents & background tasks / back out — `↑`/`↓` then picks a child, and EVENTS shows just that child's stream |
-| `PgUp` / `PgDn`      | scroll the event log — a scrolled-back log stays pinned as new events land (accent border) instead of following the tail                           |
-| `Home` / `End`       | jump the event log to the first line held / back to the live tail                                                                                  |
-| `⇥`                  | toggle the fleet list: **overview** (fleet + detail + events) ↔ **session** (detail + events, full width)                                          |
-| `Esc`                | one step back: the session view → overview, then out of a drill-down, then out of an overlay — never quits                                         |
-| `Space`              | open the command palette                                                                                                                           |
+| key                  | action                                                                                                                                                                                                  |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `↑` / `↓`, `j` / `k` | move the selection among the top-level rows (or among the children while drilled in)                                                                                                                    |
+| `→` / `←`, `l` / `h` | drill into the selected session's sub-agents, background tasks & Loom agents / back out a level — `↑`/`↓` then picks a child, and EVENTS shows just that child's stream; a Loom agent is a full session |
+| `PgUp` / `PgDn`      | scroll the event log — a scrolled-back log stays pinned as new events land (accent border) instead of following the tail                                                                                |
+| `Home` / `End`       | jump the event log to the first line held / back to the live tail                                                                                                                                       |
+| `⇥`                  | toggle the fleet list: **overview** (fleet + detail + events) ↔ **session** (detail + events, full width)                                                                                               |
+| `Esc`                | one step back: the session view → overview, then out of a drill-down, then out of an overlay — never quits                                                                                              |
+| `Space`              | open the command palette                                                                                                                                                                                |
 
 On a narrow terminal (under 80 columns — a small window or an SSH session from a
 phone) there's no room for the three-column split, so `overview` is the fleet

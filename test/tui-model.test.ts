@@ -1925,11 +1925,10 @@ test("compact is offered on any live session; the footer slot waits for half", (
 });
 
 test("groupsOf only emits non-empty groups, in fleet-view order", () => {
-  const g = groupsOf([
-    snap({ status: "idle" }),
-    snap({ status: "awaiting_input" }),
-    snap({ status: "idle" }),
-  ]);
+  const g = groupsOf(
+    [snap({ status: "idle" }), snap({ status: "awaiting_input" }), snap({ status: "idle" })],
+    (s) => s.status.kind,
+  );
   assert.deepEqual(
     g.map((x) => x.status),
     ["awaiting_input", "idle"],

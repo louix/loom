@@ -32,6 +32,7 @@ import { cycleProfile } from "@loom/tui/new-workspace";
 import { fleetPaneView } from "@loom/tui/views";
 import { Fleet } from "@loom/tui/components";
 import { entryAuthor } from "@loom/tui/queue-view";
+import { shownStatusIn } from "@loom/tui/fleet-status";
 
 const provider = (id: string, over: Partial<ProviderInfo> = {}): ProviderInfo =>
   ({
@@ -163,37 +164,47 @@ const tree = () => {
   return { lead, kids, other };
 };
 
-test("agents sit under their supervisor, in start order, whatever their status", () => {
+test("agents sit under their supervisor, sorted like the fleet, the archived hidden", () => {
   const { lead, kids, other } = tree();
   const state = withFleet([kids[1]!, other, kids[0]!, lead, kids[2]!]);
   assert.deepEqual(
     fleetSessions(state).map((s) => s.id),
-    ["other", "lead", "kid3", "kid1", "kid2"],
-    "the cursor walks the rows in the order they are drawn",
+    ["other", "lead", "kid2", "kid1", "kid3"],
+    "status group first among agents too; the archived last",
   );
   assert.deepEqual(
-    groupsOf(fleetSessions(state)).map((g) => [g.status, g.sessions.map((s) => s.id)]),
+    groupsOf(fleetSessions(state), shownStatusIn(fleetSessions(state))).map((g) => [
+      g.status,
+      g.sessions.map((s) => s.id),
+    ]),
     [
       ["running", ["other"]],
-      ["idle", ["lead"]],
+      ["working_background", ["lead"]],
     ],
+    "an idle supervisor with a running agent is grouped as background work",
   );
   const rows = fleetEntries(state).flatMap((e) =>
-    e.kind === "session" ? [[e.s.id, e.nest?.isLast ?? null, e.agents?.summary ?? null]] : [],
+    e.kind === "session"
+      ? [[e.s.id, e.status, e.nest?.isLast ?? null, e.agents?.summary ?? null]]
+      : [],
   );
   assert.deepEqual(rows, [
-    ["other", null, null],
-    ["lead", null, "1 needs input · 1 working"],
-    ["kid3", false, null],
-    ["kid1", false, null],
-    ["kid2", true, null],
+    ["other", "running", null, null],
+    ["lead", "working_background", null, "1 needs input · 1 working · +1 done"],
+    ["kid2", "awaiting_input", false, null],
+    ["kid1", "running", true, null],
   ]);
-  assert.equal(agentSummary(kids), "1 needs input · 1 working");
+  assert.equal(
+    agentSummary(kids, (s) => s.status.kind),
+    "1 needs input · 1 working",
+  );
   assert.deepEqual(treeCost(lead, fleetSessions(state)), { costUsd: 2, costSource: "provider" });
-  // ↓ from the supervisor lands on its first agent.
+  // ↑ from the supervisor reaches the row above it, not an agent.
   let s = reduce(state, { t: "select", id: "lead" });
   s = reduce(s, { t: "move", delta: 1 });
-  assert.equal(s.selectedId, "kid3");
+  assert.equal(s.selectedId, "lead", "nothing below it at the top level");
+  s = reduce(s, { t: "move", delta: -1 });
+  assert.equal(s.selectedId, "other");
 });
 
 test("a nested agent is a full session: every session verb, none withheld as a child row", () => {
@@ -217,9 +228,10 @@ test("the fleet draws agents on tree branches, and a supervisor's summary and co
     }),
   );
   const line = (id: string) => out.split("\n").find((l) => l.includes(id.slice(0, 8)))!;
-  assert.match(line("lead"), /Coordinate\s+1 needs input · 1 working\s+Σ\$2\.00/);
-  assert.match(line("kid1"), /├ .*kid1.*Implement/);
-  assert.match(line("kid2"), /└ .*kid2.*Verify/);
+  assert.match(line("lead"), /◐ .*Coordinate\s+1 needs input · 1 working · \+1 done\s+Σ\$2\.00/);
+  assert.match(line("kid2"), /├ .*kid2.*Verify/);
+  assert.match(line("kid1"), /└ .*kid1.*Implement/);
+  assert.equal(out.includes("Old"), false, "the archived agent waits for the supervisor's →");
   assert.doesNotMatch(line("other"), /[├└]/);
 });
 

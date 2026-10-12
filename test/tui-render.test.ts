@@ -4951,6 +4951,50 @@ test("with a child row focused, ⏎ and i do not reach the parent session", () =
   }
 });
 
+test("a Loom agent is entered like a child row, and keeps its session verbs there", () => {
+  const fake = mkFakeClient();
+  fake.deliver(
+    fleetOf(
+      snap({ id: "other", status: "running", createdAt: 1 }),
+      snap({
+        id: "lead",
+        status: "idle",
+        createdAt: 2,
+        backgroundTasks: [{ id: "t", kind: "shell", title: "watch" }],
+      }),
+      snap({ id: "kid", status: "running", supervisorId: "lead", createdAt: 3 }),
+    ),
+  );
+  const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+  const stop = handle.effectStart();
+  const press = (input: string, key = {}) => handle.handleKey(input, key as Key);
+  const at = () => [handle.getView().ui.selectedId, handle.getView().ui.selectedChild];
+  const chips = () => handle.getView().bar.map((i) => i.command?.id);
+  try {
+    assert.deepEqual(at(), ["other", null]);
+    press("", { downArrow: true });
+    press("", { downArrow: true });
+    assert.deepEqual(at(), ["lead", null], "↓ passes over the nested agent");
+    press("", { rightArrow: true });
+    assert.deepEqual(at(), ["lead", "bg:t"]);
+    press("", { downArrow: true });
+    assert.deepEqual(at(), ["kid", null]);
+    assert.ok(chips().includes("send") && chips().includes("interrupt"));
+    press("i");
+    assert.equal(fake.of("session.interrupt")[0]?.params["id"], "kid");
+    press("", { leftArrow: true });
+    assert.deepEqual(at(), ["lead", null]);
+    press("", { rightArrow: true });
+    press("", { downArrow: true });
+    press("", { escape: true });
+    assert.deepEqual(at(), ["lead", null], "esc steps out of the agent too");
+    press("", { upArrow: true });
+    assert.deepEqual(at(), ["other", null]);
+  } finally {
+    stop();
+  }
+});
+
 test("number tabs preserve navigation, isolate scroll, and leave text editing alone", async () => {
   const fake = mkFakeClient();
   fake.deliver(

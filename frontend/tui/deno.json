@@ -16,6 +16,7 @@
     "./editor-handoff": "./src/editor-handoff.ts",
     "./fleet-handle": "./src/fleet-handle.ts",
     "./fleet-search": "./src/fleet-search.ts",
+    "./fleet-status": "./src/fleet-status.ts",
     "./theme": "./src/theme.ts",
     "./transcript": "./src/transcript.ts",
     "./theme-store": "./src/theme-store.ts",

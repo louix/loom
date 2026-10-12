@@ -32,7 +32,8 @@ import {
 } from "./new-workspace.ts";
 import { openPrompt } from "./overlay.ts";
 import {
-  childrenOf,
+  childSpots,
+  cursorParentOf,
   defaultProviderId,
   fleetAgentProfiles,
   fleetProviders,
@@ -281,13 +282,13 @@ const COMMANDS = {
     scope: "view",
     keys: "←",
     label: "fleet",
-    description: "Step back out of the session's sub-agents and tasks.",
+    description: "Step back out of the session's sub-agents, tasks and agents.",
   },
   childEnter: {
     scope: "view",
     keys: "→",
     label: "inspect",
-    description: "Drill into the session's sub-agents and background tasks.",
+    description: "Drill into the session's sub-agents, background tasks and Loom agents.",
   },
   viewlog: {
     scope: "view",
@@ -852,12 +853,16 @@ const otherAvailability = (
   const sel = selectedSession(ctx);
   const features = ctx.features ?? {};
   switch (id) {
+    // The bar reads the tree; an active filter's flat list is the keymap's.
     case "childEnter":
-      return sel && target === sel.id && ctx.selectedChild == null && childrenOf(sel).length > 0
+      return sel &&
+        target === sel.id &&
+        ctx.selectedChild == null &&
+        childSpots(fleetSessions(ctx), sel, false).length > 0
         ? { bar: true }
         : null;
     case "childExit":
-      return ctx.selectedChild != null ? { bar: true } : null;
+      return cursorParentOf(ctx, false) ? { bar: true } : null;
     case "viewlog":
       // It opens what the screen shows, so only for the session on screen.
       return { disabled: target !== ctx.selectedId ? "Select the session to view it." : undefined };

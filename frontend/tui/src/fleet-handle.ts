@@ -69,7 +69,7 @@ import { mkComposer, outboxOf, release, type SendReply } from "./composer.ts";
 import type { QueueDelivery } from "@loom/core/message-queue";
 import { queueRows } from "./queue-view.tsx";
 import { mkModeControl, pendingMode } from "./mode-control.ts";
-import { mkSearchControl, searchStale, searchMatches, type Find } from "./fleet-search.ts";
+import { mkSearchControl, queryOf, searchStale, searchMatches, type Find } from "./fleet-search.ts";
 import { cycleLogFilter, mkTranscript, transcriptText } from "./transcript.ts";
 import type { ChildrenOnClose } from "@loom/core/agents";
 import {
@@ -102,6 +102,7 @@ import {
   type FleetHit,
   type TuiState,
   focusedChildOf,
+  cursorParentOf,
   providerAccountOf,
   providerColorOf,
   cacheStatus,
@@ -988,13 +989,24 @@ export const mkFleetHandle = ({
     runAct(id, action.target, draft);
   };
 
+  /** The rows an active filter ranks, flat; undefined while the fleet draws
+   *  its tree (an open filter with nothing typed included). */
+  const rankedIds = (): readonly string[] | undefined => {
+    const find = searches.get();
+    return find && queryOf(find) !== ""
+      ? searchMatches(find, fleetSessions(state)).map((s) => s.id)
+      : undefined;
+  };
+
   const dispatch = (a: Action): void => {
     const prev = state;
+    const ids = rankedIds();
     state = refreshPalette(
       reduce(
         state,
-        a.t === "move"
-          ? { ...a, ids: searchMatches(searches.get(), fleetSessions(state)).map((s) => s.id) }
+        (a.t === "move" || a.t === "childEnter" || a.t === "childExit" || a.t === "childMove") &&
+          ids !== undefined
+          ? { ...a, ids }
           : a,
       ),
     );
@@ -2913,23 +2925,25 @@ export const mkFleetHandle = ({
       }
     }
     // Fleet drill-down: → enters the selected session's child rows (its live
-    // background tasks + sub-agents — the tree already rendered under the row);
-    // ↑/↓ then pick among them and the event pane follows the focused child.
-    // ← / esc steps back out to the fleet. Children carry no actions of their
-    // own, and the session verbs that would read as acting on the child (send,
-    // interrupt, …) are disabled while one is focused (see `commands.ts`);
-    // request decisions and the workspace verbs still reach the session. The
+    // background tasks + sub-agents, then its Loom agents — the tree already
+    // rendered under the row); ↑/↓ then pick among them and the event pane
+    // follows the focused child. ← / esc steps back out a level. Task rows
+    // carry no actions of their own, and the session verbs that would read as
+    // acting on one (send, interrupt, …) are disabled while one is focused (see
+    // `commands.ts`); request decisions and the workspace verbs still reach the
+    // session. A Loom agent is a session in full and keeps every verb. The
     // fleet toggle is on ⇥ (below), not the arrows, so this is unchanged at
     // every width.
+    const inside = cursorParentOf(state, rankedIds() !== undefined) !== null;
     if (key.rightArrow || input === "l") {
       if (sel) dispatch({ t: "childEnter" });
       return;
     }
     if (key.leftArrow || input === "h") {
-      if (state.selectedChild != null) dispatch({ t: "childExit" });
+      if (inside) dispatch({ t: "childExit" });
       return;
     }
-    if (state.selectedChild != null) {
+    if (inside) {
       if (key.upArrow || input === "k") return void dispatch({ t: "childMove", delta: -1 });
       if (key.downArrow || input === "j") return void dispatch({ t: "childMove", delta: 1 });
     }
@@ -2940,7 +2954,7 @@ export const mkFleetHandle = ({
       if (layoutView !== "overview") {
         layoutView = "overview";
         publish();
-      } else if (state.selectedChild != null) {
+      } else if (inside) {
         dispatch({ t: "childExit" });
       }
       return;

@@ -5,7 +5,7 @@
  * a set of selectors, all unit-tested without React or a live daemon.
  */
 import { absurd } from "@loom/core/absurd";
-import { sortSessions } from "@loom/core/session-order";
+import { sortSessions, sortSessionsBy } from "@loom/core/session-order";
 export { sortSessions };
 import type { BackgroundTaskKind, HarnessEvent, SessionStateKind } from "@loom/core/events";
 import { isClaudeId } from "@loom/core/provider-id";
@@ -45,6 +45,7 @@ import type { QNav } from "./interactions.ts";
 import { noDrafts, recalled, recorded, type Drafts } from "./composer.ts";
 import type { QueueEntryView } from "@loom/core/message-queue";
 import { queryOf, searchMatches, type Find } from "./fleet-search.ts";
+import { shownStatusIn } from "./fleet-status.ts";
 import {
   filterLog,
   noTranscript,
@@ -145,7 +146,9 @@ export interface TuiState {
    * an in-flight foreground sub-agent. Non-null = "drilled in": ↑/↓ moves
    * between that session's children and the event pane narrows to just that
    * child's stream. Cleared by ←/Esc (`childExit`), by an explicit `select`,
-   * and whenever churn empties the child list (`clampChild`).
+   * and whenever churn empties the child list (`clampChild`). A Loom agent
+   * drawn under its supervisor is a child row too, but a session in full: the
+   * cursor on it is `selectedId` with no child (see {@link cursorParentOf}).
    */
   selectedChild: string | null;
   logFilter: LogFilter;
@@ -221,12 +224,14 @@ export type Action =
   | { t: "push"; frame: PushFrame }
   | { t: "archivePending"; id: string; pending: boolean }
   | { t: "toggleTheme" }
+  /** `ids` on the cursor's moves: the flat list an active filter ranks,
+   *  where no agent is nested; absent while the fleet draws its tree. */
   | { t: "move"; delta: number; ids?: readonly string[] }
   | { t: "select"; id: string }
   | { t: "selectChild"; sessionId: string; key: string }
-  | { t: "childEnter" }
-  | { t: "childExit" }
-  | { t: "childMove"; delta: number }
+  | { t: "childEnter"; ids?: readonly string[] }
+  | { t: "childExit"; ids?: readonly string[] }
+  | { t: "childMove"; delta: number; ids?: readonly string[] }
   | { t: "logFilter"; value: LogFilter }
   | { t: "notice"; text: string; tone: Tone }
   | { t: "expireNotice"; now: number; ttlMs?: number }
@@ -280,8 +285,10 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
       // order — the rows the fleet is actually showing. Off-list (the
       // selection was filtered out), ↓ lands on the best match and ↑ on the
       // last.
-      const list = a.ids ?? fleetSessions(s).map((x) => x.id);
-      let from = list.indexOf(s.selectedId ?? "");
+      // In the tree they walk the top-level rows; → and ← reach what is
+      // nested under one.
+      const list = a.ids ?? topRows(fleetSessions(s));
+      let from = list.indexOf(a.ids ? (s.selectedId ?? "") : topRowOf(s));
       if (from < 0) from = a.delta < 0 ? list.length : -1;
       const next = Math.max(0, Math.min(list.length - 1, from + a.delta));
       const picked = list[next];
@@ -323,27 +330,29 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
 
     case "childEnter": {
       const sel = selectedSession(s);
-      const kids = sel ? childrenOf(sel) : [];
-      if (kids.length === 0) return s;
-      // Re-entering restores the remembered child while it's still live;
-      // otherwise the cursor lands on the first one.
-      const again = s.selectedChild != null && kids.some((k) => k.key === s.selectedChild);
-      return { ...s, selectedChild: again ? s.selectedChild : kids[0]!.key };
+      // A task row has nothing under it.
+      if (!sel || s.selectedChild != null) return s;
+      const first = childSpots(fleetSessions(s), sel, a.ids !== undefined)[0];
+      return first ? { ...s, selectedId: first.id, selectedChild: first.child } : s;
     }
 
-    case "childExit":
-      return s.selectedChild == null ? s : { ...s, selectedChild: null };
+    case "childExit": {
+      if (s.selectedChild != null) return { ...s, selectedChild: null };
+      const parent = cursorParentOf(s, a.ids !== undefined);
+      return parent ? { ...s, selectedId: parent.id } : s;
+    }
 
     case "childMove": {
-      const sel = selectedSession(s);
-      const kids = sel ? childrenOf(sel) : [];
-      if (kids.length === 0) return s;
+      const ranked = a.ids !== undefined;
+      const parent = cursorParentOf(s, ranked);
+      if (!parent) return s;
+      const spots = childSpots(fleetSessions(s), parent, ranked);
       const from = Math.max(
         0,
-        kids.findIndex((k) => k.key === s.selectedChild),
+        spots.findIndex((p) => p.id === s.selectedId && p.child === s.selectedChild),
       );
-      const next = Math.max(0, Math.min(kids.length - 1, from + a.delta));
-      return { ...s, selectedChild: kids[next]!.key };
+      const next = spots[Math.max(0, Math.min(spots.length - 1, from + a.delta))];
+      return next ? { ...s, selectedId: next.id, selectedChild: next.child } : s;
     }
 
     case "logFilter":
@@ -506,7 +515,8 @@ const applyClientState = (s: TuiState, state: ClientState): TuiState => {
     // and selection are ours, not the daemon's, and survive.
     return { ...s, fleet: state };
   }
-  const sessions = sortSessions(state.value.sessions);
+  // Grouped by what each row shows, a supervisor by its agents' work too.
+  const sessions = sortSessionsBy(shownStatusIn(state.value.sessions))(state.value.sessions);
   const fleet: ClientState = { tag: "data", value: { ...state.value, sessions } };
   const live = new Set(sessions.map((x) => x.id));
   // Every outstanding request, addressed the way the UI holds one — request ids
@@ -612,6 +622,76 @@ export const childrenOf = (s: SessionSnapshot): FleetChild[] => {
   ];
 };
 
+/** A place the cursor can rest among a session's child rows: a task or
+ *  sub-agent of its own (`child` its key), or one of its Loom agents' rows. */
+export interface ChildSpot {
+  readonly id: string;
+  readonly child: string | null;
+}
+
+/** What → reaches under `p`, in the order drawn: its tasks and sub-agents,
+ *  then its Loom agents — in the tree; a ranked list draws those flat. */
+export const childSpots = (
+  all: readonly SessionSnapshot[],
+  p: SessionSnapshot,
+  ranked: boolean,
+): ChildSpot[] => [
+  ...childrenOf(p).map((c) => ({ id: p.id, child: c.key })),
+  ...(ranked ? [] : agentsOf(all, p.id)).map((a) => ({ id: a.id, child: null })),
+];
+
+/** The session whose child rows the cursor is among — the selected one while
+ *  one of its tasks is focused, a Loom agent's supervisor while the agent is
+ *  (in the tree) — or null on a top-level row. */
+export const cursorParentOf = (
+  s: Pick<TuiState, "fleet" | "selectedId" | "selectedChild">,
+  ranked: boolean,
+): SessionSnapshot | null => {
+  const all = fleetSessions(s);
+  const sel = all.find((x) => x.id === s.selectedId);
+  if (!sel) return null;
+  if (s.selectedChild != null) return sel;
+  if (ranked || !nestedIn(all)(sel)) return null;
+  return all.find((x) => x.id === sel.supervisorId) ?? null;
+};
+
+/** The sessions the cursor is inside of: whose child rows it is among, and
+ *  their supervisors up to the top-level row. */
+const enteredIds = (
+  s: Pick<TuiState, "fleet" | "selectedId" | "selectedChild">,
+  ranked: boolean,
+): ReadonlySet<string> => {
+  const all = fleetSessions(s);
+  const nested = nestedIn(all);
+  const up = (at: SessionSnapshot | undefined, seen: ReadonlySet<string>): ReadonlySet<string> =>
+    at === undefined || seen.has(at.id)
+      ? seen
+      : up(
+          ranked || !nested(at) ? undefined : all.find((x) => x.id === at.supervisorId),
+          new Set([...seen, at.id]),
+        );
+  return up(cursorParentOf(s, ranked) ?? undefined, new Set());
+};
+
+/** The tree's top-level rows, in display order. */
+const topRows = (all: readonly SessionSnapshot[]): string[] => {
+  const nested = nestedIn(all);
+  return all.filter((x) => !nested(x)).map((x) => x.id);
+};
+
+/** The top-level row the cursor is on or nested under. */
+const topRowOf = (s: Pick<TuiState, "fleet" | "selectedId">): string => {
+  const all = fleetSessions(s);
+  const nested = nestedIn(all);
+  const up = (id: string, seen: ReadonlySet<string>): string => {
+    const at = all.find((x) => x.id === id);
+    return at?.supervisorId !== undefined && nested(at) && !seen.has(at.supervisorId)
+      ? up(at.supervisorId, new Set([...seen, id]))
+      : id;
+  };
+  return s.selectedId === null ? "" : up(s.selectedId, new Set());
+};
+
 const clampSelection = (
   list: readonly SessionSnapshot[],
   current: string | null,
@@ -628,8 +708,12 @@ const clampSelection = (
   // A just-picked session whose row hasn't arrived yet — hold the selection on
   // it rather than snapping to the fleet head (U4).
   if (current && current === pending) return current;
-  // Keep the cursor near a removed or archived row in the order last shown.
   const candidates = archived ? list.filter((x) => x.id !== current) : list;
+  // A removed or archived Loom agent hands the cursor back to its supervisor.
+  const supervisor = wasSelected?.supervisorId;
+  if (supervisor !== undefined && candidates.some((x) => x.id === supervisor && x.id !== current))
+    return supervisor;
+  // Keep the cursor near a removed or archived row in the order last shown.
   const live = new Set(candidates.map((x) => x.id));
   for (let i = previous.findIndex((x) => x.id === current) - 1; i >= 0; i--) {
     const id = previous[i]!.id;
@@ -1177,14 +1261,18 @@ const nestedIn = (sessions: readonly SessionSnapshot[]) => {
     s.supervisorId !== undefined && s.supervisorId !== s.id && ids.has(s.supervisorId);
 };
 
-/** The status groups of the sessions nobody listed supervises; each one's Loom
- *  agents are drawn under it (see {@link fleetEntries}), not in their own group. */
-export const groupsOf = (sessions: readonly SessionSnapshot[]): Group[] => {
+/** The status groups, by what each shows (`shown`), of the sessions nobody
+ *  listed supervises; each one's Loom agents are drawn under it (see
+ *  {@link fleetEntries}), not in their own group. */
+export const groupsOf = (
+  sessions: readonly SessionSnapshot[],
+  shown: (s: SessionSnapshot) => SessionStateKind,
+): Group[] => {
   const nested = nestedIn(sessions);
   const roots = sessions.filter((s) => !nested(s));
   const out: Group[] = [];
   for (const status of STATUS_ORDER) {
-    const inGroup = roots.filter((x) => x.status.kind === status);
+    const inGroup = roots.filter((x) => shown(x) === status);
     if (inGroup.length > 0)
       out.push({ status, label: statusLook(status).label, sessions: inGroup });
   }
@@ -1195,9 +1283,12 @@ export const groupsOf = (sessions: readonly SessionSnapshot[]): Group[] => {
 export const agentsOf = (sessions: readonly SessionSnapshot[], id: string): SessionSnapshot[] =>
   sessions.filter((s) => s.supervisorId === id && s.id !== id);
 
-/** A supervisor's open agents in a few words — "2 working · 1 needs input";
- *  "" with none open. Archived ones are left out. */
-export const agentSummary = (agents: readonly SessionSnapshot[]): string => {
+/** A supervisor's open agents in a few words, by what each shows —
+ *  "2 working · 1 needs input"; "" with none open. Archived ones are left out. */
+export const agentSummary = (
+  agents: readonly SessionSnapshot[],
+  shown: (s: SessionSnapshot) => SessionStateKind,
+): string => {
   const words: Array<[string, (k: SessionStateKind) => boolean]> = [
     ["needs input", (k) => k === "awaiting_input"],
     ["working", (k) => k === "running" || k === "starting" || k === "working_background"],
@@ -1206,7 +1297,7 @@ export const agentSummary = (agents: readonly SessionSnapshot[]): string => {
     ["idle", (k) => k === "idle"],
   ];
   return words
-    .map(([word, is]) => [agents.filter((a) => is(a.status.kind)).length, word] as const)
+    .map(([word, is]) => [agents.filter((a) => is(shown(a))).length, word] as const)
     .filter(([n]) => n > 0)
     .map(([n, word]) => `${n} ${word}`)
     .join(" · ");
@@ -1257,6 +1348,8 @@ export type FleetEntry =
   | {
       kind: "session";
       s: SessionSnapshot;
+      /** What the row shows — see `fleet-status.ts`. */
+      status: SessionStateKind;
       /** A Loom agent drawn under its supervisor: how deep, and whether it is
        *  that supervisor's last. Absent for a row at the top of its group. */
       nest?: { depth: number; isLast: boolean };
@@ -1274,8 +1367,10 @@ export const fleetEntries = (
 ): FleetEntry[] => {
   const matched = searchMatches(state.find ?? null, fleetSessions(state));
   const active = state.find != null && queryOf(state.find) !== "";
-  const focused = focusedChildOf(state);
   const all = fleetSessions(state);
+  const status = shownStatusIn(all);
+  const entered = enteredIds(state, active);
+  const parent = cursorParentOf(state, active);
   const out: FleetEntry[] = [];
   const placed = new Set<string>();
 
@@ -1283,17 +1378,21 @@ export const fleetEntries = (
     if (placed.has(s.id)) return;
     placed.add(s.id);
     const mine = agentsOf(all, s.id);
+    // Archived agents stay out of the way until their supervisor is entered.
+    const archived = entered.has(s.id) ? 0 : mine.filter((a) => status(a) === "done").length;
+    const summary = [agentSummary(mine, status), archived > 0 ? `+${archived} done` : ""]
+      .filter((x) => x !== "")
+      .join(" · ");
     out.push({
       kind: "session",
       s,
+      status: status(s),
       ...(nest ? { nest } : {}),
-      ...(mine.length > 0
-        ? { agents: { summary: agentSummary(mine), cost: treeCost(s, all) } }
-        : {}),
+      ...(mine.length > 0 ? { agents: { summary, cost: treeCost(s, all) } } : {}),
     });
     const kids = childrenOf(s);
     // Mirrors the FLEET row cap: 4 children shown, lifted while drilled in.
-    const drilled = focused != null && s.id === state.selectedId;
+    const drilled = parent?.id === s.id;
     const shown = drilled ? kids : kids.slice(0, 4);
     const extra = drilled ? 0 : kids.length - shown.length;
     shown.forEach((c, i) =>
@@ -1302,7 +1401,7 @@ export const fleetEntries = (
     if (extra > 0) out.push({ kind: "childMore", s, extra });
     // Its Loom agents are full sessions, drawn under it like its children (a
     // filtered list is flat, ranked by relevance).
-    const agents = active ? [] : mine;
+    const agents = active ? [] : mine.filter((a) => entered.has(s.id) || status(a) !== "done");
     agents.forEach((agent, i) =>
       pushSession(agent, { depth: (nest?.depth ?? 0) + 1, isLast: i === agents.length - 1 }),
     );
@@ -1311,7 +1410,7 @@ export const fleetEntries = (
   if (active) {
     for (const s of matched) pushSession(s);
   } else {
-    for (const group of groupsOf(matched)) {
+    for (const group of groupsOf(matched, status)) {
       if (out.length > 0) out.push({ kind: "blank" });
       out.push({ kind: "groupHeader", group });
       for (const s of group.sessions) pushSession(s);

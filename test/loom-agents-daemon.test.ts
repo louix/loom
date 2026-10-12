@@ -16,6 +16,7 @@ import { FakeProvider, type FakeSession } from "@loom/connector-mock";
 import type { ConnectorContext } from "@loom/core/connector";
 import { makeHarness, type Harness } from "@loom/harness";
 import { WorktreeManager } from "@loom/daemon/daemon/worktrees";
+import { shownStatusIn } from "@loom/tui/fleet-status";
 
 const CONFIG = JSON.stringify({
   agents: {
@@ -282,6 +283,34 @@ describe("loom agents", { concurrency: 4 }, () => {
     assert.match(note, /Its workspace: 0 commits ahead of its base, nothing uncommitted\./);
     assert.match(note, /Widget added; tests pass\./);
     assert.doesNotMatch(note, /cut at 2 KB/);
+  });
+
+  test("a supervisor stays idle while its agents run, so their reports still reach it", async (env) => {
+    const lead = await idleSession(env);
+    const first = await startChild(env, lead.fs, { title: "First" });
+    const second = await startChild(env, lead.fs, { title: "Second" });
+    const list = () => env.c.request<SessionSnapshot[]>("session.list");
+    const busy = new Set(["starting", "running"]);
+    await waitFor(async () => busy.has((await get(env.c, second.id)).status.kind));
+    // The fleet shows it as background work; that is the TUI's reading alone.
+    const shown = async () => {
+      const all = await list();
+      return shownStatusIn(all)(all.find((s) => s.id === lead.id)!);
+    };
+    assert.equal((await get(env.c, lead.id)).status.kind, "idle");
+    assert.equal(await shown(), "working_background");
+    const before = lead.fs.sends.length;
+    await finish(env, first, "First part done.");
+    await waitFor(() => lead.fs.sends.length > before);
+    assert.match(lead.fs.sends.at(-1)!, /First part done\./);
+    assert.ok(
+      busy.has((await get(env.c, second.id)).status.kind),
+      "delivered with one still running",
+    );
+    lead.fs.finishTurn();
+    await waitFor(async () => (await get(env.c, lead.id)).status.kind === "idle");
+    assert.equal((await get(env.c, lead.id)).queue?.entries.length ?? 0, 0);
+    assert.equal(await shown(), "working_background");
   });
 
   test("a busy supervisor is not interrupted: the notification waits for its turn to end", async (env) => {

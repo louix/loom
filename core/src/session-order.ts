@@ -30,41 +30,45 @@ const byId = (a: SessionSnapshot, b: SessionSnapshot): number =>
   a.id < b.id ? -1 : Number(a.id > b.id);
 
 /**
- * Status group, then most recent turn boundary first, then id — for every
- * session nobody in the list supervises. Each one's Loom agents follow it,
- * nested in the order they were started (and theirs after them), whatever
- * their own status: the fleet draws them under their supervisor, and the
- * cursor walks them there.
+ * Status group (as `kindOf` names it), then most recent turn boundary first,
+ * then id — for every session nobody in the list supervises. Each one's Loom
+ * agents follow it, nested and ordered the same way among themselves (so an
+ * archived one comes last), and theirs after them: the fleet draws them under
+ * their supervisor.
  */
-export const sortSessions = (list: readonly SessionSnapshot[]): SessionSnapshot[] => {
-  const ids = new Set(list.map((s) => s.id));
-  const nested = (s: SessionSnapshot) =>
-    s.supervisorId !== undefined && s.supervisorId !== s.id && ids.has(s.supervisorId);
-  const roots = list
-    .filter((s) => !nested(s))
-    .sort((a, b) => {
-      const group = RANK[a.status.kind] - RANK[b.status.kind];
+export const sortSessionsBy =
+  (kindOf: (s: SessionSnapshot) => SessionStateKind) =>
+  (list: readonly SessionSnapshot[]): SessionSnapshot[] => {
+    const ids = new Set(list.map((s) => s.id));
+    const nested = (s: SessionSnapshot) =>
+      s.supervisorId !== undefined && s.supervisorId !== s.id && ids.has(s.supervisorId);
+    const order = (a: SessionSnapshot, b: SessionSnapshot): number => {
+      const group = RANK[kindOf(a)] - RANK[kindOf(b)];
       if (group !== 0) return group;
       const recent = recency(b) - recency(a);
       if (recent !== 0) return recent;
       return byId(a, b);
-    });
-  const agents = new Map<string, SessionSnapshot[]>();
-  for (const s of list.filter(nested).sort((a, b) => a.createdAt - b.createdAt || byId(a, b)))
-    agents.set(s.supervisorId!, [...(agents.get(s.supervisorId!) ?? []), s]);
-  const out: SessionSnapshot[] = [];
-  const seen = new Set<string>();
-  const place = (s: SessionSnapshot): void => {
-    if (seen.has(s.id)) return;
-    seen.add(s.id);
-    out.push(s);
-    for (const agent of agents.get(s.id) ?? []) place(agent);
+    };
+    const roots = list.filter((s) => !nested(s)).sort(order);
+    const agents = new Map<string, SessionSnapshot[]>();
+    for (const s of list.filter(nested).sort(order))
+      agents.set(s.supervisorId!, [...(agents.get(s.supervisorId!) ?? []), s]);
+    const out: SessionSnapshot[] = [];
+    const seen = new Set<string>();
+    const place = (s: SessionSnapshot): void => {
+      if (seen.has(s.id)) return;
+      seen.add(s.id);
+      out.push(s);
+      for (const agent of agents.get(s.id) ?? []) place(agent);
+    };
+    for (const s of roots) place(s);
+    // A supervision loop has no root to hang from: keep its sessions listed.
+    for (const s of list) place(s);
+    return out;
   };
-  for (const s of roots) place(s);
-  // A supervision loop has no root to hang from: keep its sessions listed.
-  for (const s of list) place(s);
-  return out;
-};
+
+/** {@link sortSessionsBy} each session's own state. */
+export const sortSessions = sortSessionsBy((s) => s.status.kind);
 
 /** How deep `s` is nested under supervisors in `list`: 0 for a root row. */
 export const nestingDepth = (
