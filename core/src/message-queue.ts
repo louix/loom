@@ -42,26 +42,6 @@ export interface QueueHoldCause {
   readonly by: QueueHoldBy | null;
 }
 
-/**
- * Which holds a message waits behind, by who sends it: the user's lifts any
- * (`none`); a Loom supervisor's waits behind the user's only (`user`); a
- * child's notification waits behind any (`any`).
- */
-export type HoldRespect = "none" | "user" | "any";
-
-/** Does a message sent with `respect` wait behind `hold` (rather than lift it)? */
-export const waitsBehind = (hold: QueueHoldCause | null, respect: HoldRespect): boolean => {
-  if (hold === null) return false;
-  switch (respect) {
-    case "none":
-      return false;
-    case "user":
-      return hold.by === "user";
-    case "any":
-      return true;
-  }
-};
-
 /** One entry in full — `session.queueEntry`'s result. */
 export const queueEntrySchema = z.object({
   /** Client-chosen UUID: the idempotency key and the provider's input id. */
