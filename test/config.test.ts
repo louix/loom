@@ -26,6 +26,32 @@ test("an empty config yields the defaults: claude default, no aisdk profiles", (
   const c = cfg("");
   assert.equal(c.defaultProvider, "claude");
   assert.deepEqual(c.providers.aisdk, {});
+  assert.equal(c.providers.claude.autoMemory, false);
+});
+
+test("Claude automatic memory can be enabled globally, per profile, and per repository", () => {
+  assert.equal(
+    cfg('{"providers":{"claude":{"auto_memory":true}}}').providers.claude.autoMemory,
+    true,
+  );
+  const profile = cfg(
+    '{"providers":{"claude":{"profiles":{"work":{"config_dir":"~/.claude-work","auto_memory":true}}}}}',
+  );
+  assert.equal(profile.claudeProfiles.find((p) => p.name === "work")?.autoMemory, true);
+  const dir = mkdtempSync(join(tmpdir(), "loom-memory-config-"));
+  try {
+    const file = join(dir, "config.json");
+    mkdirSync(join(dir, "repo"));
+    writeFileSync(
+      file,
+      JSON.stringify({
+        repos: [{ path: join(dir, "repo"), providers: { claude: { auto_memory: true } } }],
+      }),
+    );
+    assert.equal(loadConfig(join(dir, "repo"), file).providers.claude.autoMemory, true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("TUI editor event log defaults to false and accepts an opt-in", () => {

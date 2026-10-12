@@ -15,13 +15,16 @@
     // "echo": {},
     "claude": {
       "default_mode": "manual", // until a session has been started with another mode
+      // Claude Code auto memories are off by default. When enabled, they are stored under
+      // <config dir>/projects/<project>/memory/ and loaded into later sessions.
+      // "auto_memory": true,
       // "cli_path": "/path/to/claude",
       // "title_model": "haiku",
       // Omit profiles to use ~/.claude. Named accounts appear as claude:work, etc.
       // tag sets the display label without changing the provider id.
       // A family-level tag is inherited unless a profile overrides it.
       // "profiles": {
-      //   "work": { "config_dir": "~/.claude-work", "tag": "Work Claude", "color": "yellow" },
+      //   "work": { "config_dir": "~/.claude-work", "tag": "Work Claude", "color": "yellow", "auto_memory": true },
       //   "personal": { "config_dir": "~/.claude-personal" },
       // },
     },

@@ -364,6 +364,7 @@ const expandTilde = (p: string): string => {
 const queryEnv = (opts: {
   promptCacheTtl?: string | undefined;
   configDir?: string | undefined;
+  autoMemory?: boolean | undefined;
 }): Record<string, string> => {
   const env: Record<string, string> = { ...Deno.env.toObject(), NO_COLOR: "1" };
   delete env["FORCE_COLOR"];
@@ -374,6 +375,8 @@ const queryEnv = (opts: {
   else if (opts.promptCacheTtl) env["CLAUDE_CODE_PROMPT_CACHE_TTL"] = opts.promptCacheTtl;
   // Points this session's `claude` at a non-default profile dir.
   if (opts.configDir) env["CLAUDE_CONFIG_DIR"] = expandTilde(opts.configDir);
+  if (opts.autoMemory === false) env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1";
+  else delete env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"];
   return env;
 };
 
@@ -497,6 +500,7 @@ interface StartExtra {
   cli?: string;
   promptCacheTtl?: string;
   configDir?: string;
+  autoMemory?: boolean;
   base?: string;
 }
 
@@ -660,7 +664,7 @@ class ClaudeSession implements AgentSession {
     this.#backgroundTasks = [];
     this.#startOpts = opts;
     this.#startExtra = extra;
-    const { resume, cli, promptCacheTtl, configDir } = extra;
+    const { resume, cli, promptCacheTtl, configDir, autoMemory } = extra;
     // A new CLI process: the old one's queue and its uuids are gone with it.
     this.#queued.clear();
     this.#settledInputs.clear();
@@ -767,14 +771,18 @@ class ClaudeSession implements AgentSession {
         this.#agentCall(tool, input),
       );
 
-    const env = queryEnv({ promptCacheTtl, configDir });
+    const env = queryEnv({ promptCacheTtl, configDir, autoMemory });
     const queryEffort = opts.effort ? asQueryEffort(opts.effort) : undefined;
     const options: Options = {
       // Flag settings: no `Co-Authored-By` trailer or PR line, whatever the
       // user's settings say. Loom's Git identity decides authorship. Not
       // `attribution: false`: CLIs before 2.1.281 (a user's `cli_path`) report
       // it as an invalid setting; every version takes empty strings.
-      settings: { ...init?.settings, attribution: NO_ATTRIBUTION },
+      settings: {
+        ...init?.settings,
+        autoMemoryEnabled: autoMemory ?? false,
+        attribution: NO_ATTRIBUTION,
+      },
       cwd: opts.cwd,
       permissionMode: toPermissionMode(opts.mode),
       canUseTool,
@@ -1926,6 +1934,8 @@ export interface ClaudeProviderOptions {
   cliPath?: string;
   /** `providers.claude.prompt_cache_ttl` — "5m" | "1h" | "off" | "" (CLI decides). */
   promptCacheTtl?: string;
+  /** Whether Claude Code automatic memory files are enabled. */
+  autoMemory?: boolean;
   /** `CLAUDE_CONFIG_DIR` for this profile — "" leaves the SDK's default. */
   configDir?: string;
   /** The repo's base branch — feeds the `status` tool's ahead/behind counts. */
@@ -1940,6 +1950,7 @@ export class ClaudeProvider implements AgentProvider {
   readonly #cliPathOption: string;
   readonly #base: string;
   readonly #promptCacheTtl: string;
+  readonly #autoMemory: boolean;
   readonly #configDir: string;
   #cli: string | undefined;
   #cliResolved = false;
@@ -1949,6 +1960,7 @@ export class ClaudeProvider implements AgentProvider {
     this.#cliPathOption = opts.cliPath ?? "";
     this.#base = opts.base ?? "";
     this.#promptCacheTtl = opts.promptCacheTtl ?? "";
+    this.#autoMemory = opts.autoMemory ?? false;
     this.#configDir = opts.configDir ?? "";
   }
 
@@ -1979,6 +1991,7 @@ export class ClaudeProvider implements AgentProvider {
     return {
       ...(cli ? { cli } : {}),
       ...(this.#promptCacheTtl ? { promptCacheTtl: this.#promptCacheTtl } : {}),
+      autoMemory: this.#autoMemory,
       ...(this.#configDir ? { configDir: this.#configDir } : {}),
       ...(base ? { base } : {}),
     };

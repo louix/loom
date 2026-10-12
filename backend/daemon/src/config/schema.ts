@@ -524,6 +524,9 @@ export const createConfigSchema = (d: LoomConfig, events: readonly HookEvent[]) 
             ),
           permission_default: deprecated("Replaced by providers.claude.default_mode."),
           setting_sources: strings(d.providers.claude.settingSources),
+          auto_memory: flag(d.providers.claude.autoMemory).describe(
+            "Whether Claude Code may save and load automatic memories. When enabled, memories are stored in <config dir>/projects/<project>/memory/.",
+          ),
           disable_builtin: strings(d.providers.claude.disableBuiltin),
           cli_path: optionalText(),
           network: section({
@@ -546,7 +549,17 @@ export const createConfigSchema = (d: LoomConfig, events: readonly HookEvent[]) 
             (v) => v ?? {},
             z.record(
               z.string(),
-              section({ config_dir: trimmedText(), tag: providerTag, color: trimmedText() }),
+              section({
+                config_dir: trimmedText(),
+                tag: providerTag,
+                color: trimmedText(),
+                auto_memory: z
+                  .boolean()
+                  .optional()
+                  .describe(
+                    "Whether this Claude profile may save and load automatic memories; memories are stored in <config dir>/projects/<project>/memory/.",
+                  ),
+              }),
             ),
           ),
         }),

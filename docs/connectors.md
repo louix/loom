@@ -53,6 +53,12 @@ list denies worker network access); Loom warns about it, and ignores it when
 do not constrain native subprocess filesystem or network access. For native confinement, enable [Claude session VMs](claude-session-vm.md).
 The Deno-only backend makes no native confinement claim.
 
+Claude Code automatic memory is disabled by default. Set
+`providers.claude.auto_memory: true` to enable it; Claude then stores and loads
+notes in `<config dir>/projects/<project>/memory/` (`MEMORY.md` and topic files).
+The setting can also be set on a `providers.claude.profiles.*` entry or a
+matching `repos[]` override.
+
 Validation uses the installed real Claude SDK with a local CLI fixture, including
 discovery, permission/question/plan callbacks, filesystem and Loom Git tools,
 compaction, persisted SDK rewind, resume, profile sharing and process cleanup.

@@ -129,6 +129,7 @@ test("all connector config fields round-trip; host policy stays off the wire", (
     includeUsage: true,
     cliPath: "/tmp/claude",
     promptCacheTtl: "5m",
+    autoMemory: false,
     configDir: "/tmp/profile",
   } satisfies Required<ConnectorWireConfig>;
   const host = {

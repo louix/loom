@@ -794,6 +794,11 @@
                 "type": "string"
               }
             },
+            "auto_memory": {
+              "default": false,
+              "description": "Whether Claude Code may save and load automatic memories. When enabled, memories are stored in <config dir>/projects/<project>/memory/.",
+              "type": "boolean"
+            },
             "disable_builtin": {
               "default": [],
               "type": "array",
@@ -847,6 +852,10 @@
                   },
                   "color": {
                     "type": "string"
+                  },
+                  "auto_memory": {
+                    "description": "Whether this Claude profile may save and load automatic memories; memories are stored in <config dir>/projects/<project>/memory/.",
+                    "type": "boolean"
                   }
                 },
                 "additionalProperties": false
@@ -2331,6 +2340,11 @@
                       "type": "string"
                     }
                   },
+                  "auto_memory": {
+                    "default": false,
+                    "description": "Whether Claude Code may save and load automatic memories. When enabled, memories are stored in <config dir>/projects/<project>/memory/.",
+                    "type": "boolean"
+                  },
                   "disable_builtin": {
                     "default": [],
                     "type": "array",
@@ -2384,6 +2398,10 @@
                         },
                         "color": {
                           "type": "string"
+                        },
+                        "auto_memory": {
+                          "description": "Whether this Claude profile may save and load automatic memories; memories are stored in <config dir>/projects/<project>/memory/.",
+                          "type": "boolean"
                         }
                       },
                       "additionalProperties": false

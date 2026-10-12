@@ -446,6 +446,13 @@ test(
       assert.equal(spec.permissions.write.includes(f.workspace), false);
       assert.equal(spec.permissions.read.includes(join(spec.env.HOME!, ".claude.json")), false);
       assert.equal(spec.env.CLAUDE_CONFIG_DIR, f.profile);
+      assert.equal(spec.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY, "1");
+      const enabled = claudeWorkerSpec(
+        { ...f.ctx, config: { ...f.ctx.config, autoMemory: true } },
+        f.workspace,
+        "title",
+      );
+      assert.equal(enabled.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY, undefined);
       await assert.rejects(
         RemoteWorkerSession.connect("missing", f.ctx.id, { ...spec, executable: "/missing/deno" }),
       );

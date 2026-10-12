@@ -145,6 +145,8 @@ export interface ClaudeProfile {
   tag?: string;
   /** Fleet-row id colour (Ink name); "" → auto-assign from a palette. */
   color: string;
+  /** Whether Claude Code automatic memories are enabled for this profile. */
+  autoMemory?: boolean;
 }
 
 /**
@@ -338,6 +340,8 @@ export interface LoomConfig {
        * a 1h cache write costs 2x base input against 1.25x for 5m.
        */
       promptCacheTtl: PromptCacheTtl;
+      /** Whether Claude Code automatic memories are enabled. */
+      autoMemory: boolean;
     };
     /** Resolved native API, Codex and OpenAI-compatible profiles, keyed by id. */
     aisdk: Record<string, AisdkProfile>;
@@ -476,6 +480,7 @@ export const DEFAULT_CONFIG: LoomConfig = {
       disableBuiltin: [],
       cliPath: "",
       promptCacheTtl: "default",
+      autoMemory: false,
     },
     aisdk: {},
     echo: false,
@@ -534,6 +539,7 @@ const parseClaudeProfiles = (rows: ClaudeProfile[]): ClaudeProfile[] => {
       name: entry.name,
       ...(entry.tag !== undefined ? { tag: entry.tag } : {}),
       color: entry.color,
+      ...(entry.autoMemory !== undefined ? { autoMemory: entry.autoMemory } : {}),
     };
     const id = claudeProfileId(profile);
     if (seen.has(id)) continue;
@@ -800,6 +806,7 @@ export const normalizeConfig = (
       name: name === "default" ? "" : name,
       dir: p.config_dir ?? "",
       ...(p.tag !== undefined ? { tag: p.tag } : {}),
+      ...(p.auto_memory !== undefined ? { autoMemory: p.auto_memory } : {}),
       color: p.color ?? "",
     })),
   );
@@ -893,6 +900,7 @@ export const normalizeConfig = (
         cliPath: claude.cli_path ?? "",
         ...(workerHosts ? { workerHosts } : {}),
         promptCacheTtl: claude.prompt_cache_ttl,
+        autoMemory: claude.auto_memory,
       },
       aisdk,
       echo,

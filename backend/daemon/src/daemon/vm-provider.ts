@@ -114,6 +114,7 @@ export const withVmSessions = async <T extends AgentProvider>(
       modelContext: ctx.config.modelContext ?? {},
       maxSteps: ctx.config.maxSteps ?? 50,
       promptCacheTtl: ctx.config.promptCacheTtl ?? "",
+      autoMemory: ctx.config.autoMemory ?? false,
     };
     connector = sdk === "google" ? "@loom/connector-gemini" : "@loom/connector-generic";
     providerHosts = [endpoint.hostname];

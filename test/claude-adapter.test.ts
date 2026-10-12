@@ -1242,10 +1242,34 @@ test("every Claude session, on the host or in a session VM, hides commit and PR 
       await session.close();
     }
   assert.equal(captured.length, 4);
-  for (const options of captured)
+  for (const options of captured) {
     assert.deepEqual(options.settings, {
+      autoMemoryEnabled: false,
       attribution: { commit: "", pr: "", sessionUrl: false },
     });
+    assert.equal((options.env as Record<string, string>).CLAUDE_CODE_DISABLE_AUTO_MEMORY, "1");
+  }
+  const enabled = createProvider({
+    id: "claude",
+    config: { autoMemory: true },
+    executionEnvironment: "host",
+    logger: makeLogger("test"),
+  });
+  const enabledSession = await enabled.createSession({
+    sessionId: "attribution-enabled",
+    cwd: "/tmp",
+    prompt: "go",
+    mode: "default",
+    mcpServers: [],
+    loomServer: false,
+  });
+  await enabledSession.close();
+  const enabledOptions = captured.at(-1)!;
+  assert.equal((enabledOptions.settings as Record<string, unknown>).autoMemoryEnabled, true);
+  assert.equal(
+    (enabledOptions.env as Record<string, string>).CLAUDE_CODE_DISABLE_AUTO_MEMORY,
+    undefined,
+  );
 });
 
 test("Claude registers async init on a new fork but does not retain it across query restarts", async () => {
@@ -1286,6 +1310,7 @@ test("Claude registers async init on a new fork but does not retain it across qu
     }
     await session.rewind(0, "keep-this");
     assert.deepEqual(captured[1]?.settings, {
+      autoMemoryEnabled: false,
       attribution: { commit: "", pr: "", sessionUrl: false },
     });
   } finally {

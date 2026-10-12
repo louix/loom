@@ -411,6 +411,7 @@ export class ProviderRegistry {
         config: {
           cliPath: c.cliPath,
           promptCacheTtl: connectorCacheTtl(c.promptCacheTtl),
+          autoMemory: this.#claudeProfile(id).autoMemory ?? c.autoMemory,
           configDir,
           ...(c.workerHosts?.kind === "replace" ? { workerAllowedHosts: c.workerHosts.hosts } : {}),
           ...(c.workerHosts?.kind === "add" ? { workerExtraHosts: c.workerHosts.hosts } : {}),

@@ -57,6 +57,8 @@ const connectorConfigFields = z.object({
    * Ignored by the other aisdk backends.
    */
   promptCacheTtl: z.string(),
+  /** Claude: enable Claude Code automatic memory files. */
+  autoMemory: z.boolean().optional(),
   /**
    * Claude: `CLAUDE_CONFIG_DIR` for this provider instance — the profile's
    * config directory, already tilde-expanded and absolute. "" = the SDK's

@@ -56,6 +56,8 @@ export const claudeWorkerSpec = (
     const value = Deno.env.get(key);
     if (value !== undefined) env[key] = value;
   }
+  if (ctx.config.autoMemory !== true) env.CLAUDE_CODE_DISABLE_AUTO_MEMORY = "1";
+  else delete env.CLAUDE_CODE_DISABLE_AUTO_MEMORY;
   const home = env.HOME!;
   const profile = ctx.config.configDir || env.CLAUDE_CONFIG_DIR || join(home, ".claude");
   const profileConfig =
@@ -114,6 +116,7 @@ export const createClaudeWorkerProvider = async (ctx: ConnectorContext) => {
         cliPath: ctx.config.cliPath ? resolve(ctx.config.cliPath) : "",
         configDir: ctx.config.configDir ?? "",
         promptCacheTtl: ctx.config.promptCacheTtl ?? "",
+        autoMemory: ctx.config.autoMemory ?? false,
       },
       ...(ctx.baseBranch ? { baseBranch: ctx.baseBranch } : {}),
     },
