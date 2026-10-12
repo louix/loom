@@ -2187,6 +2187,10 @@ export const mkFleetHandle = ({
   ): void => {
     const e = queueSelection(state, sessionId);
     if (!e) return;
+    // An unset selection means "the first entry"; pin it to this one so it
+    // follows the entry when a move reorders the list.
+    if (state.overlay.t === "queue" && state.overlay.selected !== e.id)
+      show({ ...state.overlay, selected: e.id });
     const target = { entryId: e.id, revision: e.revision };
     switch (name) {
       case "queueEdit": {

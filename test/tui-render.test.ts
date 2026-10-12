@@ -2797,6 +2797,30 @@ describe("tui fleet-handle effects", () => {
     }
   });
 
+  test("a moved entry keeps the selection, even when none was made", () => {
+    const fake = mkFakeClient();
+    const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+    const teardown = handle.effectStart();
+    try {
+      const [a, b, c] = ["A", "B", "C"].map((id) => queueEntry(id));
+      fake.deliver(fleetOf(testSession({ id: "s", queue: queueOf([a!, b!, c!]) })));
+      handle.handleKey("q", {} as Key);
+      handle.handleKey("", { shift: true, downArrow: true } as Key);
+      // The daemon reorders: B, A, C. The second move must still be A's.
+      fake.deliver(fleetOf(testSession({ id: "s", queue: queueOf([b!, a!, c!]) })));
+      handle.handleKey("", { shift: true, downArrow: true } as Key);
+      assert.deepEqual(
+        fake.of("session.queueMove").map((r) => [r.params["entryId"], r.params["direction"]]),
+        [
+          ["A", "down"],
+          ["A", "down"],
+        ],
+      );
+    } finally {
+      teardown();
+    }
+  });
+
   test("q opens the selected session's queue; ↑↓ select by id; its keys act on the entry", () => {
     const fake = mkFakeClient();
     const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
