@@ -9,7 +9,8 @@
  *   awaiting_input ─▶ running             (the daemon's answer/approve path, NOT this fn;
  *                                          back to working_background if the request
  *                                          came from a background child)
- *   running ─▶ interrupted                (user stop / stream ended — set by the manager)
+ *   running ─▶ interrupted                (user stop / stream ended — set by the manager;
+ *                                          the provider's own cut-short `result`)
  *   running ─▶ idle                       (clean `result`, no background work)
  *   running ─▶ working_background         (clean `result` while ≥1 background task runs)
  *   idle ⇄ working_background             (background set becomes non-empty / drains)
@@ -28,6 +29,7 @@ import {
   stateAwaitingInput,
   stateError,
   stateIdle,
+  stateInterrupted,
   stateRunning,
   stateWorkingBackground,
 } from "@loom/core/session-state";
@@ -115,7 +117,9 @@ export const deriveStatus = (
       // A trailing `result` from a turn the user already killed must not
       // un-stick `interrupted` (nor a settled `error`).
       if (terminal(current)) return current;
-      if (ev.kind !== "ok") return stateError(truncate(ev.error));
+      if (ev.kind === "error") return stateError(truncate(ev.error));
+      if (ev.kind === "interrupted")
+        return stateInterrupted("provider", ev.reason && truncate(ev.reason));
       // Clean finish: `idle`, unless the turn left background work running that
       // will wake it again — then `working_background`. If that "empty set"
       // `background_tasks` event is somehow missed, the task's own re-drive

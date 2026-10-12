@@ -25,9 +25,10 @@ export type AwaitReason = z.infer<typeof awaitReasonSchema>;
  * caused it.
  */
 export type StopCause = "user" | "supervisor";
-/** What ended a turn as `interrupted`: a stop someone asked for, or the
- *  provider's stream ending with the turn still live. */
-export const interruptedBySchema = z.enum(["user", "supervisor", "stream_ended"]);
+/** What ended a turn as `interrupted`: a stop someone asked for, the
+ *  provider's stream ending with the turn still live, or the provider cutting
+ *  the turn short itself (e.g. Codex after too many denied approvals). */
+export const interruptedBySchema = z.enum(["user", "supervisor", "stream_ended", "provider"]);
 export type InterruptedBy = z.infer<typeof interruptedBySchema>;
 
 export const sessionStateSchema = z.discriminatedUnion("kind", [
@@ -44,6 +45,8 @@ export const sessionStateSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("interrupted"),
     by: interruptedBySchema,
+    /** Why, when whoever stopped the turn said so — e.g. `too many denials`. */
+    reason: z.string().optional(),
   }),
   z.object({
     kind: z.literal("idle"),
@@ -80,9 +83,10 @@ export const stateAwaitingInput = (on: AwaitReason): SessionState => ({
   kind: "awaiting_input",
   on,
 });
-export const stateInterrupted = (by: InterruptedBy): SessionState => ({
+export const stateInterrupted = (by: InterruptedBy, reason?: string): SessionState => ({
   kind: "interrupted",
   by,
+  ...(reason ? { reason } : {}),
 });
 export const stateError = (message: string): SessionState => ({ kind: "error", message });
 
@@ -90,7 +94,7 @@ interface FoldSessionState<B> {
   readonly onStarting: () => B;
   readonly onRunning: () => B;
   readonly onAwaitingInput: (on: AwaitReason) => B;
-  readonly onInterrupted: (by: InterruptedBy) => B;
+  readonly onInterrupted: (by: InterruptedBy, reason?: string) => B;
   readonly onIdle: () => B;
   readonly onWorkingBackground: () => B;
   readonly onError: (message: string) => B;
@@ -108,7 +112,7 @@ export const foldSessionState =
       case "awaiting_input":
         return fns.onAwaitingInput(s.on);
       case "interrupted":
-        return fns.onInterrupted(s.by);
+        return fns.onInterrupted(s.by, s.reason);
       case "idle":
         return fns.onIdle();
       case "working_background":
@@ -138,7 +142,8 @@ export const isLiveState = (s: SessionState): boolean =>
 export const sameSessionState = (a: SessionState, b: SessionState): boolean => {
   if (a.kind !== b.kind) return false;
   if (a.kind === "awaiting_input" && b.kind === "awaiting_input") return a.on === b.on;
-  if (a.kind === "interrupted" && b.kind === "interrupted") return a.by === b.by;
+  if (a.kind === "interrupted" && b.kind === "interrupted")
+    return a.by === b.by && a.reason === b.reason;
   if (a.kind === "error" && b.kind === "error") return a.message === b.message;
   return true;
 };
@@ -149,7 +154,7 @@ export const sessionStateLabel = (s: SessionState): string =>
     onStarting: () => "starting",
     onRunning: () => "running",
     onAwaitingInput: (on) => `awaiting_input · ${on}`,
-    onInterrupted: (by) => `interrupted · ${by}`,
+    onInterrupted: (by, reason) => `interrupted · ${by}${reason ? ` · ${reason}` : ""}`,
     onIdle: () => "idle",
     onWorkingBackground: () => "working_background",
     onError: (message) => (message ? `error · ${message}` : "error"),
@@ -179,8 +184,13 @@ export const parseSessionState = (kind: string, detail: string | null): SessionS
       return stateDone;
     case "awaiting_input":
       return stateAwaitingInput(isAwaitReason(detail) ? detail : "permission");
-    case "interrupted":
-      return stateInterrupted(interruptedBySchema.safeParse(detail).data ?? "user");
+    case "interrupted": {
+      // `by`, or `by: reason` (see `sessionStateDetail`).
+      const split = detail?.indexOf(": ") ?? -1;
+      const by = split < 0 ? detail : detail!.slice(0, split);
+      const reason = split < 0 ? undefined : detail!.slice(split + 2);
+      return stateInterrupted(interruptedBySchema.safeParse(by).data ?? "user", reason);
+    }
     case "error":
       return stateError(detail ?? "");
     default:
@@ -194,7 +204,7 @@ export const sessionStateDetail = (s: SessionState): string | null =>
     onStarting: () => null,
     onRunning: () => null,
     onAwaitingInput: (on) => on,
-    onInterrupted: (by) => by,
+    onInterrupted: (by, reason) => (reason ? `${by}: ${reason}` : by),
     onIdle: () => null,
     onWorkingBackground: () => null,
     onError: (message) => message,

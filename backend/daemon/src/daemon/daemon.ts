@@ -2808,7 +2808,7 @@ export class Daemon {
         this.#hooks.stopped(session, "error", state.message);
         return;
       case "interrupted":
-        this.#hooks.stopped(session, "interrupted", state.by);
+        this.#hooks.stopped(session, "interrupted", state.reason ?? state.by);
         return;
       default:
         return;

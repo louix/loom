@@ -320,9 +320,24 @@ export const resultErrorEventSchema = harnessEventBaseSchema.extend({
 });
 export type ResultErrorEvent = z.infer<typeof resultErrorEventSchema>;
 
+/**
+ * The provider cut the turn short itself — not a stop Loom asked for (that
+ * ends the turn without a `result`). `reason` names why in a few words
+ * (`too many denials`), `message` is the provider's own explanation when it
+ * gives one beyond that.
+ */
+export const resultInterruptedEventSchema = harnessEventBaseSchema.extend({
+  type: z.literal("result"),
+  kind: z.literal("interrupted"),
+  reason: z.string().optional(),
+  message: z.string().optional(),
+});
+export type ResultInterruptedEvent = z.infer<typeof resultInterruptedEventSchema>;
+
 export const resultEventSchema = z.discriminatedUnion("kind", [
   resultOkEventSchema,
   resultErrorEventSchema,
+  resultInterruptedEventSchema,
 ]);
 export type ResultEvent = z.infer<typeof resultEventSchema>;
 

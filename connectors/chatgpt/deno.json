@@ -10,6 +10,7 @@
     "./account": "./src/account.ts",
     "./launch": "./src/launch.ts",
     "./tool-dispatch": "./src/tool-dispatch.ts",
-    "./agent-modes": "./src/agent-modes.ts"
+    "./agent-modes": "./src/agent-modes.ts",
+    "./turn-error": "./src/turn-error.ts"
   }
 }

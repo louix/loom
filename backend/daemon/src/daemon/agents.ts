@@ -222,6 +222,8 @@ const excerptLine = (ev: HarnessEvent): string | null => {
     case "plan_review":
       return "? presented a plan for review";
     case "result":
+      if (ev.kind === "interrupted")
+        return `— turn interrupted${ev.reason ? `: ${ev.reason}` : ""}`;
       return ev.kind === "ok" ? "— turn finished" : `— turn failed: ${ev.error}`;
     case "error":
       return ev.fatal ? `! ${ev.message}` : null;
@@ -643,7 +645,8 @@ export class AgentSupervision {
     if (s.status.kind === "awaiting_input")
       state = `waiting for input (${s.status.on}) — the user answers it`;
     else if (s.status.kind === "error") state = `failed: ${s.status.message}`;
-    else if (s.status.kind === "interrupted") state = "interrupted";
+    else if (s.status.kind === "interrupted")
+      state = s.status.reason ? `interrupted: ${s.status.reason}` : "interrupted";
     else if (s.status.kind === "done") state = "archived";
     const diff = s.git ? gitSummary(s.git) : "";
     const final = finalMessage(this.#host.events(s.id, { limit: 200 }).map((e) => e.event));
@@ -815,7 +818,7 @@ export class AgentSupervision {
         event = `failed: ${state.message}`;
         break;
       case "interrupted":
-        event = `was interrupted (${state.by})`;
+        event = `was interrupted (${state.reason ?? state.by})`;
         break;
       default:
         return;

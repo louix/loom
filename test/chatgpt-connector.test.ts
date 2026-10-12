@@ -2920,3 +2920,121 @@ const waitUntil = async (cond: () => boolean, ms = 3000): Promise<void> => {
     await delay(5);
   }
 };
+
+/** Start a one-turn session under `env` and collect its events until the turn ends. */
+const turnEvents = async (
+  sessionId: string,
+  env: Record<string, string>,
+): Promise<HarnessEvent[]> => {
+  for (const [k, v] of Object.entries(env)) Deno.env.set(k, v);
+  try {
+    const s = await CodexAppServerSession.start(
+      { sessionId, cwd: "/tmp", prompt: "go", mode: "default", mcpServers: [] },
+      { dir: `/tmp/loom-${sessionId}`, authJsonPath: `/tmp/loom-${sessionId}/auth.json` },
+      FAKE_CODEX,
+    );
+    const deadline = setTimeout(() => void s.close(), 5000);
+    const events: HarnessEvent[] = [];
+    try {
+      for await (const ev of s.events()) {
+        events.push(ev);
+        if (ev.type === "result" || (ev.type === "error" && ev.fatal)) break;
+      }
+      return events;
+    } finally {
+      clearTimeout(deadline);
+      await s.close();
+    }
+  } finally {
+    for (const k of Object.keys(env)) Deno.env.delete(k);
+  }
+};
+
+test("a turn Codex interrupted itself ends as an interrupted result carrying the reason", async () => {
+  const message =
+    "Automatic approval review rejected too many approval requests for this turn (3).";
+  const events = await turnEvents("codex-too-many-denials", {
+    LOOM_TEST_TURN_COMPLETION: JSON.stringify({
+      status: "interrupted",
+      error: { message, codexErrorInfo: "tooManyDenials", additionalDetails: null },
+    }),
+  });
+  const end = events.at(-1);
+  assert.deepEqual(end && { ...end, ts: 0 }, {
+    type: "result",
+    sessionId: "codex-too-many-denials",
+    ts: 0,
+    kind: "interrupted",
+    reason: "too many denials",
+    message,
+  });
+  // Without an error Codex still said it stopped; the reason is just unknown.
+  const bare = await turnEvents("codex-interrupted-bare", {
+    LOOM_TEST_TURN_COMPLETION: JSON.stringify({ status: "interrupted", error: null }),
+  });
+  const last = bare.at(-1);
+  assert.equal(last?.type === "result" && last.kind, "interrupted");
+  assert.equal(last?.type === "result" && last.kind === "interrupted" && last.reason, undefined);
+});
+
+test("a failed Codex turn's error names its code before Codex's message", async () => {
+  const events = await turnEvents("codex-flex-unavailable", {
+    LOOM_TEST_TURN_COMPLETION: JSON.stringify({
+      status: "failed",
+      error: {
+        message: "Flex processing is unavailable right now.",
+        codexErrorInfo: "flexUnavailable",
+      },
+    }),
+  });
+  const end = events.at(-1);
+  assert.equal(end?.type, "error");
+  assert.equal(
+    end?.type === "error" && end.message,
+    "flex processing unavailable: Flex processing is unavailable right now.",
+  );
+});
+
+test("a user stop keeps its attribution: Codex's interrupted completion of the stopped turn is not reported", async () => {
+  Deno.env.set("LOOM_TEST_HOLD_TURN", "1");
+  Deno.env.set(
+    "LOOM_TEST_INTERRUPT_COMPLETION",
+    JSON.stringify({ error: { message: "interrupted", codexErrorInfo: "other" } }),
+  );
+  try {
+    const s = await CodexAppServerSession.start(
+      { sessionId: "codex-user-stop", cwd: "/tmp", prompt: "go", mode: "default", mcpServers: [] },
+      { dir: "/tmp/loom-codex-user-stop", authJsonPath: "/tmp/loom-codex-user-stop/auth.json" },
+      FAKE_CODEX,
+    );
+    await s.interrupt();
+    await delay(150);
+    await s.close();
+    const ends: HarnessEvent[] = [];
+    for await (const ev of s.events())
+      if (ev.type === "result" || (ev.type === "error" && ev.fatal)) ends.push(ev);
+    assert.deepEqual(ends, []);
+  } finally {
+    Deno.env.delete("LOOM_TEST_HOLD_TURN");
+    Deno.env.delete("LOOM_TEST_INTERRUPT_COMPLETION");
+  }
+});
+
+test("Codex error codes read as short reasons; unknown codes degrade to words", async () => {
+  const { codexErrorLabel, turnErrorReason } = await import("@loom/connector-chatgpt/turn-error");
+  assert.equal(codexErrorLabel("tooManyDenials"), "too many denials");
+  assert.equal(codexErrorLabel("flexUnavailable"), "flex processing unavailable");
+  assert.equal(codexErrorLabel("other"), undefined);
+  assert.equal(codexErrorLabel("someFutureCode"), "some future code");
+  assert.equal(
+    codexErrorLabel({ responseStreamDisconnected: { httpStatusCode: 502 } }),
+    "stream disconnected (HTTP 502)",
+  );
+  assert.equal(codexErrorLabel({ futureVariant: {} }), "future variant");
+  assert.equal(codexErrorLabel(null), undefined);
+  // `other` falls back to Codex's message, which then needs no repeating.
+  assert.deepEqual(turnErrorReason({ message: "boom", codexErrorInfo: "other" }), {
+    reason: "boom",
+  });
+  assert.deepEqual(turnErrorReason(null), {});
+});

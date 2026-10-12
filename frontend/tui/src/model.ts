@@ -1636,6 +1636,12 @@ const noticeForEvent = (s: TuiState, ev: HarnessEvent): Notice | null => {
       tone: ev.fatal ? "bad" : "warn",
       at: Date.now(),
     };
+  if (ev.type === "result" && ev.kind === "interrupted")
+    return {
+      text: `turn interrupted${ev.reason ? `: ${oneLine(ev.reason, 80)}` : ""}${tag}`,
+      tone: "warn",
+      at: Date.now(),
+    };
   if (ev.type === "result" && ev.kind === "ok" && ev.stopReason === "step_limit")
     return {
       text: `turn paused at the step ceiling${tag} — send to continue`,

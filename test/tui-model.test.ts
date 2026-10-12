@@ -2035,6 +2035,21 @@ test("a provider notice renders dim, a warning in the warn tone", () => {
   assert.equal(warn.full, "Settings\nwere only partially applied");
 });
 
+test("formatEvent names why a provider interrupted a turn, with its own message to expand", () => {
+  const line = formatEvent(
+    ev({
+      type: "result",
+      kind: "interrupted",
+      reason: "too many denials",
+      message: "Automatic approval review rejected too many approval requests for this turn.",
+    }),
+  );
+  assert.equal(line.text, "turn interrupted — too many denials");
+  assert.equal(line.tone, "warn");
+  assert.match(line.full ?? "", /rejected too many approval requests/);
+  assert.equal(formatEvent(ev({ type: "result", kind: "interrupted" })).text, "turn interrupted");
+});
+
 test("formatEvent renders each event kind to a glyph + one-liner + tone", () => {
   const tc = formatEvent(
     ev({ type: "tool_call", id: "1", name: "Bash", input: { command: "npm test" } }),

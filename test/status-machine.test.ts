@@ -3,7 +3,10 @@ import { test } from "node:test";
 import { deriveStatus } from "@loom/daemon/daemon/status-machine";
 import type { HarnessEvent } from "@loom/core/events";
 import {
+  parseSessionState,
   type SessionState,
+  sessionStateDetail,
+  sessionStateLabel,
   stateAwaitingInput,
   stateError,
   stateIdle,
@@ -57,12 +60,51 @@ test("a killed turn's own trailing output / result does not revive interrupted o
     unchanged(s, ev({ type: "tool_result", id: "1", ok: true, output: null }));
     unchanged(s, ev({ type: "result", kind: "ok" }));
     unchanged(s, ev({ type: "result", kind: "error", error: "x" }));
+    unchanged(s, ev({ type: "result", kind: "interrupted", reason: "too many denials" }));
     // …but a fatal error still wins.
     assert.deepEqual(
       deriveStatus(s, ev({ type: "error", message: "dead", fatal: true })),
       stateError("dead"),
     );
   }
+});
+
+test("a provider's own cut-short result ends the turn interrupted by the provider, with its reason", () => {
+  for (const from of [stateRunning, stateStarting, stateWorkingBackground]) {
+    assert.deepEqual(
+      deriveStatus(from, ev({ type: "result", kind: "interrupted", reason: "too many denials" })),
+      stateInterrupted("provider", "too many denials"),
+    );
+    assert.deepEqual(
+      deriveStatus(from, ev({ type: "result", kind: "interrupted" })),
+      stateInterrupted("provider"),
+    );
+  }
+  const long = deriveStatus(
+    stateRunning,
+    ev({ type: "result", kind: "interrupted", reason: "x".repeat(300) }),
+  );
+  assert.equal(long.kind === "interrupted" && long.reason?.length, 118);
+});
+
+test("an interruption's reason survives persistence and shows in its label", () => {
+  for (const s of [
+    stateInterrupted("user"),
+    stateInterrupted("stream_ended"),
+    stateInterrupted("provider"),
+    stateInterrupted("provider", "too many denials"),
+    stateInterrupted("provider", "usage limit reached: try again at 5pm"),
+  ]) {
+    assert.deepEqual(parseSessionState(s.kind, sessionStateDetail(s)), s);
+  }
+  // Rows written before reasons existed hold the cause alone.
+  assert.deepEqual(parseSessionState("interrupted", "supervisor"), stateInterrupted("supervisor"));
+  assert.deepEqual(parseSessionState("interrupted", null), stateInterrupted("user"));
+  assert.equal(
+    sessionStateLabel(stateInterrupted("provider", "too many denials")),
+    "interrupted · provider · too many denials",
+  );
+  assert.equal(sessionStateLabel(stateInterrupted("user")), "interrupted · user");
 });
 
 test("a new turn's blocking request re-engages an interrupted / errored session", () => {
@@ -123,7 +165,12 @@ test("permission_request for AskUserQuestion → awaiting_input/user_question", 
   assert.deepEqual(
     deriveStatus(
       stateRunning,
-      ev({ type: "permission_request", id: "p1", tool: "AskUserQuestion", input: {} }),
+      ev({
+        type: "permission_request",
+        id: "p1",
+        tool: "AskUserQuestion",
+        input: {},
+      }),
     ),
     stateAwaitingInput("user_question"),
   );
@@ -186,7 +233,9 @@ const bgEv = (n: number) =>
 
 test("a clean result with background work outstanding settles to working_background", () => {
   assert.deepEqual(
-    deriveStatus(stateRunning, ev({ type: "result", kind: "ok" }), { backgroundTasks: 2 }),
+    deriveStatus(stateRunning, ev({ type: "result", kind: "ok" }), {
+      backgroundTasks: 2,
+    }),
     stateWorkingBackground,
   );
   // A failed result still errors regardless of background work.
@@ -233,7 +282,13 @@ test("a child's own output never moves a settled session — only the main loop'
   for (const e of [
     ev({ type: "assistant_text", text: "sub-agent at work", agentId: "a1" }),
     ev({ type: "thinking", text: "…", agentId: "a1" }),
-    ev({ type: "tool_call", id: "1", name: "Bash", input: {}, agentId: "a1" }),
+    ev({
+      type: "tool_call",
+      id: "1",
+      name: "Bash",
+      input: {},
+      agentId: "a1",
+    }),
   ]) {
     // A background sub-agent streams long after the turn settled.
     unchanged(stateWorkingBackground, e);

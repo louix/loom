@@ -74,6 +74,12 @@
  * NOTIFICATION, LOOM_TEST_FAIL_THREAD_SETTINGS_UPDATE_FROM, LOOM_TEST_HOLD_
  * THREAD_SETTINGS_UPDATE_CALL, LOOM_TEST_EXIT_ON_SETTINGS_UPDATE, and
  * LOOM_TEST_PLAN_ITEM (a turn started in Plan ends with that proposed plan).
+ *
+ * `LOOM_TEST_TURN_COMPLETION` (JSON turn fields) is merged into the automatic
+ * `turn/completed` turn — e.g. `{status: "interrupted", error: {…}}` for a
+ * turn Codex cut short itself. `LOOM_TEST_INTERRUPT_COMPLETION` (JSON turn
+ * fields) makes `turn/interrupt` answer with that turn's `turn/completed`
+ * (`status: "interrupted"` plus the fields), as Codex 0.160 reports it.
  */
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -399,7 +405,13 @@ const handle = (req) => {
       send({
         jsonrpc: "2.0",
         method: "turn/completed",
-        params: { turn: { id: "fake-turn-1", status: "completed" } },
+        params: {
+          turn: {
+            id: "fake-turn-1",
+            status: "completed",
+            ...JSON.parse(process.env["LOOM_TEST_TURN_COMPLETION"] || "{}"),
+          },
+        },
       });
     };
     const respondToTurnStart = () => {
@@ -540,6 +552,16 @@ const handle = (req) => {
       return;
     }
     send({ jsonrpc: "2.0", id, result: {} });
+    const interrupted = process.env["LOOM_TEST_INTERRUPT_COMPLETION"];
+    if (interrupted)
+      send({
+        jsonrpc: "2.0",
+        method: "turn/completed",
+        params: {
+          threadId: startedThreadId,
+          turn: { id: params?.turnId, status: "interrupted", ...JSON.parse(interrupted) },
+        },
+      });
     return;
   }
   if (method === "thread/settings/update") {

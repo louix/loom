@@ -372,6 +372,13 @@ export const formatEvent = (ev: HarnessEvent, toolName?: string): EventFormat =>
           tone: "warn",
         };
       }
+      if (ev.kind === "interrupted")
+        return {
+          glyph: "■",
+          text: `turn interrupted${ev.reason ? ` — ${oneLine(ev.reason, 120)}` : ""}`,
+          ...(ev.message ? { full: body(ev.message) } : {}),
+          tone: "warn",
+        };
       return {
         glyph: "■",
         text: ev.kind === "ok" ? "turn complete" : "turn failed",

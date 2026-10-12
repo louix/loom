@@ -91,6 +91,7 @@ import {
 /** The ` · …` tail after a status label in the Detail pane. */
 const statusDetailSuffix = (s: SessionSnapshot): string => {
   if (s.status.kind === "awaiting_input") return ` · ${s.status.on}`;
+  if (s.status.kind === "interrupted" && s.status.reason) return ` · ${s.status.reason}`;
   if (s.status.kind === "working_background") {
     const n = (s.backgroundTasks ?? []).length;
     return n > 0 ? ` · ${n} task${n === 1 ? "" : "s"}` : "";

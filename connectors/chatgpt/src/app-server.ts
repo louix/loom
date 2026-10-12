@@ -42,6 +42,7 @@ import {
 } from "./agent-modes.ts";
 import { verifyChatGptAccount } from "./account.ts";
 import { rateLimitEvents } from "./rate-limits.ts";
+import { turnErrorReason } from "./turn-error.ts";
 import type { CodexHome } from "./codex-home.ts";
 import { spawnCodex, type CodexLauncher } from "./launch.ts";
 import {
@@ -1432,13 +1433,28 @@ export class CodexAppServerSession implements AgentSession {
       );
       this.#agentCalls.failAll("(the turn ended before this was answered)");
       this.#turns++;
+      const { reason, message } = turnErrorReason(turn?.error);
       if (turn?.status === "failed")
         this.#events.push({
           type: "error",
           sessionId: this.id,
           ts: now(),
-          message: turn?.error?.message ?? "Codex turn failed",
+          message:
+            reason && message
+              ? `${reason}: ${message}`
+              : (reason ?? message ?? "Codex turn failed"),
           fatal: true,
+        });
+      // Codex stopped the turn itself (Loom's own interrupt cleared `#turnId`
+      // and never gets here): e.g. its auto-review denied too many requests.
+      else if (turn?.status === "interrupted")
+        this.#events.push({
+          type: "result",
+          sessionId: this.id,
+          ts: now(),
+          kind: "interrupted",
+          ...(reason ? { reason } : {}),
+          ...(message ? { message } : {}),
         });
       else if (plan) return this.#offerPlan(plan);
       else this.#events.push({ type: "result", sessionId: this.id, ts: now(), kind: "ok" });

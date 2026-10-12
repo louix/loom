@@ -27,6 +27,7 @@
     "connectors/chatgpt/src/rate-limits.ts",
     "connectors/chatgpt/src/rpc.ts",
     "connectors/chatgpt/src/tool-dispatch.ts",
+    "connectors/chatgpt/src/turn-error.ts",
     "connectors/claude/src/adapter.ts",
     "connectors/claude/src/cli.ts",
     "connectors/claude/src/index.ts",
