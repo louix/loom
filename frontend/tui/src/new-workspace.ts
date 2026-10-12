@@ -27,8 +27,8 @@ export const WORKSPACE_MODES = [
 type Provider = ProviderInfo | null;
 
 /** The isolation the session will run under: chosen, else the provider's default. */
-export const newIsolation = (p: Provider, s: NewSessionSettings): "vm" | "local" =>
-  s.isolation ?? p?.defaultIsolation ?? "local";
+export const newIsolation = (p: Provider, s: NewSessionSettings): "vm" | "none" =>
+  s.isolation ?? p?.defaultIsolation ?? "none";
 
 /** The workspace the session will get: chosen, else the daemon's default for
  *  its isolation. A daemon that names no default makes a worktree. */
@@ -86,11 +86,11 @@ export const cycleWorkspace = (p: Provider, s: NewSessionSettings): SettingsStep
 /** `⌥i`: the other isolation, or why not. */
 export const toggleIsolation = (p: Provider, s: NewSessionSettings): SettingsStep => {
   const current = newIsolation(p, s);
-  if (current === "local" && p?.vmUnavailableReason) return { disabled: p.vmUnavailableReason };
-  if (current === "local") return { settings: { ...s, isolation: "vm" } };
+  if (current === "none" && p?.vmUnavailableReason) return { disabled: p.vmUnavailableReason };
+  if (current === "none") return { settings: { ...s, isolation: "vm" } };
   if (s.workspace === "clone")
-    return { settings: { ...s, isolation: "local", workspace: "worktree" }, note: CLONE_LEFT_VM };
-  return { settings: { ...s, isolation: "local" } };
+    return { settings: { ...s, isolation: "none", workspace: "worktree" }, note: CLONE_LEFT_VM };
+  return { settings: { ...s, isolation: "none" } };
 };
 
 // ---------------------------------------------------------------------------

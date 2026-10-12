@@ -110,11 +110,15 @@ const grants = z.strictObject({
 
 /**
  * Default workspace placement for applications that create workspaces. Absent
- * fields keep each consumer's own default: Loom stays local + worktree.
+ * fields keep each consumer's own default: Loom stays on the host + worktree.
  */
 const lifecycle = z.strictObject({
   workspace: z.enum(["in-place", "worktree", "clone"]).optional(),
-  execution: z.enum(["vm", "local"]).optional(),
+  execution: z
+    .enum(["vm", "none", "local"])
+    .transform((v) => (v === "local" ? "none" : v))
+    .optional()
+    .describe("vm, or none (on the host); local is the old spelling of none."),
   idleTimeoutMinutes: z.int().min(0).max(1440).optional(),
 });
 

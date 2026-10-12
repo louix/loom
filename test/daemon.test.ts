@@ -602,7 +602,7 @@ test("providers.list exposes opt-in echo and respects visibility and access sett
         if (provider) {
           assert.deepEqual(provider.models, ["echo"]);
           assert.equal(provider.defaultModel, "echo");
-          assert.equal(provider.defaultIsolation, "local");
+          assert.equal(provider.defaultIsolation, "none");
           assert.ok(provider.vmUnavailableReason);
           assert.equal(provider.isDefault, true);
           const created = await c.request<SessionSnapshot>("session.create", {
@@ -616,7 +616,7 @@ test("providers.list exposes opt-in echo and respects visibility and access sett
           });
           const session = await c.request<SessionSnapshot>("session.get", { id: created.id });
           assert.equal(session.model, "echo");
-          assert.equal(session.isolation, "local");
+          assert.equal(session.isolation, "none");
           assert.equal(session.costUsd, 0);
           assert.deepEqual(session.usage, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
         }
@@ -997,7 +997,7 @@ test("session.fork copies the transcript into a new session + worktree", async (
     });
     const fresh = await c.request<SessionSnapshot>("session.fork", { id: fk.id });
     assert.equal(fresh.parentId, fk.id);
-    assert.equal(fresh.isolation, "local");
+    assert.equal(fresh.isolation, "none");
 
     await c.close();
   } finally {

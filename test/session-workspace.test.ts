@@ -92,7 +92,7 @@ test("a chosen workspace overrides the configured one and survives restart and f
     }).match(/^worktree /gm)?.length ?? 0;
   try {
     const before = await defaults();
-    assert.deepEqual(before.defaultWorkspace, { local: "worktree", vm: "worktree" });
+    assert.deepEqual(before.defaultWorkspace, { none: "worktree", vm: "worktree" });
     assert.equal(before.inPlaceUnavailableReason, undefined);
 
     // Unspecified: today's default — a VM with a mounted worktree.
@@ -110,12 +110,12 @@ test("a chosen workspace overrides the configured one and survives restart and f
     assert.equal(cwdOf(clone.id), clonePath);
     assert.equal(clone.branch, `loom/${clone.id.slice(0, 8)}`);
 
-    const inPlace = await create({ workspace: "in-place", isolation: "local" });
+    const inPlace = await create({ workspace: "in-place", isolation: "none" });
     assert.equal(inPlace.inPlace, true);
     assert.equal(inPlace.worktree, null);
     assert.equal(cwdOf(inPlace.id), h.repoRoot);
 
-    const local = await create({ workspace: "worktree", isolation: "local" });
+    const local = await create({ workspace: "worktree", isolation: "none" });
     assert.equal(local.inPlace, false);
     assert.equal(local.checkout, undefined);
     assert.equal(cwdOf(local.id), local.worktree);
@@ -124,7 +124,7 @@ test("a chosen workspace overrides the configured one and survives restart and f
     // Refused before anything exists.
     const count = (await c.request<SessionSnapshot[]>("session.list")).length;
     await assert.rejects(
-      create({ workspace: "clone", isolation: "local" }),
+      create({ workspace: "clone", isolation: "none" }),
       /private clone runs only in a VM/,
     );
     await assert.rejects(
@@ -142,7 +142,7 @@ test("a chosen workspace overrides the configured one and survives restart and f
     writeFileSync(h.configPath, config({ clone: true, worktree: true }));
     await h.restart();
     c = await LoomClient.connect({ repoRoot: h.repoRoot, sockPath: h.sockPath, autospawn: false });
-    assert.deepEqual((await defaults()).defaultWorkspace, { local: "worktree", vm: "clone" });
+    assert.deepEqual((await defaults()).defaultWorkspace, { none: "worktree", vm: "clone" });
     for (const s of [plain, clone, inPlace, local]) {
       const resumed = await c.request<SessionSnapshot>("session.resume", { id: s.id });
       assert.equal(resumed.inPlace, s.inPlace);
@@ -165,7 +165,7 @@ test("a chosen workspace overrides the configured one and survives restart and f
     assert.equal(vmDefault.checkout, "clone");
     const legacy = await create({ worktree: true });
     assert.equal(legacy.checkout, "clone", "the old flag keeps meaning the configured kind");
-    const hostDefault = await create({ isolation: "local" });
+    const hostDefault = await create({ isolation: "none" });
     assert.equal(hostDefault.checkout, undefined);
     assert.equal(hostDefault.inPlace, false);
     const chosen = await create({ workspace: "worktree" });
@@ -178,8 +178,8 @@ test("a chosen workspace overrides the configured one and survives restart and f
     writeFileSync(h.configPath, config({ clone: true, worktree: false }));
     await h.restart();
     c = await LoomClient.connect({ repoRoot: h.repoRoot, sockPath: h.sockPath, autospawn: false });
-    assert.deepEqual((await defaults()).defaultWorkspace, { local: "in-place", vm: "in-place" });
-    const inPlaceDefault = await create({ isolation: "local" });
+    assert.deepEqual((await defaults()).defaultWorkspace, { none: "in-place", vm: "in-place" });
+    const inPlaceDefault = await create({ isolation: "none" });
     assert.equal(inPlaceDefault.inPlace, true);
     const cloneChosen = await create({ workspace: "clone" });
     assert.equal(cloneChosen.checkout, "clone");

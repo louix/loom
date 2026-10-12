@@ -33,7 +33,7 @@ test("shell leases select the workspace, protect it, and release on exit or disc
         await delay(10);
       const target = await c.request<SessionShell>("session.openShell", { id: s.id });
       assert.equal(target.cwd, worktree ? s.worktree : h.repoRoot);
-      assert.equal(target.isolation, "local");
+      assert.equal(target.isolation, "none");
       assert.equal(target.vm, undefined);
       await assert.rejects(
         other.request("session.closeShell", { token: target.token }),

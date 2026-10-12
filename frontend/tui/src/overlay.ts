@@ -38,7 +38,7 @@ export interface NewSessionSettings {
   model: string | null;
   effort: string | null;
   /** Omitted uses the selected provider default. */
-  isolation?: "vm" | "local";
+  isolation?: "vm" | "none";
   /** Omitted uses the daemon's default for the isolation (⌥w cycles it). */
   workspace?: WorkspaceMode;
   /** What it branches from (⌥b): the checked-out branch, or the default
@@ -179,7 +179,7 @@ export interface ForkPlan {
   model: string | null;
   effort: string | null;
   workspace: "copy" | "share" | null;
-  isolation: "vm" | "local";
+  isolation: "vm" | "none";
 }
 
 // ---------------------------------------------------------------------------

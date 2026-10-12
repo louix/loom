@@ -802,14 +802,14 @@ test("session isolation persists and legacy pinning cannot change an existing ch
   try {
     const db = openDb(path);
     const store = new SessionStore(db);
-    store.create({ id: "local-mode", provider: "fake", isolation: "local" });
+    store.create({ id: "local-mode", provider: "fake", isolation: "none" });
     store.create({ id: "legacy-mode", provider: "fake" });
     store.pinIsolation("legacy-mode", "vm");
     store.pinIsolation("local-mode", "vm");
     db.close();
     const reopened = openDb(path);
     const saved = new SessionStore(reopened);
-    assert.equal(saved.get("local-mode")?.isolation, "local");
+    assert.equal(saved.get("local-mode")?.isolation, "none");
     assert.equal(saved.get("legacy-mode")?.isolation, "vm");
     reopened.close();
   } finally {

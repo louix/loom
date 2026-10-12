@@ -435,7 +435,7 @@ export class Daemon {
       if (row.isolation) continue;
       const dir = sessionVmDirectory(this.repoRoot, row.id);
       const vm = ["profile", "aisdk", "codex-ref"].some((name) => existsSync(join(dir, name)));
-      this.#registry.store.pinIsolation(row.id, vm ? "vm" : "local");
+      this.#registry.store.pinIsolation(row.id, vm ? "vm" : "none");
     }
     this.#children = new ChildStore(this.#db);
     this.#checkpoints = new CheckpointStore(this.#db);
@@ -1469,7 +1469,7 @@ export class Daemon {
    * session gets a worktree. A caller's legacy `worktree` flag picks in
    * place (false) or not (true) over it.
    */
-  #defaultWorkspace(isolation: "vm" | "local", worktree?: boolean): WorkspaceMode {
+  #defaultWorkspace(isolation: "vm" | "none", worktree?: boolean): WorkspaceMode {
     if (worktree === false) return "in-place";
     const configured = this.config.defaults.workspace;
     if (configured === "clone") return isolation === "vm" ? "clone" : "worktree";
@@ -1521,7 +1521,7 @@ export class Daemon {
     const inPlace = this.#inPlaceUnavailableReason();
     return {
       defaultWorkspace: {
-        local: this.#defaultWorkspace("local"),
+        none: this.#defaultWorkspace("none"),
         vm: this.#defaultWorkspace("vm"),
       },
       ...(inPlace ? { inPlaceUnavailableReason: inPlace } : {}),
@@ -1610,7 +1610,7 @@ export class Daemon {
         defaultModel: "echo",
         defaultEffort: this.#defaultEffortFor("echo"),
         defaultMode: mode,
-        defaultIsolation: "local",
+        defaultIsolation: "none",
         vmUnavailableReason: this.#providers.vmUnavailableReason("echo")!,
         ...workspace,
         tag: "Echo",
@@ -2057,13 +2057,13 @@ export class Daemon {
   #nativeForkBlockedReason(
     row: SessionSnapshot,
     providerId = row.provider,
-    isolation: "vm" | "local" = row.isolation ?? "local",
+    isolation: "vm" | "none" = row.isolation ?? "none",
   ): string | undefined {
     if (providerId !== row.provider)
       return "Native history stays with its own provider; another provider starts from a handoff.";
     const blocked = this.#resumeBlockedReason(row);
     if (blocked) return blocked;
-    if (isolation === "vm" || (row.isolation ?? "local") === "vm")
+    if (isolation === "vm" || (row.isolation ?? "none") === "vm")
       return "Native history forks need Local isolation; a VM keeps its history inside the VM.";
     const codex = this.config.providers.aisdk[providerId]?.sdk === "chatgpt";
     const caps = this.#providers.capsOf(providerId, isolation);
@@ -2080,11 +2080,11 @@ export class Daemon {
   }
 
   /** Why a fork onto `isolation` cannot share `row`'s worktree, if it cannot. */
-  #shareBlockedReason(row: SessionSnapshot, isolation: "vm" | "local"): string | undefined {
+  #shareBlockedReason(row: SessionSnapshot, isolation: "vm" | "none"): string | undefined {
     if (row.checkout === "clone") return "A private clone cannot be shared; fork into a copy.";
     if (row.inPlace) return "An in-place session has no worktree of its own to share.";
     if (!row.worktree) return "The source has no worktree to share (it was archived).";
-    if ((row.isolation ?? "local") !== "local" || isolation !== "local")
+    if ((row.isolation ?? "none") !== "none" || isolation !== "none")
       return "Sharing a worktree needs Local isolation on both sessions.";
     return undefined;
   }
@@ -2154,7 +2154,7 @@ export class Daemon {
     workspace?: WorkspaceMode;
     /** A legacy per-session `worktree` flag, over `session.defaults.workspace`. */
     worktree?: boolean;
-    isolation?: "vm" | "local";
+    isolation?: "vm" | "none";
     /** What it branches from; absent takes {@link #defaultBase}. */
     base?: string;
     by: string | undefined;
@@ -2414,7 +2414,7 @@ export class Daemon {
    * runtime (Apple Silicon without a matching pin): 15–60 minutes, far longer
    * than a client waits for a reply.
    */
-  async #runtimeBuildPending(providerId: string, isolation?: "vm" | "local"): Promise<boolean> {
+  async #runtimeBuildPending(providerId: string, isolation?: "vm" | "none"): Promise<boolean> {
     if ((isolation ?? this.#providers.defaultIsolation(providerId)) !== "vm") return false;
     return await this.#providers.runtimeBuildPending(providerId);
   }
@@ -3484,7 +3484,7 @@ export class Daemon {
    *  once the provider's been built, else a guess from the provider type. Every
    *  adapter Loom ships rewinds; the guess only bridges the gap before a
    *  provider's first construction. */
-  #canRewind(providerId: string, isolation?: "vm" | "local"): boolean {
+  #canRewind(providerId: string, isolation?: "vm" | "none"): boolean {
     const caps = this.#providers.capsOf(providerId, isolation);
     if (caps) return caps.rewind;
     return this.#isAisdk(providerId) || providerId === "fake" || isClaudeId(providerId);
@@ -3493,7 +3493,7 @@ export class Daemon {
   /** The modes `providerId` offers when it reports fewer than all four. Known
    *  once the provider is built; until then clients offer every mode and the
    *  adapter maps whichever it is given (Codex: `acceptEdits` is Manual). */
-  #modesOf(providerId: string, isolation?: "vm" | "local"): { modes?: SessionMode[] } {
+  #modesOf(providerId: string, isolation?: "vm" | "none"): { modes?: SessionMode[] } {
     const modes = this.#providers.capsOf(providerId, isolation)?.permissionModes;
     return modes && modes.length < SESSION_MODES.length ? { modes } : {};
   }
@@ -3503,7 +3503,7 @@ export class Daemon {
    *  `capabilities.ownsTranscript` once built, else a guess from the provider
    *  type (matches every aisdk profile Loom ships) before its first
    *  construction. */
-  #ownsTranscript(providerId: string, isolation?: "vm" | "local"): boolean {
+  #ownsTranscript(providerId: string, isolation?: "vm" | "none"): boolean {
     const caps = this.#providers.capsOf(providerId, isolation);
     if (caps) return caps.ownsTranscript;
     return this.#isAisdk(providerId);

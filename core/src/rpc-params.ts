@@ -86,7 +86,7 @@ export const rpcParamsSchemas = {
     parentId: optionalText,
     mode: mode.optional().catch(undefined),
     worktree: z.boolean().optional(),
-    isolation: z.enum(["vm", "local"]).optional(),
+    isolation: z.enum(["vm", "none"]).optional(),
     /** Overrides the configured workspace; `clone` needs VM isolation. A
      *  `worktree` flag given with it must agree. */
     workspace: workspaceModeSchema.optional(),
@@ -128,7 +128,7 @@ export const rpcParamsSchemas = {
   "session.fork": session.extend({
     provider: optionalText,
     prompt: optionalText,
-    isolation: z.enum(["vm", "local"]).optional(),
+    isolation: z.enum(["vm", "none"]).optional(),
     /** `native` copies the provider's own history (same provider only);
      *  `handoff` starts fresh from a portable summary. Default: native when
      *  possible. */

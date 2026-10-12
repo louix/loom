@@ -149,13 +149,13 @@ export class ProviderRegistry {
   }
 
   /** Configured default for new sessions; existing sessions keep their recorded mode. */
-  defaultIsolation(id: string): "vm" | "local" {
+  defaultIsolation(id: string): "vm" | "none" {
     return this.#config.defaults.isolation === "vm" &&
       id !== "fake" &&
       id !== "mock" &&
       id !== "echo"
       ? "vm"
-      : "local";
+      : "none";
   }
 
   #vmKind(id: string): "claude" | "aisdk" | "codex" {
@@ -183,7 +183,7 @@ export class ProviderRegistry {
       return `No VM runtime artifact is configured. Use a Nix build with bundled runtimes or set session.isolation.${this.#vmKind(id)}.artifact.`;
   }
 
-  configFor(id: string, isolation: "vm" | "local"): LoomConfig {
+  configFor(id: string, isolation: "vm" | "none"): LoomConfig {
     if (isolation === "vm") {
       const reason = this.vmUnavailableReason(id);
       if (reason) throw new Error(reason);
@@ -233,7 +233,7 @@ export class ProviderRegistry {
     return GENERIC;
   }
 
-  async #build(id: string, isolation: "vm" | "local"): Promise<AgentProvider> {
+  async #build(id: string, isolation: "vm" | "none"): Promise<AgentProvider> {
     const effectiveConfig = this.configFor(id, isolation);
     const pkg = this.#packageFor(id);
     const load = this.#manifest[pkg];

@@ -17,7 +17,7 @@ Deno.test("an empty config converts to Loom's explicit local, worktree default",
   const report = convert({});
   assert.deepEqual(report.user, {
     version: 1,
-    lifecycle: { workspace: "worktree", execution: "local", idleTimeoutMinutes: 10 },
+    lifecycle: { workspace: "worktree", execution: "none", idleTimeoutMinutes: 10 },
   });
   assert.deepEqual(report.converted, []);
   assert.deepEqual(report.unsupported, []);

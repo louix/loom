@@ -68,7 +68,7 @@ const row = (over: Partial<SessionSnapshot> & { id: string }): SessionSnapshot =
     branch: `loom/${over.id}`,
     baseBranch: "main",
     inPlace: false,
-    isolation: "local",
+    isolation: "none",
     usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextUsed: 0,
     contextLimit: 0,

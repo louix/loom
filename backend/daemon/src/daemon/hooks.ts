@@ -22,7 +22,7 @@ export interface HookSession {
   branch: string | null;
   /** The worktree is a private clone: agent-written, and never a place to run host commands. */
   clone?: boolean;
-  isolation?: "vm" | "local" | undefined;
+  isolation?: "vm" | "none" | undefined;
   guestCwd?: string | undefined;
   /** A Loom agent's supervising session. */
   supervisorId?: string | undefined;

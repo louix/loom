@@ -2817,10 +2817,10 @@ export const mkFleetHandle = ({
         if (locked) return void note(locked, "dim");
         const target = f.provider ?? sessionOf(f.sessionId)?.provider;
         const provider = fleetProviders(state).find((x) => x.id === target);
-        if (f.isolation === "local" && provider?.vmUnavailableReason)
+        if (f.isolation === "none" && provider?.vmUnavailableReason)
           return void note(provider.vmUnavailableReason, "dim");
         return void show(
-          forkConfirm(state, { ...f, isolation: f.isolation === "vm" ? "local" : "vm" }),
+          forkConfirm(state, { ...f, isolation: f.isolation === "vm" ? "none" : "vm" }),
         );
       }
       // Esc steps back to the workspace choice rather than out of the wizard.

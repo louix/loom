@@ -84,7 +84,7 @@ export class SessionShells {
       token,
       sessionId: session.id,
       cwd,
-      isolation: session.isolation ?? "local",
+      isolation: session.isolation ?? "none",
       ...(vm ? { vm } : {}),
       ...(localEnvironment ? { environment: localEnvironment } : {}),
     };

@@ -16,6 +16,9 @@ import type { ModelUsage, SessionSnapshot } from "@loom/core/wire";
 import { supervisionCycle } from "@loom/core/agents";
 import { type Db, withTransaction } from "./db.ts";
 
+// The column keeps the old word, so a database stays readable by an older daemon.
+const isolationColumn: Record<"vm" | "none", "vm" | "local"> = { vm: "vm", none: "local" };
+
 /** How long a plan window with no reset time and no utilization (a streamed
  *  status) is shown after it was read. */
 const UNTIMED_STATUS_MS = 5 * 60_000;
@@ -94,7 +97,7 @@ export interface NewSession {
   baseBranch?: string | null;
   /** Runs in the repo working dir, no dedicated worktree. Immutable after create. */
   inPlace?: boolean;
-  isolation?: "vm" | "local";
+  isolation?: "vm" | "none";
   /** `clone`: the worktree path is a private clone host Git never opens. */
   checkout?: "worktree" | "clone";
   providerRef?: string | null;
@@ -201,7 +204,7 @@ export class SessionStore {
           s.historyBackend ?? "",
           now,
           now,
-          s.isolation ?? null,
+          s.isolation ? isolationColumn[s.isolation] : null,
           s.checkout ?? null,
           s.supervisorId ?? null,
           s.agentProfile ?? null,
@@ -212,10 +215,10 @@ export class SessionStore {
     });
   }
 
-  pinIsolation(id: string, isolation: "vm" | "local"): void {
+  pinIsolation(id: string, isolation: "vm" | "none"): void {
     this.#db
       .prepare("UPDATE sessions SET isolation = ? WHERE id = ? AND isolation IS NULL")
-      .run(isolation, id);
+      .run(isolationColumn[isolation], id);
   }
 
   get(id: string): SessionSnapshot | null {
@@ -1072,7 +1075,7 @@ const toSnapshot = (row: SessionRow, usage: UsageRow | undefined): SessionSnapsh
     branch: row.branch,
     baseBranch: row.base_branch,
     inPlace: row.in_place === 1,
-    ...(row.isolation ? { isolation: row.isolation } : {}),
+    ...(row.isolation ? { isolation: row.isolation === "local" ? "none" : "vm" } : {}),
     ...(row.checkout === "clone" ? { checkout: row.checkout } : {}),
     usage: usage
       ? {

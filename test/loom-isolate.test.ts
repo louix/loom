@@ -556,7 +556,7 @@ withFixture("config inspect shows the resolution and its sources", async (f) => 
       version: 1,
       environment: { timeoutSeconds: 60 },
       access: { network: { presets: ["python"] } },
-      lifecycle: { execution: "local" },
+      lifecycle: { execution: "none" },
       repos: [
         { path: f.workspace, grants: { setup: true }, environment: { resources: { cpus: 3 } } },
       ],
@@ -573,7 +573,7 @@ withFixture("config inspect shows the resolution and its sources", async (f) => 
     `user config     ${join(f.root, "xdg-config/loom/environment.jsonc")}`,
     `project config  ${join(f.workspace, "loom.json")}`,
     `repository      ${f.workspace}`,
-    "lifecycle       execution=local (not used by loom-isolate)",
+    "lifecycle       execution=none (not used by loom-isolate)",
     "  nix.auto        true (project)",
     "  timeout         60s (user)",
     "  cpus            3 (repository)",

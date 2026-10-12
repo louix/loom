@@ -280,7 +280,7 @@ export interface ChildStart {
   mode: SessionMode;
   /** What its worktree branches from. */
   base: string;
-  isolation: "vm" | "local";
+  isolation: "vm" | "none";
   supervisorId: string;
   agentProfile: string;
   taskId?: string;
@@ -590,7 +590,7 @@ export class AgentSupervision {
       title,
       ...settings,
       base,
-      isolation: me.isolation ?? "local",
+      isolation: me.isolation ?? "none",
       supervisorId: caller,
       agentProfile: profile,
       ...(taskId ? { taskId } : {}),

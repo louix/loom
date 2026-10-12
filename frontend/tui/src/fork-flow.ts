@@ -42,12 +42,12 @@ export const startingForkOf = (st: St, s: SessionSnapshot): SessionSnapshot | un
  *  own rule, so the step can say so before anything is sent. */
 export const shareBlockedReason = (
   s: SessionSnapshot,
-  isolation: "vm" | "local",
+  isolation: "vm" | "none",
 ): string | undefined => {
   if (s.checkout === "clone") return "A private clone cannot be shared; fork into a copy.";
   if (s.inPlace) return "An in-place session has no worktree of its own to share.";
   if (!s.worktree) return "The source has no worktree to share (it was archived).";
-  if ((s.isolation ?? "local") !== "local" || isolation !== "local")
+  if ((s.isolation ?? "none") !== "none" || isolation !== "none")
     return "Sharing a worktree needs Local isolation on both sessions.";
   return undefined;
 };
@@ -163,7 +163,7 @@ export const startFork = (st: TuiState, s: SessionSnapshot): Overlay => {
     model: null,
     effort: null,
     workspace: null,
-    isolation: s.isolation ?? "local",
+    isolation: s.isolation ?? "none",
   };
   const providers = fleetProviders(st);
   if (providers.length > 1) return providerStep(st, s, fork);
@@ -234,7 +234,7 @@ export const pickForkStep = (st: TuiState, p: Picker): Overlay => {
     case "forkWorkspace": {
       const workspace = cur.id === "share" ? "share" : "copy";
       // A shared tree is the source's, so the fork runs where it does.
-      const isolation = workspace === "share" ? "local" : fork.isolation;
+      const isolation = workspace === "share" ? "none" : fork.isolation;
       return forkConfirm(st, { ...fork, workspace, isolation });
     }
     default:

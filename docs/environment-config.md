@@ -61,7 +61,7 @@ lifecycle defaults, repositories or grants.
     "tests": { "entrypoint": ["just", "test"], "environment": { "resources": { "cpus": 4 } } },
   },
   "limits": { "cpus": 8, "memoryMiB": 16384 },
-  "lifecycle": { "workspace": "worktree", "execution": "local" },
+  "lifecycle": { "workspace": "worktree", "execution": "none" },
   "repos": [
     {
       "path": "/home/me/src/project",
@@ -82,9 +82,9 @@ lifecycle defaults, repositories or grants.
 - `profiles`: [launch profiles](#launch-profiles).
 - `limits`: ceilings; a larger request fails rather than being clamped.
 - `lifecycle`: default workspace placement (`in-place`, `worktree`, `clone`),
-  execution (`vm`, `local`) and `idleTimeoutMinutes` for applications that
-  create workspaces. Absent fields keep each application's own default; Loom's
-  is local + worktree, main-new's was worktree + VM. loom-isolate always runs in
+  execution (`vm`, or `none` for the host; the older `local` reads as `none`)
+  and `idleTimeoutMinutes` for applications that create workspaces. Absent
+  fields keep each application's own default; Loom's is none + worktree, main-new's was worktree + VM. loom-isolate always runs in
   place in a VM and only displays these.
 - `repos[]`: per-repository host overrides (`environment`, `access`,
   `lifecycle`) and `grants`. A path names its repository: a linked worktree or

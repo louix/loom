@@ -345,8 +345,9 @@
           "enum": ["in-place", "worktree", "clone"]
         },
         "execution": {
+          "description": "vm, or none (on the host); local is the old spelling of none.",
           "type": "string",
-          "enum": ["vm", "local"]
+          "enum": ["vm", "none", "local"]
         },
         "idleTimeoutMinutes": {
           "type": "integer",
@@ -357,7 +358,6 @@
       "additionalProperties": false
     },
     "repos": {
-      "default": [],
       "maxItems": 1024,
       "type": "array",
       "items": {
@@ -526,8 +526,9 @@
                 "enum": ["in-place", "worktree", "clone"]
               },
               "execution": {
+                "description": "vm, or none (on the host); local is the old spelling of none.",
                 "type": "string",
-                "enum": ["vm", "local"]
+                "enum": ["vm", "none", "local"]
               },
               "idleTimeoutMinutes": {
                 "type": "integer",

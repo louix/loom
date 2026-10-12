@@ -29,7 +29,9 @@ import { agentProfileInfoSchema } from "./agents.ts";
 // queued message reaches the log only once the agent has taken it.
 // v6 adds `interrupted` by `supervisor` (a Loom agent stopped by the session
 // supervising it), a state a v5 client cannot parse.
-export const PROTOCOL_VERSION = 6;
+// v7 spells host execution `none`, not `local` (session `isolation`,
+// `defaultIsolation`, `defaultWorkspace`), as the config does.
+export const PROTOCOL_VERSION = 7;
 
 /**
  * Hard cap on a single newline-delimited frame (bytes). Enforced identically on
@@ -312,7 +314,7 @@ export const sessionSnapshotSchema = z.object({
    *  from a gc'd one (both have `worktree: null`). */
   inPlace: z.boolean(),
   /** Immutable execution mode; absent only for legacy rows. */
-  isolation: z.enum(["vm", "local"]).optional(),
+  isolation: z.enum(["vm", "none"]).optional(),
   /** `clone`: `worktree` is a private clone that host Git must never open. Absent otherwise. */
   checkout: z.enum(["worktree", "clone"]).optional(),
   usage: tokenUsageSchema,
@@ -537,7 +539,7 @@ export const providerInfoSchema = z.object({
   /** The modes this provider offers, in cycle order, once known and when
    *  fewer than all four (Codex: no `acceptEdits`). */
   modes: z.array(sessionModeSchema).optional(),
-  defaultIsolation: z.enum(["vm", "local"]).optional(),
+  defaultIsolation: z.enum(["vm", "none"]).optional(),
   vmUnavailableReason: z.string().optional(),
   /**
    * Workspace a new session gets when none is chosen, by isolation: in place
@@ -545,7 +547,7 @@ export const providerInfoSchema = z.object({
    * with `"clone"`, else a worktree. Same value
    * on every entry. Absent from daemons that cannot take a chosen workspace.
    */
-  defaultWorkspace: z.object({ local: workspaceModeSchema, vm: workspaceModeSchema }).optional(),
+  defaultWorkspace: z.object({ none: workspaceModeSchema, vm: workspaceModeSchema }).optional(),
   /** Why a new session cannot work in place here (a bare repository). */
   inPlaceUnavailableReason: z.string().optional(),
   /** Short label (Detail pane, `loom ls`). */

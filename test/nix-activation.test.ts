@@ -291,7 +291,7 @@ test("local hooks, fresh workers, resume and shell targets share activation", as
             session: {
               ...session,
               status: { kind: "running" },
-              isolation: "local",
+              isolation: "none",
               inPlace: false,
             } as SessionSnapshot,
             repoRoot: cwd,

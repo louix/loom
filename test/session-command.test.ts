@@ -78,7 +78,7 @@ test("session commands support local in-place sessions and fail without their en
   const cwd = await Deno.makeTempDir();
   const session = {
     id: "local",
-    isolation: "local",
+    isolation: "none",
     inPlace: true,
     worktree: null,
   } as SessionSnapshot;

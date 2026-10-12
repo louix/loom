@@ -124,7 +124,7 @@ const effective = (settings: Settings) => {
     },
     lifecycle: {
       workspace: session.defaults.workspace,
-      execution: session.defaults.isolation === "vm" ? ("vm" as const) : ("local" as const),
+      execution: session.defaults.isolation,
       idleTimeoutMinutes: isolation.idle_stop_minutes,
     },
     autoNixIgnored: environment.auto_nix && prefix.length > 0,

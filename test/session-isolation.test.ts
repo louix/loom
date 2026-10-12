@@ -17,7 +17,7 @@ test("VM and local sessions share a provider, keep modes across restart, and for
   Deno.env.set("XDG_STATE_HOME", state);
   const calls: Array<{
     id: string;
-    mode: "vm" | "local";
+    mode: "vm" | "none";
     operation: "create" | "resume";
     cwd: string;
   }> = [];
@@ -26,7 +26,7 @@ test("VM and local sessions share a provider, keep modes across restart, and for
   const connectors: ConnectorManifest = {
     "@loom/connector-claude": async () => ({
       createProvider: (ctx) => {
-        const mode = ctx.config.sessionVm ? "vm" : "local";
+        const mode = ctx.config.sessionVm ? "vm" : "none";
         builds.push(mode);
         const fake = new FakeProvider();
         const ready = async (id: string, session: ReturnType<FakeProvider["createSession"]>) => {
@@ -94,29 +94,25 @@ test("VM and local sessions share a provider, keep modes across restart, and for
     const local = await c.request<SessionSnapshot>("session.create", {
       prompt: "local override",
       provider: "claude",
-      isolation: "local",
+      isolation: "none",
     });
     const local2 = await c.request<SessionSnapshot>("session.create", {
       prompt: "local too",
       provider: "claude",
-      isolation: "local",
+      isolation: "none",
     });
     assert.equal(vm.isolation, "vm");
-    assert.equal(local.isolation, "local");
+    assert.equal(local.isolation, "none");
     assert.ok(local.worktree, "local execution still has Git isolation");
-    assert.deepEqual(
-      builds,
-      ["vm", "local"],
-      "cache is separated by mode, shared within each mode",
-    );
+    assert.deepEqual(builds, ["vm", "none"], "cache is separated by mode, shared within each mode");
     await idle(vm);
     await idle(local);
     await idle(local2);
     const fork = await c.request<SessionSnapshot>("session.fork", {
       id: vm.id,
-      isolation: "local",
+      isolation: "none",
     });
-    assert.equal(fork.isolation, "local");
+    assert.equal(fork.isolation, "none");
     assert.equal(
       calls.find((x) => x.id === fork.id)?.operation,
       "create",
@@ -156,7 +152,7 @@ test("VM and local sessions share a provider, keep modes across restart, and for
     await h.restart();
     c = await LoomClient.connect({ repoRoot: h.repoRoot, sockPath: h.sockPath, autospawn: false });
     assert.equal(h.daemon.registry.get(inherited.id)?.isolation, "vm");
-    assert.equal(h.daemon.registry.get(local2.id)?.isolation, "local");
+    assert.equal(h.daemon.registry.get(local2.id)?.isolation, "none");
     for (const s of [vm, local, inPlace]) {
       const resumed = await c.request<SessionSnapshot>("session.resume", { id: s.id });
       assert.equal(resumed.isolation, s.isolation);
@@ -170,7 +166,7 @@ test("VM and local sessions share a provider, keep modes across restart, and for
       prompt: "now local",
       provider: "claude",
     });
-    assert.equal(newDefault.isolation, "local");
+    assert.equal(newDefault.isolation, "none");
     const explicitVm = await c.request<SessionSnapshot>("session.create", {
       prompt: "still available",
       provider: "claude",
@@ -284,8 +280,8 @@ test("Claude, Codex and AI SDK providers select independent runtimes and cache c
       ["codex", "/codex"],
       ["generic", "/aisdk"],
     ]) {
-      assert.equal(registry.defaultIsolation(id!), "local");
-      const local = await registry.get(id!, "local");
+      assert.equal(registry.defaultIsolation(id!), "none");
+      const local = await registry.get(id!, "none");
       const vm = await registry.get(id!, "vm");
       assert.notEqual(vm, local);
       assert.equal(await registry.get(id!), local);
@@ -293,7 +289,7 @@ test("Claude, Codex and AI SDK providers select independent runtimes and cache c
         seen.filter((x) => x.id === id).map((x) => x.artifact),
         [undefined, artifact],
       );
-      assert.equal(registry.capsOf(id!, "local")?.rewind, false);
+      assert.equal(registry.capsOf(id!, "none")?.rewind, false);
       assert.equal(registry.capsOf(id!, "vm")?.rewind, true);
     }
   } finally {

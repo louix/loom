@@ -3800,9 +3800,9 @@ test("new-session isolation follows the provider default and can be overridden w
     const p = openPrompt(handle.getView().ui.overlay);
     assert.equal(p?.buffer.text, "keep this draft");
     assert(p?.t === "new");
-    assert.equal(p.settings.isolation, "local");
+    assert.equal(p.settings.isolation, "none");
     handle.handleKey("", { return: true } as Key);
-    assert.equal(fake.of("session.create")[0]?.params["isolation"], "local");
+    assert.equal(fake.of("session.create")[0]?.params["isolation"], "none");
   } finally {
     teardown();
   }
@@ -3824,7 +3824,7 @@ test("unavailable VM choice explains why and leaves the local session draft inta
             defaultModel: "fixture",
             defaultEffort: "",
             defaultMode: "default",
-            defaultIsolation: "local",
+            defaultIsolation: "none",
             vmUnavailableReason: "No VM runtime is configured",
             tag: "Claude",
             color: "",
@@ -3859,8 +3859,8 @@ const workspaceFleet = (over: Partial<ProviderInfo> = {}): ClientState =>
         defaultModel: "fixture",
         defaultEffort: "",
         defaultMode: "default",
-        defaultIsolation: "local",
-        defaultWorkspace: { local: "worktree", vm: "worktree" },
+        defaultIsolation: "none",
+        defaultWorkspace: { none: "worktree", vm: "worktree" },
         tag: "Claude",
         color: "",
         isDefault: true,
@@ -3919,7 +3919,7 @@ test("⌥w cycles the new session's workspace, shows it, and sends it", () => {
     // Leaving the VM turns a chosen clone back into a worktree.
     handle.handleKey("i", { meta: true } as Key);
     p = newPromptOf(handle);
-    assert.equal(p.settings.isolation, "local");
+    assert.equal(p.settings.isolation, "none");
     assert.equal(p.settings.workspace, "worktree");
     assert.match(p.feedback?.text ?? "", /workspace is now worktree/);
 
@@ -3943,7 +3943,7 @@ test("the new prompt shows the daemon's default workspace and sends none unless 
     fake.deliver(
       workspaceFleet({
         defaultIsolation: "vm",
-        defaultWorkspace: { local: "in-place", vm: "clone" },
+        defaultWorkspace: { none: "in-place", vm: "clone" },
       }),
     );
     handle.handleKey("n", {} as Key);
@@ -4140,8 +4140,8 @@ const launchProvider = (id: string, tag: string, over: Partial<ProviderInfo>): P
   defaultModel: "",
   defaultEffort: "",
   defaultMode: "default",
-  defaultIsolation: "local",
-  defaultWorkspace: { local: "worktree", vm: "worktree" },
+  defaultIsolation: "none",
+  defaultWorkspace: { none: "worktree", vm: "worktree" },
   tag,
   color: "",
   isDefault: false,
@@ -4506,7 +4506,7 @@ test("fork selector inherits isolation and sends an explicit override", () => {
     assert.equal(overlay.confirm.fork.isolation, "vm");
     handle.handleKey("i", {} as Key);
     handle.handleKey("", { return: true } as Key);
-    assert.equal(fake.of("session.fork")[0]?.params["isolation"], "local");
+    assert.equal(fake.of("session.fork")[0]?.params["isolation"], "none");
   } finally {
     teardown();
   }
@@ -4633,7 +4633,7 @@ test("fork wizard: native history on the source's provider, sharing its worktree
           status: stateIdle,
           provider: "claude",
           model: "claude-opus-5",
-          isolation: "local",
+          isolation: "none",
           worktree: "/tmp/wt/a",
           branch: "loom/a",
         }),
@@ -4667,7 +4667,7 @@ test("fork wizard: native history on the source's provider, sharing its worktree
     handle.handleKey("i", {} as Key);
     const still = overlayOf(handle);
     assert(still.t === "confirm" && still.confirm.action === "forkSession");
-    assert.equal(still.confirm.fork.isolation, "local");
+    assert.equal(still.confirm.fork.isolation, "none");
     enter(handle);
     const params = fake.of("session.fork")[0]?.params;
     assert.equal(params?.["history"], "native");

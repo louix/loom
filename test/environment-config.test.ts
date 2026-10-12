@@ -24,6 +24,10 @@ const resolve = (intent = project(), trusted = user(), profile?: string) =>
 Deno.test("schemas are versioned and strict, and projects cannot carry host authority", () => {
   assert.throws(() => parseProjectEnvironment('{"version":1,// comment\n}'), /strict JSON/);
   assert.equal(parseEnvironmentUser('{// allowed\n"version":1,}').version, 1);
+  // lifecycle.execution says none, like Loom's session.defaults.isolation; local is the old word.
+  assert.equal(user({ lifecycle: { execution: "none" } }).lifecycle?.execution, "none");
+  assert.equal(user({ lifecycle: { execution: "local" } }).lifecycle?.execution, "none");
+  assert.throws(() => user({ lifecycle: { execution: "host" } }), /execution/);
   assert.throws(() => parseProjectEnvironment("{}"), /version/);
   for (const authority of [
     { grants: { setup: true } },
