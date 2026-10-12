@@ -1,4 +1,5 @@
 import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { uptime } from "node:os";
 import { legacyDaemonPid, pidAlive } from "@loom/core/daemon-endpoint";
 import type { LoomPaths } from "@loom/core/paths";
 
@@ -31,7 +32,8 @@ export class LegacyDaemonRunning extends Error {
 /**
  * Claim single-daemon-per-repo ownership by atomically creating the pidfile.
  * If it exists and names a live process, throws DaemonAlreadyRunning. A stale
- * pidfile (dead pid) is removed and the claim retried once.
+ * pidfile (dead pid, or written before the machine last booted) is removed and
+ * the claim retried once.
  */
 export const acquirePidfile = (path: string, epoch: string): PidfileInfo => {
   const info: PidfileInfo = { pid: Deno.pid, epoch, startedAt: Date.now() };
@@ -52,7 +54,15 @@ export const acquirePidfile = (path: string, epoch: string): PidfileInfo => {
       existing = null;
     }
 
-    if (existing && Number.isInteger(existing.pid) && pidAlive(existing.pid)) {
+    // The pidfile outlives a reboot (it is in the state directory), and after
+    // one its pid may be any process's.
+    const bootedAt_ms = Date.now() - uptime() * 1000;
+    if (
+      existing &&
+      Number.isInteger(existing.pid) &&
+      pidAlive(existing.pid) &&
+      !(existing.startedAt < bootedAt_ms)
+    ) {
       throw new DaemonAlreadyRunning(existing);
     }
     // Stale — remove and loop to retry the exclusive create.

@@ -160,8 +160,9 @@ test("loomPaths keys runtime, state and cache directories by repository", () => 
     });
     assert.equal(xdg.runtime, join(root, "run", "loom", key));
     assert.equal(xdg.sock, join(xdg.runtime, "daemon.sock"));
-    assert.equal(xdg.pid, join(xdg.runtime, "daemon.pid"));
     const state = join(root, "state", "loom", "repos", key);
+    // Not in the runtime directory, which may be under /tmp (macOS clean-up).
+    assert.equal(xdg.pid, join(state, "daemon.pid"));
     assert.deepEqual(
       [xdg.state, xdg.record, xdg.db, xdg.log, xdg.startupLog, xdg.tuiLog, xdg.tuiState, xdg.hooks],
       [

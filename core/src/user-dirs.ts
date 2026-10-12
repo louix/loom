@@ -63,7 +63,7 @@ export const userDirectory = (
 };
 
 /**
- * Loom's base for sockets and pidfiles: `$XDG_RUNTIME_DIR/loom`, or `/tmp/loom-<uid>`
+ * Loom's base for sockets: `$XDG_RUNTIME_DIR/loom`, or `/tmp/loom-<uid>`
  * where the variable is unset (macOS). Not `$TMPDIR`: macOS's per-user one is long
  * enough to push a socket path past the sun_path limit.
  */

@@ -74,11 +74,15 @@ export const findRepoRoot = (start: string = Deno.cwd()): string => {
 
 export interface LoomPaths {
   repoRoot: string;
-  /** `$XDG_RUNTIME_DIR/loom/<repo-key>`: socket and pidfile, private to the user. */
+  /** `$XDG_RUNTIME_DIR/loom/<repo-key>`: the socket, private to the user. */
   runtime: string;
   /** Unix domain socket the daemon listens on. */
   sock: string;
-  /** Pidfile guarding single-daemon-per-repo. */
+  /**
+   * Pidfile guarding single-daemon-per-repo, in `state`: the runtime base may
+   * be `/tmp/loom-<uid>`, where macOS's periodic clean-up deletes files not
+   * touched for three days, and with it the guard of a long-running daemon.
+   */
   pid: string;
   /** `$XDG_STATE_HOME/loom/repos/<repo-key>`: the database, logs and generated hooks. */
   state: string;
@@ -196,7 +200,7 @@ const keyedPaths = (
     repoRoot,
     runtime,
     sock,
-    pid: join(runtime, "daemon.pid"),
+    pid: join(state, "daemon.pid"),
     state,
     record: join(state, "repo.json"),
     db: join(state, "loom.db"),
