@@ -5,6 +5,7 @@ import { readEnvironmentOutput } from "../runtime/src/session-vm/environment-pro
 import { readStartupProgress } from "../runtime/src/session-vm/progress.ts";
 import type { VmTermination } from "../core/src/vm-termination.ts";
 import { launchSessionVm } from "@loom/runtime/session-vm";
+import { writeExecutable } from "../scripts/lib/executable-fixture.ts";
 
 const quote = (s: string) => "'" + s.replaceAll("'", "'\\''") + "'";
 const waitForFile = async (path: string) => {
@@ -25,10 +26,10 @@ Deno.test("standalone supervisor gates readiness, retains ownership, and cleans 
   const root = await Deno.makeTempDir({ dir: "/tmp", prefix: "loom-environment-test-" });
   const backend = join(root, "backend");
   const fixture = fileURLToPath(new URL("./fixtures/environment-backend.ts", import.meta.url));
-  await Deno.writeTextFile(
+  await writeExecutable(
     backend,
     `#!/bin/sh\nexec ${quote(Deno.execPath())} run -A ${quote(fixture)} "$@"\n`,
-    { mode: 0o700 },
+    0o700,
   );
   await Deno.mkdir(join(root, "workspace"));
   const children: Deno.ChildProcess[] = [];

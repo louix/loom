@@ -5,6 +5,7 @@ import { isFileLimitError, fileLimitDiagnostic } from "../runtime/src/session-vm
 import { classifyStartupFailure, readStartupProgress } from "../runtime/src/session-vm/progress.ts";
 import { vmCommand } from "../runtime/src/session-vm/command.ts";
 import type { VmBinding } from "../runtime/src/packaged/vm.ts";
+import { writeExecutable } from "../scripts/lib/executable-fixture.ts";
 
 Deno.test("VM diagnostics require explicit descriptor-exhaustion evidence", () => {
   for (const text of ["EMFILE: open", "Too many open files", "readfile: os error 24"]) {
@@ -95,10 +96,10 @@ Deno.test("failed VM command preserves exit and output, including exhaustion bey
   const executable = directory + "/smolvm";
   const binding = { smolvm: executable, workspace: directory, state: directory } as VmBinding;
   try {
-    await Deno.writeTextFile(
+    await writeExecutable(
       executable,
       "#!/bin/sh\nprintf 'load library: Too many open files' >&2\nexit 17\n",
-      { mode: 0o700 },
+      0o700,
     );
     const failed = await vmCommand(binding, "ignored", 5000, new AbortController().signal);
     assert.equal(failed.code, 17);

@@ -3,7 +3,6 @@ import { test } from "node:test";
 import { execFileSync } from "node:child_process";
 import {
   accessSync,
-  chmodSync,
   constants,
   existsSync,
   mkdirSync,
@@ -15,6 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WorktreeManager, slugify } from "@loom/daemon/daemon/worktrees";
 import { setLogLevel, makeLogger } from "@loom/core/logger";
+import { writeExecutableSync } from "../scripts/lib/executable-fixture.ts";
 
 setLogLevel("error");
 
@@ -460,8 +460,7 @@ test("a worktree still runs the repo's own pre-commit hook (G12)", () => {
     // The repo has its own pre-commit that stamps a marker.
     const marker = join(root, "pre-commit-ran");
     const hookPath = join(root, ".git", "hooks", "pre-commit");
-    writeFileSync(hookPath, `#!/bin/sh\ntouch "${marker}"\n`);
-    chmodSync(hookPath, 0o755);
+    writeExecutableSync(hookPath, `#!/bin/sh\ntouch "${marker}"\n`, 0o755);
 
     const m = mgr(root);
     const wt = m.create(fakeId("aaaaaaaa"));

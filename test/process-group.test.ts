@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,6 +14,7 @@ import {
   settleProcessGroups,
   terminateProcessGroup,
 } from "@loom/core/process-group";
+import { writeExecutableSync } from "../scripts/lib/executable-fixture.ts";
 
 const git = (cwd: string, ...args: string[]): string =>
   execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", stdio: "pipe" }).trim();
@@ -34,8 +35,7 @@ const repo = () => {
 /** `git commit -a` holds index.lock while its pre-commit hook runs: a slow hook is a git mid-write. */
 const commitInHook = async (root: string, lock: string): Promise<ChildProcess> => {
   const hook = join(root, ".git", "hooks", "pre-commit");
-  writeFileSync(hook, "#!/bin/sh\nsleep 30\n");
-  chmodSync(hook, 0o755);
+  writeExecutableSync(hook, "#!/bin/sh\nsleep 30\n", 0o755);
   writeFileSync(join(root, "a.txt"), "changed\n");
   const child = spawn("git", ["-C", root, "commit", "-q", "-a", "-m", "work"], {
     detached: true,

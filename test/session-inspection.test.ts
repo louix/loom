@@ -8,6 +8,7 @@ import {
   vmMonitorText,
 } from "../backend/daemon/src/daemon/session-inspection.ts";
 import { executeShellHook } from "../core/src/shell-hook.ts";
+import { writeExecutable } from "../scripts/lib/executable-fixture.ts";
 
 test("Changes includes committed, staged, unstaged and untracked files without altering Git state", async () => {
   const f = await gitFixture();
@@ -188,7 +189,7 @@ test("VM sampler targets named and ephemeral machines without starting stopped V
   try {
     const executable = join(home, "smolvm");
     for (const name of ["loom-session", "vm-abc123"]) {
-      await Deno.writeTextFile(
+      await writeExecutable(
         executable,
         `#!/bin/sh
 set -eu
@@ -202,8 +203,8 @@ exec)
 *) exit 1 ;;
 esac
 `,
+        0o700,
       );
-      await Deno.chmod(executable, 0o700);
       const vm = {
         version: 1 as const,
         id: "fixture",
@@ -305,7 +306,7 @@ test("host counters remain available when executing guest metrics fails", async 
   const home = await Deno.makeTempDir();
   try {
     const executable = join(home, "smolvm");
-    await Deno.writeTextFile(
+    await writeExecutable(
       executable,
       `#!/bin/sh
 case "$2" in
@@ -314,7 +315,7 @@ exec) exit 24 ;;
 *) exit 1 ;;
 esac
 `,
-      { mode: 0o700 },
+      0o700,
     );
     const files = { pid: 4321, open: 900000, softLimit: 1048576, hardLimit: 1048576 };
     const vm = {
@@ -340,7 +341,7 @@ test("agent VM counters run under the environment's lease", async () => {
   try {
     // A direct guest exec would leave a marker; only machine ls is a host-side query.
     const executable = join(home, "smolvm");
-    await Deno.writeTextFile(
+    await writeExecutable(
       executable,
       `#!/bin/sh
 case "$2" in
@@ -349,7 +350,7 @@ exec) : > "${home}/direct-exec"; exit 1 ;;
 *) exit 1 ;;
 esac
 `,
-      { mode: 0o700 },
+      0o700,
     );
     const vm = (kind: "session" | "mcp") =>
       ({

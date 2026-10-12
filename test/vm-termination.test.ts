@@ -6,6 +6,7 @@ import {
 } from "../core/src/vm-termination.ts";
 import { harnessEventSchema } from "../core/src/events.ts";
 import { readStartupProgress } from "../runtime/src/session-vm/progress.ts";
+import { writeExecutable } from "../scripts/lib/executable-fixture.ts";
 
 Deno.test("termination diagnostics survive fragmented stderr and exclude vendor data", async () => {
   const info: VmTermination = {
@@ -116,7 +117,7 @@ Deno.test("supervisor records exit, stdout EOF, parent EOF and signals before cl
         parent: "while read -r line; do :; done",
         signal: "while read -r line; do :; done",
       }[mode];
-      await Deno.writeTextFile(
+      await writeExecutable(
         script,
         `#!/bin/sh
 case "$2" in
@@ -129,7 +130,7 @@ case "$2" in
     ;;
 esac
 `,
-        { mode: 0o700 },
+        0o700,
       );
       const child = new Deno.Command(Deno.execPath(), {
         args: [

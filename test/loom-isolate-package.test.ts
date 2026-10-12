@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { copyIsolateCli, isolateCliGraph } from "../packaging/copy-isolate-cli.ts";
+import { writeExecutable } from "../scripts/lib/executable-fixture.ts";
 
 const source = fileURLToPath(new URL("../", import.meta.url));
 
@@ -116,10 +117,10 @@ Deno.test("loom-isolate installs, checks and runs as a standalone package", asyn
       await Deno.copyFile(join(source, "test/fixtures", name), join(pkg, "test/fixtures", name));
     }
     const smolvm = join(root, "smolvm");
-    await Deno.writeTextFile(
+    await writeExecutable(
       smolvm,
       `#!/bin/sh\nPATH='${Deno.env.get("PATH")}'\nwhile [ "$1" != "--" ]; do shift; done\n# Skip both guest wrappers; run the literal argv.\nshift 9\nexec "$@"\n`,
-      { mode: 0o755 },
+      0o755,
     );
     const log = join(root, "events.jsonl");
     const fake = await run(
