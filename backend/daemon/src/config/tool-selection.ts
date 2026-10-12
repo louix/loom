@@ -42,12 +42,13 @@ export const resolveToolSelection = (raw: ToolSettings): Pick<LoomConfig, "mcp" 
         });
         break;
       case "command": {
-        const { command, args, env, cwd } = entry.source;
+        const { command, args, env, pass_env, cwd } = entry.source;
         mcp.push({
           ...common,
           command,
           args,
           ...(Object.keys(env).length > 0 ? { env } : {}),
+          ...(pass_env.length > 0 ? { passEnv: pass_env } : {}),
           ...(cwd !== undefined ? { cwd: expandHome(cwd) } : {}),
         });
         break;

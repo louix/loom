@@ -43,7 +43,6 @@ import { McpHub } from "./mcp.ts";
 import { buildAgentTools, buildLoomTools, type LoomToolDeps } from "./loom-tools.ts";
 import { AgentCalls } from "@loom/runtime/agent-tools";
 import { BuiltinTools } from "./tools/builtins.ts";
-import type { SearchConfig } from "@loom/core/connector";
 import { isReadonly, wrapToolSet } from "./gate.ts";
 import type { TranscriptStore } from "@loom/core/transcript";
 import { contextLimitFor, estimateTokens } from "@loom/core/tokens";
@@ -115,8 +114,6 @@ export interface AisdkSessionOptions {
   allowTools?: string[];
   /** Tools withheld from the session, by name. */
   denyTools?: string[];
-  /** Resolved `web_search` config, when configured. */
-  search?: SearchConfig;
   /** The repo's base branch, for the `status` tool's ahead/behind counts. */
   base?: string;
   /** null for a throwaway one-shot. */
@@ -145,7 +142,6 @@ export class AisdkSession implements AgentSession {
   readonly #system: string | undefined;
   #mode: SessionMode;
   readonly #cwd: string;
-  readonly #search: SearchConfig | undefined;
   #base: string | undefined;
   readonly #mcpHandles: McpServerHandle[];
   readonly #loomServer: boolean;
@@ -219,7 +215,6 @@ export class AisdkSession implements AgentSession {
     this.#system = opts.system;
     this.#mode = opts.mode;
     this.#cwd = opts.cwd;
-    this.#search = opts.search;
     this.#base = opts.base;
     this.#mcpHandles = opts.mcpHandles;
     this.#loomServer = opts.loomServer;
@@ -229,7 +224,7 @@ export class AisdkSession implements AgentSession {
     this.#log = opts.log ?? makeLogger("aisdk").child(opts.sessionId.slice(0, 8));
     this.#messages = [...opts.messages];
     if (opts.initHooks?.hooks.length && !opts.oneShot) {
-      this.#builtins = new BuiltinTools(this.#cwd, this.#search);
+      this.#builtins = new BuiltinTools(this.#cwd);
       for (const hook of opts.initHooks.hooks) {
         const id = this.#builtins.background.start(hook.run, hook.timeoutMs, {
           shell: "sh",
@@ -620,7 +615,7 @@ export class AisdkSession implements AgentSession {
             );
           // Builtins fill only the names no MCP server claimed, and only those
           // an agent profile's allow list keeps.
-          this.#builtins ??= new BuiltinTools(this.#cwd, this.#search);
+          this.#builtins ??= new BuiltinTools(this.#cwd);
           for (const [name, t] of Object.entries(this.#builtins.tools)) {
             if (!(name in base) && (this.#allowTools?.has(name) ?? true)) base[name] = t;
           }

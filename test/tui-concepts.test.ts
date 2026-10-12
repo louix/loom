@@ -247,7 +247,6 @@ test("prepared detail and doctor resolve every theme without changing their geom
       aisdk: [],
       claudeDisabled: ["Grep", "Glob"],
     },
-    webSearch: { backend: "none" as const, enabled: false, note: "no backend configured" },
     configWarnings: [],
   };
   const layout = detailLayout(snap({ status: "error", contextUsed: 90, contextLimit: 100 }), {

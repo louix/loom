@@ -31,7 +31,9 @@ import { agentProfileInfoSchema } from "./agents.ts";
 // supervising it), a state a v5 client cannot parse.
 // v7 spells host execution `none`, not `local` (session `isolation`,
 // `defaultIsolation`, `defaultWorkspace`), as the config does.
-export const PROTOCOL_VERSION = 7;
+// v8 drops the doctor report's `webSearch` (Loom's own search backend is gone),
+// which a v7 TUI reads unconditionally.
+export const PROTOCOL_VERSION = 8;
 
 /**
  * Hard cap on a single newline-delimited frame (bytes). Enforced identically on
@@ -638,13 +640,7 @@ export const doctorReportSchema = z.object({
     /** Built-ins Loom disables on Claude sessions (steered onto `fff` instead). */
     claudeDisabled: z.array(z.string()),
   }),
-  webSearch: z.object({
-    backend: z.union([z.literal("none"), z.literal("brave"), z.literal("tavily")]),
-    /** Backend set and its key resolved — aisdk sessions then get `web_search`. */
-    enabled: z.boolean(),
-    note: z.string(),
-  }),
-  /** `lintConfig` output — misconfigured providers, unset env vars, keyless search. */
+  /** `lintConfig` output — misconfigured providers, unset env vars. */
   configWarnings: z.array(z.string()),
 });
 export type DoctorReport = z.infer<typeof doctorReportSchema>;

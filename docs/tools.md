@@ -36,6 +36,48 @@ environments. No Kagi-specific tools or argument adapters are involved.
 Existing inline credentials can use `auth.bearer_token`; a nonempty inline token
 takes precedence over `auth.bearer_token_env`.
 
+## Web search
+
+Claude has its own web search, and Codex can keep its native one
+(`builtin_web_search`). For other agents, and as an alternative, web search is an
+MCP server. Loom's starter config and `config.example.jsonc` define two, inert
+until selected; each needs only its API key in the daemon's environment:
+
+```jsonc
+{
+  "mcp_servers": {
+    // Brave's official server (npm; needs Node's npx on the host). A host command,
+    // so host sessions only; pass_env copies the key into its environment.
+    "brave": {
+      "source": {
+        "kind": "command",
+        "command": "npx",
+        "args": ["--yes", "@brave/brave-search-mcp-server@2.1.4", "--transport", "stdio"],
+        "pass_env": ["BRAVE_API_KEY"],
+      },
+      "default_for": ["web_search"],
+    },
+    // Tavily's official hosted server: works for VM sessions too, and the key
+    // stays in Loom's HTTP relay.
+    "tavily": {
+      "source": { "kind": "http", "url": "https://mcp.tavily.com/mcp/" },
+      "auth": { "bearer_token_env": "TAVILY_API_KEY" },
+      "default_for": ["web_search", "web_fetch"],
+    },
+  },
+  "session": { "mcp_servers": ["tavily"] },
+}
+```
+
+Select one search server at a time: each is the `default_for` `web_search`.
+Kagi (above) works the same way. Tools keep their servers' names
+(`brave_web_search`, `tavily-search`, `kagi_search_fetch`).
+
+The old `search` section (`backend`, `api_key`, `api_key_env`, `api_base`,
+`max_results`) configured a Brave/Tavily client built into AISDK sessions. It is
+gone: Loom ignores the section and reports it once. Set the same key variable
+for the matching server above and select it.
+
 ## OAuth for hosted servers
 
 Use `auth.oauth` instead of bearer authentication for a standards-compatible
@@ -213,6 +255,10 @@ host command is never silently moved into a VM, and a failed VM never falls back
 to the host. Package the server with Nix (`source.kind: "nix"`) to run it beside
 a VM agent. `grants` do not apply to a host command and are rejected. A missing
 executable fails preflight.
+
+Some MCP clients give a host command only a few variables (`PATH`, `HOME`, …).
+`pass_env` names variables to copy from the daemon's environment when a session
+starts, such as an API key; one that is unset fails preflight.
 
 ## Common configurations
 

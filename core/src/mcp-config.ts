@@ -34,15 +34,26 @@ export const nixMcpSourceSchema = z.strictObject({
 });
 export type NixMcpSource = z.output<typeof nixMcpSourceSchema>;
 /** A host executable: unconfined, so only sessions that run on the host can use it. */
+const envName = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/);
 const commandMcpSourceSchema = z.strictObject({
   kind: z.literal("command"),
-  command: text,
-  args: z.array(z.string()).default([]),
-  env: z.record(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/), z.string()).default({}),
+  command: text.describe("Executable: a name looked up on PATH, or an absolute path."),
+  args: z.array(z.string()).default([]).describe("Arguments; never a shell command string."),
+  env: z
+    .record(envName, z.string())
+    .default({})
+    .describe("Literal variables added to the environment it inherits."),
+  pass_env: z
+    .array(envName)
+    .default([])
+    .describe(
+      "Variables copied from the daemon's environment when a session starts, such as an API key; one that is unset fails the launch.",
+    ),
   cwd: z
     .string()
     .refine((v) => v.startsWith("/") || v.startsWith("~/"), "must be absolute or start with ~/")
-    .optional(),
+    .optional()
+    .describe("Working directory, absolute or ~/; omitted: the session's worktree."),
 });
 export const mcpSourceSchema = z.union([
   nixMcpSourceSchema,

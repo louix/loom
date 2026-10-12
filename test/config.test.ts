@@ -6,6 +6,7 @@ import { test } from "node:test";
 
 import {
   claudeProfileId,
+  configKeyWarnings,
   deepMerge,
   lintConfig,
   loadConfig,
@@ -431,11 +432,8 @@ test("resolveApiKey: inline api_key wins over api_key_env; else env; else empty"
   assert.equal(resolveApiKey({}, env), "");
 });
 
-test("lintConfig flags unset env vars, auto-detect, keyless search", () => {
+test("lintConfig flags unset env vars and auto-detect", () => {
   const c = cfg(`{
-  "search": {
-    "backend": "brave"
-  },
   "providers": {
     "openai_compatible": {
       "profiles": {
@@ -453,7 +451,6 @@ test("lintConfig flags unset env vars, auto-detect, keyless search", () => {
   const w = lintConfig(c, {} as NodeJS.ProcessEnv);
   assert.ok(w.some((l) => /\$DEFINITELY_UNSET_VAR is not set/.test(l)));
   assert.ok(w.some((l) => /provider "auto".*auto-detect/.test(l)));
-  assert.ok(w.some((l) => /search:.*web_search stays disabled/.test(l)));
 
   // an inline api_key silences the env-var warning
   const c2 = cfg(`{
@@ -477,12 +474,10 @@ test("lintConfig flags unset env vars, auto-detect, keyless search", () => {
 
 test("a value of the wrong type or range is an error naming its key", () => {
   assert.equal(cfg("").daemon.idleStopMinutes, 30);
-  assert.equal(cfg("").search.maxResults, 5);
   assert.throws(
     () =>
       cfg(`{
   "daemon": { "idle_stop_minutes": -5 },
-  "search": { "max_results": -2 },
   "providers": { "claude": { "disable_builtin": ["Grep", 5, "Glob"] } }
 }`),
     (error: unknown) => {
@@ -490,8 +485,7 @@ test("a value of the wrong type or range is an error naming its key", () => {
       assert.equal(
         error.message,
         "daemon.idle_stop_minutes: Too small: expected number to be >=0; " +
-          "providers.claude.disable_builtin[1]: expected string, received number; " +
-          "search.max_results: Too small: expected number to be >=0",
+          "providers.claude.disable_builtin[1]: expected string, received number",
       );
       return true;
     },
@@ -843,37 +837,25 @@ test("unknown provider families are rejected", () => {
   );
 });
 
-// --- [search] ---------------------------------------------------------------
+// --- search ---------------------------------------------------------------
 
-test("[search] parses a backend + key env + base; an unknown backend is an error", () => {
+test("search, Loom's own backend, is no longer read and points at search MCP servers", () => {
+  // given
   const c = cfg(`{
   "search": {
     "backend": "brave",
     "api_key_env": "BRAVE_API_KEY",
-    "api_base": "http://localhost:7777",
-    "max_results": 8
+    "max_results": 0
   }
 }`);
-  assert.equal(c.search.backend, "brave");
-  assert.equal(c.search.apiKeyEnv, "BRAVE_API_KEY");
-  assert.equal(c.search.apiBase, "http://localhost:7777");
-  assert.equal(c.search.maxResults, 8);
-
-  assert.throws(
-    () =>
-      cfg(`{
-  "search": {
-    "backend": "kagi"
-  }
-}`),
-    /mcp_servers\.kagi.*session\.mcp_servers/,
-  );
-  assert.throws(
-    () => cfg('{"search": {"backend": "google"}}'),
-    /search\.backend: expected one of "none"\|"brave"\|"tavily"/,
-  );
-  assert.equal(cfg(``).search.backend, "none");
-  assert.equal(cfg(``).search.maxResults, 5);
+  // then
+  assert.deepEqual(configKeyWarnings(c), [
+    "search is no longer read (Loom's own Brave/Tavily search is gone; web search comes from a search MCP server: copy the brave or tavily mcp_servers entry from config.example.jsonc and select it in session.mcp_servers); remove it from the config",
+  ]);
+  assert.deepEqual(c.mcp, []);
+  assert.deepEqual(c.httpMcp, []);
+  // Kagi was already an error pointing at mcp_servers; now it is the same warning.
+  assert.equal(configKeyWarnings(cfg('{"search": {"backend": "kagi"}}')).length, 1);
 });
 
 // --- session.auto_rebase / auto_resume / commit_reminder -------------------

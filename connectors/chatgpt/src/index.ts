@@ -107,7 +107,6 @@ class ChatGPTProvider implements AgentProvider {
   readonly capabilities: ProviderCapabilities;
   readonly #codexHome: CodexHome;
   readonly #codexCliPath: string;
-  readonly #search: ConnectorContext["search"];
   readonly #base: string | undefined;
   readonly #codexBuiltinWebSearch: boolean;
   readonly #listModelsImpl: (launch: CodexLauncher) => Promise<DiscoveredModel[]>;
@@ -123,7 +122,6 @@ class ChatGPTProvider implements AgentProvider {
     codexCliPath: string,
     base: string | undefined,
     networkAccess: boolean,
-    search?: ConnectorContext["search"],
     codexBuiltinWebSearch = false,
     launch: CodexLauncher = spawnCodex,
     dispatch: ToolDispatcher = localToolDispatcher,
@@ -132,7 +130,6 @@ class ChatGPTProvider implements AgentProvider {
     this.#listModelsImpl = listModels;
     this.#codexHome = codexHome;
     this.#codexCliPath = codexCliPath;
-    this.#search = search;
     this.#base = base;
     this.#networkAccess = networkAccess;
     this.#codexBuiltinWebSearch = codexBuiltinWebSearch;
@@ -187,7 +184,6 @@ class ChatGPTProvider implements AgentProvider {
       },
       this.#codexHome,
       this.#codexCliPath,
-      this.#search,
       this.#codexBuiltinWebSearch,
       opts.base ?? this.#base,
       this.#launch,
@@ -217,7 +213,6 @@ class ChatGPTProvider implements AgentProvider {
       },
       this.#codexHome,
       this.#codexCliPath,
-      this.#search,
       this.#codexBuiltinWebSearch,
       ref.base ?? this.#base,
       this.#launch,
@@ -295,7 +290,6 @@ export const createProvider = (ctx: ConnectorContext): AgentProvider => {
     codexCliPath,
     ctx.baseBranch,
     ctx.executionEnvironment === "session-vm",
-    ctx.search,
     ctx.config.codexBuiltinWebSearch,
   );
 };

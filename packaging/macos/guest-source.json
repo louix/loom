@@ -13,7 +13,6 @@
     "aisdk/src/tools/builtins.ts",
     "aisdk/src/tools/edit.ts",
     "aisdk/src/tools/grep.ts",
-    "aisdk/src/tools/search.ts",
     "aisdk/src/tools/spawn-env.ts",
     "aisdk/src/transcript.ts",
     "connectors/chatgpt/src/account.ts",

@@ -6,7 +6,6 @@
  * itself — see {@link TranscriptStore}.
  */
 import type { LanguageModel, ModelMessage } from "ai";
-import type { SearchConfig } from "@loom/core/connector";
 import type { TranscriptStore } from "@loom/core/transcript";
 import type {
   AgentProvider,
@@ -52,8 +51,6 @@ export interface AisdkProviderOptions {
   cacheControl?: { type: "ephemeral"; ttl?: "5m" | "1h" };
   /** Resolve a model id to a live model — from {@link resolveModelFactory}, or a test stub. */
   makeModel: (id: string) => LanguageModel;
-  /** Resolved `web_search` config, when a backend + key are set. */
-  search?: SearchConfig;
   /** The repo's base branch, for the `status` tool's ahead/behind counts. */
   base?: string;
   /** Whether Loom should advertise a native sub-agent capability (none: `loom-agents` replaces it). */
@@ -83,7 +80,6 @@ export class AisdkProvider implements AgentProvider {
   readonly #defaultModel: string;
   readonly #store: TranscriptStore;
   readonly #makeModel: (id: string) => LanguageModel;
-  readonly #search: SearchConfig | undefined;
   readonly #base: string | undefined;
   readonly #maxSteps: number | undefined;
   readonly #modelContext: Record<string, number> | undefined;
@@ -96,7 +92,6 @@ export class AisdkProvider implements AgentProvider {
     this.#defaultModel = opts.model;
     this.#store = store;
     this.#makeModel = opts.makeModel;
-    this.#search = opts.search;
     this.#base = opts.base;
     this.#maxSteps = opts.maxSteps;
     this.#modelContext = opts.modelContext;
@@ -170,7 +165,6 @@ export class AisdkProvider implements AgentProvider {
       loomServer: opts.loomServer ?? false,
       ...agentOptions(opts),
       ...this.#baseOf(opts.base),
-      ...(this.#search ? { search: this.#search } : {}),
       ...(this.#maxSteps != null ? { maxSteps: this.#maxSteps } : {}),
       store: this.#store,
       oneShot: false,
@@ -204,7 +198,6 @@ export class AisdkProvider implements AgentProvider {
       loomServer: true,
       ...agentOptions(ref),
       ...this.#baseOf(ref.base),
-      ...(this.#search ? { search: this.#search } : {}),
       ...(this.#maxSteps != null ? { maxSteps: this.#maxSteps } : {}),
       store: this.#store,
       oneShot: false,

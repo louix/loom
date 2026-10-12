@@ -240,3 +240,35 @@ test("VM tool placement validation precedes all MCP worker launches", async () =
   );
   assert.equal(launches, 0);
 });
+
+test("a host command's pass_env must be set before a session starts", async () => {
+  // given
+  const config = normalizeConfig({
+    mcp_servers: {
+      search: {
+        source: { kind: "command", command: "search-mcp", pass_env: ["LOOM_TEST_UNSET_PASS_ENV"] },
+      },
+    },
+    session: { mcp_servers: ["search"] },
+  });
+  const dependencies = {
+    onPath: () => true,
+    resolveRuntime: () => {
+      throw new Error("unexpected runtime");
+    },
+  };
+  // then
+  assert.deepEqual(config.mcp[0] && "passEnv" in config.mcp[0] && config.mcp[0].passEnv, [
+    "LOOM_TEST_UNSET_PASS_ENV",
+  ]);
+  await assert.rejects(
+    preflightTools(config, "claude", dependencies),
+    /MCP server search: LOOM_TEST_UNSET_PASS_ENV is not set/,
+  );
+  Deno.env.set("LOOM_TEST_UNSET_PASS_ENV", "set");
+  try {
+    await preflightTools(config, "claude", dependencies);
+  } finally {
+    Deno.env.delete("LOOM_TEST_UNSET_PASS_ENV");
+  }
+});

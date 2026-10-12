@@ -19,6 +19,9 @@ export const preflightTools = async (
       throw new Error(
         `MCP server ${m.name}: host command ${m.command} is unavailable. Install it or remove ${m.name} from session.mcp_servers.`,
       );
+    else
+      for (const name of m.passEnv ?? [])
+        if (!Deno.env.get(name)) throw new Error(`MCP server ${m.name}: ${name} is not set`);
   }
   for (const m of config.httpMcp) {
     if (m.oauth) {

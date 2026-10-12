@@ -101,10 +101,6 @@ export const withVmSessions = async <T extends AgentProvider>(
       endpoint.password
     )
       throw new Error("AISDK VM endpoints must use HTTPS port 443");
-    if (ctx.search)
-      throw new Error(
-        "AISDK VM search requires an HTTP MCP mount instead of legacy search credentials",
-      );
     if (!ctx.transcript) throw new Error("AISDK VM needs host transcript persistence");
     config = {
       model: ctx.config.model ?? "",

@@ -5537,7 +5537,15 @@ export class Daemon {
             ...(m.grants ? { grants: m.grants } : {}),
           },
         };
-      const { command, args, env, cwd } = m;
+      const { command, args, env, passEnv = [], cwd } = m;
+      const passed = Object.fromEntries(
+        passEnv.map((name) => {
+          const value = Deno.env.get(name);
+          if (value === undefined) throw new Error("MCP " + m.name + ": " + name + " is not set");
+          return [name, value];
+        }),
+      );
+      const childEnv = { ...env, ...passed };
       return {
         name: m.name,
         ...(m.required ? { required: true } : {}),
@@ -5546,7 +5554,7 @@ export class Daemon {
           transport: "stdio",
           command,
           args: args ?? [],
-          ...(env ? { env } : {}),
+          ...(Object.keys(childEnv).length > 0 ? { env: childEnv } : {}),
           ...(cwd !== undefined ? { cwd } : {}),
         },
       };
@@ -5649,8 +5657,6 @@ export class Daemon {
             (m.required ? ". Required remote tool." : ""),
       });
     }
-    const s = this.config.search;
-    const searchKey = s.backend === "none" ? "" : resolveApiKey(s);
 
     return {
       daemon: {
@@ -5674,11 +5680,6 @@ export class Daemon {
         aisdk: ["bash", "edit", "grep"],
         claudeDisabled: [...this.config.providers.claude.disableBuiltin],
       },
-      webSearch: {
-        backend: s.backend,
-        enabled: s.backend !== "none" && searchKey !== "",
-        note: searchNoteOf(s.backend, searchKey),
-      },
       configWarnings: [
         ...lintConfig(this.config),
         ...configKeyWarnings(this.config),
@@ -5695,9 +5696,3 @@ export class Daemon {
 /** MCP command health for {@link DoctorReport}: whether the configured binary is executable. */
 const mcpStatusOf = (command: string): DoctorMcpServer["status"] =>
   onPath(command) ? "ok" : "missing";
-
-const searchNoteOf = (backend: string, resolvedKey: string): string => {
-  if (backend === "none") return "no backend configured";
-  if (resolvedKey === "") return "backend set but no api_key / api_key_env resolved";
-  return "";
-};

@@ -13,16 +13,6 @@ import type { AgentProvider } from "./types.ts";
 import type { TranscriptStore } from "./transcript.ts";
 import type { Logger } from "./logger.ts";
 
-/** A resolved `web_search` backend. `[search] backend = "none"` yields no config at all. */
-export interface SearchConfig {
-  backend: "brave" | "tavily";
-  /** The resolved search API key. */
-  apiKey: string;
-  /** Backend URL override; "" uses the backend default. */
-  apiBase: string;
-  maxResults: number;
-}
-
 /**
  * The config slice for one provider id, flattened from `[providers.<id>]` /
  * `providers.<family>` or `providers.<family>.profiles.<name>`.
@@ -146,8 +136,6 @@ export interface ConnectorContext {
   config: ConnectorConfig;
   /** Provided to connectors that persist their own history (aisdk); omitted for Claude. */
   transcript?: TranscriptStore;
-  /** Provided when a `web_search` backend + key are configured. */
-  search?: SearchConfig;
   /** The repo's base branch (`base_branch`) — feeds `status` ahead/behind counts. */
   baseBranch?: string;
   logger: Logger;

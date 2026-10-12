@@ -22,8 +22,8 @@ nix build .#session-runtime --out-link /tmp/loom-aisdk-runtime
 it. Each session gets a separate VM with its worktree and only its resolved API
 credential. Its HTTPS endpoint hostname is allowed on port 443; additional
 worktree destinations use `session.isolation.network.allowed_hosts`. HTTP/custom-port model
-endpoints are rejected. Legacy built-in search credentials require migration to
-HTTP MCP mounts. No fallback to host session execution occurs after a VM error.
+endpoints are rejected. Web search comes from an HTTP MCP server such as tavily or
+kagi ([MCP servers](tools.md#web-search)). No fallback to host session execution occurs after a VM error.
 
 The daemon owns durable conversation history. Before starting a worker it sends
 that session's history to a private in-memory mirror. Guest append/replace/clear

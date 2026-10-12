@@ -51,7 +51,6 @@ const STAYS: Record<string, string> = {
   "session.defaults.base_branch": "session workspace policy",
   "session.worktree_dir": "session workspace policy",
   git: "Git identity of Loom sessions",
-  search: "agent web search",
   mcp_servers: tools,
   "session.mcp_servers": tools,
   "session.auto_rebase": "session policy",

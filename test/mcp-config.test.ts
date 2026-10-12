@@ -90,11 +90,6 @@ test("catalogs reject old syntax and malformed definitions even when unselected"
     `{
   "http-mcp": []
 }`,
-    `{
-  "search": {
-    "backend": "kagi"
-  }
-}`,
     http.replace('"web_search"', '"invented"'),
     http.replace('"bearer_token_env": "SEARCH_CREDENTIAL"', '"bearer_token_env": 42'),
     http.replace('"kind": "http"', '"kind": "command"'),

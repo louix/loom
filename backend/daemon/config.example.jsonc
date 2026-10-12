@@ -57,9 +57,11 @@
     "auto_rebase": "off", // or rebase, merge
     "auto_resume": true,
     "commit_reminder": true,
-    "mcp_servers": [], // e.g. ["tilth", "kagi"] after configuring credentials
+    "mcp_servers": [], // e.g. ["tilth", "tavily"] after configuring credentials
   },
   // Definitions are inert until selected in session.mcp_servers.
+  // Web search: brave, tavily and kagi need only their API key in the daemon's environment.
+  // Select one at a time; each is the default for web_search.
   "mcp_servers": {
     "tilth": {
       "source": {
@@ -74,6 +76,22 @@
     "kagi": {
       "source": { "kind": "http", "url": "https://mcp.kagi.com/mcp" },
       "auth": { "bearer_token_env": "KAGI_API_KEY" },
+      "default_for": ["web_search", "web_fetch"],
+    },
+    // Brave's official server, from npm: a host command, so host sessions only.
+    "brave": {
+      "source": {
+        "kind": "command",
+        "command": "npx",
+        "args": ["--yes", "@brave/brave-search-mcp-server@2.1.4", "--transport", "stdio"],
+        "pass_env": ["BRAVE_API_KEY"],
+      },
+      "default_for": ["web_search"],
+    },
+    // Tavily's official hosted server; the key stays in Loom's relay.
+    "tavily": {
+      "source": { "kind": "http", "url": "https://mcp.tavily.com/mcp/" },
+      "auth": { "bearer_token_env": "TAVILY_API_KEY" },
       "default_for": ["web_search", "web_fetch"],
     },
     // A host executable: unconfined, so only sessions that run on the host can select it.

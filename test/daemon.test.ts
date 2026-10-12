@@ -453,8 +453,6 @@ test("daemon.doctor reports connectors, mcp mounts and daemon vitals", async () 
 
   assert.deepEqual(rep.tools.loom, ["ask_user", "commit"]);
   assert.deepEqual(rep.tools.claudeDisabled, []);
-  assert.equal(rep.webSearch.backend, "none");
-  assert.equal(rep.webSearch.enabled, false);
   assert.ok(Array.isArray(rep.configWarnings));
 
   await c.close();

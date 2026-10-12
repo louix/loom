@@ -8,6 +8,7 @@ import { configEditorSchema } from "../backend/daemon/src/config/schema.ts";
 import {
   DEFAULT_CONFIG,
   HOOK_EVENTS,
+  lintConfig,
   normalizeConfig,
   parseConfig,
 } from "@loom/daemon/config/config";
@@ -15,6 +16,7 @@ import {
   exampleConfigPath,
   exampleSchemaPath,
   scaffoldUserConfig,
+  SEARCH_MCP_SERVERS,
   userConfigPath,
   userSchemaPath,
 } from "@loom/daemon/scaffold";
@@ -229,6 +231,64 @@ test("scaffolding refreshes the offline schema without overwriting user settings
       "in-place",
     );
     assert.deepEqual(JSON.parse(readFileSync(userSchemaPath(), "utf8")), schema);
+  } finally {
+    if (previous === undefined) Deno.env.delete("XDG_CONFIG_HOME");
+    else Deno.env.set("XDG_CONFIG_HOME", previous);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the starter and example configs define brave and tavily search, valid and unselected", () => {
+  const previous = Deno.env.get("XDG_CONFIG_HOME");
+  const dir = mkdtempSync(join(tmpdir(), "loom-starter-"));
+  Deno.env.set("XDG_CONFIG_HOME", dir);
+  try {
+    // given
+    scaffoldUserConfig();
+    const validate = new Ajv({ strict: false }).compile(schema);
+    for (const raw of [
+      parseConfig(readFileSync(userConfigPath(), "utf8")),
+      parseConfig(readFileSync(exampleConfigPath(), "utf8")),
+    ]) {
+      // then
+      assert.ok(validate(raw), JSON.stringify(validate.errors));
+      const config = normalizeConfig(raw);
+      assert.deepEqual(
+        { brave: config.mcpServers?.["brave"], tavily: config.mcpServers?.["tavily"] },
+        normalizeConfig({ mcp_servers: SEARCH_MCP_SERVERS }).mcpServers,
+      );
+      assert.deepEqual(
+        [...config.mcp, ...config.httpMcp].filter((m) => m.name === "brave" || m.name === "tavily"),
+        [],
+      );
+    }
+    // when selected, each needs only its key
+    const selected = (name: string) =>
+      normalizeConfig({ mcp_servers: SEARCH_MCP_SERVERS, session: { mcp_servers: [name] } });
+    assert.deepEqual(selected("brave").mcp, [
+      {
+        name: "brave",
+        required: true,
+        defaultFor: ["web_search"],
+        command: "npx",
+        args: ["--yes", "@brave/brave-search-mcp-server@2.1.4", "--transport", "stdio"],
+        passEnv: ["BRAVE_API_KEY"],
+      },
+    ]);
+    assert.deepEqual(selected("tavily").httpMcp, [
+      {
+        name: "tavily",
+        required: true,
+        defaultFor: ["web_search", "web_fetch"],
+        url: "https://mcp.tavily.com/mcp/",
+        bearerTokenEnv: "TAVILY_API_KEY",
+      },
+    ]);
+    assert.ok(
+      lintConfig(selected("brave"), {}).includes(
+        'MCP "brave": $BRAVE_API_KEY is not set — session creation will fail',
+      ),
+    );
   } finally {
     if (previous === undefined) Deno.env.delete("XDG_CONFIG_HOME");
     else Deno.env.set("XDG_CONFIG_HOME", previous);

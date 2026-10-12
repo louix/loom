@@ -70,6 +70,8 @@ const rename = (from: string, to: string): Rename => ({
 const LAYER: Scope = {
   removed: {
     db: "the database lives in $XDG_STATE_HOME/loom/repos/<repo>/loom.db",
+    search:
+      "Loom's own Brave/Tavily search is gone; web search comes from a search MCP server: copy the brave or tavily mcp_servers entry from config.example.jsonc and select it in session.mcp_servers",
     "session.isolation.launcher": "session VMs always start through the isolation library",
     "session.titles": "session titles are always generated",
     "session.notify":

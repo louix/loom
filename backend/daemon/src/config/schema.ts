@@ -517,22 +517,9 @@ export const createConfigSchema = (d: LoomConfig, events: readonly HookEvent[]) 
       }),
     ),
     hooks: z.array(hook).max(64).default([]),
-    search: section({
-      backend: preprocess(
-        (v) => {
-          if (v === "kagi")
-            throw new Error(
-              "Configure Kagi under mcp_servers.kagi and select it in session.mcp_servers",
-            );
-          return v;
-        },
-        z.enum(["none", "brave", "tavily"]).default("none"),
-      ),
-      api_key_env: optionalText(),
-      api_key: optionalText(),
-      api_base: optionalText(),
-      max_results: nonNegative(d.search.maxResults).transform((v) => Math.max(1, v)),
-    }),
+    search: deprecated(
+      "No longer read: web search comes from a search MCP server under mcp_servers (brave, tavily, kagi).",
+    ),
     agents: agentsSchema(d.agents.maxDepth),
   });
 };

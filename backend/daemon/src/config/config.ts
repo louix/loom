@@ -124,7 +124,7 @@ export interface AisdkProfile {
   configDir: string;
   /** Explicit `codex` executable for `sdk = "chatgpt"`. Empty resolves `codex` on PATH. */
   codexCliPath: string;
-  /** Keep Codex's native web search alongside Loom's configured search. Default false — set explicitly to opt in. */
+  /** Keep Codex's native web search alongside configured search MCP servers. Default false — set explicitly to opt in. */
   codexBuiltinWebSearch: boolean;
 }
 
@@ -344,7 +344,14 @@ export interface LoomConfig {
   mcpServers?: Record<string, z.output<typeof mcpDefinitionSchema>>;
   mcp: Array<
     { name: string; defaultFor?: McpCapability[]; required?: boolean } & (
-      | { command: string; args?: string[]; env?: Record<string, string>; cwd?: string }
+      | {
+          command: string;
+          args?: string[];
+          env?: Record<string, string>;
+          /** Daemon environment variables copied into `env` at launch. */
+          passEnv?: string[];
+          cwd?: string;
+        }
       | { runtime: string; isolation: "vm"; grants?: McpGrants }
     )
   >;
@@ -368,21 +375,6 @@ export interface LoomConfig {
    * installed into session worktrees.
    */
   hooks: HookConfig[];
-  /**
-   * `web_search` tool for aisdk sessions (Claude has its own). Off unless a
-   * backend is chosen and its key env var is set. Hosted search MCP servers
-   * are configured with [remote_tools.<name>].
-   */
-  search: {
-    backend: "none" | "brave" | "tavily";
-    /** Env var holding the API key. */
-    apiKeyEnv: string;
-    /** Literal API key; wins over `apiKeyEnv`. Prefer the env var. */
-    apiKey: string;
-    /** Override the backend's base URL (a proxy, or a test stub). */
-    apiBase: string;
-    maxResults: number;
-  };
   /**
    * Loom agents (`docs/loom-agents.md`): how deep supervision may go, and the
    * named profiles a session starts children with. Global, with a matching
@@ -474,7 +466,6 @@ export const DEFAULT_CONFIG: LoomConfig = {
   mcp: [],
   httpMcp: [],
   hooks: [],
-  search: { backend: "none", apiKeyEnv: "", apiKey: "", apiBase: "", maxResults: 5 },
   agents: { maxDepth: DEFAULT_MAX_DEPTH, profiles: {} },
 };
 
@@ -615,7 +606,7 @@ const parseAisdkProfiles = (raw: Record<string, unknown>): Record<string, AisdkP
 };
 
 /**
- * The API key for an aisdk profile / `search`: an inline `api_key` wins,
+ * The API key for an aisdk profile: an inline `api_key` wins,
  * else `api_key_env` is looked up in the environment, else "" (a keyless
  * local endpoint).
  */
@@ -646,8 +637,8 @@ export const configKeyWarnings = (cfg: LoomConfig): string[] =>
 
 /**
  * Human-readable warnings about the loaded config — misconfigured providers,
- * env vars that aren't set, models that will be auto-detected, a keyless search
- * backend. `normalizeConfig` has already coerced an unknown `default_provider`
+ * env vars that aren't set, models that will be auto-detected.
+ * `normalizeConfig` has already coerced an unknown `default_provider`
  * to `claude`, so that's not re-checked here. Logged at daemon start-up and
  * available over `config.check` / `loom config`.
  */
@@ -717,15 +708,6 @@ export const lintConfig = (
       );
     }
   }
-  if (cfg.search.backend !== "none" && !cfg.search.apiKey) {
-    if (!cfg.search.apiKeyEnv) {
-      w.push(
-        `search: backend = "${cfg.search.backend}" but no api_key / api_key_env — web_search stays disabled`,
-      );
-    } else if (!env[cfg.search.apiKeyEnv]) {
-      w.push(`search: $${cfg.search.apiKeyEnv} is not set — web_search stays disabled`);
-    }
-  }
   for (const m of cfg.mcp) {
     if ("command" in m && !onPath(m.command, env))
       w.push(`MCP "${m.name}": host command ${m.command} is unavailable`);
@@ -738,6 +720,9 @@ export const lintConfig = (
     const error = toolExecutionError(cfg, id);
     if (error) w.push(error);
   }
+  for (const m of cfg.mcp)
+    for (const name of "passEnv" in m ? (m.passEnv ?? []) : [])
+      if (!env[name]) w.push(`MCP "${m.name}": $${name} is not set — session creation will fail`);
   for (const m of cfg.httpMcp) {
     if (!m.bearerToken && m.bearerTokenEnv && !env[m.bearerTokenEnv])
       w.push(`MCP "${m.name}": $${m.bearerTokenEnv} is not set — session creation will fail`);
@@ -901,13 +886,6 @@ export const normalizeConfig = (
       timeoutMs: h.timeout_seconds,
       async: h.async,
     })),
-    search: {
-      backend: settings.search.backend,
-      apiKeyEnv: settings.search.api_key_env ?? "",
-      apiKey: settings.search.api_key ?? "",
-      apiBase: settings.search.api_base ?? "",
-      maxResults: settings.search.max_results,
-    },
     agents,
   };
 };

@@ -2615,7 +2615,6 @@ test("doctor: open sets the mode, doctorLoaded caches the report, close returns 
     connectors: [],
     mcp: [],
     tools: { loom: [], claude: [], aisdk: [], claudeDisabled: [] },
-    webSearch: { backend: "none" as const, enabled: false, note: "" },
     configWarnings: [],
   };
   s = reduce(s, { t: "doctorLoaded", report });

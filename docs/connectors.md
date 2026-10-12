@@ -102,9 +102,9 @@ guarantee that every call uses the preferred server.
 
 Kagi is a normal MCP server: its tools keep their advertised names, such as
 `kagi_search_fetch` and `kagi_extract`. Loom supplies no Kagi-specific wrappers
-or argument translations. `[[mcp]]` and `[search] backend = "kagi"` are rejected;
-use named definitions and explicit selections. Brave and Tavily remain
-optional first-party `search` backends.
+or argument translations. `[[mcp]]` is rejected; use named definitions and
+explicit selections. Brave and Tavily are MCP servers in the same way (see
+[web search](tools.md#web-search)); Loom has no search backend of its own.
 
 Only the relay receives the upstream URL and HTTP credentials, over private
 stdin after a version handshake. Its launch policy grants the configured host
@@ -171,7 +171,7 @@ entry to hide it. Provider access rules still apply.
    ▲
 @loom/aisdk       the shared Vercel AI SDK engine — AisdkSession (owns the
    ▲              ModelMessage[], the permission gate, compaction, plan mode,
-   │              sub-agents), the first-party bash/edit/grep/web_search tools,
+   │              sub-agents), the first-party bash/edit/grep tools,
    │              and makeAisdkProvider(opts, store). Deps: `ai`, `@ai-sdk/mcp`.
    │
 @loom/connector-generic / -gemini    each owns the one `@ai-sdk/*` model factory
@@ -204,7 +204,6 @@ export function createProvider(ctx: ConnectorContext): AgentProvider | Promise<A
   //                  sdk, maxSteps, cliPath, promptCacheTtl — all optional)
   // ctx.transcript — a TranscriptStore, for connectors that persist their own
   //                  history (the aisdk kind); omitted for Claude
-  // ctx.search     — a resolved web_search config when `search` is set
   // ctx.logger     — a scoped Logger
 }
 ```

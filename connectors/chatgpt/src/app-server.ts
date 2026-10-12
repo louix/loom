@@ -9,7 +9,6 @@ import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { AsyncChannel } from "@loom/core/channel";
 import type { HarnessEvent, TokenUsage } from "@loom/core/events";
-import type { SearchConfig } from "@loom/core/connector";
 import { stateIdle, stateRunning } from "@loom/core/session-state";
 import { ASK_USER_DESC, COMMIT_DESC, STATUS_DESC } from "@loom/runtime/loom-tools";
 import { PendingInteractions } from "@loom/runtime/pending";
@@ -113,7 +112,6 @@ export const NATIVE_SUBAGENT_FLAGS = [
  *  until the ChatGPT connector migration and VM isolation. */
 const launchOptions = (
   servers: McpServerHandle[],
-  _search: SearchConfig | undefined,
   builtinWebSearch: boolean,
   codexHome: CodexHome,
 ): { args: string[]; env: NodeJS.ProcessEnv } => ({
@@ -414,7 +412,6 @@ export class CodexAppServerSession implements AgentSession {
     opts: CreateSessionOptions,
     codexHome: CodexHome,
     cliPath = "codex",
-    search?: SearchConfig,
     builtinWebSearch = false,
     base?: string,
     launch: CodexLauncher = spawnCodex,
@@ -425,7 +422,6 @@ export class CodexAppServerSession implements AgentSession {
     // from leaking into a Loom-controlled session.
     const built = launchOptions(
       opts.oneShot ? [] : opts.mcpServers,
-      search,
       opts.oneShot ? false : builtinWebSearch,
       codexHome,
     );
@@ -495,7 +491,6 @@ export class CodexAppServerSession implements AgentSession {
     ref: SessionRef,
     codexHome: CodexHome,
     cliPath = "codex",
-    search?: SearchConfig,
     builtinWebSearch = false,
     base?: string,
     launch: CodexLauncher = spawnCodex,
@@ -513,7 +508,7 @@ export class CodexAppServerSession implements AgentSession {
       ...(ref.model ? { model: ref.model } : {}),
       ...(ref.effort ? { effort: ref.effort } : {}),
     };
-    const built = launchOptions(opts.mcpServers, search, builtinWebSearch, codexHome);
+    const built = launchOptions(opts.mcpServers, builtinWebSearch, codexHome);
     const proc = launch({ cliPath, args: built.args, cwd: opts.cwd, env: built.env, codexHome });
     const s = new CodexAppServerSession(opts, proc, base, dispatch, networkAccess);
     try {

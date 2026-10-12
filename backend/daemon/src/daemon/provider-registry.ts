@@ -32,12 +32,7 @@ import {
 } from "../config/config.ts";
 import { isClaudeId } from "@loom/core/provider-id";
 import type { AgentProvider } from "@loom/core/types";
-import type {
-  ConnectorConfig,
-  ConnectorContext,
-  ConnectorManifest,
-  SearchConfig,
-} from "@loom/core/connector";
+import type { ConnectorConfig, ConnectorContext, ConnectorManifest } from "@loom/core/connector";
 import type { TranscriptStore } from "@loom/core/transcript";
 import { makeLogger } from "@loom/core/logger";
 import { withExternalMcp } from "./mcp-provider.ts";
@@ -399,11 +394,10 @@ export class ProviderRegistry {
 
   #contextFor(id: string): ConnectorContext {
     const logger = makeLogger("connector").child(id);
-    const search = this.#resolveSearch();
     // Provider-wide, so not any one session's own base.
     const baseBranch = legacyBaseBranch(this.#config);
     if (id === "fake" || id === "mock" || id === "echo") {
-      return { id, config: {}, logger, baseBranch, ...(search ? { search } : {}) };
+      return { id, config: {}, logger, baseBranch };
     }
     if (isClaudeId(id)) {
       const c = this.#config.providers.claude;
@@ -423,7 +417,6 @@ export class ProviderRegistry {
         },
         baseBranch,
         logger,
-        ...(search ? { search } : {}),
       };
     }
     const p = this.#config.providers.aisdk[id];
@@ -447,21 +440,6 @@ export class ProviderRegistry {
       transcript: this.#transcript,
       logger,
       baseBranch,
-      ...(search ? { search } : {}),
-    };
-  }
-
-  /** `[search]` → a resolved `web_search` config, or undefined when off / keyless. */
-  #resolveSearch(): SearchConfig | undefined {
-    const s = this.#config.search;
-    if (s.backend === "none") return undefined;
-    const apiKey = resolveApiKey(s);
-    if (!apiKey) return undefined;
-    return {
-      backend: s.backend,
-      apiKey,
-      apiBase: s.apiBase,
-      maxResults: s.maxResults,
     };
   }
 

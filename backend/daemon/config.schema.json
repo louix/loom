@@ -56,10 +56,12 @@
                   },
                   "command": {
                     "type": "string",
-                    "minLength": 1
+                    "minLength": 1,
+                    "description": "Executable: a name looked up on PATH, or an absolute path."
                   },
                   "args": {
                     "default": [],
+                    "description": "Arguments; never a shell command string.",
                     "type": "array",
                     "items": {
                       "type": "string"
@@ -67,6 +69,7 @@
                   },
                   "env": {
                     "default": {},
+                    "description": "Literal variables added to the environment it inherits.",
                     "type": "object",
                     "propertyNames": {
                       "type": "string",
@@ -76,7 +79,17 @@
                       "type": "string"
                     }
                   },
+                  "pass_env": {
+                    "default": [],
+                    "description": "Variables copied from the daemon's environment when a session starts, such as an API key; one that is unset fails the launch.",
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                    }
+                  },
                   "cwd": {
+                    "description": "Working directory, absolute or ~/; omitted: the session's worktree.",
                     "type": "string"
                   }
                 },
@@ -1396,29 +1409,8 @@
       }
     },
     "search": {
-      "type": "object",
-      "properties": {
-        "backend": {
-          "default": "none",
-          "type": "string",
-          "enum": ["none", "brave", "tavily"]
-        },
-        "api_key_env": {
-          "type": "string"
-        },
-        "api_key": {
-          "type": "string"
-        },
-        "api_base": {
-          "type": "string"
-        },
-        "max_results": {
-          "default": 5,
-          "type": "number",
-          "minimum": 0
-        }
-      },
-      "additionalProperties": false
+      "deprecated": true,
+      "description": "No longer read: web search comes from a search MCP server under mcp_servers (brave, tavily, kagi)."
     },
     "agents": {
       "type": "object",
@@ -1575,10 +1567,12 @@
                         },
                         "command": {
                           "type": "string",
-                          "minLength": 1
+                          "minLength": 1,
+                          "description": "Executable: a name looked up on PATH, or an absolute path."
                         },
                         "args": {
                           "default": [],
+                          "description": "Arguments; never a shell command string.",
                           "type": "array",
                           "items": {
                             "type": "string"
@@ -1586,6 +1580,7 @@
                         },
                         "env": {
                           "default": {},
+                          "description": "Literal variables added to the environment it inherits.",
                           "type": "object",
                           "propertyNames": {
                             "type": "string",
@@ -1595,7 +1590,17 @@
                             "type": "string"
                           }
                         },
+                        "pass_env": {
+                          "default": [],
+                          "description": "Variables copied from the daemon's environment when a session starts, such as an API key; one that is unset fails the launch.",
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                          }
+                        },
                         "cwd": {
+                          "description": "Working directory, absolute or ~/; omitted: the session's worktree.",
                           "type": "string"
                         }
                       },
@@ -2915,29 +2920,8 @@
             }
           },
           "search": {
-            "type": "object",
-            "properties": {
-              "backend": {
-                "default": "none",
-                "type": "string",
-                "enum": ["none", "brave", "tavily"]
-              },
-              "api_key_env": {
-                "type": "string"
-              },
-              "api_key": {
-                "type": "string"
-              },
-              "api_base": {
-                "type": "string"
-              },
-              "max_results": {
-                "default": 5,
-                "type": "number",
-                "minimum": 0
-              }
-            },
-            "additionalProperties": false
+            "deprecated": true,
+            "description": "No longer read: web search comes from a search MCP server under mcp_servers (brave, tavily, kagi)."
           },
           "agents": {
             "type": "object",

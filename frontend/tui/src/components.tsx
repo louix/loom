@@ -2121,7 +2121,6 @@ export const Doctor = ({
 
 const DoctorBody = ({ report }: { report: DoctorReport }): ReactNode => {
   const d = report.daemon;
-  const ws = report.webSearch;
   return (
     <>
       <Section title="daemon">
@@ -2182,17 +2181,6 @@ const DoctorBody = ({ report }: { report: DoctorReport }): ReactNode => {
               <>
                 {report.tools.claudeDisabled.join(", ") || "none"}
                 <Line tone="faint">{"  (Claude)"}</Line>
-              </>,
-            ],
-            [
-              "web_search",
-              <>
-                <Line tone={ws.enabled ? "good" : "faint"}>
-                  {ws.backend === "none"
-                    ? "off"
-                    : `${ws.backend} · ${ws.enabled ? "enabled" : "disabled"}`}
-                </Line>
-                {ws.note && <Line tone="faint">{`  ${ws.note}`}</Line>}
               </>,
             ],
           ]}
