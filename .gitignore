@@ -7,16 +7,8 @@ references/
 # nix + direnv
 .direnv/
 
-# Loom runtime state — created per repo the daemon runs in
-.loom/daemon.sock
-.loom/daemon.pid
-.loom/loom.db
-.loom/loom.db-journal
-.loom/loom.db-wal
-.loom/loom.db-shm
-.loom/trees/
-.loom/tui.json
-.loom/package-cache
+# Per-repo state of Loom versions before the XDG layout; a newer daemon moves it out
+.loom/
 
 credentials
 .claude/worktrees/
