@@ -9,6 +9,7 @@ type Rpc = {
   error?: unknown;
 };
 const MAX_BODY = 1024 * 1024;
+const INITIALIZE_ERROR_chars = 1000;
 export const stdioHttp = async (
   input: WritableStream<Uint8Array>,
   output: ReadableStream<Uint8Array>,
@@ -125,7 +126,7 @@ export const stdioHttp = async (
       capabilities: {},
       clientInfo: { name: "loom-runtime", version: "1" },
     });
-    if (hello.error || !hello.result) throw new Error("MCP initialization failed");
+    if (hello.error || !hello.result) throw new Error(initializeFailure(hello.error));
     await writer.send({ jsonrpc: "2.0", method: "notifications/initialized" });
     const lifetime = new AbortController();
     const server = Deno.serve(
@@ -234,4 +235,14 @@ export const stdioHttp = async (
     await writer.close().catch(() => {});
     throw error;
   }
+};
+
+// A server that cannot authenticate upstream (an expired AWS SSO session behind
+// mcp-proxy-for-aws) says why only here, often with nothing on stderr yet.
+const initializeFailure = (error: unknown): string => {
+  const message =
+    error && typeof error === "object" && "message" in error && typeof error.message === "string"
+      ? error.message.slice(0, INITIALIZE_ERROR_chars)
+      : "";
+  return message ? `MCP initialization failed: ${message}` : "MCP initialization failed";
 };

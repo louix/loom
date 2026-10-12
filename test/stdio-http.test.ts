@@ -187,3 +187,33 @@ test("a request slower than the bridge's bound fails and is cancelled; a longer 
     }
   }
 });
+
+test("an initialize error names the server's reason", async () => {
+  // given
+  const input = new TransformStream<Uint8Array, Uint8Array>();
+  const output = new TransformStream<Uint8Array, Uint8Array>();
+  const writer = new FrameWriter(output.writable);
+  const native = (async () => {
+    for await (const f of readFrames(input.readable, (v) => v as Record<string, any>))
+      if (f.method === "initialize")
+        await writer.send({
+          jsonrpc: "2.0",
+          id: f.id,
+          error: { code: -32603, message: "No AWS credentials available." },
+        });
+    await writer.close();
+  })();
+  // when
+  const started = stdioHttp(
+    input.writable,
+    output.readable,
+    "token",
+    MCP_REQUEST_TIMEOUT_DEFAULT_MS,
+    MAX_FRAME_BYTES,
+  );
+  // then
+  await assert.rejects(started, {
+    message: "MCP initialization failed: No AWS credentials available.",
+  });
+  await native;
+});
