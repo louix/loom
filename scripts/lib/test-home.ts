@@ -1,14 +1,26 @@
-// A throwaway HOME and XDG base directories for one test run (test-run.ts), so the
-// suite never reads or writes the developer's real Loom state, caches,
-// config, Git identity or provider profiles. Production path resolution
-// (`core/src/user-dirs.ts`) throws while LOOM_TEST_HOME is set if a path
-// escapes it, and `test/test-home.test.ts` fails a bare `deno test test/`.
+// A throwaway HOME, TMPDIR and XDG base directories for one test run
+// (test-run.ts), so the suite never reads or writes the developer's real Loom
+// state, caches, config, Git identity or provider profiles. Production path
+// resolution (`core/src/user-dirs.ts`) throws while LOOM_TEST_HOME is set if a
+// path escapes it, and `test/test-home.test.ts` fails a bare `deno test test/`.
 //
 // Set LOOM_KEEP_TEST_HOME=1 to keep the directory for inspection.
 
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TEST_HOME_VARIABLE } from "../../core/src/user-dirs.ts";
+
+/**
+ * Longest socket path on both platforms, without its NUL: `sun_path` is 104
+ * bytes on macOS, 108 on Linux. The smaller, so a run that fits here fits on both.
+ */
+const SOCKET_PATH_MAX_BYTES = 103;
+
+/**
+ * Room tests need below TMPDIR for sockets of their own. The deepest is
+ * `<makeTempDir()>/bridge.sock` (test/guest-relay.test.ts), 29 bytes; the rest
+ * is headroom for the next one.
+ */
+const TEST_SOCKET_ROOM_BYTES = 48;
 
 const DIRECTORIES = {
   HOME: "home",
@@ -54,23 +66,35 @@ export interface TestHome {
 }
 
 export const createTestHome = async (): Promise<TestHome> => {
-  const root = await Deno.realPath(await Deno.makeTempDir({ prefix: "loom-test-home-" }));
+  // Under /tmp, not $TMPDIR: each nix-shell nests a TMPDIR below its caller's, and
+  // a Loom session's sits below that, too deep for tests' sockets. Real path, as
+  // Loom canonicalizes repositories and workspaces: on macOS /tmp is a symlink.
+  const root = await Deno.realPath(
+    await Deno.makeTempDir({ dir: "/tmp", prefix: "loom-test-home-" }),
+  );
+  const temporary = join(root, "tmp");
+  const temporaryBytes = new TextEncoder().encode(temporary).length;
+  if (temporaryBytes + TEST_SOCKET_ROOM_BYTES > SOCKET_PATH_MAX_BYTES) {
+    await Deno.remove(root);
+    throw new Error(
+      `The test TMPDIR ${temporary} is ${temporaryBytes} bytes, over the ${SOCKET_PATH_MAX_BYTES - TEST_SOCKET_ROOM_BYTES} that leave tests room for Unix sockets below it.`,
+    );
+  }
+  await Deno.mkdir(temporary, { mode: 0o700 });
   const env = Deno.env.toObject();
   for (const key of UNSET) delete env[key];
   Object.assign(env, {
     [TEST_HOME_VARIABLE]: root,
     DENO_DIR: await denoDir(),
     GIT_CONFIG_NOSYSTEM: "1",
-    // Fixtures under their real path, as Loom canonicalizes repositories and
-    // workspaces: on macOS $TMPDIR (and /tmp) are symlinks into /private.
-    TMPDIR: await Deno.realPath(tmpdir()),
+    TMPDIR: temporary,
   });
   for (const [variable, name] of Object.entries(DIRECTORIES)) {
     env[variable] = join(root, name);
     await Deno.mkdir(env[variable]!, { mode: 0o700 });
   }
-  // Daemon sockets live here. Under /tmp, not the home: on macOS a home in $TMPDIR
-  // is long enough to push a socket path past the sun_path limit.
+  // Daemon sockets live here, beside the home rather than in it: every byte saved
+  // is one more a test repository's name can take in its socket's path.
   const runtime = await Deno.realPath(await Deno.makeTempDir({ dir: "/tmp", prefix: "loom-run-" }));
   env["XDG_RUNTIME_DIR"] = runtime;
   // A neutral global identity: commits work without the developer's ~/.gitconfig,
