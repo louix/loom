@@ -1,3 +1,4 @@
+// test-run: own-process — points XDG_* and the isolate variables at its fixture for in-process code.
 /** loom-isolate's command surface, ownership and signal handling, over a fake VM backend. */
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";

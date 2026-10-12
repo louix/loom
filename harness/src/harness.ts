@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import type { ConnectorManifest } from "@loom/core/connector";
 import { loomPaths } from "@loom/core/paths";
 import { setLogLevel } from "@loom/core/logger";
+import { TEST_HOME_VARIABLE } from "@loom/core/user-dirs";
 import { Daemon, type DaemonStartOptions } from "@loom/daemon/daemon/daemon";
 
 /** Every connector, for a harness daemon that may exercise any provider. */
@@ -24,11 +25,17 @@ setLogLevel("error"); // keep test output quiet
 // dir; each harness also supplies its own trusted config file. State too:
 // harness daemons create session VM directories and environment bases there.
 // (XDG_CACHE_HOME stays: it also locates Deno's module cache for child workers.)
-Deno.env.set("XDG_CONFIG_HOME", mkdtempSync(join(tmpdir(), "loom-xdg-")));
-Deno.env.set("XDG_DATA_HOME", mkdtempSync(join(tmpdir(), "loom-data-")));
-Deno.env.set("XDG_STATE_HOME", mkdtempSync(join(tmpdir(), "loom-state-")));
-// Under /tmp, not $TMPDIR: macOS's is long enough to push daemon sockets past sun_path.
-Deno.env.set("XDG_RUNTIME_DIR", mkdtempSync("/tmp/loom-run-"));
+// The test runner's throwaway home (scripts/lib/test-home.ts) already does all
+// this before any file starts; resetting it here would pull the directories out
+// from under the other files of a `deno test --parallel` run, which share one
+// process environment.
+if (!Deno.env.get(TEST_HOME_VARIABLE)) {
+  Deno.env.set("XDG_CONFIG_HOME", mkdtempSync(join(tmpdir(), "loom-xdg-")));
+  Deno.env.set("XDG_DATA_HOME", mkdtempSync(join(tmpdir(), "loom-data-")));
+  Deno.env.set("XDG_STATE_HOME", mkdtempSync(join(tmpdir(), "loom-state-")));
+  // Under /tmp, not $TMPDIR: macOS's is long enough to push daemon sockets past sun_path.
+  Deno.env.set("XDG_RUNTIME_DIR", mkdtempSync("/tmp/loom-run-"));
+}
 
 export interface Harness {
   repoRoot: string;

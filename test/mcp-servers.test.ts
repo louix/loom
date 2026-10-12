@@ -1,3 +1,4 @@
+// test-run: own-process — points XDG_* at its fixture and sets a credential variable.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { normalizeConfig, loadConfig } from "@loom/daemon/config/config";

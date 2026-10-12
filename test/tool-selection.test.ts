@@ -1,3 +1,4 @@
+// test-run: own-process — sets and clears variables that tool preflight reads from Deno.env.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { parseConfig as parse } from "@loom/daemon/config/config";

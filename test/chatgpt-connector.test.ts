@@ -1,3 +1,4 @@
+// test-run: own-process — drives the fake app-server through LOOM_TEST_* variables it inherits.
 import assert from "node:assert/strict";
 import { setTimeout as delay } from "node:timers/promises";
 import { execFileSync } from "node:child_process";

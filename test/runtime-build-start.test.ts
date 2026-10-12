@@ -1,3 +1,4 @@
+// test-run: own-process — sets LOOM_BUNDLED_RUNTIMES, which every config load in the process reads.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { join } from "node:path";

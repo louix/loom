@@ -1,3 +1,4 @@
+// test-run: own-process — empties PATH, which every subprocess launch in the process reads.
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";

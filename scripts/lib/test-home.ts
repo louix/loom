@@ -1,4 +1,4 @@
-// A throwaway HOME and XDG base directories for one `deno test` run, so the
+// A throwaway HOME and XDG base directories for one test run (test-run.ts), so the
 // suite never reads or writes the developer's real Loom state, caches,
 // config, Git identity or provider profiles. Production path resolution
 // (`core/src/user-dirs.ts`) throws while LOOM_TEST_HOME is set if a path
@@ -6,7 +6,6 @@
 //
 // Set LOOM_KEEP_TEST_HOME=1 to keep the directory for inspection.
 
-import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TEST_HOME_VARIABLE } from "../../core/src/user-dirs.ts";
@@ -94,40 +93,4 @@ export const createTestHome = async (): Promise<TestHome> => {
       await Deno.remove(runtime, { recursive: true });
     },
   };
-};
-
-/** `test/` unless the arguments already name test files or directories. */
-const withDefaultTarget = (args: string[]) =>
-  args.some((arg) => !arg.startsWith("-") && existsSync(arg)) ? args : [...args, "test/"];
-
-/** Run `deno test -A <args>` inside a fresh test home; resolves to its exit code. */
-export const runIsolatedTests = async (
-  args: string[],
-  io: { stdout: "inherit" | "piped"; stderr: "inherit" | "piped" },
-): Promise<{ code: number; stdout: string; stderr: string }> => {
-  args = withDefaultTarget(args);
-  const home = await createTestHome();
-  // Ctrl-C reaches the child too; outlive it so the test home is still removed.
-  const ignore = () => {};
-  Deno.addSignalListener("SIGINT", ignore);
-  try {
-    const child = new Deno.Command(Deno.execPath(), {
-      args: ["test", "-A", ...args],
-      clearEnv: true,
-      env: home.env,
-      stdout: io.stdout,
-      stderr: io.stderr,
-    }).spawn();
-    const text = (stream: ReadableStream<Uint8Array> | null) =>
-      stream ? new Response(stream).text() : Promise.resolve("");
-    const [stdout, stderr, status] = await Promise.all([
-      io.stdout === "piped" ? text(child.stdout) : "",
-      io.stderr === "piped" ? text(child.stderr) : "",
-      child.status,
-    ]);
-    return { code: status.code, stdout, stderr };
-  } finally {
-    Deno.removeSignalListener("SIGINT", ignore);
-    await home.remove();
-  }
 };

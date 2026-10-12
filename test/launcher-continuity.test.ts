@@ -1,3 +1,4 @@
+// test-run: own-process — points XDG_STATE_HOME at its fixture for daemon code that reads Deno.env.
 /**
  * Old-session continuity after the legacy session VM launcher's removal. A VM session
  * created and suspended by that launcher (or the isolation launcher, its successor)

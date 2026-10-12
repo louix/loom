@@ -1,3 +1,4 @@
+// test-run: own-process — sets LOOM_BUNDLED_RUNTIMES, which every config load in the process reads.
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";

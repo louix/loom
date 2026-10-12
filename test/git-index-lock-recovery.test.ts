@@ -1,3 +1,4 @@
+// test-run: own-process — prepends a fake git to PATH and sets the shared-git-dir switch.
 // A `git` killed while it holds `index.lock` leaves the worktree locked for every
 // later write until someone deletes the file. Loom's commit tool clears such a
 // lock when it is old and no live process is using the worktree.

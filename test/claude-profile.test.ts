@@ -1,3 +1,4 @@
+// test-run: own-process — unsets ANTHROPIC_API_KEY, which profile reads check.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

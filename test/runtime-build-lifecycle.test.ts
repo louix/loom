@@ -1,3 +1,4 @@
+// test-run: own-process — sets LOOM_BUNDLED_RUNTIMES, which every config load in the process reads.
 // While a VM runtime build is pending, a message that needs the session started
 // replies at once and the start goes on in the background. That shortcut is
 // for what may build the runtime, a start or an environment refresh: an idle

@@ -1,3 +1,4 @@
+// test-run: own-process — points XDG_STATE_HOME at its fixture for daemon code that reads Deno.env.
 import assert from "node:assert/strict";
 import { dirname, join } from "node:path";
 import { gitFixture } from "../scripts/lib/git-fixture.ts";

@@ -1,3 +1,4 @@
+// test-run: own-process — prepends fake nix tools to PATH and sets a daemon-only secret.
 import assert from "node:assert/strict";
 import { HookRunner } from "../backend/daemon/src/daemon/hooks.ts";
 import { runSessionCommand } from "../backend/daemon/src/daemon/session-command.ts";

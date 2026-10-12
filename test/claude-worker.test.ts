@@ -1,3 +1,4 @@
+// test-run: own-process — sets KAGI_API_KEY to prove worker specs don't forward it.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";

@@ -1,3 +1,4 @@
+// test-run: own-process — sets LOOM_TEST_LIMITS for the fake app-server, and points XDG_STATE_HOME at its fixture.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createServer } from "node:http";

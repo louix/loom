@@ -1,3 +1,4 @@
+// test-run: own-process — points XDG_CONFIG_HOME at its fixture for config code that reads Deno.env.
 /** Versioned environment configuration: schemas, intent ≤ grants, precedence and loading. */
 import assert from "node:assert/strict";
 import { dirname, join, relative } from "node:path";

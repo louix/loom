@@ -1,3 +1,4 @@
+// test-run: own-process — sets a variable to prove the Bash tool inherits the daemon's environment.
 import assert from "node:assert/strict";
 import {
   chmodSync,

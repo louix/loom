@@ -1,3 +1,4 @@
+// test-run: own-process — points XDG_DATA_HOME and XDG_CONFIG_HOME at its fixture for the in-process daemon.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { execFileSync } from "node:child_process";

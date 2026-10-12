@@ -1,3 +1,4 @@
+// test-run: own-process — points PATH at a fixture to test `claude` discovery.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";

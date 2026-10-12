@@ -1,3 +1,4 @@
+// test-run: own-process — replaces the Git identity variables every git subprocess in the process inherits.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";

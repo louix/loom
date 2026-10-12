@@ -1,3 +1,4 @@
+// test-run: own-process — points XDG_CONFIG_HOME at its fixture for config code that reads Deno.env.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";

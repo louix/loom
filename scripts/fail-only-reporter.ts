@@ -1,27 +1,21 @@
 // Silent runner for `deno test`: prints only failing tests, nothing on
-// success. Exit code mirrors the child `deno test` run.
+// success. Exit code mirrors the child `deno test` runs.
 //
 // Unlike the old `node --test --test-reporter` version, this can't stream
 // failures as they happen — `deno test` has no per-event reporter hook, only
 // a final report (`--reporter=junit`), so output is batched until the whole
 // suite finishes. Use `deno task test` for live output when debugging.
-// Runs inside a throwaway HOME/XDG root (scripts/lib/test-home.ts).
+// Runs inside a throwaway HOME/XDG root (scripts/lib/test-run.ts).
 //
 // Usage: deno task test:silent [deno test flags...] [files or dirs; default test/]
 
-import { parseJunit, stripTrailingTestFailedNotice } from "./junit.ts";
-import { runIsolatedTests } from "./lib/test-home.ts";
+import { runTests } from "./lib/test-run.ts";
 
-const { code, stdout, stderr } = await runIsolatedTests(["--reporter=junit", ...Deno.args], {
-  stdout: "piped",
-  stderr: "piped",
-});
+const { code, report, stderr } = await runTests(Deno.args, "junit");
 
-const cleanedStderr = stripTrailingTestFailedNotice(stderr);
-if (cleanedStderr) await Deno.stderr.write(new TextEncoder().encode(cleanedStderr));
+if (stderr) await Deno.stderr.write(new TextEncoder().encode(stderr));
 
-const { suites } = parseJunit(stdout);
-for (const suite of suites) {
+for (const suite of report?.suites ?? []) {
   for (const c of suite.cases) {
     if (c.failureBody === null) continue;
     console.log(`✖ ${suite.file} — ${c.name}`);

@@ -1,3 +1,4 @@
+// test-run: own-process — points XDG_STATE_HOME at its fixture for daemon code that reads Deno.env.
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
