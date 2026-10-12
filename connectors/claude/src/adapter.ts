@@ -371,15 +371,36 @@ const parseContextTag = (s: string): number => {
   return Math.round(parseFloat(m[1]!) * (m[2]!.toLowerCase() === "m" ? 1_000_000 : 1_000));
 };
 
-const userMessage = (text: string, uuid: string): SDKUserMessage => {
+const userMessage = (text: string, uuid: string, now = false): SDKUserMessage => {
   return {
     type: "user",
     // The interrupt receipt only lists UUID-stamped queued messages.
     uuid,
     message: { role: "user", content: text },
     parent_tool_use_id: null,
+    // The CLI moves calls aside only for a message a person typed; one
+    // without an origin counts as unattributed and waits for the tool, then
+    // ends the turn to start its own.
+    ...(now ? { priority: "now", origin: { kind: "human" } } : {}),
   } as unknown as SDKUserMessage;
 };
+
+/**
+ * The tool calls the CLI moves aside for a `priority: "now"` message (CLI
+ * 2.1.286+): a shell goes on as a background task, an agent goes to the
+ * background, a web call detaches — each result still reaches the model
+ * later. For any other running call (an MCP tool, an edit) the CLI falls
+ * back after a short grace to stopping the turn for the message, and while
+ * the model is only writing it stops the response. So Loom asks for "now"
+ * only while every root call in flight is one of these.
+ */
+const MOVABLE_TOOLS: ReadonlySet<string> = new Set([
+  "Bash",
+  "PowerShell",
+  ...NATIVE_SUBAGENT_TOOLS,
+  "WebFetch",
+  "WebSearch",
+]);
 
 /** How many queued-input uuids {@link ClaudeSession} remembers, either way. */
 const QUEUED_INPUTS_MAX = 256;
@@ -466,6 +487,8 @@ class ClaudeSession implements AgentSession {
    * `input_consumed` when it is.
    */
   #receipts = new Map<string, boolean>();
+  /** The main loop's tool calls without a result yet: tool_use id → name. */
+  #rootToolCalls = new Map<string, string>();
   /** Normalized events out: SDK messages + permission prompts, merged. */
   #outbox = new AsyncChannel<HarnessEvent>();
   #pending = new PendingInteractions<PermissionResult | null, PermissionResult | null>();
@@ -565,6 +588,7 @@ class ClaudeSession implements AgentSession {
       delete opts.agentPrompt;
     }
     this.#taskIds.clear();
+    this.#rootToolCalls.clear();
     this.#finishedTaskIds.clear();
     this.#backgroundTaskIds.clear();
     this.#taskToolIds.clear();
@@ -901,6 +925,7 @@ class ClaudeSession implements AgentSession {
         // diffed against a baseline that is still being read.
         if (msg.type === "result" && seeding) await seeding;
         this.#trackTasks(msg);
+        this.#trackRootToolCalls(msg);
         this.#trackConsumed(msg);
         if (msg.type === "system" && msg.subtype === "init") {
           const missing = (this.#startOpts?.mcpServers ?? []).filter(
@@ -1032,7 +1057,37 @@ class ClaudeSession implements AgentSession {
       this.#receipts.set(uuid, opts.midTurn ?? false);
       bounded(this.#receipts);
     }
-    this.#inbox.push(userMessage(text, uuid));
+    const calls = [...this.#rootToolCalls.values()];
+    const now =
+      opts.now === true &&
+      opts.midTurn === true &&
+      calls.length > 0 &&
+      calls.every((name) => MOVABLE_TOOLS.has(name));
+    if (opts.now) this.#log.info("send now", { inputId: uuid, running: calls, now });
+    this.#inbox.push(userMessage(text, uuid, now));
+  }
+
+  /** Follow the main loop's tool calls in flight — what a send-now would
+   *  have the CLI move aside ({@link MOVABLE_TOOLS}). */
+  #trackRootToolCalls(msg: SDKMessage): void {
+    if (msg.type === "result") {
+      this.#rootToolCalls.clear();
+      return;
+    }
+    if ((msg.type !== "assistant" && msg.type !== "user") || msg.parent_tool_use_id != null) return;
+    const content: unknown = msg.message.content;
+    if (!Array.isArray(content)) return;
+    for (const block of content as Array<{
+      type?: string;
+      id?: string;
+      name?: string;
+      tool_use_id?: string;
+    }>) {
+      if (msg.type === "assistant" && block.type === "tool_use" && block.id && block.name)
+        this.#rootToolCalls.set(block.id, block.name);
+      else if (msg.type === "user" && block.type === "tool_result" && block.tool_use_id)
+        this.#rootToolCalls.delete(block.tool_use_id);
+    }
   }
 
   /**

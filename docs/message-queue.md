@@ -362,6 +362,19 @@ client saw; a stale one gets `conflict` and changes nothing.
   session, moves to the head of `next_boundary`; on an idle or held one, starts
   a turn with that entry alone. An uncertain entry needs `confirm` (it may
   duplicate).
+  Handed into the live turn, the entry carries `now` (`SendOptions.now`).
+  Claude sends it with `priority: "now"` and `origin: {kind: "human"}` (CLI
+  2.1.286+) when a person wrote it and every root tool call in flight is one
+  the CLI moves aside — Bash/PowerShell continues as a background task, an
+  agent goes to the background, WebFetch/WebSearch detach; each result still
+  reaches the model later, a shell's as a task notification — so the message
+  lands within about a second instead of after the tool. Otherwise the entry
+  folds in at the boundary as before: for a call it cannot move (an MCP tool,
+  an edit) the CLI falls back after a short grace to stopping the turn for
+  the message, and while the model is only writing it stops the response.
+  Without `origin` the CLI never moves anything: it lets the call finish,
+  ends the turn and runs the message as a new one (CLI 2.1.287, observed).
+  Other providers ignore `now`.
 - `session.queueRemove {id, entries: [{entryId, revision}]}` cancels queued and
   uncertain entries. A delivering, certain entry is refused ("already handed to
   the agent") until an adapter offers per-input cancel (Claude's

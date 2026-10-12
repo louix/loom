@@ -161,6 +161,14 @@ export const sendOptionsSchema = z.object({
   inputId: z.string().optional(),
   /** Handed into a live turn rather than starting one. */
   midTurn: z.boolean().optional(),
+  /**
+   * The user sent it now (`session.queueSendNow`), and a person wrote it.
+   * Handed into a live turn, a provider that can join it at once without
+   * losing work does so — Claude moves the running shell, agent or web calls
+   * aside — instead of waiting for the tool boundary; any other folds it in
+   * as `midTurn` does.
+   */
+  now: z.boolean().optional(),
 });
 export type SendOptions = z.infer<typeof sendOptionsSchema>;
 

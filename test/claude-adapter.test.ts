@@ -1486,3 +1486,52 @@ test("readTaskOutput reads the CLI's task tail and says when a task has none", a
     await old.close();
   }
 });
+
+test("send now asks the CLI for priority now only while every root call in flight can move aside", async (t) => {
+  const { s, q, pull } = await setupPulled(t);
+  await pull(); // the opening prompt
+  const priority = async (opts: { now?: boolean; midTurn?: boolean }) => {
+    await s.send("steer", { inputId: crypto.randomUUID(), midTurn: true, ...opts });
+    const m = (await pull()) as Pulled & { priority?: string; origin?: { kind: string } };
+    // The CLI moves calls aside only for what a person typed.
+    if (m.priority === "now") assert.deepEqual(m.origin, { kind: "human" });
+    else assert.equal(m.origin, undefined);
+    return m.priority;
+  };
+  const toolUse = (id: string, name: string, parent: string | null = null) =>
+    q.push({
+      type: "assistant",
+      parent_tool_use_id: parent,
+      message: { content: [{ type: "tool_use", id, name, input: {} }] },
+    });
+  const toolResult = (id: string) =>
+    q.push({
+      type: "user",
+      parent_tool_use_id: null,
+      message: { content: [{ type: "tool_result", tool_use_id: id, content: "ok" }] },
+    });
+
+  assert.equal(await priority({ now: true }), undefined, "the model only writing: no abort");
+  toolUse("tu-bash", "Bash");
+  await delay(20);
+  assert.equal(await priority({ now: true }), "now", "a running shell moves to the background");
+  assert.equal(await priority({}), undefined, "an ordinary fold waits for the boundary");
+  assert.equal(
+    await priority({ now: true, midTurn: false }),
+    undefined,
+    "a fresh turn is not steering",
+  );
+  toolUse("tu-fetch", "WebFetch");
+  toolUse("tu-sub", "mcp__files__read", "tu-agent"); // a sub-agent's call is not the root's
+  await delay(20);
+  assert.equal(await priority({ now: true }), "now");
+  toolUse("tu-mcp", "mcp__files__search");
+  await delay(20);
+  assert.equal(await priority({ now: true }), undefined, "an MCP call cannot move: wait for it");
+  toolResult("tu-mcp");
+  await delay(20);
+  assert.equal(await priority({ now: true }), "now");
+  q.push({ type: "result", subtype: "success", is_error: false, result: "", usage: {} });
+  await delay(20);
+  assert.equal(await priority({ now: true }), undefined, "the turn ended: nothing runs");
+});

@@ -16,6 +16,7 @@ import type {
   HarnessEvent,
 } from "@loom/core/events";
 import { interactionFor, type SessionInteraction } from "@loom/core/interaction";
+import { isAgentAuthor } from "@loom/core/agents";
 import {
   isLiveState,
   sameSessionState,
@@ -248,6 +249,10 @@ interface Running {
   liftedStop: number | null;
 }
 
+/** A queue entry a person wrote, not a Loom agent's or supervisor's message. */
+const writtenByUser = (author: string): boolean =>
+  !isAgentAuthor(author) && !author.startsWith("supervisor:");
+
 export class SessionManager {
   readonly #hooks: ManagerHooks;
   readonly #running = new Map<string, Running>();
@@ -261,6 +266,11 @@ export class SessionManager {
    * restart forgets the request and the entry waits under the ordinary rules.
    */
   readonly #forced = new Map<string, string>();
+  /**
+   * Per session, the entry last sent now: handed into a live turn, it asks the
+   * provider to deliver it at once ({@link SendOptions.now}). Runtime-only.
+   */
+  readonly #sentNow = new Map<string, string>();
   /** Sessions whose clone's guest Git runs for the daemon: nothing is
    *  dispatched to them meanwhile ({@link setBusy}). */
   readonly #busy = new Set<string>();
@@ -1052,10 +1062,13 @@ export class SessionManager {
     for (const [i, entry] of entries.entries()) {
       // The first of a fresh batch starts the turn; the rest join it.
       const midTurn = !action.fresh || i > 0;
+      // Only what a person wrote: the provider is told a human typed it.
+      const now = midTurn && this.#sentNow.get(id) === entry.id && writtenByUser(entry.author);
       // A forced entry stays forced until it has gone: refused, it goes
       // first again, unless a hold applied meanwhile dropped it (H3).
-      if (await this.#deliver(id, run, entry, midTurn)) {
+      if (await this.#deliver(id, run, entry, midTurn, now)) {
         if (entry.id === forced && this.#forced.get(id) === forced) this.#forced.delete(id);
+        if (this.#sentNow.get(id) === entry.id) this.#sentNow.delete(id);
         continue;
       }
       for (const rest of entries.slice(i + 1)) q.requeue(id, rest.id);
@@ -1065,7 +1078,13 @@ export class SessionManager {
   }
 
   /** Hand one entry to the adapter. False when it did not go. */
-  async #deliver(id: string, run: Running, entry: QueueEntry, midTurn: boolean): Promise<boolean> {
+  async #deliver(
+    id: string,
+    run: Running,
+    entry: QueueEntry,
+    midTurn: boolean,
+    now = false,
+  ): Promise<boolean> {
     const q = this.#hooks.queue!;
     const before = run.state;
     if (!midTurn) run.firstOutputSince = performance.now();
@@ -1077,7 +1096,7 @@ export class SessionManager {
     run.stopBy = null;
     this.#warmPings.delete(id);
     try {
-      await run.session.send(entry.text, { inputId: entry.id, midTurn });
+      await run.session.send(entry.text, { inputId: entry.id, midTurn, ...(now ? { now } : {}) });
     } catch (err) {
       run.userTurn = armed;
       const message = err instanceof Error ? err.message : String(err);
@@ -1220,9 +1239,10 @@ export class SessionManager {
 
   /**
    * Send now. On a running, unheld session the entry moves to the head of the
-   * next tool boundary; on an idle or held one it starts a turn alone and the
-   * rest stay as they are. An uncertain entry needs `confirm` — it may
-   * duplicate.
+   * next tool boundary, and goes over marked `now`: a provider that can, joins
+   * it to the turn without waiting for the running tool to finish. On an idle
+   * or held one it starts a turn alone and the rest stay as they are. An
+   * uncertain entry needs `confirm` — it may duplicate.
    */
   sendNow(id: string, target: QueueTarget, confirm: boolean): QueueResult<QueueEntry> {
     const q = this.#hooks.queue;
@@ -1238,6 +1258,7 @@ export class SessionManager {
     const run = this.#running.get(id);
     const live = run !== undefined && !run.ended && isLiveState(run.state);
     if (!live || q.hold(id) !== null) this.#forced.set(id, target.entryId);
+    this.#sentNow.set(id, target.entryId);
     this.queueChanged(id);
     return r;
   }
@@ -1511,6 +1532,7 @@ export class SessionManager {
     // interrupt nothing queued reaches the agent until the user says so.
     const q = this.#hooks.queue;
     this.#forced.delete(id);
+    this.#sentNow.delete(id);
     this.#askedToStop(id, run, by);
     this.#hooks.onOverlay(id);
     const operation = Promise.resolve().then(async () => {

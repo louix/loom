@@ -278,6 +278,39 @@ describe("message queue", { concurrency: 4 }, () => {
     assert.deepEqual(fs.sends, ["b1", "e1"]);
   });
 
+  test("send now on a running turn goes over marked now at the tool window; a fold is not", async (env) => {
+    const { c } = env;
+    const { id, fs } = await runningSession(env);
+    const m1 = await send(c, id, "m1");
+    const m2 = await send(c, id, "m2", "end_of_turn");
+    assert.equal(m1.state, "queued", "the model only writing: it waits");
+    const view = (await entries(c, id)).find((e) => e.id === m2.entryId)!;
+    await c.request("session.queueSendNow", { id, entryId: view.id, revision: view.revision });
+    await delay(30);
+    assert.deepEqual(fs.sends, [], "send now does not cut the model off mid-text");
+    fs.emit({ type: "tool_call", id: "t1", name: "Bash", input: {} });
+    await waitFor(() => fs.sends.length === 2);
+    assert.deepEqual(fs.sends, ["m2", "m1"], "sent now, it goes first");
+    assert.deepEqual(fs.sendOptions.slice(-2), [
+      { inputId: m2.entryId, midTurn: true, now: true },
+      { inputId: m1.entryId, midTurn: true },
+    ]);
+    // Once gone, the mark is spent: the next fold is ordinary.
+    const m3 = await send(c, id, "m3");
+    await waitFor(() => fs.sends.length === 3);
+    assert.deepEqual(fs.sendOptions.at(-1), { inputId: m3.entryId, midTurn: true });
+    // A supervisor's message sent now is not passed off as typed by a person.
+    env.h.daemon.sessions.enqueue(
+      id,
+      { entryId: "sup", text: "from above", author: "supervisor:x", delivery: "end_of_turn" },
+      { respect: "user" },
+    );
+    const sup = (await entries(c, id)).find((e) => e.id === "sup")!;
+    await c.request("session.queueSendNow", { id, entryId: sup.id, revision: sup.revision });
+    await waitFor(() => fs.sends.length === 4);
+    assert.deepEqual(fs.sendOptions.at(-1), { inputId: "sup", midTurn: true });
+  });
+
   test("send now on a held queue delivers that one alone and leaves the rest held", async (env) => {
     const { c } = env;
     const { id, fs } = await runningSession(env);
