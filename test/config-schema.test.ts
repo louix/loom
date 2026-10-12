@@ -93,7 +93,7 @@ test("editor schema validates user inputs, optional defaults, and repo overrides
         anthropic: { prompt_cache_ttl: "default", api_key_env: "ANTHROPIC_API_KEY" },
       },
       hooks: [{ on: "turn_end", run: "check", timeout_seconds: 30 }],
-      agents: { profiles: { solo: { description: "Alone", mcp_servers: [] } } },
+      agents: { profiles: { solo: { description: "Alone", mcp_servers: { allow: [] } } } },
     },
     // Editors accept deprecated keys; Loom reads them under their new names and says so.
     {
@@ -112,7 +112,6 @@ test("editor schema validates user inputs, optional defaults, and repo overrides
         echo: { enabled: true },
         claude: { permission_default: "bypassPermissions", worker_allowed_hosts: ["x.example"] },
       },
-      agents: { profiles: { solo: { description: "Alone", mcp: [] } } },
     },
     {
       mcp_servers: {
@@ -156,6 +155,7 @@ test("editor schema validates user inputs, optional defaults, and repo overrides
     { session: { auto_rebase: { enabled: true } } },
     { session: { auto_resume: "no" } },
     { providers: { claude: { prompt_cache_ttl: "60m" } } },
+    { agents: { profiles: { solo: { description: "Alone", mcp_servers: ["tilth"] } } } },
     // Unknown keys only warn at runtime, but editors still flag them.
     { tui: { compat: true, typo: 1 } },
     {

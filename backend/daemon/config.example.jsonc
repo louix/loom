@@ -111,7 +111,7 @@
       //   "model": "claude-sonnet-5-5",
       //   "effort": "medium",
       //   "mode": "auto",
-      //   "mcp_servers": [], // without "loom-agents" it cannot start agents of its own
+      //   "mcp_servers": { "deny": ["loom-agents"] }, // or { "allow": ["tilth"] }; omitted: all of them
       //   "prompt": "You implement exactly the task you are given…",
       // },
     },

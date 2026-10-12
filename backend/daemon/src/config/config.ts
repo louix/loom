@@ -238,8 +238,8 @@ export interface LoomConfig {
   };
   autoNix: boolean;
   tui: { includeEventLogInEditor: boolean; compat: boolean };
-  /** `session.provider_access`: `allow` absent allows every provider. */
-  providerAccess: { allow?: string[]; deny: string[] };
+  /** `session.provider_access`, by provider id. */
+  providerAccess: NameAccess;
   isolation: {
     /** Available runtimes, including ones disabled as the default. */
     runtimes?: Partial<Record<"claude" | "aisdk" | "codex", { artifact: string; smolvm: string }>>;
@@ -394,8 +394,8 @@ export interface AgentProfileConfig {
   model?: string;
   effort?: string;
   mode?: SessionMode;
-  /** Session MCP servers by name, plus `loom-agents`; absent keeps them all. */
-  mcpServers?: string[];
+  /** Session MCP servers by name, plus `loom-agents`. */
+  mcpServers: NameAccess;
   /** Claude skills to load from the provider's config dir; absent keeps the CLI's own. */
   skills?: string[];
   tools?: { allow?: string[]; deny?: string[] };
@@ -408,9 +408,14 @@ export interface AgentProfileConfig {
  * base, and the agents' own `status` tool: the configured branch, else `main`,
  * as before `base_branch` became optional.
  */
-/** Does `session.provider_access` allow provider `id`? */
-export const providerAllowed = (access: LoomConfig["providerAccess"], id: string): boolean =>
-  (!access.allow || access.allow.includes(id)) && !access.deny.includes(id);
+/** An `{ allow, deny }` setting: `allow` absent admits every name; `deny` then removes some. */
+export interface NameAccess {
+  allow?: readonly string[];
+  deny: readonly string[];
+}
+
+export const accessAllows = (access: NameAccess, name: string): boolean =>
+  (!access.allow || access.allow.includes(name)) && !access.deny.includes(name);
 
 /**
  * The profiles a session in this repository can use: each whose provider —
@@ -428,7 +433,7 @@ export const availableProfiles = (
   Object.fromEntries(
     Object.entries(config.agents.profiles).filter(([, p]) => {
       const provider = p.provider ?? spawner;
-      return provider === undefined || providerAllowed(config.providerAccess, provider);
+      return provider === undefined || accessAllows(config.providerAccess, provider);
     }),
   );
 
@@ -656,7 +661,7 @@ export const lintConfig = (
   env: Record<string, string | undefined> = Deno.env.toObject(),
 ): string[] => {
   const w: string[] = [];
-  const enabled = (id: string) => providerAllowed(cfg.providerAccess, id);
+  const enabled = (id: string) => accessAllows(cfg.providerAccess, id);
   for (const p of cfg.claudeProfiles) {
     if (!enabled(claudeProfileId(p))) continue;
     if (!existsSync(p.dir)) {
@@ -798,7 +803,7 @@ export const normalizeConfig = (
   const { mcp, httpMcp } = resolveToolSelection(settings);
   const agents = resolveAgents(settings.agents, {
     providers: [...claudeIds, ...Object.keys(aisdk), "fake", "mock", ...(echo ? ["echo"] : [])],
-    allowed: (id) => providerAllowed(providerAccess, id),
+    allowed: (id) => accessAllows(providerAccess, id),
     repoProviders,
     codex: (id) => aisdk[id]?.sdk === "chatgpt",
     mcp: [...mcp, ...httpMcp].map((m) => m.name),
@@ -931,11 +936,12 @@ const resolveAgents = (
           `${at}.provider: this repository's entry names "${p.provider}", which its session.provider_access disables`,
         );
     }
-    for (const server of p.mcp_servers ?? [])
-      if (server !== LOOM_AGENTS_SERVER && !known.mcp.includes(server))
-        throw new Error(
-          `${at}.mcp_servers: "${server}" is not one of the session's MCP servers (${[...known.mcp, LOOM_AGENTS_SERVER].join(", ")})`,
-        );
+    for (const list of ["allow", "deny"] as const)
+      for (const server of p.mcp_servers?.[list] ?? [])
+        if (server !== LOOM_AGENTS_SERVER && !known.mcp.includes(server))
+          throw new Error(
+            `${at}.mcp_servers.${list}: "${server}" is not one of the session's MCP servers (${[...known.mcp, LOOM_AGENTS_SERVER].join(", ")})`,
+          );
     // Checked only against a provider this repository allows.
     const provider = p.provider !== undefined && known.allowed(p.provider) ? p.provider : undefined;
     if (provider !== undefined && !isClaudeId(provider) && p.skills !== undefined)
@@ -948,7 +954,10 @@ const resolveAgents = (
       ...(p.model !== undefined ? { model: p.model } : {}),
       ...(p.effort !== undefined ? { effort: p.effort } : {}),
       ...(p.mode !== undefined ? { mode: p.mode } : {}),
-      ...(p.mcp_servers !== undefined ? { mcpServers: p.mcp_servers } : {}),
+      mcpServers: {
+        ...(p.mcp_servers?.allow !== undefined ? { allow: p.mcp_servers.allow } : {}),
+        deny: p.mcp_servers?.deny ?? [],
+      },
       ...(p.skills !== undefined ? { skills: p.skills } : {}),
       ...(p.tools !== undefined
         ? {

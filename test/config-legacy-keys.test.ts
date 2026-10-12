@@ -370,27 +370,20 @@ test('"" reads as unset where it always meant the default', () => {
   assert.deepEqual(configKeyWarnings(cfg), []);
 });
 
-test("provider_access.{only, disabled} and profiles' mcp read as allow, deny and mcp_servers", () => {
+test("provider_access.{only, disabled} read as allow and deny", () => {
   const legacy = normalizeConfig({
     session: { provider_access: { only: ["claude", "fake"], disabled: ["fake"] } },
-    agents: { profiles: { solo: { description: "Alone", mcp: [] } } },
   });
   assert.deepEqual(legacy.providerAccess, { allow: ["claude", "fake"], deny: ["fake"] });
-  assert.deepEqual(legacy.agents.profiles["solo"]?.mcpServers, []);
   assert.deepEqual(configKeyWarnings(legacy), [
     "session.provider_access.only is deprecated; write session.provider_access.allow instead",
     "session.provider_access.disabled is deprecated; write session.provider_access.deny instead",
-    "agents.profiles.solo.mcp is deprecated; write agents.profiles.solo.mcp_servers instead",
   ]);
   const both = normalizeConfig({
     session: { provider_access: { allow: ["claude"], only: ["fake"] } },
-    agents: {
-      profiles: { solo: { description: "Alone", mcp: ["loom-agents"], mcp_servers: [] } },
-    },
   });
   assert.deepEqual(both.providerAccess.allow, ["claude"]);
-  assert.deepEqual(both.agents.profiles["solo"]?.mcpServers, []);
-  assert.equal(configKeyWarnings(both).filter((w) => w.includes("is also set and wins")).length, 2);
+  assert.equal(configKeyWarnings(both).filter((w) => w.includes("is also set and wins")).length, 1);
 });
 
 test("providers.echo is shown by its presence; enabled: false hides it", () => {

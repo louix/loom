@@ -229,10 +229,27 @@ export const agentProfileSchema = z.strictObject({
   mode: sessionMode
     .optional()
     .describe("Permission mode; omitted takes the spawner's own (plan becomes manual)."),
-  mcp: deprecated("Replaced by mcp_servers."),
-  mcp_servers: names("MCP servers").describe(
-    `The session MCP servers it gets, by name, plus ${LOOM_AGENTS_SERVER} to let it start sub-agents of its own. Omitted: all of them.`,
-  ),
+  mcp_servers: z
+    .strictObject(
+      {
+        allow: names("MCP servers").describe(
+          `Only these session MCP servers, by name; ${LOOM_AGENTS_SERVER} only if named. Omitted allows them all.`,
+        ),
+        deny: names("MCP servers").describe(
+          `MCP servers withheld from it, applied after allow; denying ${LOOM_AGENTS_SERVER} stops it starting sub-agents.`,
+        ),
+      },
+      {
+        error: (issue) =>
+          Array.isArray(issue.input)
+            ? 'a list is no longer accepted: write { "allow": [...] } to keep only those servers, or { "deny": [...] } to withhold them'
+            : undefined,
+      },
+    )
+    .optional()
+    .describe(
+      `The session MCP servers it gets, plus ${LOOM_AGENTS_SERVER} to start sub-agents of its own (still subject to agents.max_depth). Omitted: all of them.`,
+    ),
   skills: names("skills").describe(
     "Claude skills to load from the provider's <config_dir>/skills/<name>/SKILL.md, by name; omitted keeps the CLI's own.",
   ),

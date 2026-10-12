@@ -24,7 +24,7 @@ import { resolveGitIdentity, sessionGitIdentity } from "../config/git-identity.t
 import {
   claudeProfileId,
   legacyBaseBranch,
-  providerAllowed,
+  accessAllows,
   resolveApiKey,
   type ClaudeProfile,
   type LoomConfig,
@@ -128,7 +128,7 @@ export class ProviderRegistry {
   unavailableReason(id: string): string | undefined {
     if (!this.#ids.has(id))
       return `Provider ${id} is no longer configured. Fork to an enabled provider to continue.`;
-    if (!providerAllowed(this.#config.providerAccess, id))
+    if (!accessAllows(this.#config.providerAccess, id))
       return `Provider ${id} is disabled for this project. Fork to an enabled provider to continue.`;
     if (!this.#manifest[this.#packageFor(id)])
       return `Provider ${id}'s connector is missing from this build. Fork to an available provider to continue.`;

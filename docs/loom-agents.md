@@ -32,7 +32,7 @@ Typical shape (flat, not deep chains):
   without its `Agent` tool; Codex without its `spawn_agent` tools (the exact
   Codex switch is to be confirmed). Background shell tasks are unaffected.
 - Every session gets the Loom agents MCP server (`loom-agents`) unless its
-  profile leaves it out, or it is already at `agents.max_depth` (default 2: a
+  profile's `mcp_servers` leaves it out, or it is already at `agents.max_depth` (default 2: a
   supervisor and its sub-agents; configurable). A supervision cycle is refused.
 - Sub-agents follow their supervisor's isolation (local or VM) and workspace
   kind; profiles have no isolation settings.
@@ -53,7 +53,7 @@ and MCP servers:
       "model": "claude-sonnet-5-5",
       "effort": "medium",
       "mode": "auto",
-      "mcp_servers": [],  // without "loom-agents" it cannot spawn
+      "mcp_servers": { "deny": ["loom-agents"] },  // every session MCP server; it cannot spawn
       "skills": [],
       "prompt": "You implement exactly the task you are given…"
     }
@@ -62,11 +62,23 @@ and MCP servers:
 ```
 
 Fields: `description` (what supervisors read when choosing), provider/profile,
-model, effort, mode, enabled MCP servers (`mcp_servers`, formerly `mcp`) and
-skills, tool allow/deny lists, and
-an inline `prompt` appended to the agent's own. A separate prompt file may come
-later. The new-session prompt lists the profiles under the providers (`⌥p`);
-no profile means today's settings.
+model, effort, mode, MCP server allow/deny lists (`mcp_servers`), skills, tool
+allow/deny lists (`tools`), and an inline `prompt` appended to the agent's own.
+A separate prompt file may come later. The new-session prompt lists the
+profiles under the providers (`⌥p`); no profile means today's settings.
+
+`mcp_servers` is shaped like `session.provider_access`. Omitted, the agent gets
+every session MCP server and `loom-agents` (still subject to
+`agents.max_depth`). `{ "allow": [...] }` keeps only the servers it names,
+`loom-agents` included only if named; `{ "deny": [...] }` withholds the ones
+it names, after `allow`. Each name must be one of the session's MCP servers or
+`loom-agents`. A list (`"mcp_servers": ["tilth"]`) is rejected: write
+`{ "allow": ["tilth"] }`.
+
+```jsonc
+"mcp_servers": { "allow": ["tilth", "loom-agents"] }  // tilth, and it may spawn
+"mcp_servers": { "deny": ["kagi"] }                    // everything but kagi
+```
 
 A built-in `self` profile is always offered: the spawning session's own
 provider, model, effort and mode, with no extra prompt. It is what a session
@@ -322,8 +334,8 @@ messages, interrupts and outcomes are ordinary session events.
   `agent_wait` takes `until: any | all` and a timeout (default 60 s, at most
   600 s); `agent_read` returns at most 16 KB with a cursor.
 - A profile's unset provider, model, effort and mode follow the spawner (a
-  `plan` spawner's sub-agents run in `default`); `mcp` filters the session's MCP
-  servers and names `loom-agents`; `skills` and the tool lists apply to Claude
+  `plan` spawner's sub-agents run in `default`); `mcp_servers` filters the
+  session's MCP servers and `loom-agents`; `skills` and the tool lists apply to Claude
   (`skills`, `tools`, `disallowedTools`) and aisdk (built-in tools), and are
   refused for providers that cannot honour them. A sub-agent's system prompt gets a
   note naming its supervisor before the profile's prompt.

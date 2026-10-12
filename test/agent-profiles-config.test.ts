@@ -36,7 +36,7 @@ test("a profile keeps what it sets and follows the spawner for the rest", () => 
           model: "claude-sonnet-5-5",
           effort: "medium",
           mode: "manual",
-          mcp_servers: ["tilth"],
+          mcp_servers: { allow: ["tilth", "loom-agents"], deny: ["loom-agents"] },
           skills: ["pdf"],
           tools: { deny: ["WebFetch"] },
           prompt: "You implement exactly the task you are given.\n",
@@ -52,12 +52,15 @@ test("a profile keeps what it sets and follows the spawner for the rest", () => 
     model: "claude-sonnet-5-5",
     effort: "medium",
     mode: "default",
-    mcpServers: ["tilth"],
+    mcpServers: { allow: ["tilth", "loom-agents"], deny: ["loom-agents"] },
     skills: ["pdf"],
     tools: { deny: ["WebFetch"] },
     prompt: "You implement exactly the task you are given.",
   });
-  assert.deepEqual(c.agents.profiles["reviewer"], { description: "Sceptical" });
+  assert.deepEqual(c.agents.profiles["reviewer"], {
+    description: "Sceptical",
+    mcpServers: { deny: [] },
+  });
 });
 
 test("profiles are validated against the configured providers, MCP servers and settings", () => {
@@ -67,9 +70,22 @@ test("profiles are validated against the configured providers, MCP servers and s
       /agents\.profiles\.implementer\.provider: "claude:nope" is not a configured provider \(configured: claude/,
     ],
     [
-      { implementer: { description: "x", mcp_servers: ["kagi"] } },
-      /agents\.profiles\.implementer\.mcp_servers: "kagi" is not one of the session's MCP servers \(loom-agents\)/,
+      { implementer: { description: "x", mcp_servers: { allow: ["kagi"] } } },
+      /agents\.profiles\.implementer\.mcp_servers\.allow: "kagi" is not one of the session's MCP servers \(loom-agents\)/,
     ],
+    [
+      { implementer: { description: "x", mcp_servers: { deny: ["kagi"] } } },
+      /agents\.profiles\.implementer\.mcp_servers\.deny: "kagi" is not one of the session's MCP servers \(loom-agents\)/,
+    ],
+    [
+      { implementer: { description: "x", mcp_servers: ["loom-agents"] } },
+      /agents\.profiles\.implementer\.mcp_servers: a list is no longer accepted: write \{ "allow": \[\.\.\.\] \} to keep only those servers, or \{ "deny": \[\.\.\.\] \} to withhold them/,
+    ],
+    [
+      { implementer: { description: "x", mcp_servers: { only: [] } } },
+      /Unknown setting agents\.profiles\.implementer\.mcp_servers\.only/,
+    ],
+    [{ implementer: { description: "x", mcp: [] } }, /Unknown setting.*mcp/],
     [
       { implementer: { description: "x", provider: "codex", skills: ["pdf"] } },
       /agents\.profiles\.implementer\.skills: skills are only supported for Claude providers/,
@@ -83,17 +99,22 @@ test("profiles are validated against the configured providers, MCP servers and s
     [{ implementer: { description: "x", colour: "red" } }, /Unknown setting.*colour/],
     [{ self: { description: "x" } }, /self is built in/],
     [{ "a b": { description: "x" } }, /letters, digits/],
-    [{ implementer: { description: "x", mcp_servers: ["a", "a"] } }, /duplicate MCP servers/],
+    [
+      { implementer: { description: "x", mcp_servers: { deny: ["a", "a"] } } },
+      /duplicate MCP servers/,
+    ],
   ];
   for (const [profiles, error] of bad)
     assert.throws(() => cfg({ providers: { codex: {} }, agents: { profiles } }), error);
   assert.throws(() => cfg({ agents: { max_depth: 0 } }), /agents\.max_depth/);
   // loom-agents is always nameable: it is how a profile lets a child spawn.
-  assert.deepEqual(
-    cfg({ agents: { profiles: { lead: { description: "x", mcp_servers: ["loom-agents"] } } } })
-      .agents.profiles["lead"]?.mcpServers,
-    ["loom-agents"],
-  );
+  for (const mcp_servers of [{ allow: ["loom-agents"] }, { deny: ["loom-agents"] }])
+    assert.deepEqual(
+      cfg({ agents: { profiles: { lead: { description: "x", mcp_servers } } } }).agents.profiles[
+        "lead"
+      ]?.mcpServers,
+      { deny: [], ...mcp_servers },
+    );
 });
 
 /** `fn` with a user config file and a repository directory under a temp dir. */
@@ -222,6 +243,7 @@ test("a repository's profiles merge over the global ones", () => {
     assert.deepEqual(agents.profiles["implementer"], {
       description: "repo implementer",
       effort: "low",
+      mcpServers: { deny: [] },
     });
     assert.equal(loadConfig(dir, user).agents.maxDepth, 2);
   } finally {

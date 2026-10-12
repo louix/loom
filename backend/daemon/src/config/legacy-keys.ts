@@ -168,7 +168,6 @@ const LAYER: Scope = {
 /** Collections whose entries carry old keys of their own: arrays by index, records by name. */
 const ENTRIES: readonly { readonly path: string; readonly scope: Scope }[] = [
   { path: "hooks", scope: { removed: {}, renames: [rename("timeout", "timeout_seconds")] } },
-  { path: "agents.profiles", scope: { removed: {}, renames: [rename("mcp", "mcp_servers")] } },
   {
     path: "mcp_servers",
     scope: {

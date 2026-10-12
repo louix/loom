@@ -27,7 +27,7 @@ const CONFIG = JSON.stringify({
         mode: "auto",
         prompt: "IMPLEMENT exactly the task.",
       },
-      solo: { description: "Works alone", mcp_servers: [] },
+      solo: { description: "Works alone", mcp_servers: { allow: [] } },
     },
   },
 });

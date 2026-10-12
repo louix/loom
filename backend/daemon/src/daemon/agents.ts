@@ -24,7 +24,12 @@ import {
   type AgentProfileInfo,
 } from "@loom/core/agents";
 import { isAgentTool, type AgentToolName } from "@loom/runtime/agent-tools";
-import { availableProfiles, type AgentProfileConfig, type LoomConfig } from "../config/config.ts";
+import {
+  accessAllows,
+  availableProfiles,
+  type AgentProfileConfig,
+  type LoomConfig,
+} from "../config/config.ts";
 import type { Sender } from "./queue-machine.ts";
 
 /** What the agent rules read from the config: depth, profiles, and which
@@ -142,8 +147,7 @@ export const agentSessionPlan = (
       message: `session ${short(row.id)} runs as agent profile "${name}", which is no longer available in this repository: session.provider_access does not allow its provider, ${configured.provider ?? row.provider}. Allow that provider again to run it with the profile's restrictions, or archive it.`,
     };
   const depth = supervisionDepth(row.id, (id) => (id === row.id ? row : ctx.lookup(id)));
-  const keeps = (name: string) =>
-    profile?.mcpServers === undefined || profile.mcpServers.includes(name);
+  const keeps = (name: string) => profile === undefined || accessAllows(profile.mcpServers, name);
   const supervisor = row.supervisorId ? ctx.lookup(row.supervisorId) : undefined;
   const agentTools = depth < ctx.config.agents.maxDepth && keeps(LOOM_AGENTS_SERVER);
   const prompt = [

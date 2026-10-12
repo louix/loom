@@ -1452,16 +1452,26 @@
                 "type": "string",
                 "enum": ["manual", "default", "plan", "acceptEdits", "auto"]
               },
-              "mcp": {
-                "deprecated": true,
-                "description": "Replaced by mcp_servers."
-              },
               "mcp_servers": {
-                "description": "The session MCP servers it gets, by name, plus loom-agents to let it start sub-agents of its own. Omitted: all of them.",
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
+                "description": "The session MCP servers it gets, plus loom-agents to start sub-agents of its own (still subject to agents.max_depth). Omitted: all of them.",
+                "type": "object",
+                "properties": {
+                  "allow": {
+                    "description": "Only these session MCP servers, by name; loom-agents only if named. Omitted allows them all.",
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "deny": {
+                    "description": "MCP servers withheld from it, applied after allow; denying loom-agents stops it starting sub-agents.",
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "additionalProperties": false
               },
               "skills": {
                 "description": "Claude skills to load from the provider's <config_dir>/skills/<name>/SKILL.md, by name; omitted keeps the CLI's own.",
@@ -2963,16 +2973,26 @@
                       "type": "string",
                       "enum": ["manual", "default", "plan", "acceptEdits", "auto"]
                     },
-                    "mcp": {
-                      "deprecated": true,
-                      "description": "Replaced by mcp_servers."
-                    },
                     "mcp_servers": {
-                      "description": "The session MCP servers it gets, by name, plus loom-agents to let it start sub-agents of its own. Omitted: all of them.",
-                      "type": "array",
-                      "items": {
-                        "type": "string"
-                      }
+                      "description": "The session MCP servers it gets, plus loom-agents to start sub-agents of its own (still subject to agents.max_depth). Omitted: all of them.",
+                      "type": "object",
+                      "properties": {
+                        "allow": {
+                          "description": "Only these session MCP servers, by name; loom-agents only if named. Omitted allows them all.",
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "deny": {
+                          "description": "MCP servers withheld from it, applied after allow; denying loom-agents stops it starting sub-agents.",
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "additionalProperties": false
                     },
                     "skills": {
                       "description": "Claude skills to load from the provider's <config_dir>/skills/<name>/SKILL.md, by name; omitted keeps the CLI's own.",

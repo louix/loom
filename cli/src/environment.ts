@@ -3,6 +3,7 @@ import { matchGlob } from "../../backend/daemon/src/daemon/hooks.ts";
 import { initializeWorkspace } from "../../runtime/src/session-vm/workspace.ts";
 import { join, resolve } from "node:path";
 import {
+  accessAllows,
   claudeProfileId,
   loadConfig,
   type LoomConfig,
@@ -82,12 +83,7 @@ export const environmentProviders = (config: LoomConfig): string[] => {
   ];
   const seen = new Set<string>();
   return providers.filter((id) => {
-    if (
-      config.providerAccess.deny.includes(id) ||
-      (config.providerAccess.allow && !config.providerAccess.allow.includes(id))
-    ) {
-      return false;
-    }
+    if (!accessAllows(config.providerAccess, id)) return false;
     const policy = environmentPolicy(config, id);
     if (!policy || seen.has(policy.artifact)) return false;
     seen.add(policy.artifact);

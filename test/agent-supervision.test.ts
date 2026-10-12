@@ -32,7 +32,7 @@ import {
   type AgentHost,
   type ChildStart,
 } from "@loom/daemon/daemon/agents";
-import type { LoomConfig } from "@loom/daemon/config/config";
+import type { AgentProfileConfig, LoomConfig } from "@loom/daemon/config/config";
 
 setLogLevel("error");
 
@@ -44,10 +44,15 @@ const AGENTS: LoomConfig["agents"] = {
       provider: "codex",
       model: "astra",
       prompt: "Verify.",
-      mcpServers: ["tilth"],
+      mcpServers: { allow: ["tilth"], deny: [] },
       tools: { deny: ["WebFetch"] },
     },
-    claudeish: { description: "Claude reviewer", skills: ["pdf"], tools: { allow: ["Read"] } },
+    claudeish: {
+      description: "Claude reviewer",
+      mcpServers: { deny: [] },
+      skills: ["pdf"],
+      tools: { allow: ["Read"] },
+    },
   },
 };
 
@@ -365,7 +370,7 @@ test("a session's plan: loom-agents below the depth limit, and its profile's ser
   assert.match(kid.agentPrompt!, /\n\nVerify\.$/);
   assert.deepEqual(kid.denyTools, ["WebFetch"]);
   const user = planOf(row({ id: "u", agentProfile: "claudeish" }), ctx);
-  assert.equal(user.agentTools, true, "a profile without an mcp list keeps loom-agents");
+  assert.equal(user.agentTools, true, "a profile without an allow list keeps loom-agents");
   assert.deepEqual(user.skills, ["pdf"]);
   assert.deepEqual(user.allowTools, ["Read"]);
   assert.equal(user.agentPrompt, undefined);
@@ -380,6 +385,52 @@ test("a session's plan: loom-agents below the depth limit, and its profile's ser
     config: { ...CONFIG, agents: { ...AGENTS, maxDepth: 1 } },
   });
   assert.equal(one.agentTools, undefined, "max_depth 1 starts no agents");
+});
+
+test("a profile's mcp_servers: every server unless it allows some, less those it denies", () => {
+  const handles: McpServerHandle[] = [
+    { name: "tilth", spec: { transport: "stdio", command: "tilth" } },
+    { name: "kagi", spec: { transport: "http", url: "https://mcp.kagi.com" } },
+  ];
+  const access: Record<string, AgentProfileConfig["mcpServers"]> = {
+    every: { deny: [] },
+    allowTilth: { allow: ["tilth"], deny: [] },
+    allowTilthAndAgents: { allow: ["tilth", "loom-agents"], deny: [] },
+    denyKagi: { deny: ["kagi"] },
+    denyAgents: { deny: ["loom-agents"] },
+    allowThenDeny: { allow: ["tilth", "kagi", "loom-agents"], deny: ["kagi", "loom-agents"] },
+  };
+  const config: AgentConfig = {
+    agents: {
+      maxDepth: 2,
+      profiles: Object.fromEntries(
+        Object.entries(access).map(([name, mcpServers]) => [
+          name,
+          { description: name, mcpServers },
+        ]),
+      ),
+    },
+    providerAccess: { deny: [] },
+  };
+  const ctx = { config, lookup: () => undefined, settledTitle: () => null, handles };
+  const got = Object.keys(access).map((name) => {
+    const plan = planOf(row({ id: name, agentProfile: name }), ctx);
+    return [name, plan.mcpServers.map((h) => h.name), plan.agentTools ?? false];
+  });
+  assert.deepEqual(got, [
+    ["every", ["tilth", "kagi"], true],
+    ["allowTilth", ["tilth"], false],
+    ["allowTilthAndAgents", ["tilth"], true],
+    ["denyKagi", ["tilth"], true],
+    ["denyAgents", ["tilth", "kagi"], false],
+    ["allowThenDeny", ["tilth"], false],
+  ]);
+  // Still subject to agents.max_depth.
+  const kid = planOf(row({ id: "kid", supervisorId: "lead", agentProfile: "every" }), {
+    ...ctx,
+    lookup: (id: string) => (id === "lead" ? row({ id: "lead" }) : undefined),
+  });
+  assert.equal(kid.agentTools, undefined);
 });
 
 test("a supervisor's provisional title, the head of its first prompt, never reaches its child", async () => {
