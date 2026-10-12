@@ -50,19 +50,20 @@ export interface RepoMoveReport {
 
 /**
  * The repository whose state `old` names, and that state directory: by its
- * key, else by a `repo.json` that records it.
+ * key when that records `old`, else by a `repo.json` that records it. The key
+ * hashes the real path, so a symlinked `old` can key another checkout's state.
  */
 const recordedRepository = (old: string): { repo: string; state: string } => {
   const keyedState = repoStateDirectory(old);
   const keyed = readRepoRecord(join(keyedState, "repo.json"));
-  if (keyed) return { repo: keyed, state: keyedState };
+  if (keyed === old) return { repo: keyed, state: keyedState };
   const repos = join(userDirectory("state"), "loom", "repos");
   const entries = existsSync(repos) ? readdirSync(repos) : [];
   for (const name of entries) {
     const recorded = readRepoRecord(join(repos, name, "repo.json"));
     if (recorded === old) return { repo: recorded, state: join(repos, name) };
   }
-  if (existsSync(keyedState)) return { repo: old, state: keyedState };
+  if (keyed === null && existsSync(keyedState)) return { repo: old, state: keyedState };
   throw new Error(`no Loom state is recorded for ${old}`);
 };
 
