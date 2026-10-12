@@ -785,6 +785,21 @@ export class SessionStore {
       .run(sha, Date.now(), id);
   }
 
+  /** Whether this Loom agent was named in its supervisor's archive reminder
+   *  (`[archive_reminder]`): each child is named once, a restart included. */
+  archiveReminded(id: string): boolean {
+    const row = this.#db.prepare("SELECT archive_reminded FROM sessions WHERE id = ?").get(id) as
+      | { archive_reminded: number }
+      | undefined;
+    return (row?.archive_reminded ?? 0) !== 0;
+  }
+
+  setArchiveReminded(id: string, reminded: boolean): void {
+    this.#db
+      .prepare("UPDATE sessions SET archive_reminded = ?, updated_at = ? WHERE id = ?")
+      .run(reminded ? 1 : 0, Date.now(), id);
+  }
+
   /** True once a manual rename has pinned the title against the auto-titler. */
   titleLocked(id: string): boolean {
     const row = this.#db.prepare("SELECT title_locked FROM sessions WHERE id = ?").get(id) as

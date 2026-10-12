@@ -50,7 +50,8 @@ export const AGENT_TOOLS = {
       "worktree from your last commit (uncommitted changes do not carry over: commit first), " +
       "runs on its own, and the user can see and steer it. Returns its id at once; you are " +
       "notified when it finishes a turn, fails or is interrupted, so the usual " +
-      "pattern is to start children and end your turn.",
+      "pattern is to start children and end your turn. Archive it with agent_stop once its work " +
+      "is merged or abandoned.",
     shape: {
       profile: z.string().describe("A profile name from agents_profiles; `self` for your own."),
       task: z
@@ -102,7 +103,8 @@ export const AGENT_TOOLS = {
   agent_stop: {
     description:
       "Stop a child for good and archive it; its branch and transcript are kept. A child with " +
-      "uncommitted changes is refused unless `discard` is set.",
+      "uncommitted changes is refused unless `discard` is set. Archive each child once its work " +
+      "is merged or abandoned: finished children left open pile up in the user's fleet.",
     shape: {
       id,
       discard: z

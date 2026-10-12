@@ -1005,7 +1005,141 @@ describe("loom agents", { concurrency: 4 }, () => {
     ]);
     assert.match(res.text, /^Stopped waiting/);
   });
+
+  test("a supervisor's turn end reminds it once of finished agents, a restart included", async (env) => {
+    const lead = await idleSession(env);
+    const merged = await startChild(env, lead.fs, { title: "Merged" });
+    const ahead = await startChild(env, lead.fs, { title: "Ahead" });
+    const tree = (await get(env.c, ahead.id)).worktree!;
+    writeFileSync(join(tree, "widget.txt"), "widget\n");
+    git(tree, "add", "widget.txt");
+    git(tree, "commit", "-q", "-m", "widget");
+    const notes = () => lead.fs.sends.filter((s) => s.startsWith("[from your agent"));
+    // Each report starts a supervisor turn; the second waits for the first's end.
+    await finish(env, merged, "Nothing to change.");
+    await waitFor(() => notes().length === 1);
+    await finish(env, ahead, "Widget added.");
+    await waitFor(async () => ((await get(env.c, lead.id)).queue?.entries.length ?? 0) === 1);
+    lead.fs.finishTurn();
+    await waitFor(() => notes().length === 2);
+    await delay(50);
+    assert.deepEqual(reminders(lead.fs), [], "not while a report waits in its queue");
+
+    lead.fs.finishTurn();
+    await waitFor(() => reminders(lead.fs).length === 1);
+    // In the fleet's order of the children.
+    const reminder = reminders(lead.fs)[0]!;
+    assert.match(reminder, /^\[loom\] You have 2 agents that have finished and are not archived: /);
+    assert.ok(reminder.includes(`${merged.id.slice(0, 8)} "Merged" (idle, branch merged)`));
+    assert.ok(
+      reminder.includes(`${ahead.id.slice(0, 8)} "Ahead" (idle, 1 commit not merged into yours)`),
+    );
+    assert.match(reminder, /\. Archive each with agent_stop once its work is merged /);
+    lead.fs.finishTurn();
+    await waitFor(async () => (await get(env.c, lead.id)).status.kind === "idle");
+    await delay(50);
+    assert.equal(reminders(lead.fs).length, 1, "once");
+
+    await env.c.close();
+    await env.h.restart();
+    env.c = await LoomClient.connect({
+      repoRoot: env.h.repoRoot,
+      sockPath: env.h.sockPath,
+      autospawn: false,
+    });
+    const provider = (await env.h.daemon.providers.get("fake")) as FakeProvider;
+    await env.c.request("session.send", { id: lead.id, text: "anything left?", by: "client" });
+    await waitFor(() => provider.session(lead.id)?.sends.includes("anything left?") ?? false);
+    const revived = provider.session(lead.id)!;
+    revived.finishTurn();
+    await waitFor(async () => (await get(env.c, lead.id)).status.kind === "idle");
+    await delay(50);
+    assert.deepEqual(reminders(revived), [], "not again after a restart");
+  });
+
+  test("a held supervisor is not reminded; its next turn end after release is", async (env) => {
+    const lead = await idleSession(env);
+    const child = await startChild(env, lead.fs);
+    await finish(env, child, "Widget added.");
+    await waitFor(() => lead.fs.sends.some((s) => s.startsWith("[from your agent")));
+    // A hold on a supervisor whose turn then ends idle.
+    env.h.daemon.sessions.holdForStop(lead.id, "user");
+    lead.fs.finishTurn();
+    await waitFor(async () => (await get(env.c, lead.id)).status.kind === "idle");
+    await delay(50);
+    assert.equal((await get(env.c, lead.id)).queue?.hold, "interrupt");
+    assert.deepEqual(reminders(lead.fs), [], "never past a hold");
+
+    await env.c.request("session.queueRelease", { id: lead.id });
+    await env.c.request("session.send", { id: lead.id, text: "go on", by: "client" });
+    await waitFor(() => lead.fs.sends.includes("go on"));
+    lead.fs.finishTurn();
+    await waitFor(() => reminders(lead.fs).length === 1);
+  });
+
+  test("running children and a root without children get no reminder", async (env) => {
+    const lone = await idleSession(env);
+    await env.c.request("session.send", { id: lone.id, text: "more", by: "client" });
+    await waitFor(() => lone.fs.sends.includes("more"));
+    lone.fs.finishTurn();
+
+    const lead = await idleSession(env);
+    const child = await startChild(env, lead.fs);
+    child.fs.emit({ type: "assistant_text", text: "busy" });
+    await waitFor(async () => (await get(env.c, child.id)).status.kind === "running");
+    await env.c.request("session.send", { id: lead.id, text: "check in", by: "client" });
+    await waitFor(() => lead.fs.sends.includes("check in"));
+    lead.fs.finishTurn();
+    await waitFor(async () => (await get(env.c, lead.id)).status.kind === "idle");
+    await delay(50);
+    assert.deepEqual(reminders(lead.fs), []);
+    assert.deepEqual(reminders(lone.fs), []);
+  });
 });
+
+const reminders = (fs: FakeSession): string[] =>
+  fs.sends.filter((s) => /^\[loom\] You have \d+ agents? that ha/.test(s));
+
+// Outside the concurrent suite: it stubs Git for the whole process.
+nodeTest("a child whose report is still being made is not in its supervisor's reminder", (t) =>
+  withEnv(async (env) => {
+    const lead = await idleSession(env);
+    const child = await startChild(env, lead.fs);
+    const tree = (await get(env.c, child.id)).worktree!;
+    const notes = () => lead.fs.sends.filter((s) => s.startsWith("[from your agent"));
+    const gate = Promise.withResolvers<void>();
+    const original = WorktreeManager.prototype.factsAsync;
+    let probed = false;
+    t.mock.method(
+      WorktreeManager.prototype,
+      "factsAsync",
+      function (this: WorktreeManager, path: string, base: string | null) {
+        // Only the report's probe waits; the reminder's own read goes through.
+        if (path !== tree || probed) return original.call(this, path, base);
+        probed = true;
+        return gate.promise.then(() => original.call(this, path, base));
+      },
+    );
+    await env.c.request("session.send", { id: lead.id, text: "keep going", by: "client" });
+    await waitFor(() => lead.fs.sends.includes("keep going"));
+    try {
+      child.fs.emit({ type: "assistant_text", text: "Widget added." });
+      child.fs.finishTurn();
+      await waitFor(() => probed);
+      // The supervisor's turn ends while the child's report is being made.
+      lead.fs.finishTurn();
+      await waitFor(async () => (await get(env.c, lead.id)).status.kind === "idle");
+      await delay(50);
+      assert.deepEqual(reminders(lead.fs), []);
+    } finally {
+      gate.resolve();
+    }
+    await waitFor(() => notes().length === 1);
+    lead.fs.finishTurn();
+    await waitFor(() => reminders(lead.fs).length === 1);
+    assert.ok(lead.fs.sends.indexOf(notes()[0]!) < lead.fs.sends.indexOf(reminders(lead.fs)[0]!));
+  }),
+);
 
 // Outside the concurrent suite: it stubs Git for the whole process.
 nodeTest("a child's turn-end workspace facts are read off the daemon thread", (t) =>

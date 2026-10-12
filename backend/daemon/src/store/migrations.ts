@@ -463,4 +463,8 @@ export const MIGRATIONS: string[] = [
   /* sql */ `
   ALTER TABLE account_usage ADD COLUMN polled INTEGER NOT NULL DEFAULT 0;
   `,
+  // 36 — a Loom agent its supervisor has been reminded to archive
+  // (`[archive_reminder]`, docs/loom-agents.md): each child is named once, a
+  // restart included, so it is a row column and not a daemon-instance Map.
+  `ALTER TABLE sessions ADD COLUMN archive_reminded INTEGER NOT NULL DEFAULT 0;`,
 ];

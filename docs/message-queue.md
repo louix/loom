@@ -318,17 +318,18 @@ state transition is under Known issues in `docs/loom-agents.md`.
 
 ## Interactions
 
-| Concern              | Rule                                                                                                                                       |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| Hook feedback        | Bypasses the queue: the direct `automated` send at `daemon.ts:457`, echoed at once, as today. A Stop that discards it drops it.            |
-| Rebase/commit nudges | Bypass the queue, as hook feedback; a discarded nudge is dropped, never surfaced as a user entry ([decision 3](#decisions)).               |
-| Auto-resume          | Bypasses the queue.                                                                                                                        |
-| Keep-warm            | Bypasses the queue; never sent while an entry is dispatchable; allowed while held.                                                         |
-| Requests, plans      | Answers bypass the queue; nothing dispatches during `awaiting_input`. Claude's "plan is approved" send (`adapter.ts:1096`) stays internal. |
-| Compaction           | Dispatch pauses while restructuring; `session.send` then enqueues instead of failing `busy`, retiring the TUI's busy reroute.              |
-| Undo/rewind          | Allowed with queued or held entries (they are not history); refused while an entry is delivering.                                          |
-| Provider switch      | The queue survives; dispatch uses the new adapter's capabilities.                                                                          |
-| A3 ordering          | Unchanged: the root result is the boundary; enqueueing never promotes a row.                                                               |
+| Concern              | Rule                                                                                                                                                                   |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Hook feedback        | Bypasses the queue: the direct `automated` send at `daemon.ts:457`, echoed at once, as today. A Stop that discards it drops it.                                        |
+| Rebase/commit nudges | Bypass the queue, as hook feedback; a discarded nudge is dropped, never surfaced as a user entry ([decision 3](#decisions)).                                           |
+| Archive reminder     | Bypasses the queue, as the nudges, so it is never sent while held or while entries wait: the next turn end decides again ([loom-agents.md](loom-agents.md#lifecycle)). |
+| Auto-resume          | Bypasses the queue.                                                                                                                                                    |
+| Keep-warm            | Bypasses the queue; never sent while an entry is dispatchable; allowed while held.                                                                                     |
+| Requests, plans      | Answers bypass the queue; nothing dispatches during `awaiting_input`. Claude's "plan is approved" send (`adapter.ts:1096`) stays internal.                             |
+| Compaction           | Dispatch pauses while restructuring; `session.send` then enqueues instead of failing `busy`, retiring the TUI's busy reroute.                                          |
+| Undo/rewind          | Allowed with queued or held entries (they are not history); refused while an entry is delivering.                                                                      |
+| Provider switch      | The queue survives; dispatch uses the new adapter's capabilities.                                                                                                      |
+| A3 ordering          | Unchanged: the root result is the boundary; enqueueing never promotes a row.                                                                                           |
 
 ## Wire, RPC, events
 

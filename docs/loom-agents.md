@@ -201,6 +201,35 @@ children inside the supervisor's VM is a later shared-VM feature.
   sessions.
 - Archiving or deleting a supervisor asks whether to stop its children or
   detach them.
+- A supervisor archives its children with `agent_stop` once their work is
+  merged or abandoned; `agent_start`, `agent_stop` and a nested supervisor's
+  own note say so. Since supervisors tend not to, Loom reminds them
+  (`[archive_reminder]`): when a supervisor's turn ends idle — top-level or
+  nested, at the same point as the commit reminder, and only on a turn end
+  that sent no rebase or commit nudge — it gets one Loom message (automated,
+  like the commit reminder) naming its children that have finished (idle,
+  failed or interrupted; not starting, running, working in the background,
+  waiting for the user, or archived) and that it has not been reminded of,
+  each with whether its branch is merged into the supervisor's, how many
+  commits are not, and whether it has uncommitted changes:
+
+  ```text
+  [loom] You have 2 agents that have finished and are not archived: 7ea89088 "Widget" (idle, branch merged); 1c0ffee5 "Gadget" (failed, 2 commits not merged into yours, uncommitted changes). Archive each with agent_stop once its work is merged or no longer needed, or keep it if you will message it again. You won't be reminded about these again.
+  ```
+
+  Each child is named once (`archive_reminded` on its row, so a restart does
+  not repeat it). A child whose report the supervisor has not taken up yet —
+  still being made, or waiting in the supervisor's queue — waits for a later
+  turn end, as does one with messages waiting in its own queue. The reminder
+  goes straight to the session, not through its queue, so it never lifts or
+  passes a hold: while the supervisor's queue is held, or has entries
+  waiting (they start its next turn), nothing is sent and the next turn end
+  decides again. The decision is a pure function over the children's states
+  (`archiveReminder`, `backend/daemon/src/daemon/archive-reminder.ts`),
+  taken as the turn ends and again once the children's Git facts are read;
+  the message goes only if the supervisor is still idle in that turn's
+  spell. A session with no children is unaffected.
+
 - A daemon restart resumes supervisors and children like any session; queued
   notifications persist with the A9 queue.
 - Notification hooks (`hooks` with `run`, e.g. a desktop toast) don't fire for

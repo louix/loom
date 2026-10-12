@@ -117,7 +117,8 @@ import { runStartupHygiene, type HygieneReport } from "./hygiene.ts";
 import { HookRunner, hookSessionOf } from "./hooks.ts";
 import { SessionManager } from "./session-manager.ts";
 import { AgentSupervision, agentSessionPlan, profileInfos, type ChildStart } from "./agents.ts";
-import { SELF_PROFILE, type ChildrenOnClose } from "@loom/core/agents";
+import { agentAuthor, SELF_PROFILE, type ChildrenOnClose } from "@loom/core/agents";
+import { archiveReminder, showArchiveReminder } from "./archive-reminder.ts";
 import {
   type HoldRespect,
   type QueueDelivery,
@@ -2708,11 +2709,12 @@ export class Daemon {
           // A slow guest probe can outlast the idle spell: facts read during a
           // later turn are that turn's business, and its own end handles them.
           if (!ended()) return;
-          const nudged =
+          const rebaseNudged =
             this.config.autoRebase.enabled && this.#cloneCanSync(id)
               ? (await this.#syncClone(id, nudges)).nudged
               : false;
-          if (!nudged && nudges) this.#maybeCommitNudge(id);
+          if (!rebaseNudged && !(nudges && this.#maybeCommitNudge(id)))
+            this.#maybeArchiveReminder(id, turn);
         } catch (error) {
           this.#emitNotice(String(error), "warn");
         }
@@ -2722,8 +2724,14 @@ export class Daemon {
       );
       return;
     }
-    if (state.kind === "idle" && !this.#maybeAutoRebase(id, nudges) && nudges)
-      this.#maybeCommitNudge(id);
+    // One message per turn end: the archive reminder waits for a turn end
+    // that sent no nudge.
+    if (
+      state.kind === "idle" &&
+      !this.#maybeAutoRebase(id, nudges) &&
+      !(nudges && this.#maybeCommitNudge(id))
+    )
+      this.#maybeArchiveReminder(id, turn);
 
     this.#fireStatusHooks(snap, state, cause, turn);
   }
@@ -2942,6 +2950,74 @@ export class Daemon {
       this.#log.warn("commit reminder failed", { id, err: String(err) });
     });
     return true;
+  }
+
+  /**
+   * When a supervisor's turn `turn` ends idle, remind it once of its Loom
+   * agents that have finished and are not archived (`[archive_reminder]`,
+   * docs/loom-agents.md, Lifecycle), with how far each one's branch is
+   * merged into its own. Decided by `archiveReminder`, twice: as the turn
+   * ends, and again once the children's Git facts are read, which is only
+   * sent if the supervisor is still in that turn's idle spell. A held
+   * queue, or entries waiting in it, leave everyone to a later turn end: the
+   * reminder goes straight to the session, so it must never pass a hold.
+   */
+  #maybeArchiveReminder(id: string, turn: number): void {
+    if (this.#stopping || this.#registry.children(id).length === 0) return;
+    const ended = () =>
+      !this.#stopping &&
+      this.#registry.get(id)?.status.kind === "idle" &&
+      this.#registry.statusEpoch(id) === turn;
+    const decide = () => {
+      const queue = this.#messageQueue;
+      const authors = new Set(queue.live(id).map((e) => e.author));
+      return archiveReminder(
+        { held: queue.holdCause(id) !== null, queued: authors.size > 0 },
+        this.#registry.children(id).map((child) => ({
+          id: child.id,
+          title: child.title,
+          state: child.status.kind,
+          reminded: this.#registry.store.archiveReminded(child.id),
+          reportPending: this.#agents.reporting(child.id) || authors.has(agentAuthor(child.id)),
+          queued: queue.slots(child.id).length > 0,
+        })),
+      );
+    };
+    const first = decide();
+    if (first.kind !== "remind") return;
+    void (async () => {
+      const facts = new Map(
+        await Promise.all(
+          first.children.map(async (child) => {
+            const row = this.#registry.get(child.id);
+            const git = row ? await this.#turnEndGit(row).catch(() => null) : null;
+            return [child.id, git] as const;
+          }),
+        ),
+      );
+      if (!ended()) return;
+      const now = decide();
+      if (now.kind !== "remind" || !this.#sessions.has(id)) return;
+      const text = showArchiveReminder(now.children, (child) => facts.get(child) ?? null);
+      const store = this.#registry.store;
+      for (const child of now.children) store.setArchiveReminded(child.id, true);
+      // Loom's own message, like the commit reminder: kept out of `#lastSend`.
+      this.emitEvent({
+        type: "user_message",
+        sessionId: id,
+        ts: Date.now(),
+        text,
+        injected: false,
+      });
+      await this.#sessions.send(id, text, { automated: true }).catch((err: unknown) => {
+        // Not delivered: named again at a later turn end.
+        for (const child of now.children)
+          if (this.#registry.get(child.id)) store.setArchiveReminded(child.id, false);
+        throw err;
+      });
+    })().catch((err: unknown) => {
+      if (!this.#stopping) this.#log.warn("archive reminder failed", { id, err: String(err) });
+    });
   }
 
   /** `id`'s title once set by hand or generated; null while it is still the

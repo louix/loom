@@ -126,17 +126,16 @@ export const agentSessionPlan = (
   const depth = supervisionDepth(row.id, (id) => (id === row.id ? row : ctx.lookup(id)));
   const keeps = (name: string) => profile?.mcp === undefined || profile.mcp.includes(name);
   const supervisor = row.supervisorId ? ctx.lookup(row.supervisorId) : undefined;
+  const agentTools = depth < ctx.config.agents.maxDepth && keeps(LOOM_AGENTS_SERVER);
   const prompt = [
-    supervisor ? childNote(supervisor.id, ctx.settledTitle(supervisor.id)) : "",
+    supervisor ? childNote(supervisor.id, ctx.settledTitle(supervisor.id), agentTools) : "",
     profile?.prompt ?? "",
   ]
     .filter(Boolean)
     .join("\n\n");
   return {
     mcpServers: ctx.handles.filter((h) => keeps(h.name)),
-    ...(depth < ctx.config.agents.maxDepth && keeps(LOOM_AGENTS_SERVER)
-      ? { agentTools: true }
-      : {}),
+    ...(agentTools ? { agentTools: true } : {}),
     ...(prompt ? { agentPrompt: prompt } : {}),
     ...(profile?.skills ? { skills: profile.skills } : {}),
     ...(profile?.tools?.allow ? { allowTools: profile.tools.allow } : {}),
@@ -144,12 +143,18 @@ export const agentSessionPlan = (
   };
 };
 
-const childNote = (supervisorId: string, title: string | null): string =>
+/** `supervises`: it has the agent tools, so it may start children of its own. */
+const childNote = (supervisorId: string, title: string | null, supervises: boolean): string =>
   [
     `You are a Loom sub-agent: session ${short(supervisorId)}${title ? ` ("${title}")` : ""} started you with a task and supervises you.`,
     "End every turn with a final message for it: make its first line a single sentence summarizing the outcome (your supervisor is notified with that line), then add the details if useful: what you did, how you verified it, and what is left or failed.",
     "Commit your work before you report: your supervisor sees your branch, not your uncommitted files.",
     "Questions and permission requests go to the user, as usual.",
+    ...(supervises
+      ? [
+          "If you start agents of your own, archive each with agent_stop once its work is merged or abandoned.",
+        ]
+      : []),
   ].join(" ");
 
 /** The profiles available in this repository, as clients list them. */
@@ -372,6 +377,9 @@ export class AgentSupervision {
   readonly #waits = new Map<string, Set<Waiter>>();
   /** Per child, the settled turn (`AgentHost.turn`) last reported. */
   readonly #notified = new Map<string, number>();
+  /** Per child, the settled turn whose report is being made: decided on,
+   *  not yet in the supervisor's queue (its workspace facts are read first). */
+  readonly #reporting = new Map<string, number>();
 
   constructor(host: AgentHost) {
     this.#host = host;
@@ -380,6 +388,12 @@ export class AgentSupervision {
   /** Forget a removed session's reports. */
   forget(id: string): void {
     this.#notified.delete(id);
+  }
+
+  /** Is a report of `childId`'s settled turn on its way to the supervisor's
+   *  queue? Once queued, the queue says whether the supervisor took it up. */
+  reporting(childId: string): boolean {
+    return this.#reporting.has(childId);
   }
 
   /** Run one `agent_call` and answer it. Never throws. */
@@ -814,6 +828,24 @@ export class AgentSupervision {
     const supervisor = this.#host.status(child.supervisorId);
     if (!supervisor || supervisor.kind === "done") return;
     this.#notified.set(child.id, turn);
+    this.#reporting.set(child.id, turn);
+    try {
+      await this.#report(child, child.supervisorId, event, current, opts.git);
+    } finally {
+      // A later turn's report may have taken over meanwhile.
+      if (this.#reporting.get(child.id) === turn) this.#reporting.delete(child.id);
+    }
+  }
+
+  /** The report `notify` decided on, from the turn's final message and
+   *  workspace; dropped if the turn has moved on while the facts were read. */
+  async #report(
+    child: SessionSnapshot,
+    supervisorId: string,
+    event: string,
+    current: () => boolean,
+    read: (() => Promise<GitFacts | null>) | undefined,
+  ): Promise<void> {
     const final = finalMessage(this.#host.events(child.id, { limit: 200 }).map((e) => e.event));
     const firstLine =
       final
@@ -821,7 +853,6 @@ export class AgentSupervision {
         .find((line) => line.trim() !== "")
         ?.trim() ?? "";
     const summary = cutBytes(firstLine, NOTIFY_MESSAGE_BYTES);
-    const read = opts.git;
     const git =
       (read
         ? await Promise.resolve()
@@ -841,17 +872,11 @@ export class AgentSupervision {
     try {
       // Behind any hold: a supervisor the user stopped stays stopped, and a
       // crashed one is not revived by a report.
-      await this.#host.enqueue(
-        child.supervisorId,
-        body,
-        agentAuthor(child.id),
-        "end_of_turn",
-        "any",
-      );
+      await this.#host.enqueue(supervisorId, body, agentAuthor(child.id), "end_of_turn", "any");
     } catch (err) {
       this.#host.log.warn("agent notification failed", {
         child: child.id,
-        supervisor: child.supervisorId,
+        supervisor: supervisorId,
         err: err instanceof Error ? err.message : String(err),
       });
     }

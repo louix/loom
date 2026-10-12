@@ -6,6 +6,7 @@
     "./config/config": "./src/config/config.ts",
     "./config/pricing": "./src/config/pricing.ts",
     "./daemon/agents": "./src/daemon/agents.ts",
+    "./daemon/archive-reminder": "./src/daemon/archive-reminder.ts",
     "./daemon/connection": "./src/daemon/connection.ts",
     "./daemon/daemon": "./src/daemon/daemon.ts",
     "./daemon/hooks": "./src/daemon/hooks.ts",
