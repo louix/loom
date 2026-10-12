@@ -5,14 +5,17 @@ const text = z
   .string()
   .min(1)
   .refine((v) => v.trim() === v, "must not have surrounding whitespace");
-const hostname = z
+// An exact DNS name, or `*.` plus one: every subdomain of that name, not the name itself.
+const hostPattern = z
   .string()
   .max(253)
-  .regex(/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/i);
+  .regex(
+    /^(?:\*\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/i,
+  );
 export const mcpGrantsSchema = z.strictObject({
   workspace: z.enum(["none", "read-only", "read-write"]).default("none"),
   network: z
-    .array(hostname)
+    .array(hostPattern)
     .max(64)
     .default([])
     .transform((hosts) => [...new Set(hosts.map((h) => h.toLowerCase()))]),

@@ -94,9 +94,13 @@ Local definitions require `execution: "vm"`. Omitted grants mean
   read-only access. No workspace grant means no repository mount and a disposable
   guest working directory.
 - `network`: exact DNS names, e.g. `["api.example.com"]`. Empty means offline.
-  This uses smolvm's `--allow-host`: names resolve at VM start and permit traffic
-  to those IP addresses on all ports. It is an IP allowlist, not an HTTPS
-  hostname/path filter; other services sharing an allowed IP are reachable.
+  A name grants only itself, not its subdomains; grant those explicitly with a
+  leading `*.`, e.g. `"*.example.com"`, which matches every subdomain but not
+  `example.com` itself. This uses smolvm's `--allow-host-pattern`: the guest can
+  resolve only granted names, exact names also resolve at VM start, and traffic
+  is permitted to the resolved IP addresses on all ports. It is an IP allowlist,
+  not an HTTPS hostname/path filter; other services sharing an allowed IP are
+  reachable.
   There is no automatic inheritance from agent or build-time network access.
 
 Workspace access follows the session's existing checkout layout. Mounted Git

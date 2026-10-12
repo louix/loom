@@ -132,6 +132,7 @@ deno run -A scripts/test-runtime-vm.ts tilth
 deno run -A scripts/test-real-git-vm.ts /path/to/aisdk-runtime /path/to/smolvm
 deno run -A scripts/test-guest-checkout-vm.ts /path/to/session-runtime /path/to/smolvm
 deno run -A scripts/test-large-frame-vm.ts /path/to/session-runtime /path/to/smolvm
+deno run -A scripts/test-mcp-network-grants-vm.ts /path/to/session-runtime /path/to/smolvm
 ```
 
 It uses only disposable files and checks tool discovery, read, hash edits, write
@@ -147,6 +148,11 @@ address reachable from a guest: a temporary HTTP fixture must be reachable with
 that IP explicitly allowed, then unreachable with the default network policy.
 Host firewall rules can make the positive control fail. Failed runs retain their
 fixture paths for diagnosis. These checks replace the removed tilth spike suite.
+
+The MCP network-grant check needs internet access. It boots tool VMs with real
+grants: `github.com` must reach `github.com` but not `api.github.com`, and
+`*.github.com` the reverse. A control run with smolvm's legacy `--allow-host`
+shows the subdomain it would otherwise admit.
 
 Linux x86_64 and Apple Silicon packaging and synthetic VM checks have been
 exercised; remaining live checks are in the [roadmap](roadmap.md#validation). Unified command MCP definitions can grant exact DNS names through smolvm;

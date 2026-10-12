@@ -72,7 +72,15 @@ test("MCP catalogs reject permissions on remote servers and malformed local gran
     { source: tilth.source },
     { ...tilth, grants: { workspace: "all" } },
     { ...tilth, grants: { network: ["https://example.com"] } },
-    { ...tilth, grants: { network: ["*.example.com"] } },
+    // Only a whole leading `*.` label before a multi-label name is a pattern.
+    ...[
+      "*",
+      "*.com",
+      "*.*.example.com",
+      "api.*.example.com",
+      "*example.com",
+      "example.com:443",
+    ].map((host) => ({ ...tilth, grants: { network: [host] } })),
     { ...tilth, grants: { network: ["127.0.0.1"] } },
     { ...tilth, grants: { mounts: ["/"] } },
     { ...tilth, source: { kind: "nix", ref: "github:org/repo", executable: "../sh" } },
@@ -89,9 +97,10 @@ test("MCP catalogs reject permissions on remote servers and malformed local gran
       }),
     /multiple groups/,
   );
-  assert.deepEqual(mcpGrantsSchema.parse({ network: ["EXAMPLE.com", "example.com"] }).network, [
-    "example.com",
-  ]);
+  assert.deepEqual(
+    mcpGrantsSchema.parse({ network: ["EXAMPLE.com", "example.com", "*.Example.com"] }).network,
+    ["example.com", "*.example.com"],
+  );
 });
 
 test("repo selections replace without changing running config snapshots", async () => {
@@ -137,12 +146,16 @@ const binding: VmBinding = {
 };
 test("VM grants enforce no mounts, read-only mounts, and independent network", () => {
   for (const workspace of ["none", "read-only", "read-write"] as const) {
-    for (const network of [[], ["example.com"]]) {
+    for (const network of [[], ["example.com", "*.files.example.com"]]) {
       const b = { ...binding, mcpGrants: { workspace, network } };
       const args = vmCreateArguments(b);
       assert.equal(args.includes("--net"), false);
-      assert.equal(args.includes("--allow-host"), network.length > 0);
-      if (network.length) assert.equal(args[args.indexOf("--allow-host") + 1], "example.com");
+      // smolvm's `--allow-host` would also admit every subdomain of an exact grant.
+      assert.equal(args.includes("--allow-host"), false);
+      assert.deepEqual(
+        args.flatMap((arg, i) => (arg === "--allow-host-pattern" ? [args[i + 1]] : [])),
+        network,
+      );
       for (const mount of binding.mounts!) {
         assert.equal(args.includes(mount + ":" + mount), workspace === "read-write");
         assert.equal(args.includes(mount + ":" + mount + ":ro"), workspace === "read-only");
@@ -162,7 +175,8 @@ test("VM grants enforce no mounts, read-only mounts, and independent network", (
   assert.throws(() =>
     vmArguments({ ...binding, mcpGrants: { workspace: "none", network: ["--net"] } }),
   );
-  assert(!vmCreateArguments(binding).includes("--allow-host")); // legacy and agent policy preserved
+  // Legacy and agent policy preserved: no smolvm host egress at all.
+  assert(!vmCreateArguments(binding).some((arg) => arg.startsWith("--allow-host")));
 });
 
 test("Nix identity excludes grants and executable arguments remain inert Nix data", async () => {

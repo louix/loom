@@ -6,7 +6,11 @@ import {
 } from "../core/src/session-environment.ts";
 import { prepareEnvironment, guestPathProfile } from "../runtime/src/session-vm/environment.ts";
 import { normalizeConfig, loadConfig } from "../backend/daemon/src/config/config.ts";
-import { expandNetworkPresets } from "../runtime/src/session-vm/network-policy.ts";
+import {
+  expandNetworkPresets,
+  networkPresets,
+  normalizeExtraHosts,
+} from "../runtime/src/session-vm/network-policy.ts";
 import { vmArguments, vmCreateArguments, type VmBinding } from "../runtime/src/packaged/vm.ts";
 
 test("guest login profile restores the prepared PATH as literal shell data", async () => {
@@ -53,6 +57,14 @@ test("network presets compose with exact hosts and reject unknown grants", () =>
   }
   for (const invalid of ["nix", ["cargo"], ["__proto__"], ["*"], [1]])
     assert.throws(() => expandNetworkPresets(invalid), /network_presets/);
+  // The egress proxy matches exactly: presets name each host, and nothing is a pattern.
+  const presetHosts = Object.values(networkPresets).flat();
+  assert.deepEqual(normalizeExtraHosts(presetHosts), [...new Set(presetHosts)]);
+  for (const pattern of ["*.example.com", "*.githubusercontent.com", "*"])
+    assert.throws(
+      () => normalizeExtraHosts([pattern]),
+      /exact DNS names.*no URLs, IPs or wildcards/,
+    );
 });
 
 test("environment configuration validates commands and bounded setup time", () => {

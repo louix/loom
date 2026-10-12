@@ -1,6 +1,9 @@
 import { z } from "zod";
 
-/** Extra authority comes only from trusted host configuration. */
+/**
+ * Extra authority comes only from trusted host configuration. The egress proxy
+ * matches names exactly, so presets list each subdomain they need.
+ */
 export const networkPresets = {
   nix: [
     "cache.nixos.org",
