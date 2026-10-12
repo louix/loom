@@ -24,6 +24,8 @@ export interface HookSession {
   clone?: boolean;
   isolation?: "vm" | "local" | undefined;
   guestCwd?: string | undefined;
+  /** A Loom agent's supervising session. */
+  supervisorId?: string | undefined;
 }
 
 /** A session snapshot, reduced to what a hook needs. */
@@ -36,6 +38,7 @@ export const hookSessionOf = (s: SessionSnapshot): HookSession => ({
   worktree: s.worktree,
   branch: s.branch,
   isolation: s.isolation,
+  ...(s.supervisorId ? { supervisorId: s.supervisorId } : {}),
   ...(s.checkout === "clone"
     ? { clone: true, guestCwd: s.worktree ? workspaceMount(s.worktree).checkout : undefined }
     : {}),
@@ -235,6 +238,9 @@ export class HookRunner {
     for (const hook of this.#hooks) {
       if (!hook.on.some((e) => e === event)) continue;
       if (session.clone && hook.kind === "notify" && event === "file_write") continue;
+      // An agent's turn end is its supervisor's to handle; only a wait (its
+      // permissions and questions come to the user) still notifies the user.
+      if (session.supervisorId && hook.kind === "notify" && event !== "waiting") continue;
       if (hook.kind === "notify" && hook.when !== "always") {
         const presence = this.#opts.tuiPresence?.();
         if (hook.when === "unfocused" && presence?.focused) continue;
@@ -325,6 +331,7 @@ export class HookRunner {
       LOOM_SESSION_PROVIDER: session.provider,
       LOOM_SESSION_MODEL: session.model ?? "",
       LOOM_SESSION_STATUS: session.status,
+      LOOM_SESSION_SUPERVISOR: session.supervisorId ?? "",
       LOOM_WORKTREE: worktree,
       LOOM_BRANCH: session.branch ?? "",
       LOOM_FILES: files.join("\n"),

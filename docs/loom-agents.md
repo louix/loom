@@ -185,6 +185,10 @@ children inside the supervisor's VM is a later shared-VM feature.
   detach them.
 - A daemon restart resumes supervisors and children like any session; queued
   notifications persist with the A9 queue.
+- Notification hooks (`hooks` with `run`, e.g. a desktop toast) don't fire for
+  an agent's turn ends or other events, which its supervisor handles, but do
+  fire on `waiting`: a child's permission prompts and questions come to the
+  user. Hooks get `LOOM_SESSION_SUPERVISOR` (empty for top-level sessions).
 
 ## Reparenting
 

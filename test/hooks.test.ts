@@ -141,6 +141,49 @@ test("a failing turn_end notification never starts another agent turn", async ()
   }
 });
 
+test("a Loom agent's notification hooks fire only for waits, with its supervisor in the env", async () => {
+  const dir = await Deno.makeTempDir({ dir: "/tmp" });
+  const output = join(dir, "output");
+  const runner = new HookRunner({
+    repoRoot: dir,
+    log: makeLogger("test"),
+    onFeedback: async () => assert.fail("notification sent feedback"),
+    onNotice: () => {},
+  });
+  runner.setHooks(
+    cfg(`{
+  "hooks": [
+    {
+      "on": ["waiting", "turn_end"],
+      "run": "sh -c 'echo \\"$LOOM_SESSION_ID $LOOM_HOOK_EVENT $LOOM_SESSION_SUPERVISOR\\" >> ${output}'"
+    }
+  ]
+}`).hooks,
+  );
+  const session = (id: string, supervisorId?: string) => ({
+    id,
+    title: null,
+    provider: "fake",
+    model: null,
+    status: "idle",
+    worktree: null,
+    branch: null,
+    ...(supervisorId ? { supervisorId } : {}),
+  });
+  const lines = () => (existsSync(output) ? readFileSync(output, "utf8").trim().split("\n") : []);
+  try {
+    runner.fire("turn_end", session("child", "sup"));
+    runner.fire("waiting", session("child", "sup"));
+    runner.fire("turn_end", session("sup"));
+    await until(() => lines().length === 2);
+    await delay(100);
+    assert.deepEqual(lines().sort(), ["child waiting sup", "sup turn_end"]);
+  } finally {
+    runner.close();
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 test("waiting, removal, reload, and shutdown invalidate feedback waiting for delivery", async () => {
   for (const action of ["waiting", "removal", "reload", "shutdown"]) {
     const delivery = Promise.withResolvers<void>();
