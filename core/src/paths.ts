@@ -79,11 +79,12 @@ export interface LoomPaths {
   /** Unix domain socket the daemon listens on. */
   sock: string;
   /**
-   * Pidfile guarding single-daemon-per-repo, in `state`: the runtime base may
-   * be `/tmp/loom-<uid>`, where macOS's periodic clean-up deletes files not
-   * touched for three days, and with it the guard of a long-running daemon.
+   * `daemon.lock`, which the daemon holds an exclusive `flock` on for its whole
+   * life, with its record inside. In `state`: the runtime base may be
+   * `/tmp/loom-<uid>`, where macOS's periodic clean-up deletes files not touched
+   * for three days.
    */
-  pid: string;
+  lock: string;
   /** `$XDG_STATE_HOME/loom/repos/<repo-key>`: the database, logs and generated hooks. */
   state: string;
   /** `repo.json`: the repository this state belongs to, for `loom repo move`. */
@@ -200,7 +201,7 @@ const keyedPaths = (
     repoRoot,
     runtime,
     sock,
-    pid: join(state, "daemon.pid"),
+    lock: join(state, "daemon.lock"),
     state,
     record: join(state, "repo.json"),
     db: join(state, "loom.db"),

@@ -8,10 +8,10 @@ import { test } from "node:test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
-import { daemonEndpoint, legacyDaemonPid } from "@loom/core/daemon-endpoint";
+import { daemonEndpoint, daemonLock, legacyDaemonPid } from "@loom/core/daemon-endpoint";
 import { ensureLoomDirectories, loomPaths, type LoomPaths } from "@loom/core/paths";
 import { Daemon } from "@loom/daemon/daemon/daemon";
-import { LegacyDaemonRunning } from "@loom/daemon/daemon/lifecycle";
+import { LegacyDaemonRunning, lockRepository } from "@loom/daemon/daemon/lifecycle";
 
 interface Fixture {
   repo: string;
@@ -49,9 +49,9 @@ test("daemonEndpoint dials the runtime directory when no older daemon runs", () 
   const f = mkFixture();
   try {
     assert.deepEqual(daemonEndpoint(f.paths), {
+      kind: "current",
       sock: f.paths.sock,
-      pid: f.paths.pid,
-      legacy: false,
+      lock: f.paths.lock,
     });
   } finally {
     f.remove();
@@ -65,13 +65,14 @@ test("daemonEndpoint dials an older daemon still serving from <repo>/.loom", asy
     writeLegacyDaemon(f.paths, old.pid);
     assert.equal(legacyDaemonPid(f.paths), old.pid);
     assert.deepEqual(daemonEndpoint(f.paths), {
+      kind: "legacy",
       sock: f.paths.legacy.sock,
       pid: f.paths.legacy.pid,
-      legacy: true,
     });
     // A current daemon wins: it only starts once the older one is gone.
-    writeFileSync(f.paths.pid, JSON.stringify({ pid: Deno.pid, epoch: "new", startedAt: 0 }));
-    assert.equal(daemonEndpoint(f.paths).legacy, false);
+    const current = await lockRepository(f.paths.lock, "new");
+    assert.equal(daemonEndpoint(f.paths).kind, "current");
+    current.release();
   } finally {
     old.kill("SIGKILL");
     await old.status;
@@ -85,7 +86,7 @@ test("daemonEndpoint ignores a stale legacy pidfile, even when its pid was reuse
   try {
     writeLegacyDaemon(f.paths, other.pid);
     assert.equal(legacyDaemonPid(f.paths), null);
-    assert.equal(daemonEndpoint(f.paths).legacy, false);
+    assert.equal(daemonEndpoint(f.paths).kind, "current");
     other.kill("SIGKILL");
     await other.status;
     assert.equal(legacyDaemonPid(f.paths), null);
@@ -99,7 +100,7 @@ test("daemonEndpoint ignores a stale legacy pidfile, even when its pid was reuse
   }
 });
 
-test("a daemon refuses to start beside an older one, and releases its pidfile", async () => {
+test("a daemon refuses to start beside an older one, and releases its lock", async () => {
   const f = mkFixture();
   const old = mkFakeLoomd();
   const config = join(f.repo, "config.jsonc");
@@ -110,7 +111,7 @@ test("a daemon refuses to start beside an older one, and releases its pidfile", 
       Daemon.start({ repoRoot: f.repo, configFile: config, standalone: false, connectors: {} }),
       (error) => error instanceof LegacyDaemonRunning && /older version/.test(error.message),
     );
-    assert.throws(() => Deno.statSync(f.paths.pid), Deno.errors.NotFound);
+    assert.deepEqual(daemonLock(f.paths.lock), { kind: "free" });
     assert.throws(() => Deno.statSync(f.paths.sock), Deno.errors.NotFound);
   } finally {
     old.kill("SIGKILL");

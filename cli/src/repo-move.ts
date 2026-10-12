@@ -23,7 +23,7 @@ import {
   worktreeDirectory,
   writeRepoRecord,
 } from "@loom/core/paths";
-import { runningDaemonPid } from "@loom/core/daemon-endpoint";
+import { runningDaemon } from "@loom/core/daemon-endpoint";
 import { userDirectory } from "@loom/core/user-dirs";
 import { makeLogger } from "@loom/core/logger";
 import { listVms } from "../../runtime/src/session-vm/inventory.ts";
@@ -99,10 +99,10 @@ export const moveRepository = async (oldArg: string, newArg: string): Promise<Re
   if (!existsSync(oldPaths.state)) throw new Error(`${oldPaths.state} is gone; nothing was moved`);
 
   for (const paths of [oldPaths, newPaths]) {
-    const pid = runningDaemonPid(paths);
-    if (pid !== null)
+    const daemon = runningDaemon(paths);
+    if (daemon !== null)
       throw new Error(
-        `a Loom daemon (pid ${pid}) is running for ${paths.repoRoot}; stop it with \`loom --repo ${paths.repoRoot} stop\` first`,
+        `a Loom daemon${daemon.pid === null ? "" : ` (pid ${daemon.pid})`} is running for ${paths.repoRoot}; stop it with \`loom --repo ${paths.repoRoot} stop\` first`,
       );
   }
   const { vms } = await listVms(from);

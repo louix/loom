@@ -29,6 +29,7 @@ import { openDb } from "@loom/daemon/store/db";
 import { WorktreeManager } from "@loom/daemon/daemon/worktrees";
 import { sessionCloneRoot } from "../backend/daemon/src/daemon/session-vm-state.ts";
 import { repoBaseDirectory } from "../runtime/src/session-vm/repo-base.ts";
+import { lockRepository } from "@loom/daemon/daemon/lifecycle";
 import { moveRepository } from "../cli/src/repo-move.ts";
 
 const git = (cwd: string, ...args: string[]): string =>
@@ -133,14 +134,12 @@ test("loom repo move refuses while a daemon runs for either path", async () => {
     execFileSync("git", ["init", "-q", to]);
     const target = loomPaths(to);
     ensureLoomDirectories(target);
-    writeFileSync(target.pid, JSON.stringify({ pid: Deno.pid, epoch: "live", startedAt: 0 }));
+    const held = await lockRepository(target.lock, "live");
     await assert.rejects(moveRepository(from, to), /a Loom daemon \(pid \d+\) is running for/);
-    rmSync(target.pid);
-    writeFileSync(
-      loomPaths(from).pid,
-      JSON.stringify({ pid: Deno.pid, epoch: "live", startedAt: 0 }),
-    );
+    held.release();
+    const source = await lockRepository(loomPaths(from).lock, "live");
     await assert.rejects(moveRepository(from, to), /is running for/);
+    source.release();
     // Nothing moved.
     assert.ok(existsSync(loomPaths(from).state));
   } finally {

@@ -1,20 +1,14 @@
-import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { uptime } from "node:os";
-import { legacyDaemonPid, pidAlive } from "@loom/core/daemon-endpoint";
+import { setTimeout as delay } from "node:timers/promises";
+import { legacyDaemonPid, readDaemonRecord, type DaemonRecord } from "@loom/core/daemon-endpoint";
 import type { LoomPaths } from "@loom/core/paths";
 
-export interface PidfileInfo {
-  pid: number;
-  epoch: string;
-  startedAt: number;
-}
+/** How long a starting daemon retries the lock: a client's probe holds it shared for a moment. */
+const LOCK_RETRY_MS = 500;
 
 export class DaemonAlreadyRunning extends Error {
-  info: PidfileInfo;
-  constructor(info: PidfileInfo) {
-    super(`a Loom daemon is already running for this repo (pid ${info.pid})`);
+  constructor(record: DaemonRecord | null) {
+    super(`a Loom daemon is already running for this repo${record ? ` (pid ${record.pid})` : ""}`);
     this.name = "DaemonAlreadyRunning";
-    this.info = info;
   }
 }
 
@@ -29,81 +23,61 @@ export class LegacyDaemonRunning extends Error {
   }
 }
 
-/**
- * Claim single-daemon-per-repo ownership by atomically creating the pidfile.
- * If it exists and names a live process, throws DaemonAlreadyRunning. A stale
- * pidfile (dead pid, or written before the machine last booted) is removed and
- * the claim retried once.
- */
-export const acquirePidfile = (path: string, epoch: string): PidfileInfo => {
-  const info: PidfileInfo = { pid: Deno.pid, epoch, startedAt: Date.now() };
-  const body = JSON.stringify(info);
-
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      writeFileSync(path, body, { flag: "wx" });
-      return info;
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
-    }
-
-    let existing: PidfileInfo | null = null;
-    try {
-      existing = JSON.parse(readFileSync(path, "utf8")) as PidfileInfo;
-    } catch {
-      existing = null;
-    }
-
-    // The pidfile outlives a reboot (it is in the state directory), and after
-    // one its pid may be any process's.
-    const bootedAt_ms = Date.now() - uptime() * 1000;
-    if (
-      existing &&
-      Number.isInteger(existing.pid) &&
-      pidAlive(existing.pid) &&
-      !(existing.startedAt < bootedAt_ms)
-    ) {
-      throw new DaemonAlreadyRunning(existing);
-    }
-    // Stale — remove and loop to retry the exclusive create.
-    try {
-      unlinkSync(path);
-    } catch {
-      /* someone else may have just cleaned it */
-    }
-  }
-  throw new Error(`could not acquire pidfile at ${path}`);
-};
-
-/** This run's identity, and the pidfile it holds unless it is standalone. */
-export interface RepositoryClaim {
-  epoch: string;
-  pidfile: PidfileInfo | null;
+/** The repository's lock, held until `release`. */
+export interface RepositoryLock {
+  record: DaemonRecord;
+  release: () => void;
 }
 
-/** Take the pidfile, then refuse if a daemon from before the XDG layout still runs. */
-export const claimRepository = (paths: LoomPaths, epoch: string): PidfileInfo => {
-  const info = acquirePidfile(paths.pid, epoch);
-  const legacy = legacyDaemonPid(paths);
-  if (legacy !== null) {
-    releasePidfile(paths.pid);
-    throw new LegacyDaemonRunning(legacy, paths.legacy.dir);
+/**
+ * Take the exclusive `flock` on `lock` that makes this the repository's daemon,
+ * and record this process in it. Only the lock says a daemon runs, so nothing
+ * here judges a recorded pid: a crash or a reboot releases the lock with its
+ * holder. The file is never removed — a new inode would let a second daemon lock
+ * it beside the first.
+ */
+export const lockRepository = async (lock: string, epoch: string): Promise<RepositoryLock> => {
+  const file = await Deno.open(lock, { read: true, write: true, create: true, mode: 0o600 });
+  const deadline_ms = Date.now() + LOCK_RETRY_MS;
+  while (!(await file.tryLock(true))) {
+    if (Date.now() >= deadline_ms) {
+      file.close();
+      throw new DaemonAlreadyRunning(readDaemonRecord(lock));
+    }
+    await delay(25);
   }
-  return info;
+  const record: DaemonRecord = { pid: Deno.pid, epoch, startedAt: Date.now() };
+  const bytes = new TextEncoder().encode(JSON.stringify(record));
+  await file.truncate(0);
+  let written = 0;
+  while (written < bytes.length) written += await file.write(bytes.subarray(written));
+  return {
+    record,
+    release: () => {
+      try {
+        file.truncateSync(0);
+      } finally {
+        file.close();
+      }
+    },
+  };
 };
 
-export const releasePidfile = (path: string): void => {
-  try {
-    const info = JSON.parse(readFileSync(path, "utf8")) as PidfileInfo;
-    if (info.pid !== Deno.pid) return; // not ours to remove
-  } catch {
-    return;
+/** This run's identity, and the lock it holds unless it is standalone. */
+export interface RepositoryClaim {
+  epoch: string;
+  lock: RepositoryLock | null;
+}
+
+/** Take the lock, then refuse if a daemon from before the XDG layout still runs. */
+export const claimRepository = async (paths: LoomPaths, epoch: string): Promise<RepositoryLock> => {
+  const lock = await lockRepository(paths.lock, epoch);
+  const legacy = legacyDaemonPid(paths);
+  if (legacy !== null) {
+    lock.release();
+    throw new LegacyDaemonRunning(legacy, paths.legacy.dir);
   }
-  try {
-    unlinkSync(path);
-  } catch {
-    /* already gone */
-  }
+  return lock;
 };
 
 /**

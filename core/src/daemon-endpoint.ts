@@ -1,13 +1,21 @@
 import { existsSync, readFileSync } from "node:fs";
 import type { LoomPaths } from "./paths.ts";
 
-/** Where a client reaches a repository's daemon, and which pidfile names it. */
-export interface DaemonEndpoint {
-  sock: string;
-  pid: string;
-  /** A daemon from before the XDG layout, still serving from `<repo>/.loom`. */
-  legacy: boolean;
+/** What a daemon writes into the lock it holds: for display and `loom stop`, never liveness. */
+export interface DaemonRecord {
+  pid: number;
+  epoch: string;
+  startedAt: number;
 }
+
+/** Whether a daemon holds the repository's lock, and what it recorded there if it has yet. */
+export type DaemonLock = { kind: "free" } | { kind: "held"; record: DaemonRecord | null };
+
+/** Where a client reaches a repository's daemon, and what says it still owns the repository. */
+export type DaemonEndpoint =
+  | { kind: "current"; sock: string; lock: string }
+  /** A daemon from before the XDG layout, still serving from `<repo>/.loom`. */
+  | { kind: "legacy"; sock: string; pid: string };
 
 /** Is `pid` a live process (whether or not we can signal it)? */
 export const pidAlive = (pid: number): boolean => {
@@ -24,7 +32,50 @@ export const pidAlive = (pid: number): boolean => {
   }
 };
 
-const pidfileOwner = (path: string): number | null => {
+/** A lock's record; null when absent, empty or malformed. */
+export const readDaemonRecord = (path: string): DaemonRecord | null => {
+  try {
+    // Loom's own JSON; anything else names nobody.
+    const { pid, epoch, startedAt } = JSON.parse(readFileSync(path, "utf8")) as {
+      pid?: unknown;
+      epoch?: unknown;
+      startedAt?: unknown;
+    };
+    return typeof pid === "number" && typeof epoch === "string" && typeof startedAt === "number"
+      ? { pid, epoch, startedAt }
+      : null;
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Probe with a shared lock, which fails only while a daemon holds it
+ * exclusively. Never creates the file; a daemon that takes the lock during the
+ * probe retries (`lockRepository`).
+ */
+export const daemonLock = (lock: string): DaemonLock => {
+  const file = openIfExists(lock);
+  if (file === null) return { kind: "free" };
+  try {
+    return file.tryLockSync(false)
+      ? { kind: "free" }
+      : { kind: "held", record: readDaemonRecord(lock) };
+  } finally {
+    file.close();
+  }
+};
+
+const openIfExists = (path: string): Deno.FsFile | null => {
+  try {
+    return Deno.openSync(path, { read: true });
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return null;
+    throw error;
+  }
+};
+
+const legacyPidfileOwner = (path: string): number | null => {
   try {
     // The pidfile is Loom's own JSON; a malformed one names nobody.
     const { pid } = JSON.parse(readFileSync(path, "utf8")) as { pid?: unknown };
@@ -48,16 +99,21 @@ const runsLoomd = (pid: number): boolean => {
 
 /** The pid of a pre-XDG daemon still running for this repository, or null. */
 export const legacyDaemonPid = (paths: LoomPaths): number | null => {
-  const pid = pidfileOwner(paths.legacy.pid);
+  const pid = legacyPidfileOwner(paths.legacy.pid);
   return pid !== null && existsSync(paths.legacy.sock) && pidAlive(pid) && runsLoomd(pid)
     ? pid
     : null;
 };
 
-/** The pid of any daemon running for this repository, current or pre-XDG. */
-export const runningDaemonPid = (paths: LoomPaths): number | null => {
-  const current = pidfileOwner(paths.pid);
-  return current !== null && pidAlive(current) ? current : legacyDaemonPid(paths);
+/**
+ * Any daemon running for this repository, current or pre-XDG, with its pid
+ * when known: a current one has not written it in the moment after it locks.
+ */
+export const runningDaemon = (paths: LoomPaths): { pid: number | null } | null => {
+  const current = daemonLock(paths.lock);
+  if (current.kind === "held") return { pid: current.record?.pid ?? null };
+  const legacy = legacyDaemonPid(paths);
+  return legacy === null ? null : { pid: legacy };
 };
 
 /**
@@ -65,12 +121,10 @@ export const runningDaemonPid = (paths: LoomPaths): number | null => {
  * the current location for a new daemon. Clients never autospawn beside a legacy
  * daemon: that one keeps the repository until it is restarted.
  */
-export const daemonEndpoint = (paths: LoomPaths): DaemonEndpoint => {
-  const current = pidfileOwner(paths.pid);
-  if ((current === null || !pidAlive(current)) && legacyDaemonPid(paths) !== null)
-    return { sock: paths.legacy.sock, pid: paths.legacy.pid, legacy: true };
-  return { sock: paths.sock, pid: paths.pid, legacy: false };
-};
+export const daemonEndpoint = (paths: LoomPaths): DaemonEndpoint =>
+  daemonLock(paths.lock).kind === "free" && legacyDaemonPid(paths) !== null
+    ? { kind: "legacy", sock: paths.legacy.sock, pid: paths.legacy.pid }
+    : { kind: "current", sock: paths.sock, lock: paths.lock };
 
 export const showLegacyDaemonNotice = (paths: LoomPaths): string =>
   `loom: a daemon from an older Loom version is still running from ${paths.legacy.dir}. ` +

@@ -147,9 +147,8 @@ import {
 import {
   claimRepository,
   IdleTimer,
-  releasePidfile,
-  type PidfileInfo,
   type RepositoryClaim,
+  type RepositoryLock,
 } from "./lifecycle.ts";
 import { adoptLegacyLog, finishLegacyMigration, migrateLegacyState } from "./legacy-state.ts";
 import { repoInstructionsFor, systemPromptAppendFor, type InstructionReader } from "./prompt.ts";
@@ -166,7 +165,7 @@ const KEEP_WARM_SWEEP_MS = 30_000;
 const GIT_FACTS_SWEEP_MS = 15_000;
 
 /** How long `stop()` waits for session shutdown before proceeding to release
- *  the pidfile and resolve `whenClosed()` regardless. A wedged adapter must not
+ *  the repository lock and resolve `whenClosed()` regardless. A wedged adapter must not
  *  make the daemon unkillable. */
 const SHUTDOWN_GRACE_MS = 5_000;
 /** Once `promise` has settled or `ms` have passed, whichever is first. */
@@ -276,7 +275,7 @@ export interface DaemonStartOptions {
   configFile?: string;
   /** Connector packages this daemon can load, keyed by package name. Supplied by the CLI. */
   connectors: ConnectorManifest;
-  /** Skip pidfile acquisition and signal handlers (used by tests). */
+  /** Skip the repository lock and signal handlers (used by tests). */
   standalone?: boolean;
 }
 
@@ -369,7 +368,7 @@ export class Daemon {
   #hooks: HookRunner;
   #idle: IdleTimer;
   readonly #pricing = new EndpointPricing();
-  #pidfile: PidfileInfo | null = null;
+  #lock: RepositoryLock | null = null;
   #standalone: boolean;
   #hygiene: HygieneReport | null = null;
   readonly #vmGenerations = new Map<string, string>();
@@ -419,7 +418,7 @@ export class Daemon {
     this.#standalone = opts.standalone ?? false;
     this.paths = loomPaths(opts.repoRoot);
     this.epoch = claim.epoch;
-    this.#pidfile = claim.pidfile;
+    this.#lock = claim.lock;
     adoptLegacyLog(this.paths);
     setLogFile(this.paths.log);
     this.#log = makeLogger("daemon");
@@ -745,19 +744,19 @@ export class Daemon {
     const epoch = randomUUID();
     // Own the repository before touching its state: the migration from
     // `<repo>/.loom` moves files another daemon would hold open.
-    const pidfile = opts.standalone ? null : claimRepository(paths, epoch);
+    const lock = opts.standalone ? null : await claimRepository(paths, epoch);
     let d: Daemon;
     try {
-      d = new Daemon({ ...opts, repoRoot }, { epoch, pidfile });
+      d = new Daemon({ ...opts, repoRoot }, { epoch, lock });
     } catch (err) {
-      if (pidfile) releasePidfile(paths.pid);
+      lock?.release();
       throw err;
     }
     try {
       await d.#bringUp();
     } catch (err) {
-      // Unwind whatever bring-up managed to claim — the pidfile (naming this
-      // live pid) and the open DB handle would otherwise block every restart.
+      // Unwind whatever bring-up managed to claim — the repository lock and
+      // the open DB handle would otherwise block every restart.
       await d.stop("bring-up failed").catch(() => {});
       throw err;
     }
@@ -898,7 +897,7 @@ export class Daemon {
     const drained = this.#sessions.shutdown().catch(() => {});
     try {
       // Time-bound the session drain: one adapter whose close() never settles
-      // must not hang shutdown before the pidfile is released.
+      // must not hang shutdown before the repository lock is released.
       await settledWithin(drained, SHUTDOWN_GRACE_MS);
       // Discovery probes first: their utility workers belong to the providers.
       await this.#catalogues.close();
@@ -936,7 +935,7 @@ export class Daemon {
       await settleProcessGroups().catch((error) => {
         this.#log.warn("process group shutdown failed", { error: String(error) });
       });
-      if (this.#pidfile) releasePidfile(this.paths.pid);
+      this.#lock?.release();
       this.#log.info("daemon stopped", { reason });
       this.#resolveClosed();
     }

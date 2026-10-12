@@ -1,13 +1,14 @@
 import { setTimeout as delay } from "node:timers/promises";
 import type { LoomClient } from "@loom/client";
+import { daemonLock, type DaemonEndpoint } from "@loom/core/daemon-endpoint";
 
 /**
  * The shutdown RPC acknowledges the request before the daemon releases its repo.
- * `pid` is the pidfile of the endpoint the client dialled: a legacy daemon's is in `<repo>/.loom`.
+ * `endpoint` is the one the client dialled: a legacy daemon's pidfile is in `<repo>/.loom`.
  */
 export const stopDaemon = async (
   client: LoomClient,
-  pid: string,
+  endpoint: DaemonEndpoint,
   timeoutMs = 30_000,
 ): Promise<void> => {
   const daemon = client.daemonInfo;
@@ -23,14 +24,7 @@ export const stopDaemon = async (
   try {
     await client.request("daemon.shutdown", undefined, timeoutMs);
     for (;;) {
-      let owned = false;
-      try {
-        const owner = JSON.parse(await Deno.readTextFile(pid));
-        owned = owner.epoch === daemon.epoch && owner.pid === daemon.pid;
-      } catch (error) {
-        if (!(error instanceof Deno.errors.NotFound)) throw error;
-      }
-      if (disconnected && !owned) return;
+      if (disconnected && !(await stillOwned(endpoint, daemon))) return;
       if (Date.now() >= deadline)
         throw new Error("Daemon shutdown timed out; it has not finished releasing this repo");
       await delay(25);
@@ -38,5 +32,27 @@ export const stopDaemon = async (
   } finally {
     unsubscribe();
     unsubscribeClose();
+  }
+};
+
+/** A lock held before its holder records itself may be the stopping daemon's still. */
+const stillOwned = async (
+  endpoint: DaemonEndpoint,
+  daemon: { pid: number; epoch: string },
+): Promise<boolean> => {
+  if (endpoint.kind === "current") {
+    const lock = daemonLock(endpoint.lock);
+    return (
+      lock.kind === "held" &&
+      (lock.record === null ||
+        (lock.record.epoch === daemon.epoch && lock.record.pid === daemon.pid))
+    );
+  }
+  try {
+    const owner = JSON.parse(await Deno.readTextFile(endpoint.pid));
+    return owner.epoch === daemon.epoch && owner.pid === daemon.pid;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return false;
+    throw error;
   }
 };

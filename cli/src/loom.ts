@@ -330,7 +330,7 @@ const main = async (): Promise<void> => {
     endpoint.sock,
     wantTui ? ["--repo", repoRoot, "tui"] : Deno.args,
   );
-  if (endpoint.legacy) writeErr(showLegacyDaemonNotice(repoPaths));
+  if (endpoint.kind === "legacy") writeErr(showLegacyDaemonNotice(repoPaths));
   const { scaffoldUserConfig } = await import("@loom/daemon/scaffold");
   scaffoldUserConfig();
   if (cmd === "mcp") {
@@ -364,7 +364,7 @@ const main = async (): Promise<void> => {
     startupLog: repoPaths.startupLog,
     reconnect,
     // A legacy daemon holds the repository; spawning would only race it.
-    autospawn: cmd !== "stop" && !endpoint.legacy,
+    autospawn: cmd !== "stop" && endpoint.kind === "current",
   }).catch((error) => {
     if (
       cmd === "stop" &&
@@ -794,7 +794,7 @@ const main = async (): Promise<void> => {
       }
       case "stop": {
         const { stopDaemon } = await import("./stop.ts");
-        await stopDaemon(client, endpoint.pid);
+        await stopDaemon(client, endpoint);
         writeOut("daemon stopped\n");
         break;
       }
