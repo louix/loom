@@ -642,10 +642,23 @@ describe("hand-over", () => {
     ]);
   });
 
-  test("an adapter attached with no trip under way changes no entry", () => {
+  test("an adapter attached with nothing handed over changes no entry", () => {
     const { machine, effects } = run(scheduled.machine, [{ kind: "attached" }], world);
     assert.deepEqual(effects, []);
     assert.deepEqual(machine.hold, FREE);
+  });
+
+  test("an adapter attached between trips leaves what the old one never reported taken uncertain", () => {
+    // given: with receipts, "a" went on an earlier trip and was not reported taken; "b" waits
+    const between = mkWorld([mkSlot("a", { state: "delivering" }), mkSlot("b")]);
+    // when
+    const { machine, effects } = run(scheduled.machine, [{ kind: "attached" }], between);
+    // then
+    assert.deepEqual(effects[0], { kind: "mark_uncertain", ids: ["a"] });
+    assert.equal(has(effects, "requeue"), false);
+    assert.ok(has(effects, "warn"));
+    assert.deepEqual(machine.hold, { kind: "loom", reason: "rejected" });
+    assert.equal(machine.delivery.kind, "ready");
   });
 
   test("a send that found no adapter puts it and the rest back", () => {

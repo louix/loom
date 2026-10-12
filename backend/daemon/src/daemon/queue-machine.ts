@@ -638,25 +638,27 @@ const transition = (m: QueueMachine, ev: QueueEvent, world: World): Draft => {
     }
     case "attached": {
       const attached: QueueMachine = { ...m, delivery: { kind: "ready" }, stop: { kind: "none" } };
-      if (m.delivery.kind !== "handing_over") return done(attached);
-      // The previous adapter's trip is cut off, and what it reports later is
-      // ignored: the entry on the wire may have reached that adapter, and so
-      // may any handed over that it had not reported taken (with receipts);
-      // the rest never went.
-      const unsent = m.delivery.ids.slice(m.delivery.at + 1);
+      // The previous adapter's trip, if one was under way, is cut off, and
+      // what it reports later is ignored: the entry on the wire may have
+      // reached that adapter, and so may any handed over that it had not
+      // reported taken (with receipts), on this trip or an earlier one; the
+      // rest of the trip never went.
+      const trip = m.delivery.kind === "handing_over" ? m.delivery : null;
+      const unsent = trip === null ? [] : trip.ids.slice(trip.at + 1);
       const handed = deliveringIds(slots, true).filter((id) => !unsent.includes(id));
+      if (trip === null && handed.length === 0) return done(attached);
       const held = writeHold(attached, loomOn(m.hold, "rejected"), {
         reasserted: false,
         keepForced: false,
       });
       return done(held.machine, [
         { kind: "mark_uncertain", ids: handed },
-        { kind: "requeue", ids: unsent },
+        ...(unsent.length > 0 ? [{ kind: "requeue", ids: unsent } as const] : []),
         ...held.effects,
         {
           kind: "warn",
           message:
-            "A queued message was being handed over as the session's adapter was replaced and may not have reached the agent; the queue is held — review it with q.",
+            "A queued message handed over to the session's previous adapter may not have reached the agent; the queue is held — review it with q.",
         },
         PUBLISH,
       ]);
