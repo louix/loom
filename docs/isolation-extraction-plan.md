@@ -99,6 +99,15 @@ Outstanding:
   interrupt without `-t`; the Loom dev shell needs `static.crates.io` for the
   patched smolvm on x86_64-linux; an isolation-launcher preparation records
   `stdout_closed` where legacy records `guest_exit`.
+- Daemon upgrades (after the `.loom` → XDG move): a version-stable control
+  channel answered before the protocol check (`hello` with version, pid and
+  attached clients; `shutdown`; a `quit` push). `loom daemon stop|restart`
+  sends attached TUIs `quit` with the reason; they print it to stderr and exit
+  without respawning, and clients still attached after a short grace get
+  SIGTERM by peer pid (`SO_PEERCRED` / `LOCAL_PEERPID`). `loom daemon status`
+  lists attached clients. Only a client of the newest installed version may
+  start a daemon (checked in the startup lock). Future versions only; no
+  fallback for daemons that predate it.
 
 ## Delivery order
 
