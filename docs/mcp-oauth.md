@@ -44,6 +44,13 @@ consume the attempt. Saved dynamic registrations reuse their callback port;
 a port conflict fails rather than silently registering another client.
 `--no-browser` prints the URL but still requires the callback on this host.
 
+Dynamic registration requests `none` when the server lists it, otherwise a
+secret method, and the response must register the requested method. A response
+that omits `token_endpoint_auth_method` means `client_secret_basic` (RFC 7591
+§2), except that a `none` request answered without a `client_secret` is taken
+as `none`: §3.2.1 issues a secret only to a confidential client, so a client
+without one is public.
+
 Confidential clients support `client_secret_basic` and `client_secret_post`.
 Secret commands execute only during explicit login, without a shell, with a
 60-second timeout and 64 KiB output bound. The resolved client secret is stored

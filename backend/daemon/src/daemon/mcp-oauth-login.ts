@@ -141,11 +141,17 @@ export const loginMcpOAuth = async (input: {
         const secret = registration.client_secret;
         if (secret !== undefined && typeof secret !== "string")
           throw new McpOAuthError("registration_failed");
+        // RFC 7591 §2 defaults an omitted method to client_secret_basic, but
+        // §3.2.1 returns a secret only to a confidential client: a public
+        // client with no secret can only be "none". Some servers drop the field.
+        const registeredMethod =
+          registration.token_endpoint_auth_method ??
+          (authMethod === "none" && secret === undefined ? "none" : "client_secret_basic");
         if (
           !Array.isArray(registration.redirect_uris) ||
           registration.redirect_uris.length !== 1 ||
           registration.redirect_uris[0] !== listener.redirectUri ||
-          (registration.token_endpoint_auth_method ?? "client_secret_basic") !== authMethod ||
+          registeredMethod !== authMethod ||
           (authMethod !== "none" && !registration.client_secret) ||
           (authMethod === "none" && registration.client_secret !== undefined)
         )

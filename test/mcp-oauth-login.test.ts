@@ -14,6 +14,7 @@ const fixture = async (methods = ["none"]) => {
   const registrations: unknown[] = [];
   const exchanges: { body: URLSearchParams; authorization: string | null }[] = [];
   let tokenMode = "ok";
+  let registrationMode = "echo";
   let authorization: URL;
   const server = Deno.serve(
     { hostname: "127.0.0.1", port: 0, onListen() {} },
@@ -44,7 +45,19 @@ const fixture = async (methods = ["none"]) => {
         const registration = await req.json();
         registrations.push(registration);
         assert.equal(registration.application_type, "native");
-        return Response.json({ ...registration, client_id: "fixture-client" }, { status: 201 });
+        if (registrationMode === "echo")
+          return Response.json({ ...registration, client_id: "fixture-client" }, { status: 201 });
+        const { token_endpoint_auth_method: requested, ...accepted } = registration;
+        return Response.json(
+          {
+            ...accepted,
+            client_id: "fixture-client",
+            ...(requested !== "none" || registrationMode === "omit-method-with-secret"
+              ? { client_secret: "fixture-client-secret", client_secret_expires_at: 0 }
+              : {}),
+          },
+          { status: 201 },
+        );
       }
       if (path === "/token") {
         const body = new URLSearchParams(await req.text());
@@ -96,6 +109,9 @@ const fixture = async (methods = ["none"]) => {
     present,
     mode: (mode: string) => {
       tokenMode = mode;
+    },
+    registrationMode: (mode: "echo" | "omit-method" | "omit-method-with-secret") => {
+      registrationMode = mode;
     },
     close: async () => {
       await server.shutdown();
@@ -280,6 +296,48 @@ test(
       assert.equal(f.exchanges.length, 0);
     } finally {
       await f.close();
+    }
+  },
+);
+
+test(
+  "OAuth login takes a public registration that omits its auth method as none, and nothing else",
+  linux,
+  async () => {
+    for (const [methods, mode, expected] of [
+      [["none"], "echo", "none"],
+      [["none"], "omit-method", "none"],
+      [["none"], "omit-method-with-secret", "registration_failed"],
+      [["client_secret_post"], "omit-method", "registration_failed"],
+    ] as const) {
+      const f = await fixture([...methods]);
+      try {
+        f.registrationMode(mode);
+        const login = loginMcpOAuth({
+          name: "work",
+          resource: f.origin + "/mcp",
+          config: {},
+          store: f.store,
+          present: f.present,
+        });
+        if (expected === "registration_failed") {
+          await assert.rejects(login, code(expected));
+          assert.equal(f.exchanges.length, 0);
+        } else {
+          await login;
+          const client = (await f.store.read()).credential!.client;
+          assert.equal(client.authMethod, expected);
+          assert.equal(client.secret, undefined);
+          assert.equal(f.exchanges[0]!.authorization, null);
+          assert.equal(f.exchanges[0]!.body.get("client_id"), "fixture-client");
+        }
+        assert.equal(
+          (f.registrations[0] as { token_endpoint_auth_method: string }).token_endpoint_auth_method,
+          methods[0],
+        );
+      } finally {
+        await f.close();
+      }
     }
   },
 );
