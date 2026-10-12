@@ -1,7 +1,7 @@
 import { fleet, queueEntry, queueOf, snap } from "./tui-fixtures.ts";
 import assert from "node:assert/strict";
 import { outboxOf } from "@loom/tui/composer";
-import { describe, test } from "node:test";
+import { describe, test as nodeTest } from "node:test";
 import { EventEmitter } from "node:events";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
@@ -63,6 +63,13 @@ import { mouseReport, terminalModes } from "@loom/tui/mouse";
 import { normalizeConfig, parseConfig } from "@loom/daemon/config/config";
 import type { FakeProvider } from "@loom/connector-mock";
 import { makeHarness, type Harness } from "@loom/harness";
+import { mkShardFilter } from "../scripts/lib/test-shards.ts";
+
+// Spread over tui-render.<n>.test.ts, which run at once (scripts/lib/test-shards.ts).
+const inShard = mkShardFilter(import.meta.url);
+const test = (name: string, fn: () => void | Promise<void>) => {
+  if (inShard()) void nodeTest(name, fn);
+};
 
 const ESC = "\x1b";
 

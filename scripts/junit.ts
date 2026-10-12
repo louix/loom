@@ -70,8 +70,15 @@ export const parseJunit = (xml: string): JunitReport => {
     suites.push({ file, cases });
   }
 
-  return { wallMs, suites: attributeNested(suites) };
+  return { wallMs, suites: attributeNested(mergeSuites(suites)) };
 };
+
+/** One suite per file: a sharded file's shards (scripts/lib/test-shards.ts) all report under its name. */
+export const mergeSuites = (suites: JunitSuite[]): JunitSuite[] =>
+  [...Map.groupBy(suites, (suite) => suite.file)].map(([file, group]) => ({
+    file,
+    cases: group.flatMap((suite) => suite.cases),
+  }));
 
 // `node:test` `describe` children are registered from inside Deno's node
 // shim, so JUnit files them under a suite named after the shim's location

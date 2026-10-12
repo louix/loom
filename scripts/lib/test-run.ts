@@ -11,8 +11,14 @@
 // fails a test file that mutates process state without the marker.
 
 import { basename, join } from "node:path";
-import { parseJunit, stripTrailingTestFailedNotice, type JunitReport } from "../junit.ts";
+import {
+  mergeSuites,
+  parseJunit,
+  stripTrailingTestFailedNotice,
+  type JunitReport,
+} from "../junit.ts";
 import { createTestHome } from "./test-home.ts";
+import { shardBase, shardsOf } from "./test-shards.ts";
 
 /** A whole line of its own in the test file, followed by why. */
 export const OWN_PROCESS_MARKER = "// test-run: own-process";
@@ -65,11 +71,25 @@ export const ownsProcess = (source: string): boolean =>
 export const planTests = (args: string[], readFile: (path: string) => string): TestPlan => {
   const targets = args.filter((arg) => !arg.startsWith("-") && exists(arg));
   const flags = args.filter((arg) => !targets.includes(arg) && !OWN_FLAGS.has(arg));
-  const files = (targets.length > 0 ? targets : ["test"]).flatMap(testModulesUnder);
+  const selected = (targets.length > 0 ? targets : ["test"]).flatMap(testModulesUnder);
+  // A shard stands for its whole file: the file and every shard run, and a
+  // shard runs where and when its file would.
+  const files = [
+    ...new Set(
+      selected.flatMap((file) => {
+        const base = shardBase(file) ?? file;
+        return [base, ...shardsOf(base)];
+      }),
+    ),
+  ]
+    .map((file) => ({ file, source: readFile(shardBase(file) ?? file) }))
+    // Largest first: `--parallel` starts files in the order given, and the run
+    // lasts at least as long as its slowest file, which tends to be a large one.
+    .sort((a, b) => b.source.length - a.source.length);
   return {
     flags,
-    parallel: files.filter((file) => !ownsProcess(readFile(file))),
-    ownProcess: files.filter((file) => ownsProcess(readFile(file))),
+    parallel: files.filter(({ source }) => !ownsProcess(source)).map(({ file }) => file),
+    ownProcess: files.filter(({ source }) => ownsProcess(source)).map(({ file }) => file),
   };
 };
 
@@ -169,7 +189,7 @@ export const runTests = async (args: string[], output: TestOutput): Promise<Test
         output === "junit"
           ? {
               wallMs: wall_ms,
-              suites: results.flatMap((result) => parseJunit(result.stdout).suites),
+              suites: mergeSuites(results.flatMap((result) => parseJunit(result.stdout).suites)),
             }
           : null,
       stderr: results.map((result) => stripTrailingTestFailedNotice(result.stderr)).join(""),
