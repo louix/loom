@@ -752,7 +752,8 @@ for (const [kind, provider] of Object.entries(providers)) {
       renewal = async () => {
         throw new Error("refresh unavailable");
       };
-      await provider.write(profile, "expiring", Date.now() + 300);
+      // Long enough to be read and delivered before it expires in a loaded run.
+      await provider.write(profile, "expiring", Date.now() + 1_500);
       await until(() => delivered.get(environment!)!.includes("expiring"), "last token delivered");
       await worker.exited;
       const failure = await worker.failure!();
