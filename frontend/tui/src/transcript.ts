@@ -354,6 +354,13 @@ export const formatEvent = (ev: HarnessEvent, toolName?: string): EventFormat =>
         full: body(ev.message),
         tone: "bad",
       };
+    case "notice":
+      return {
+        glyph: ev.level === "warning" ? "!" : "·",
+        text: oneLine(ev.message, 160),
+        full: body(ev.message),
+        tone: ev.level === "warning" ? "warn" : "dim",
+      };
     case "result":
       // The turn's text is already in the log as assistant_text; a failure gets
       // its own `error` line. So this is just a terse end-of-turn marker.
@@ -1098,6 +1105,8 @@ const transcriptHeader = (l: LogLine): string | null => {
       return "context compacted";
     case "error":
       return "error";
+    case "notice":
+      return "notice";
     case "subagent_started":
       return "sub-agent started";
     case "subagent_stopped":

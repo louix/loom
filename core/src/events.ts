@@ -283,6 +283,19 @@ export const errorEventSchema = harnessEventBaseSchema.extend({
 });
 export type ErrorEvent = z.infer<typeof errorEventSchema>;
 
+/**
+ * A status line the provider wants shown, not part of the conversation: hook
+ * feedback, a model notice, a configuration warning (Claude's
+ * `system/informational` frames). `warning` is meant to stand out; `info`
+ * is background. The adapter drops exact repeats.
+ */
+export const noticeEventSchema = harnessEventBaseSchema.extend({
+  type: z.literal("notice"),
+  level: z.enum(["info", "warning"]),
+  message: z.string(),
+});
+export type NoticeEvent = z.infer<typeof noticeEventSchema>;
+
 /** A turn ended cleanly. `summary` is the model's closing text, if any. */
 export const resultOkEventSchema = harnessEventBaseSchema.extend({
   type: z.literal("result"),
@@ -493,6 +506,7 @@ export const harnessEventSchema = z.discriminatedUnion("type", [
   statusChangedEventSchema,
   startupProgressEventSchema,
   errorEventSchema,
+  noticeEventSchema,
   resultEventSchema,
   rewindEventSchema,
   providerChangedEventSchema,

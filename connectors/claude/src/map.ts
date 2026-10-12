@@ -92,6 +92,9 @@ interface SdkMsgLite {
     /** Housekeeping task the CLI hides from activity indicators — we drop these. */
     ambient?: boolean;
   }>;
+  // informational system message
+  content?: string;
+  level?: string;
   // rate_limit_event
   rate_limit_info?: {
     status?: string;
@@ -198,6 +201,9 @@ const zeroUsage = (): TokenUsage => {
 const blocks = (content: unknown): ContentBlock[] => {
   return Array.isArray(content) ? (content as ContentBlock[]) : [];
 };
+
+/** How many distinct notices the mapper remembers to drop repeats of. */
+const NOTICES_REMEMBERED = 256;
 
 /** Map the SDK's free-text `task_type` onto our coarse {@link BackgroundTaskKind}. */
 const taskKind = (t: string | undefined): BackgroundTaskKind => {
@@ -334,6 +340,9 @@ export class ClaudeEventMapper {
    *  backgrounded Task is tracked via `background_tasks_changed` instead. */
   readonly #openSubagents = new Map<string, string>();
 
+  /** Notices already shown, by level and text — a repeated warning is shown once. */
+  readonly #noticesSeen = new Set<string>();
+
   /** Ids of the last `background_tasks` set we emitted — to suppress no-op repeats. */
   #lastBgSig: string | null = null; // null until the first set is emitted
 
@@ -372,6 +381,7 @@ export class ClaudeEventMapper {
         }
         if (m.subtype === "compact_boundary") return this.#compactBoundary(m);
         if (m.subtype === "background_tasks_changed") return this.#backgroundTasks(m);
+        if (m.subtype === "informational") return this.#informational(m);
         return [];
       case "assistant":
         return this.#assistant(m);
@@ -454,6 +464,26 @@ export class ClaudeEventMapper {
         ? { agentId: this.#bgIds.get(agentId) ?? agentId }
         : {}),
     };
+  }
+
+  /**
+   * `system/informational`: a status line the CLI would print — hook feedback,
+   * a model notice, a settings warning. `suggestion` and `warning` are meant
+   * to stand out, `info` and `notice` not. Exact repeats are dropped (some
+   * recur every turn, e.g. a hook's feedback).
+   */
+  #informational(m: SdkMsgLite): HarnessEvent[] {
+    const message = typeof m.content === "string" ? m.content.trim() : "";
+    if (!message) return [];
+    const level = m.level === "warning" || m.level === "suggestion" ? "warning" : "info";
+    const key = `${level}\0${message}`;
+    if (this.#noticesSeen.has(key)) return [];
+    this.#noticesSeen.add(key);
+    if (this.#noticesSeen.size > NOTICES_REMEMBERED) {
+      const oldest = this.#noticesSeen.values().next().value;
+      if (oldest !== undefined) this.#noticesSeen.delete(oldest);
+    }
+    return [{ type: "notice", ...this.#base(null), level, message }];
   }
 
   #rateLimit(m: SdkMsgLite): HarnessEvent[] {

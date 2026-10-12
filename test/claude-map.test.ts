@@ -465,6 +465,39 @@ test("a backgrounded Task does NOT bracket as a foreground sub-agent", () => {
   assert.equal(byType(res, "subagent_stopped").length, 0);
 });
 
+test("system/informational → a notice; warnings stand out; repeats dropped", () => {
+  const m = new ClaudeEventMapper(SID);
+  const frame = (content: string, level: string) => ({
+    type: "system",
+    subtype: "informational",
+    content,
+    level,
+    uuid: crypto.randomUUID(),
+    session_id: "claude-abc",
+  });
+  const warn = byType(m.map(frame("Host config was only partially applied", "warning")), "notice");
+  assert.deepEqual(
+    warn.map((e) => [e.level, e.message, e.sessionId]),
+    [["warning", "Host config was only partially applied", SID]],
+  );
+  assert.equal(byType(m.map(frame("Try /model", "suggestion")), "notice")[0]?.level, "warning");
+  assert.equal(
+    byType(m.map(frame("Stop hook says: tests pass", "notice")), "notice")[0]?.level,
+    "info",
+  );
+  assert.equal(
+    byType(m.map(frame("Session completed successfully", "info")), "notice")[0]?.level,
+    "info",
+  );
+  // The same text again (a fresh uuid) is a repeat; the same text at another level is not.
+  assert.deepEqual(m.map(frame("Host config was only partially applied", "warning")), []);
+  assert.deepEqual(m.map(frame("  Stop hook says: tests pass ", "notice")), []);
+  assert.equal(byType(m.map(frame("Stop hook says: tests pass", "warning")), "notice").length, 1);
+  // Nothing to show.
+  assert.deepEqual(m.map(frame("   ", "warning")), []);
+  assert.deepEqual(m.map({ type: "system", subtype: "informational", level: "warning" }), []);
+});
+
 test("background_tasks_changed → a background_tasks event; ambient filtered; repeats suppressed", () => {
   const m = new ClaudeEventMapper(SID);
   const first = m.map({

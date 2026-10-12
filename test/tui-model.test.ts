@@ -2022,6 +2022,19 @@ test("structured tool errors retain readable summaries and expanded details", ()
   }
 });
 
+test("a provider notice renders dim, a warning in the warn tone", () => {
+  const info = formatEvent(ev({ type: "notice", level: "info", message: "lint hook says: ok" }));
+  assert.equal(info.tone, "dim");
+  assert.equal(info.text, "lint hook says: ok");
+  const warn = formatEvent(
+    ev({ type: "notice", level: "warning", message: "Settings\nwere only partially applied" }),
+  );
+  assert.equal(warn.tone, "warn");
+  assert.equal(warn.glyph, "!");
+  assert.equal(warn.text, "Settings were only partially applied");
+  assert.equal(warn.full, "Settings\nwere only partially applied");
+});
+
 test("formatEvent renders each event kind to a glyph + one-liner + tone", () => {
   const tc = formatEvent(
     ev({ type: "tool_call", id: "1", name: "Bash", input: { command: "npm test" } }),
