@@ -97,12 +97,35 @@ test("a partial streamed reading keeps the fuller snapshot of the same window", 
     reading(3000, { resetsAt: 9000 });
     assert.equal(s.accountUsage("account-1", 4000).five_hour?.utilization, 40);
     // A new window without a utilization does not inherit the old one.
-    reading(10_000, { resetsAt: 20_000 });
+    const next = 9000 + 5 * 3_600_000;
+    reading(10_000, { resetsAt: next });
     assert.deepEqual(s.accountUsage("account-1", 11_000).five_hour, {
       status: "allowed",
-      resetsAt: 20_000,
+      resetsAt: next,
       observedAt: 10_000,
     });
+  } finally {
+    db.close();
+  }
+});
+
+test("a streamed reset in whole seconds is the same window as a polled one in ms", () => {
+  const db = openDb(":memory:");
+  try {
+    const s = new SessionStore(db);
+    const reading = (ts: number, extra: { utilization?: number; resetsAt?: number }) =>
+      s.recordAccountUsage("account-1", {
+        type: "rate_limit",
+        sessionId: "a",
+        ts,
+        window: "five_hour",
+        status: "allowed",
+        ...extra,
+      });
+    // get_usage: 05:19:59.914; the stream: 05:20:00 in seconds, converted to ms.
+    reading(1000, { utilization: 33, resetsAt: 1_791_782_399_914 });
+    reading(2000, { resetsAt: 1_791_782_400_000 });
+    assert.equal(s.accountUsage("account-1", 3000).five_hour?.utilization, 33);
   } finally {
     db.close();
   }

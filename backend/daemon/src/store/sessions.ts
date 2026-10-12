@@ -480,6 +480,8 @@ export class SessionStore {
    * never replaces one still ahead. A full reading with no reset time, taken
    * after the stored reset passed, is a window that has not restarted: the
    * stale reset goes, so the reading shows rather than being filtered out.
+   * Reset times within a minute are the same window: the stream reports whole
+   * seconds, `get_usage` milliseconds (05:20:00.000 vs 05:19:59.914).
    */
   recordAccountUsage(scope: string, ev: PlanWindow | RateLimitEvent): void {
     this.#db
@@ -490,7 +492,8 @@ export class SessionStore {
         polled = MAX(account_usage.polled, excluded.polled),
         utilization = CASE
           WHEN excluded.utilization IS NOT NULL THEN excluded.utilization
-          WHEN excluded.resets_at IS NULL OR excluded.resets_at = account_usage.resets_at
+          WHEN excluded.resets_at IS NULL
+            OR abs(excluded.resets_at - account_usage.resets_at) < 60000
             OR (excluded.resets_at <= excluded.observed_at
               AND account_usage.resets_at > excluded.observed_at)
             THEN account_usage.utilization
