@@ -1,59 +1,75 @@
 # Loom
 
-Loom is an agent harness: one terminal UI and one set of configuration for
-working with different coding agents.
+A cross-provider agent harness with sandboxing built in: every session can run
+in its own microVM (via [smolvm](https://github.com/smol-machines/smolvm)), and
+so can its MCP servers.
 
-- **Claude** runs Claude Code headlessly through the Claude Agent SDK, using your
-  subscription's OAuth login.
-- **Codex** runs Codex headlessly through its app-server, using your subscription's
-  OAuth login.
-- **Other models** run in Loom's own agent loop via OpenAI-compatible endpoints,
-  including local models. Native Anthropic and Google APIs are supported too.
+Ever wanted to just let agents go wild? Start a session with VM isolation and a
+private clone. The agent gets a fresh machine with a copy of your repository and
+nothing else. Its commits come back to its own branch on your host.
 
-Choose the agent, model and account per session. Loom provides the shared
-configuration, tools, Git workflow and execution environment.
+Runs Claude Code and Codex on your subscriptions, plus any OpenAI-compatible
+endpoint (local models too), and the native Anthropic and Google APIs.
 
 ## Features
 
-- **Persistent sessions.** A daemon runs your agents; the TUI is a client. Close
-  the terminal and reconnect later. Browse multiple sessions, search conversations,
-  and inspect changes and activity.
-- **Git workspaces.** Separate branches and worktrees by default, with an in-place
-  option. Fork conversations, undo supported turns, rebase, archive and resume.
-- **Agent controls.** Manual approval, plan, accept-edits and auto modes. Review a
-  plan before implementation, switch models, interrupt, queue messages and compact
-  context. Follow sub-agents and background tasks.
-- **Usage visibility.** Token counts, context usage, reported or estimated costs,
-  and prompt-cache activity where the provider exposes them.
-- **Tools and hooks.** Local and HTTP MCP servers, including filesystem tools and
-  OAuth services. Hooks for workspace setup, checks and notifications.
-- **Nix environments.** Activate a project's devenv, flake or Nix shell for agent
-  commands and hooks. Open a shell in the session's environment.
-
-Capabilities such as native undo, history forks and cache reporting vary by provider.
+- **One central config.** Providers, accounts, models, MCP servers, skills and
+  hooks, for every agent, in one file.
+- **Cross-provider sub-agents.** Have Opus hand the work to Codex. Any
+  session can start, steer and stop sub-agents on any provider, and you can
+  talk to each of them directly.
+- **Agent profiles.** Set up a model as your reviewer, another as an overseer,
+  a cheap one as your implementer, or something more exotic. Profiles choose the
+  provider, model, effort, MCP servers and skills.
+- **First-class sandboxing.** Sessions, and the MCP servers they use, run in
+  separate microVMs with their own network allowlists.
+- **Persistent sessions.** A daemon runs your agents; the TUI is just a client.
+  Close the terminal and pick up later. Each session keeps its own worktree or
+  clone, conversation and branch.
+- **Git built in.** A branch per session, worktrees or clones, forks, rebase,
+  undo, archive and resume.
+- **Nix environments.** Agent commands run inside your project's devenv, flake
+  or Nix shell, in a VM or on the host.
+- **Know what it costs.** Tokens, context, cache activity, and costs per session
+  and across a whole tree of sub-agents.
 
 ## Isolation
 
-Choose how each agent session runs:
+Choose how each session runs:
 
-| Execution     | Workspace                                                                                                                                 |
-| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| Local         | Host worktree, or the current checkout in in-place mode.                                                                                  |
-| VM with mount | A separate VM with the host repository and session worktree mounted. Shared Git metadata is accessible.                                   |
-| VM with clone | A separate VM with a private clone. A host relay publishes commits to the session branch without exposing the host repository filesystem. |
+| Execution     | Workspace                                                                                               |
+| ------------- | ------------------------------------------------------------------------------------------------------- |
+| Local         | A host worktree, or your checkout in place.                                                             |
+| VM with mount | Its own VM, with the session worktree and the repository's Git metadata mounted.                        |
+| VM with clone | Its own VM with a private clone. A host relay publishes its commits to the session branch, and no more. |
 
-Agent VMs use network allowlists for provider access and any extra destinations
-you configure. Local MCP servers can run in their own VMs with separate workspace
-and network grants; HTTP MCP credentials stay in host relays. Permission modes
-govern approvals independently of these boundaries.
-
-Prepare reusable dependency caches with `loom vm prepare`. Use `loom vm list`
-and `loom vm inspect` to see VM ownership and state, and `loom vm prune` to clean
-up obsolete caches. The TUI's Monitor tab shows session activity and host/daemon
-resource counters.
+In a VM the agent has no SSH keys, no credentials but its own provider's, and
+none of your files beyond its workspace. On a subscription it doesn't even see
+its own refresh token: Loom renews the login on the host and hands the VM
+short-lived access tokens. Network access is an
+allowlist of exact hosts. Local MCP servers run in their own VMs with their own
+grants, and remote MCP credentials stay on the host. A host command you trust,
+such as a browser driver, can be relayed in explicitly.
 
 See [isolation](docs/isolation.md), [repository access](docs/repository-mounts.md)
 and [session environments](docs/session-environments.md) for configuration and limits.
+
+## Compared with
+
+### Claude Code in Docker
+
+- A microVM doesn't share the host kernel; a container does.
+- Claude Code on its own can reach everything you can. In Loom's clone mode it
+  reaches nothing but its clone and the hosts you allow.
+- Loom isn't tied to one agent: Claude, Codex and API models side by side, with
+  the same tools and isolation.
+
+### Docker Sandboxes
+
+- Docker Sandboxes also use microVMs, but local stdio MCP servers run on the
+  host. In Loom they get their own VMs.
+- Loom has multi-agent built in: profiles, cross-provider sub-agents and a
+  fleet view to follow them.
 
 ## Setup
 
