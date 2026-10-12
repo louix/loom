@@ -243,6 +243,37 @@ describe("loom agents", { concurrency: 4 }, () => {
     assert.match(listed.text, /cannot start sub-agents of their own \(agents\.max_depth 2\)/);
   });
 
+  test("an archived session whose profile is gone is refused before its worktree comes back", async (env) => {
+    // given: archived as "solo", which the config then drops
+    const solo = await idleSession(env, { profile: "solo" });
+    await env.c.request("session.markDone", { id: solo.id });
+    const archived = await get(env.c, solo.id);
+    assert.equal(archived.worktree, null);
+    writeFileSync(
+      env.h.configPath,
+      JSON.stringify({ agents: { profiles: { implementer: { description: "Implements" } } } }),
+    );
+    await env.h.restart();
+    const c = await LoomClient.connect({
+      repoRoot: env.h.repoRoot,
+      sockPath: env.h.sockPath,
+      autospawn: false,
+    });
+    try {
+      // when
+      await assert.rejects(
+        c.request("session.resume", { id: solo.id }),
+        /agent profile "solo", which is no longer in the config/,
+      );
+      // then
+      const after = await get(c, solo.id);
+      assert.equal(after.worktree, null, "its worktree was not restored");
+      assert.equal(after.status.kind, archived.status.kind);
+    } finally {
+      await c.close();
+    }
+  });
+
   test("messages reach a child through its queue, labelled; only its supervisor may send them", async (env) => {
     const lead = await idleSession(env);
     const child = await startChild(env, lead.fs);

@@ -120,6 +120,7 @@ import {
   agentSessionPlan,
   profileInfos,
   type AgentSessionPlan,
+  type AgentSessionPlanned,
   type ChildStart,
 } from "./agents.ts";
 import { agentAuthor, SELF_PROFILE, type ChildrenOnClose } from "@loom/core/agents";
@@ -2545,6 +2546,9 @@ export class Daemon {
       );
     const reason = this.#resumeBlockedReason(row);
     if (reason) return Promise.reject(new RpcError("resume_blocked", reason));
+    const planned = this.#agentPlanned(id);
+    if (planned.kind === "refused")
+      return Promise.reject(new RpcError("bad_request", planned.message));
     const operation = Promise.resolve()
       .then(async () => {
         await this.#preflightTools(row.provider, row.isolation);
@@ -2578,9 +2582,11 @@ export class Daemon {
   }
 
   async #reviveLocked(id: string, startReason = "resume"): Promise<SessionSnapshot> {
-    if (this.#sessions.isEnded(id)) await this.#sessions.close(id);
     const row = this.#registry.get(id);
     if (!row) throw new RpcError("not_found", `no such session: ${id}`);
+    // Before anything changes: a refused session keeps its row and its archive.
+    const agent = this.#agentPlan(id);
+    if (this.#sessions.isEnded(id)) await this.#sessions.close(id);
     // An archived (`done`) session had its worktree reclaimed but its branch and
     // transcript kept — check the branch back out into a fresh tree and resume
     // on it. An in-place archived session has no branch to restore; it just
@@ -2640,7 +2646,6 @@ export class Daemon {
       );
     }
     const cwd = worktree ?? this.repoRoot;
-    const agent = this.#agentPlan(id);
     const mcpHandles = agent.mcpServers;
     const isClaude = isClaudeId(row.provider);
     const isAisdk = prof !== undefined;
@@ -3207,15 +3212,18 @@ export class Daemon {
    * whose profile is no longer available rather than drop its restrictions.
    */
   #agentPlan(id: string): AgentSessionPlan {
-    const row = this.#registry.mustGet(id);
-    const planned = agentSessionPlan(row, {
+    const planned = this.#agentPlanned(id);
+    if (planned.kind === "refused") throw new RpcError("bad_request", planned.message);
+    return planned.plan;
+  }
+
+  #agentPlanned(id: string): AgentSessionPlanned {
+    return agentSessionPlan(this.#registry.mustGet(id), {
       config: this.config,
       lookup: (other) => this.#registry.get(other) ?? undefined,
       settledTitle: (other) => this.#settledTitle(other),
       handles: this.#mcpHandles(),
     });
-    if (planned.kind === "refused") throw new RpcError("bad_request", planned.message);
-    return planned.plan;
   }
 
   /** Start a child for `agent_start`: a worktree off its base, nested under its supervisor. */
@@ -3840,11 +3848,13 @@ export class Daemon {
         const operation = this.#queue
           .run(id, async () => {
             await this.#settleGuestProbes(id);
+            // A session that could not run again keeps running as it is.
             if (
               this.#stopping ||
               this.#shells.has(id) ||
               !this.#sessions.canRefresh(id) ||
-              this.#hooks.isRunning(id)
+              this.#hooks.isRunning(id) ||
+              this.#agentPlanned(id).kind === "refused"
             )
               return this.#registry.mustGet(id);
             const warm = this.#sessions.keepWarm(id);
