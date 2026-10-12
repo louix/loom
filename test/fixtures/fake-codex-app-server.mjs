@@ -61,7 +61,9 @@
  * protocol) do the same for one specific numbered `turn/start` call — e.g.
  * holding only the *second* turn a session starts, for racing an interrupt
  * against a slow `turn/start` without also blocking the first turn a test
- * needs just to get set up.
+ * needs just to get set up. The released turn stays open, as if still
+ * working: otherwise it would complete straight after its reply, and a
+ * client that reads both before acting has no turn left to interrupt.
  *
  * Native settings are modelled the way Codex 0.156 behaves: start/resume
  * replies carry the effective approval policy and reviewer (a resume reply
@@ -422,7 +424,7 @@ const handle = (req) => {
         },
       });
     };
-    const respondToTurnStart = () => {
+    const respondToTurnStart = (keepOpen) => {
       // LOOM_TEST_COMPLETE_TURN_WITH_REPLY: the reply and the turn's
       // completion (`=started`: with `turn/started` between them) in one
       // write, so the client reads them together — a turn that ends at once.
@@ -462,7 +464,7 @@ const handle = (req) => {
       // A real turn finishes asynchronously via a notification, not the reply.
       // LOOM_TEST_HOLD_TURN=1 skips this so a test can act (e.g. call
       // `setMode`) while the turn is still genuinely open.
-      if (!process.env["LOOM_TEST_HOLD_TURN"] && pendingOutgoing.size === 0) {
+      if (!keepOpen && !process.env["LOOM_TEST_HOLD_TURN"] && pendingOutgoing.size === 0) {
         setTimeout(() => {
           if (process.env["LOOM_TEST_TITLE_REPLY"])
             send({
@@ -509,12 +511,12 @@ const handle = (req) => {
       const poll = setInterval(() => {
         if (existsSync(releasePath)) {
           clearInterval(poll);
-          respondToTurnStart();
+          respondToTurnStart(true);
         }
       }, 10);
       return;
     }
-    respondToTurnStart();
+    respondToTurnStart(false);
     return;
   }
   if (method === "turn/interrupt") {
