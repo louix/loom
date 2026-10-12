@@ -10,10 +10,18 @@
  * that ran in the old checkout itself, old paths quoted in session history, and
  * `repos[].path` entries in the user config.
  */
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+} from "node:fs";
 import { spawnSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import {
   findRepoRoot,
   loomPaths,
@@ -52,19 +60,35 @@ export interface RepoMoveReport {
  * The repository whose state `old` names, and that state directory: by its
  * key when that records `old`, else by a `repo.json` that records it. The key
  * hashes the real path, so a symlinked `old` can key another checkout's state.
+ * `old` as given is looked for first, then through its symlinks: a record
+ * holds the real path its checkout had, which a symlink left where a moved
+ * parent was no longer leads to.
  */
 const recordedRepository = (old: string): { repo: string; state: string } => {
   const keyedState = repoStateDirectory(old);
   const keyed = readRepoRecord(join(keyedState, "repo.json"));
-  if (keyed === old) return { repo: keyed, state: keyedState };
   const repos = join(userDirectory("state"), "loom", "repos");
   const entries = existsSync(repos) ? readdirSync(repos) : [];
-  for (const name of entries) {
-    const recorded = readRepoRecord(join(repos, name, "repo.json"));
-    if (recorded === old) return { repo: recorded, state: join(repos, name) };
-  }
+  const recordOf = (path: string): { repo: string; state: string } | null => {
+    if (keyed === path) return { repo: keyed, state: keyedState };
+    const name = entries.find((n) => readRepoRecord(join(repos, n, "repo.json")) === path);
+    return name === undefined ? null : { repo: path, state: join(repos, name) };
+  };
+  const real = realPrefix(old);
+  const found = recordOf(old) ?? (real === old ? null : recordOf(real));
+  if (found !== null) return found;
   if (keyed === null && existsSync(keyedState)) return { repo: old, state: keyedState };
   throw new Error(`no Loom state is recorded for ${old}`);
+};
+
+/** `path` with its longest existing prefix resolved through symlinks. */
+const realPrefix = (path: string): string => {
+  try {
+    return realpathSync(path);
+  } catch {
+    const parent = dirname(path);
+    return parent === path ? path : join(realPrefix(parent), basename(path));
+  }
 };
 
 const sessionsIn = (db: string): number => {

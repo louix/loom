@@ -241,6 +241,34 @@ test("loom repo move skips the new checkout's own state that a symlinked old pat
   }
 });
 
+test("loom repo move finds the old state through a symlink in the old path", async () => {
+  // given: a checkout recorded at its real path, moved, and named through a symlinked parent
+  const root = mkRoot();
+  const from = join(root, "real", "repo");
+  const to = join(root, "new", "repo");
+  const old = loomPaths(from);
+  const cleanup = [root, old.state, old.runtime];
+  try {
+    execFileSync("git", ["init", "-q", "-b", "main", from]);
+    ensureLoomDirectories(old);
+    symlinkSync(join(root, "real"), join(root, "link"));
+    mkdirSync(join(root, "new"));
+    renameSync(from, to);
+    const moved = loomPaths(to);
+    cleanup.push(moved.state, moved.runtime);
+
+    // when
+    const report = await moveRepository(join(root, "link", "repo"), to);
+
+    // then
+    assert.equal(report.from, from);
+    assert.ok(report.moved.includes(`${old.state} -> ${moved.state}`));
+    assert.equal(readRepoRecord(moved.record), to);
+  } finally {
+    for (const dir of cleanup) rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("loom repo move refuses a new path that already has sessions", async () => {
   const root = mkRoot();
   const from = join(root, "old");
