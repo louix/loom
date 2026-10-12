@@ -636,7 +636,6 @@ const sessionAvailability = (
       let label = "queue";
       // A user's stop holds the queue even with nothing in it.
       if (held) label = n > 0 ? `${n} held` : "held";
-      else if (n > 0) label = `queue ${n}`;
       return {
         label,
         disabled: first(

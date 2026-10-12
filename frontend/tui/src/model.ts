@@ -49,7 +49,7 @@ import { shownStatusIn } from "./fleet-status.ts";
 import {
   filterLog,
   noTranscript,
-  queuedLine,
+  queuedLines,
   transcriptLines,
   type Transcript,
   oneLine,
@@ -860,17 +860,18 @@ export const cacheHeat = (cs: CacheStatus): "fresh" | "fading" | "expiring" | nu
 };
 
 /** The selected session's log lines, oldest first: the durable entries the
- *  transcript holds, then a marker per message still in its queue. Those
- *  markers are derived from the snapshot, not stored — the daemon's queue is
- *  where a queued message lives, so one disappears exactly when the agent
- *  takes it and the daemon's own `user_message` takes its place. */
+ *  transcript holds, then a marker per kind of wait its queue still has
+ *  messages in. Those markers are derived from the snapshot, not stored — the
+ *  daemon's queue is where a queued message lives, so a count drops exactly
+ *  when the agent takes one and the daemon's own `user_message` takes its
+ *  place. */
 export const sessionLog = (s: TuiState & { transcript?: Transcript }): LogLine[] => {
   const lines = transcriptLines(s.transcript ?? noTranscript);
   const id = s.selectedId;
   if (id === null) return [...lines];
   const queued = queueFor(s, id);
   if (queued.length === 0) return [...lines];
-  return [...lines, ...queued.map((entry) => queuedLine(id, entry))];
+  return [...lines, ...queuedLines(id, queued)];
 };
 
 /**

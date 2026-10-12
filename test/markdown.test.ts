@@ -13,7 +13,7 @@ import {
   EventLog,
 } from "@loom/tui/components";
 import {
-  queuedLine,
+  queuedLines,
   formatEvent,
   logContext,
   type LogLine,
@@ -223,7 +223,7 @@ test("code surfaces fill wrapped and blank rows without shading prose or quote m
   assert.ok(code.spans.slice(1).every((s) => s.background === "code"));
 });
 
-test("human messages and queued input retain literal lines while questions use Markdown", () => {
+test("human messages retain literal lines, a queue marker stays plain, and questions use Markdown", () => {
   const source = "build started\n  build failed\n\n**literal**\n- item";
   for (const kind of ["user_message", "answer"] as const) {
     const event = { type: kind, text: source, ts: 0, sessionId: "s", id: "a", injected: false };
@@ -237,24 +237,26 @@ test("human messages and queued input retain literal lines while questions use M
       source,
     );
   }
-  const queued = queuedLine("s", {
-    id: "e1",
-    author: "c",
-    delivery: "next_boundary",
-    state: "queued",
-    uncertain: false,
-    revision: 0,
-    preview: source,
-    bytes: source.length,
-    dequeue: { t: "tool_boundary", tool: "Bash" },
-  });
-  const ctx = logContext([queued], 100);
+  const [queued] = queuedLines("s", [
+    {
+      id: "e1",
+      author: "c",
+      delivery: "next_boundary",
+      state: "queued",
+      uncertain: false,
+      revision: 0,
+      preview: source,
+      bytes: source.length,
+      dequeue: { t: "tool_boundary", tool: "Bash" },
+    },
+  ]);
+  const ctx = logContext([queued!], 100);
   assert.ok(windowRows(ctx, 0, totalRows(ctx)).every((r) => r.tone === "dim" && !r.spans));
   assert.equal(
     windowRows(ctx, 0, totalRows(ctx))
       .map((r) => r.seg)
       .join("\n"),
-    "next boundary · lands when Bash finishes\n\n" + source,
+    "1 message queued for after the current tool call. press q to view/manage.",
   );
   const question: LogLine = {
     id: null,

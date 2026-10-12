@@ -420,7 +420,7 @@ running, like every A2 target. Session commands stay hidden on child rows.
 | ------------------------------- | ------- | -------- | ----------- | -------------------------------------------------------------------------------- |
 | `send`                          | `⏎`     | `⏎`      |             | On a busy target the label is "queue · next tool boundary".                      |
 | `enqueueEndOfTurn`              |         | `⌥q`     |             | "queued send"; a plain send on an idle, unheld target (as today).                |
-| `queue`                         | `q`     | palette  |             | Bar label "queue 3" / "3 held". "No queued messages."                            |
+| `queue`                         | `q`     | palette  |             | Bar label "queue" / "3 held". "No queued messages."                              |
 | `queueEdit`                     |         |          | `e`         | "Already handed to the agent." · "Loom's own messages can't be edited."          |
 | `queueRemove`                   |         |          | `x`         | "Already handed to the agent."                                                   |
 | `queueMoveUp` / `queueMoveDown` |         |          | `⇧↑` / `⇧↓` | Aliases `K` / `J`. "First in its group." / "Last in its group."                  |
@@ -442,7 +442,9 @@ survives arrivals; a clear confirm covers only the IDs shown (main-new test
 "queue review freezes clear selection across arrivals").
 
 Chat log: `views.ts:163` draws trailing lines from `snapshot.queue` instead of
-the outbox (`⧗ next boundary · <preview> · <hint>`). A consumed entry becomes a
+the outbox, one per kind of wait (`⧗ 3 messages queued for after the current
+tool call. press q to view/manage.`, `… queued for when the agent finishes. …`,
+`… held. …`; previews only in the queue view). A consumed entry becomes a
 normal `user_message`; mid-turn ones keep the `»` glyph and "sent mid-turn"
 (`transcript.ts:379`). DETAIL's status line appends `· 3 queued` or
 `· 3 held · q review`.

@@ -2609,7 +2609,7 @@ describe("tui fleet-handle effects", () => {
         sessionLog(handle.getView().ui)
           .map((l) => l.text)
           .at(-1),
-        "next boundary · follow up · at the next tool boundary",
+        "1 message queued for after the current tool call. press q to view/manage.",
         "the queued message still shows, off the snapshot",
       );
     } finally {

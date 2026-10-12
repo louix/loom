@@ -15,7 +15,7 @@ import type { TextDocument, TextSpan } from "./text-layout.ts";
 import { absurd } from "@loom/core/absurd";
 import { isAgentAuthor } from "@loom/core/agents";
 import type { HarnessEvent } from "@loom/core/events";
-import { describeDequeue, type QueueEntryView } from "@loom/core/message-queue";
+import type { QueueDelivery, QueueEntryView } from "@loom/core/message-queue";
 import { sessionStateLabel } from "@loom/core/session-state";
 import type { HistoryCursor, HistoryPage, PushFrame, TranscriptId } from "@loom/core/wire";
 import {
@@ -89,7 +89,8 @@ export interface LogLine {
   kind: HarnessEvent["type"] | "echo";
   /** Sub-agent that produced the event, when applicable. */
   agentId?: string;
-  /** For a `user_message` or a queued-message marker: who queued it. */
+  /** For a `user_message`: who queued it. For a queued-message marker, the
+   *  agent's author when it counts only Loom agents' notifications. */
   author?: string;
   glyph: string;
   /** Compact one-liner for the log pane (may be truncated). */
@@ -605,31 +606,51 @@ export const pageLines = (page: HistoryPage): LogLine[] => {
   return out;
 };
 
+/** What a queued message waits for. A held one — by an interrupt or another
+ *  hold, or handed over with its fate unknown — waits for the user, whichever
+ *  group it is in. */
+const waitOf = (e: QueueEntryView): QueueDelivery | "held" =>
+  e.dequeue.t === "held" || e.uncertain ? "held" : e.delivery;
+
+/** Each wait's marker, in the order they are drawn — the order the messages go. */
+const QUEUED_WAITS = [
+  ["next_boundary", "queued for after the current tool call"],
+  ["end_of_turn", "queued for when the agent finishes"],
+  ["held", "held"],
+] as const;
+
 /**
- * The one-line marker a follow-up gets while it waits for the current turn.
+ * The one-line markers for a session's queued messages while they wait —
+ * `N messages queued for after the current tool call`, `… for when the agent
+ * finishes` and, after an interrupt, `N messages held` (a warning when one may
+ * already have reached the agent) — each only when it counts something. The
+ * previews are the queue view's (`q`), not the log's.
  *
  * Synthesised per render from the session's queue on the snapshot, not
- * stored: there is no durable row behind it, so it has no id, no place in the
- * id order and nothing to reconcile against. It sits after every durable line,
- * which is where the message it stands for is going — `⧗ next boundary ·
- * <preview> · <when>`, in the daemon's words for when.
+ * stored: there is no durable row behind one, so it has no id, no place in the
+ * id order and nothing to reconcile against. They sit after every durable
+ * line, which is where the messages they stand for are going. A marker that
+ * counts only Loom agents' notifications carries an agent author, so `chat`
+ * hides it as it hides the notifications themselves.
  */
-export const queuedLine = (sessionId: string, entry: QueueEntryView): LogLine => {
-  const where = entry.delivery === "next_boundary" ? "next boundary" : "after it finishes";
-  const when = entry.uncertain ? "may have reached the agent" : describeDequeue(entry.dequeue);
-  const preview = entry.preview.replace(/\s+/g, " ").trim();
-  return {
-    id: null,
-    sessionId,
-    kind: "echo",
-    author: entry.author,
-    glyph: "⧗",
-    text: `${where} · ${preview} · ${when}`,
-    full: `${where} · ${when}\n\n${entry.preview}`,
-    tone: entry.uncertain ? "warn" : "dim",
-    ts: 0,
-  };
-};
+export const queuedLines = (sessionId: string, entries: readonly QueueEntryView[]): LogLine[] =>
+  QUEUED_WAITS.flatMap(([wait, what]): LogLine[] => {
+    const counted = entries.filter((e) => waitOf(e) === wait);
+    const n = counted.length;
+    if (n === 0) return [];
+    return [
+      {
+        id: null,
+        sessionId,
+        kind: "echo",
+        ...(counted.every((e) => isAgentAuthor(e.author)) ? { author: counted[0]!.author } : {}),
+        glyph: "⧗",
+        text: `${n} message${n === 1 ? "" : "s"} ${what}. press q to view/manage.`,
+        tone: counted.some((e) => e.uncertain) ? "warn" : "dim",
+        ts: 0,
+      },
+    ];
+  });
 
 // ---------------------------------------------------------------------------
 // the resource

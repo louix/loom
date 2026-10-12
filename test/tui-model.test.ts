@@ -1042,13 +1042,15 @@ test("chat view collapses tool traffic and thinking; chat_and_tools keeps calls 
 });
 
 test("chat view hides a child's notifications, taken up or queued; the other filters show them", () => {
+  // The queue's markers count by wait: the boundary one counts only the
+  // child's notification, so chat hides it; the other counts the user's.
   const note = '[from your agent kid12345 "Kid" (profile self)] It finished a turn.';
   const a = snap({
     id: "a",
     status: "running",
     queue: queueOf([
       queueEntry("n2", { author: "agent:kid-2", preview: note }),
-      queueEntry("u2", { preview: "mine too" }),
+      queueEntry("u2", { preview: "mine too", delivery: "end_of_turn" }),
     ]),
   });
   let s = reduce(initialState(), fleet([a]));
@@ -1066,14 +1068,18 @@ test("chat view hides a child's notifications, taken up or queued; the other fil
   s = reduce(s, { t: "logFilter", value: "chat" });
   assert.deepEqual(
     visibleLog(s).map((l) => l.text),
-    ["start the kids", "kid 1 is done", "next boundary · mine too · at the next tool boundary"],
+    [
+      "start the kids",
+      "kid 1 is done",
+      "1 message queued for when the agent finishes. press q to view/manage.",
+    ],
   );
   for (const value of ["chat_and_tools", "everything"] as const) {
     s = reduce(s, { t: "logFilter", value });
     const shown = visibleLog(s);
     assert.deepEqual(
       shown.map((l) => l.author),
-      ["client-a", "agent:kid-1", undefined, "agent:kid-2", "client-a"],
+      ["client-a", "agent:kid-1", undefined, "agent:kid-2", undefined],
       value,
     );
     assert.equal(shown[1]!.text, note, value);
@@ -2374,13 +2380,12 @@ test("↓ at the live buffer never clobbers it with the stashed draft", () => {
 });
 
 test("queued messages render after the durable transcript, from the snapshot's queue", () => {
+  const later = (id: string, ahead: number) =>
+    queueEntry(id, { delivery: "end_of_turn", dequeue: { t: "turn_end", ahead } });
   const queue = queueOf([
     queueEntry("e1", { preview: "hi", dequeue: { t: "tool_boundary", tool: "Bash" } }),
-    queueEntry("e2", {
-      preview: "there",
-      delivery: "end_of_turn",
-      dequeue: { t: "turn_end", ahead: 0 },
-    }),
+    later("e2", 0),
+    later("e3", 1),
   ]);
   const a = snap({ id: "a", status: "running", queue });
   let s = opened(reduce(reduce(initialState(), fleet([a])), { t: "select", id: "a" }), "a");
@@ -2399,21 +2404,53 @@ test("queued messages render after the durable transcript, from the snapshot's q
     sessionLog(s).map((l) => l.text),
     [
       "from the daemon",
-      "next boundary · hi · lands when Bash finishes",
-      "after it finishes · there · when the agent finishes",
+      "1 message queued for after the current tool call. press q to view/manage.",
+      "2 messages queued for when the agent finishes. press q to view/manage.",
     ],
-    "a queued message belongs at the bottom — it is about to happen, not part of the record",
+    "queued messages belong at the bottom, a line per wait — about to happen, not the record",
+  );
+  assert.ok(
+    sessionLog(s).every((l) => l.full === undefined),
+    "the previews are the queue view's, not the log's",
   );
 
   // The agent takes the first: the daemon drops it from the queue and its own
   // `user_message` takes its place, in the same snapshot-and-event breath.
-  const later = {
-    ...reduce(s, fleet([{ ...a, queue: queueOf([queue.entries[1]!]) }])),
+  const taken = {
+    ...reduce(s, fleet([{ ...a, queue: queueOf(queue.entries.slice(1)) }])),
     transcript: s.transcript,
   };
   assert.deepEqual(
-    sessionLog(later).map((l) => l.text),
-    ["from the daemon", "after it finishes · there · when the agent finishes"],
+    sessionLog(taken).map((l) => l.text),
+    ["from the daemon", "2 messages queued for when the agent finishes. press q to view/manage."],
+  );
+});
+
+test("a held queue's messages count as held, whichever group they wait in", () => {
+  const held = { t: "held", reason: "interrupt" } as const;
+  const queue = queueOf(
+    [
+      queueEntry("e1", { dequeue: held }),
+      queueEntry("e2", { delivery: "end_of_turn", dequeue: held }),
+      queueEntry("e3", { state: "delivering", uncertain: true, dequeue: { t: "handed_over" } }),
+    ],
+    "interrupt",
+  );
+  const a = snap({ id: "a", status: "interrupted", queue });
+  let s = opened(reduce(reduce(initialState(), fleet([a])), { t: "select", id: "a" }), "a");
+  s = headPage(s, historyPage([]), "a");
+  assert.deepEqual(
+    sessionLog(s).map((l) => [l.text, l.tone]),
+    [["3 messages held. press q to view/manage.", "warn"]],
+    "one may already have reached the agent: a warning",
+  );
+  const one = {
+    ...reduce(s, fleet([{ ...a, queue: queueOf([queue.entries[0]!], "interrupt") }])),
+    transcript: s.transcript,
+  };
+  assert.deepEqual(
+    sessionLog(one).map((l) => [l.text, l.tone]),
+    [["1 message held. press q to view/manage.", "dim"]],
   );
 });
 
@@ -3482,8 +3519,9 @@ test("q opens the queue, ⌃c quits, Q is unbound and Quit and stop the daemon i
   const quitall = paletteActions(busy, "a").find((a) => a.id === "quitall");
   assert.equal(quitall?.label, "Quit and stop the daemon");
   assert.equal(quitall?.keys, "");
-  // The bar says how many wait, and whether they are held.
-  assert.ok(browseBar(busy).some((b) => b.label === "queue 1"));
+  // The bar says whether the queue is held, and then how many wait; the
+  // transcript's markers carry the counts otherwise.
+  assert.ok(browseBar(busy).some((b) => b.label === "queue"));
   const held = ctxFor(
     snap({ id: "a", status: "interrupted", queue: queueOf([queueEntry("e1")], "interrupt") }),
   );

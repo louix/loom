@@ -20,7 +20,7 @@ import {
   windowRows,
   filterLog,
   transcriptLines,
-  queuedLine,
+  queuedLines,
   type Transcript,
   type LogFilter,
   type PhysicalRow,
@@ -159,10 +159,7 @@ export const logView = (
   scroll: number,
 ): LogView => {
   const capacity = Math.max(1, height - 4);
-  const lines = [
-    ...transcriptLines(transcript),
-    ...queue.map((entry) => queuedLine(sessionId ?? "", entry)),
-  ];
+  const lines = [...transcriptLines(transcript), ...queuedLines(sessionId ?? "", queue)];
   const ctx = logContext(filterLog(lines, filter, child?.id ?? null), width);
   const total = totalRows(ctx);
   const off = Math.min(scroll, Math.max(0, total - capacity));
