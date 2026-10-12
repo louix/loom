@@ -873,7 +873,11 @@ describe("loom agents", { concurrency: 4 }, () => {
           judged.push(scope);
           return real(scope, now);
         };
-        await delay(50);
+        // Let the startups' own snapshot builds finish: under load they trail on.
+        for (let seen = -1; seen !== judged.length;) {
+          seen = judged.length;
+          await delay(50);
+        }
         judged.length = 0;
         // Two sessions on one account: one judgement per build.
         await c.request("session.list", {});

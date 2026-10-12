@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { after, afterEach, test } from "node:test";
-import { mkdtempSync, rmSync, realpathSync } from "node:fs";
+import { mkdtempSync, rmSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
@@ -96,7 +96,10 @@ test("background: unread buffer is clamped and reports drops", async () => {
 
 test("background: filter keeps only matching lines", async () => {
   const bg = spawnTasks();
-  const id = bg.start("printf 'foo\\nbar\\n'");
+  // One write from `cat`: a read returns at the first output, and `printf`'s
+  // two lines can arrive apart in a loaded run.
+  writeFileSync(join(dir, "lines.txt"), "foo\nbar\n");
+  const id = bg.start("cat lines.txt");
   const r = await bg.read(id, { waitMs: 5_000, filter: "foo" });
   assert.match(r.output, /^1 of 3 lines matched/);
   assert.match(r.output, /^foo$/m);
