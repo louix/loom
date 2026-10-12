@@ -1,8 +1,6 @@
 import type { ManagedProcess } from "../../../../runtime/src/process.ts";
 import { escalateProcessGroup } from "@loom/core/process-group";
 import { fileURLToPath } from "node:url";
-import { spawn } from "node:child_process";
-import { Readable, Writable } from "node:stream";
 
 export interface WorkerLaunchSpec {
   executable: string;
@@ -31,120 +29,104 @@ export const launchLocalWorker: WorkerLauncher = (spec) => {
     if (values.some((v) => !v || v.includes(","))) throw new Error(`invalid ${name} permission`);
     return values.length ? [`--allow-${name}=${values.join(",")}`] : [];
   });
-  const args = [
-    "run",
-    "--quiet",
-    "--no-prompt",
-    "--cached-only",
-    "--frozen",
-    "--node-modules-dir=manual",
-    `--config=${spec.configPath}`,
-    ...grants,
-    spec.entrypoint,
-  ];
-  if (spec.processGroup) {
-    if (Deno.build.os === "windows")
-      throw new Error("native connector workers require a POSIX process-group launcher");
-    args.push("--process-group");
-    const child = spawn(spec.executable, args, {
-      cwd: spec.cwd,
-      env: spec.env,
-      detached: true,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    // Observe exit independently from EOF: a surviving grandchild may still own
-    // stderr/stdout. The supervisor must kill the group before awaiting those pipes.
-    const exited = new Promise<void>((resolve, reject) => {
-      child.once("exit", () => resolve());
-      child.once("error", reject);
-    });
-    void exited.catch(() => {});
-    child.stderr.on("data", () => {});
-    let terminated = false;
-    return {
-      input: Writable.toWeb(child.stdin) as WritableStream<Uint8Array>,
-      output: Readable.toWeb(child.stdout) as ReadableStream<Uint8Array>,
-      pid: child.pid ?? -1,
-      exited,
-      terminate() {
-        if (child.pid && !terminated) {
-          terminated = true;
-          try {
-            // SIGKILL follows only for what outlives the grace: an agent's `git`
-            // killed outright leaves its index.lock behind. The escalation is
-            // tracked; Daemon.stop waits for it before the daemon exits.
-            Deno.kill(-child.pid, "SIGTERM");
-            void escalateProcessGroup(child.pid);
-          } catch (e) {
-            if (e instanceof Deno.errors.NotFound) return;
-            // Darwin can report EPERM while the last group member is exiting.
-            // Ignore it only after confirming that no live members remain.
-            if (Deno.build.os === "darwin" && e instanceof Deno.errors.PermissionDenied) {
-              try {
-                Deno.kill(-child.pid, 0);
-              } catch (check) {
-                if (check instanceof Deno.errors.NotFound) return;
-              }
-              const group = Deno.spawnAndWaitSync(
-                "/bin/ps",
-                ["-o", "stat=", "-g", String(child.pid)],
-                { stdout: "piped", stderr: "piped" },
-              );
-              if (group.success || (group.code === 1 && group.stderr.length === 0)) {
-                const states = new TextDecoder()
-                  .decode(group.stdout)
-                  .trim()
-                  .split(/\s+/)
-                  .filter(Boolean);
-                if (states.every((state) => state.startsWith("Z"))) return;
-              }
-            }
-            throw e;
-          }
-        }
-      },
-      async cleanup() {
-        for (const path of spec.cleanupPaths ?? []) {
-          try {
-            await Deno.remove(path, { recursive: true });
-          } catch (e) {
-            if (!(e instanceof Deno.errors.NotFound)) throw e;
-          }
-        }
-      },
-    };
-  }
+  if (spec.processGroup && Deno.build.os === "windows")
+    throw new Error("native connector workers require a POSIX process-group launcher");
+  // Deno-native pipes, not node:child_process + Readable.toWeb: cancelling that
+  // adapter destroys stdout with an AbortError, which Deno's child_process exit
+  // handler (still awaiting stdout's close) rethrows as an unhandled rejection
+  // and kills the daemon.
   const child = new Deno.Command(spec.executable, {
-    args,
+    args: [
+      "run",
+      "--quiet",
+      "--no-prompt",
+      "--cached-only",
+      "--frozen",
+      "--node-modules-dir=manual",
+      `--config=${spec.configPath}`,
+      ...grants,
+      spec.entrypoint,
+      ...(spec.processGroup ? ["--process-group"] : []),
+    ],
     cwd: spec.cwd,
     clearEnv: true,
     env: spec.env,
     stdin: "piped",
     stdout: "piped",
     stderr: "piped",
+    // setsid: the worker leads a process group the daemon can signal as a whole.
+    detached: spec.processGroup === true,
   }).spawn();
   // Drain without exposing potentially sensitive vendor diagnostics or retaining
   // unbounded output. A redacted logging channel can be added with real connectors.
   const drained = child.stderr.pipeTo(new WritableStream({ write() {} })).catch(() => {});
+  const cleanup = async () => {
+    for (const path of spec.cleanupPaths ?? []) {
+      try {
+        await Deno.remove(path, { recursive: true });
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) throw error;
+      }
+    }
+  };
+  if (!spec.processGroup) {
+    return {
+      input: child.stdin,
+      output: child.stdout,
+      pid: child.pid,
+      exited: child.status.finally(() => drained),
+      cleanup,
+      terminate() {
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          /* already exited */
+        }
+      },
+    };
+  }
+  let terminated = false;
   return {
     input: child.stdin,
     output: child.stdout,
     pid: child.pid,
-    exited: child.status.finally(() => drained),
-    async cleanup() {
-      for (const path of spec.cleanupPaths ?? []) {
-        try {
-          await Deno.remove(path, { recursive: true });
-        } catch (error) {
-          if (!(error instanceof Deno.errors.NotFound)) throw error;
-        }
-      }
-    },
+    // Observe exit independently from EOF: a surviving grandchild may still own
+    // stderr/stdout. The supervisor must kill the group before awaiting those pipes.
+    exited: child.status,
+    cleanup,
     terminate() {
+      if (terminated) return;
+      terminated = true;
       try {
-        child.kill("SIGKILL");
-      } catch {
-        /* already exited */
+        // SIGKILL follows only for what outlives the grace: an agent's `git`
+        // killed outright leaves its index.lock behind. The escalation is
+        // tracked; Daemon.stop waits for it before the daemon exits.
+        Deno.kill(-child.pid, "SIGTERM");
+        void escalateProcessGroup(child.pid);
+      } catch (e) {
+        if (e instanceof Deno.errors.NotFound) return;
+        // Darwin can report EPERM while the last group member is exiting.
+        // Ignore it only after confirming that no live members remain.
+        if (Deno.build.os === "darwin" && e instanceof Deno.errors.PermissionDenied) {
+          try {
+            Deno.kill(-child.pid, 0);
+          } catch (check) {
+            if (check instanceof Deno.errors.NotFound) return;
+          }
+          const group = Deno.spawnAndWaitSync("/bin/ps", ["-o", "stat=", "-g", String(child.pid)], {
+            stdout: "piped",
+            stderr: "piped",
+          });
+          if (group.success || (group.code === 1 && group.stderr.length === 0)) {
+            const states = new TextDecoder()
+              .decode(group.stdout)
+              .trim()
+              .split(/\s+/)
+              .filter(Boolean);
+            if (states.every((state) => state.startsWith("Z"))) return;
+          }
+        }
+        throw e;
       }
     },
   };

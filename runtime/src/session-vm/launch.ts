@@ -13,8 +13,6 @@ import {
 import { relayDiagnosticMessage } from "../../../core/src/relay-diagnostic.ts";
 import { normalizeExtraHosts } from "./network-policy.ts";
 /** Supervised VM launch and persistent resource ownership, for environments and preparation. */
-import { spawn } from "node:child_process";
-import { Readable, Writable } from "node:stream";
 import { join } from "node:path";
 import { repoCacheDirectory } from "../../../core/src/paths.ts";
 import { fileURLToPath } from "node:url";
@@ -276,9 +274,11 @@ const launchSessionVmOwned = async (
       paths: inventoryPaths,
     });
     const root = new URL("../../../", import.meta.url);
-    const child = spawn(
-      Deno.execPath(),
-      [
+    // Deno-native pipes, not node:child_process + Readable.toWeb: cancelling that
+    // adapter destroys stdout with an AbortError, which Deno's child_process exit
+    // handler (still awaiting stdout's close) rethrows as an unhandled rejection.
+    const child = new Deno.Command(Deno.execPath(), {
+      args: [
         "run",
         "-A",
         "--no-prompt",
@@ -288,33 +288,40 @@ const launchSessionVmOwned = async (
         `--config=${fileURLToPath(new URL("deno.json", root))}`,
         fileURLToPath(new URL("runtime/src/session-vm/supervisor.ts", root)),
       ],
-      {
-        cwd: state,
-        detached: true,
-        stdio: ["pipe", "pipe", "pipe"],
-        env: {
-          PATH: Deno.env.get("PATH") ?? "",
-          ...(Deno.env.get("DENO_DIR") ? { DENO_DIR: Deno.env.get("DENO_DIR")! } : {}),
-        },
+      cwd: state,
+      detached: true,
+      stdin: "piped",
+      stdout: "piped",
+      stderr: "piped",
+      clearEnv: true,
+      env: {
+        PATH: Deno.env.get("PATH") ?? "",
+        ...(Deno.env.get("DENO_DIR") ? { DENO_DIR: Deno.env.get("DENO_DIR")! } : {}),
       },
-    );
-    const exited = new Promise<void>((resolve, reject) => {
-      child.once("exit", () => resolve());
-      child.once("error", reject);
+    }).spawn();
+    let supervisorExit: Deno.CommandStatus | undefined;
+    const exited = child.status.then((status) => {
+      supervisorExit = status;
     });
     // A private bootstrap frame precedes the unchanged guest worker protocol.
     // Credentials never enter argv, environment, logs, or an unsupervised file.
-    child.stdin.on("error", () => {});
-    child.stdin.write(
-      JSON.stringify({
-        binding,
-        extraAllowedHosts,
-        environment: options.environment,
-        prepareHooks: options.prepareHooks,
-        providerHosts: normalizeExtraHosts(options.providerHosts ?? defaultProviderHosts),
-        auth,
-      }) + "\n",
-    );
+    // Releasing the lock leaves the write queued ahead of the worker's frames.
+    const bootstrap = child.stdin.getWriter();
+    void bootstrap
+      .write(
+        new TextEncoder().encode(
+          JSON.stringify({
+            binding,
+            extraAllowedHosts,
+            environment: options.environment,
+            prepareHooks: options.prepareHooks,
+            providerHosts: normalizeExtraHosts(options.providerHosts ?? defaultProviderHosts),
+            auth,
+          }) + "\n",
+        ),
+      )
+      .catch(() => {});
+    bootstrap.releaseLock();
     let lastStage: StartupStage = "runtime";
     let failure: Error | undefined;
     let termination: VmTermination | undefined;
@@ -328,8 +335,13 @@ const launchSessionVmOwned = async (
         ...(activity.success && activity.data ? { activity: activity.data } : {}),
         ...(hostReason ? { hostReason } : {}),
         ...(lastNetworkWarning ? { lastNetworkWarning } : {}),
-        ...(child.exitCode !== null || child.signalCode !== null
-          ? { supervisorExit: { code: child.exitCode, signal: child.signalCode } }
+        ...(supervisorExit
+          ? {
+              supervisorExit: {
+                code: supervisorExit.signal ? null : supervisorExit.code,
+                signal: supervisorExit.signal,
+              },
+            }
           : {}),
       };
     };
@@ -342,7 +354,7 @@ const launchSessionVmOwned = async (
     };
     const startup = !options.preparationOnly
       ? readStartupProgress(
-          Readable.toWeb(child.stderr) as ReadableStream<Uint8Array>,
+          child.stderr,
           (stage, elapsed, host) => {
             if (stage === "networkBlocked") {
               if (host) lastNetworkWarning = { host, at: Date.now() };
@@ -373,7 +385,6 @@ const launchSessionVmOwned = async (
     let subscribing: Promise<void> | undefined;
     let publication: Promise<void> = Promise.resolve();
     const killGroup = () => {
-      if (!child.pid) return;
       try {
         Deno.kill(-child.pid, "SIGKILL");
       } catch (error) {
@@ -439,29 +450,30 @@ const launchSessionVmOwned = async (
     const worker = {
       binding,
       status: async () => JSON.parse(await Deno.readTextFile(join(state, "status.json"))),
-      input: Writable.toWeb(child.stdin) as WritableStream<Uint8Array>,
-      output: Readable.toWeb(child.stdout) as ReadableStream<Uint8Array>,
+      input: child.stdin,
+      output: child.stdout,
       exited,
-      pid: child.pid ?? -1,
-      exitCode: exited.then(() => child.exitCode ?? 1),
+      pid: child.pid,
+      exitCode: child.status.then((status) => (status.signal ? 1 : status.code)),
       failure: async () => {
         await startup;
         await exited.catch(() => {});
         return new VmTerminationError(diagnosis(), failure?.message);
       },
-      ...(options.preparationOnly
-        ? { diagnostics: Readable.toWeb(child.stderr) as ReadableStream<Uint8Array> }
-        : {}),
+      ...(options.preparationOnly ? { diagnostics: child.stderr } : {}),
       setStopReason(reason: HostStopReason) {
-        if (!termination && child.exitCode === null && child.signalCode === null)
-          hostReason ??= reason;
+        if (!termination && !supervisorExit) hostReason ??= reason;
       },
       terminate(reason?: HostStopReason) {
         if (reason) worker.setStopReason(reason);
         if (stopping) return;
         stopping = true;
-        if (child.exitCode !== null || child.signalCode !== null) return;
-        child.kill("SIGTERM");
+        if (supervisorExit) return;
+        try {
+          child.kill("SIGTERM");
+        } catch {
+          return; // exited before its status was observed
+        }
         timer = setTimeout(killGroup, 20_000);
       },
       cleanup: clean,
