@@ -29,6 +29,10 @@
  *   codex-tools [model]                 a Codex thread's own tools: no native sub-agents,
  *                                       or (a v2 model, openai/codex#50880) listed but no
  *                                       spawn starts a thread
+ *   tail-claude                         a background shell's output tail read while it
+ *                                       runs; a message sent now during a running Bash
+ *                                       lands before the Bash ends (Claude only: the
+ *                                       Codex variables are not needed)
  */
 import assert from "node:assert/strict";
 import { join } from "node:path";
@@ -55,7 +59,11 @@ for (const name of [
   "OPENAI_API_KEY",
 ])
   Deno.env.delete(name);
-assert(claudeProfile && codexProfile && codexCli, "Set the LOOM_LIVE_* provider variables");
+const claudeOnly = check === "tail-claude";
+assert(
+  claudeProfile && (claudeOnly || (codexProfile && codexCli)),
+  "Set the LOOM_LIVE_* provider variables",
+);
 setLogLevel("warn");
 
 const CLAUDE = "claude:personal";
@@ -93,7 +101,9 @@ const writeConfig = async (opts: {
             ...(opts.claudeCli ? { cli_path: opts.claudeCli } : {}),
             profiles: { personal: { config_dir: claudeProfile } },
           },
-          codex: { config_dir: codexProfile, cli_path: opts.codexCli ?? codexCli },
+          ...(codexProfile
+            ? { codex: { config_dir: codexProfile, cli_path: opts.codexCli ?? codexCli } }
+            : {}),
         },
         session: {
           titles: { enabled: false },
@@ -147,9 +157,16 @@ const start = async () => {
       permission_request: () => ({ tool: event["tool"] }),
       error: () => ({ message: String(event["message"]).slice(0, 200) }),
       result: () => ({ kind: event["kind"] }),
+      background_tasks: () => ({
+        ids: ((event["tasks"] as Array<{ id: string }> | undefined) ?? []).map((t) => t.id),
+      }),
       // The queue check orders these: a root tool, and the message folded in.
       tool_call: () => ({ id: event["id"], name: event["name"], agentId: event["agentId"] }),
-      tool_result: () => ({ id: event["id"], agentId: event["agentId"] }),
+      tool_result: () => ({
+        id: event["id"],
+        agentId: event["agentId"],
+        output: JSON.stringify(event["output"] ?? "").slice(0, 200),
+      }),
       user_message: () => ({
         text: String(event["text"]).slice(0, 80),
         injected: event["injected"],
@@ -674,6 +691,148 @@ const queue = async (provider: string) => {
 };
 
 /**
+ * Background task output and send now (Claude CLI 2.1.286+): a background
+ * shell's tail is read through `session.taskOutput` while it runs and grows;
+ * then a message sent now while a root Bash sleeps lands well before the
+ * sleep would end — the CLI moved the shell to the background — and the
+ * shell's result still reaches the model afterwards.
+ */
+const tail = async () => {
+  await writeConfig({});
+  await start();
+  await waitCatalogue(CLAUDE);
+  const model = await cheapModel(CLAUDE);
+  const s = await create(CLAUDE, "Reply with exactly ok. Do not use tools.", {
+    model,
+    isolation: "local",
+  });
+  const mine = () => events.filter((e) => e.id === s.id);
+  const wait = async <T>(cond: () => Promise<T | undefined> | T | undefined, what: string) => {
+    const deadline = Date.now() + 180_000;
+    for (;;) {
+      const v = await cond();
+      if (v) return v;
+      assert(Date.now() < deadline, `timed out waiting for ${what}`);
+      await new Promise((r) => setTimeout(r, 500));
+    }
+  };
+
+  // 1. A background shell's output tail, read twice while it runs.
+  await rpc("session.send", {
+    id: s.id,
+    text:
+      "Use the Bash tool with run_in_background set to true to run exactly: " +
+      "for i in $(seq 1 40); do echo tick $i; sleep 1; done. " +
+      "Do not wait for it or check on it. Then reply with exactly started.",
+  });
+  const task = await wait(async () => {
+    const t = (await get(s.id)).backgroundTasks?.find((x) => x.kind === "shell");
+    return t;
+  }, "a background shell");
+  type Out = { t: string; output?: string; totalBytes?: number; truncated?: boolean };
+  const read = () => rpc<Out>("session.taskOutput", { id: s.id, taskId: task.id });
+  const first = await wait(async () => {
+    const r = await read();
+    return r.t === "output" && /tick/.test(r.output ?? "") ? r : undefined;
+  }, "the first ticks");
+  await new Promise((r) => setTimeout(r, 4000));
+  const second = await read();
+  log("task tail", {
+    task: task.id,
+    first: { bytes: first.totalBytes, tail: first.output?.trim().split("\n").at(-1) },
+    second: { bytes: second.totalBytes, tail: second.output?.trim().split("\n").at(-1) },
+  });
+  assert.equal(second.t, "output");
+  assert((second.totalBytes ?? 0) > (first.totalBytes ?? 0), "the tail grows while it runs");
+  const sub = (await get(s.id)).backgroundTasks?.find((x) => x.kind !== "shell");
+  if (sub)
+    log("other task reads as", await rpc("session.taskOutput", { id: s.id, taskId: sub.id }));
+  await settle(s.id, (x) => x.status.kind === "idle", 300_000);
+
+  // 2. Send now while a root Bash waits.
+  const from = mine().length;
+  const turnsBefore = (await get(s.id)).turns;
+  await rpc("session.send", {
+    id: s.id,
+    // Not `sleep`: the CLI refuses a long foreground sleep outright.
+    text: "Run the Bash command `timeout 45 tail -f /dev/null; echo slept` in the foreground, then say what it printed.",
+  });
+  const bash = await wait(
+    () =>
+      mine()
+        .slice(from)
+        .find(
+          (e) =>
+            e.type === "tool_call" &&
+            (e.detail as { agentId?: string; name: string }).agentId === undefined &&
+            (e.detail as { name: string }).name === "Bash",
+        ),
+    "the root Bash",
+  );
+  const bashId = (bash.detail as { id: string }).id;
+  const queued = await rpc<SessionSnapshot & { entryId: string }>("session.send", {
+    id: s.id,
+    text: "New instruction: do not wait for the sleep. Reply with exactly BANANA right away.",
+    delivery: "end_of_turn",
+  });
+  const entry = (await get(s.id)).queue!.entries.find((e) => e.id === queued.entryId)!;
+  const sentAt = Date.now();
+  await rpc("session.queueSendNow", { id: s.id, entryId: entry.id, revision: entry.revision });
+  const logged = await wait(
+    () =>
+      mine()
+        .slice(from)
+        .find(
+          (e) =>
+            e.type === "user_message" && (e.detail as { entry?: string }).entry === queued.entryId,
+        ),
+    "the message sent now",
+  );
+  const landedMs = Date.now() - sentAt;
+  const timeline = mine().slice(from);
+  const resultAt = timeline.findIndex(
+    (e) => e.type === "tool_result" && (e.detail as { id: string }).id === bashId,
+  );
+  const result = timeline[resultAt]?.detail as { output?: string } | undefined;
+  log("sent now", {
+    landedMs,
+    logged: logged.detail,
+    resultAt,
+    at: timeline.indexOf(logged),
+    bashResult: result?.output,
+  });
+  assert(landedMs < 25_000, "landed before the 45 s wait could end");
+  assert.equal((logged.detail as { injected?: boolean }).injected, true, "into the running turn");
+  assert.match(result?.output ?? "", /moved to the background/, "the CLI moved the shell aside");
+  // The moved shell ends later: the CLI takes its notification up as a turn
+  // of its own, which may start only after the session went idle.
+  const moved = /moved to the background \(ID: ([^)]+)\)/.exec(result?.output ?? "")?.[1];
+  const listed = (e: (typeof events)[number]) =>
+    e.type === "background_tasks" && (e.detail as { ids: string[] }).ids.includes(moved ?? "");
+  await wait(() => {
+    const tl = mine().slice(from);
+    const ran = tl.findIndex(listed);
+    const ended = tl.findIndex((e, i) => i > ran && e.type === "background_tasks" && !listed(e));
+    return ran >= 0 && ended > ran && tl.slice(ended).some((e) => e.type === "result");
+  }, "a turn on the moved shell's notification");
+  const done = await settle(
+    s.id,
+    (x) => x.status.kind === "idle" && x.queue === undefined && !x.backgroundTasks?.length,
+    300_000,
+  );
+  log("settled", {
+    banana: /BANANA/.test(texts.get(s.id) ?? ""),
+    slept: /slept/.test(texts.get(s.id) ?? ""),
+    turns: done.turns - turnsBefore,
+    tail: texts.get(s.id)?.slice(-160),
+    timeline: mine()
+      .slice(from)
+      .map((e) => e.type + (e.type === "result" ? ":" + (e.detail as { kind: string }).kind : "")),
+  });
+  assert(done.turns - turnsBefore <= 5, "no runaway turns");
+};
+
+/**
  * A pass-through CLI that records, without secrets, what proves which tools a
  * session has: its argv, the stdin lines matching `stdin` (Codex `thread/start`
  * params) and the stdout lines matching `stdout` (Claude's system init).
@@ -1064,6 +1223,7 @@ const run = async () => {
     else if (check === "agents-claude") await agents(CLAUDE);
     else if (check === "agents-codex") await agents(CODEX);
     else if (check === "codex-tools") await codexTools(Deno.args[1]);
+    else if (check === "tail-claude") await tail();
     else throw new Error("unknown check " + check);
     log("PASSED");
     passed = true;
