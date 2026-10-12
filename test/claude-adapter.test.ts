@@ -625,6 +625,48 @@ test("a task completing while its stop request fails is already cancelled", asyn
   await stopped;
 });
 
+test("a background shell ending is reported as the shell it was, a sub-agent's as a sub-agent", async (t) => {
+  const { q, seen } = await setupLive(t);
+  const started = (task_id: string, task_type: string, description: string) => ({
+    type: "system",
+    subtype: "task_started",
+    task_id,
+    tool_use_id: `toolu_${task_id}`,
+    task_type,
+    description,
+  });
+  const settled = (task_id: string, status: string) => ({
+    type: "system",
+    subtype: "task_notification",
+    task_id,
+    tool_use_id: `toolu_${task_id}`,
+    status,
+    summary: "",
+  });
+  q.push(started("b1", "local_bash", "npm test"));
+  q.push(started("b2", "local_bash", "npm run build"));
+  q.push(started("a1", "local_agent", "audit"));
+  q.push(settled("b1", "completed"));
+  q.push(settled("b2", "failed"));
+  q.push(settled("a1", "completed"));
+  await delay(20);
+  const ends = seen.filter(
+    (e) => e.type === "background_task_ended" || e.type === "subagent_stopped",
+  );
+  assert.deepEqual(
+    ends.map((e) =>
+      e.type === "background_task_ended"
+        ? { taskId: e.taskId, kind: e.kind, title: e.title, status: e.status }
+        : { subagentId: e.subagentId },
+    ),
+    [
+      { taskId: "b1", kind: "shell", title: "npm test", status: "completed" },
+      { taskId: "b2", kind: "shell", title: "npm run build", status: "failed" },
+      { subagentId: "toolu_a1" },
+    ],
+  );
+});
+
 // The frames CLI 2.1.280 sends when an async `Agent` finishes and `SendMessage`
 // later resumes it: the same task id comes back, level first, then a
 // `task_started` naming the `SendMessage` call.

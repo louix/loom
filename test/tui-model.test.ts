@@ -1117,6 +1117,22 @@ test("chat view: tool calls with an input `description` get their own line; thos
   );
 });
 
+test("toLogLine names an ended background task by its kind, never as a sub-agent", () => {
+  const ended = (kind: "shell" | "monitor", status: "completed" | "failed" | "stopped") =>
+    toLogLine(
+      1,
+      ev({ type: "background_task_ended", taskId: "b1", kind, title: "npm test", status }),
+    );
+  assert.equal(ended("shell", "completed").text, "background shell finished · npm test");
+  assert.equal(ended("shell", "failed").text, "background shell failed · npm test");
+  assert.equal(ended("shell", "failed").tone, "bad");
+  assert.equal(ended("monitor", "stopped").text, "background monitor stopped · npm test");
+  assert.equal(
+    toLogLine(2, ev({ type: "subagent_stopped", subagentId: "t" })).text,
+    "sub-agent finished",
+  );
+});
+
 test("transcriptText renders [time] role + body, skips metadata, no raw JSON", () => {
   const L = [
     toLogLine(1, {

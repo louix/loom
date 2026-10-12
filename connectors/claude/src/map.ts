@@ -206,7 +206,7 @@ const blocks = (content: unknown): ContentBlock[] => {
 const NOTICES_REMEMBERED = 256;
 
 /** Map the SDK's free-text `task_type` onto our coarse {@link BackgroundTaskKind}. */
-const taskKind = (t: string | undefined): BackgroundTaskKind => {
+export const taskKind = (t: string | undefined): BackgroundTaskKind => {
   const s = (t ?? "").toLowerCase();
   if (s.includes("agent")) return "subagent"; // local_agent / remote_agent / subagent
   if (s.includes("bash") || s.includes("shell")) return "shell";

@@ -24,6 +24,7 @@ import type {
   SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import type {
+  BackgroundTaskEndedEvent,
   BackgroundTaskInfo,
   DiscardedInput,
   HarnessEvent,
@@ -35,7 +36,13 @@ import { makeLogger, type Logger } from "@loom/core/logger";
 import { AsyncChannel } from "@loom/core/channel";
 import { WorkerDiagnostic } from "@loom/core/worker";
 import { copyClaudeSkills } from "@loom/core/claude-skills";
-import { ClaudeEventMapper, baselineOf, planWindows, type SdkGetUsageResponse } from "./map.ts";
+import {
+  ClaudeEventMapper,
+  baselineOf,
+  planWindows,
+  taskKind,
+  type SdkGetUsageResponse,
+} from "./map.ts";
 import { resolveClaudeCli } from "./cli.ts";
 import { buildAgentsMcpServer, buildLoomMcpServer, type LoomToolDeps } from "./loom-mcp.ts";
 import { PendingInteractions } from "@loom/runtime/pending";
@@ -536,7 +543,11 @@ class ClaudeSession implements AgentSession {
    */
   #finishedTaskIds = new Set<string>();
   #backgroundTaskIds = new Set<string>();
-  #taskToolIds = new Map<string, string>();
+  /** What each task started as: its tool call, and what kind of task it is. */
+  #taskStarts = new Map<
+    string,
+    { toolId?: string; kind: BackgroundTaskInfo["kind"]; title: string }
+  >();
   /** The CLI's last `background_tasks_changed` set, ambient entries dropped. */
   #levelTasks: BackgroundTaskInfo[] = [];
   /** What was last published: {@link #levelTasks} minus finished tasks. */
@@ -626,7 +637,7 @@ class ClaudeSession implements AgentSession {
     this.#rootToolCalls.clear();
     this.#finishedTaskIds.clear();
     this.#backgroundTaskIds.clear();
-    this.#taskToolIds.clear();
+    this.#taskStarts.clear();
     this.#levelTasks = [];
     this.#backgroundTasks = [];
     this.#startOpts = opts;
@@ -1621,7 +1632,7 @@ class ClaudeSession implements AgentSession {
         if (!q || typeof q.stopTask !== "function")
           throw new Error("this Claude runtime does not support stopping tasks");
         await q.stopTask(id);
-        if (q === this.#query) this.#retireTask(id);
+        if (q === this.#query) this.#retireTask(id, "stopped");
       } catch (err) {
         if (q === this.#query && this.#taskIds.has(id))
           throw new Error(`task ${id}: ${String(err)}`);
@@ -1639,7 +1650,11 @@ class ClaudeSession implements AgentSession {
     if (msg.subtype === "task_started") {
       if (msg.ambient || msg.skip_transcript) return;
       this.#taskIds.add(msg.task_id);
-      if (msg.tool_use_id) this.#taskToolIds.set(msg.task_id, msg.tool_use_id);
+      this.#taskStarts.set(msg.task_id, {
+        ...(msg.tool_use_id ? { toolId: msg.tool_use_id } : {}),
+        kind: taskKind(msg.task_type),
+        title: msg.description || msg.task_type || "background task",
+      });
       added.push(msg.task_id);
       // A finished sub-agent resumed by `SendMessage` starts again under its
       // old id. The level listing it came first and was not believed then.
@@ -1649,7 +1664,7 @@ class ClaudeSession implements AgentSession {
         this.#publishBackgroundTasks();
       }
     } else if (msg.subtype === "task_notification") {
-      this.#retireTask(msg.task_id);
+      this.#retireTask(msg.task_id, msg.status);
     } else if (msg.subtype === "background_tasks_changed") {
       const ids = new Set(
         msg.tasks
@@ -1680,17 +1695,28 @@ class ClaudeSession implements AgentSession {
     }
   }
 
-  #retireTask(id: string): void {
+  #retireTask(id: string, status: BackgroundTaskEndedEvent["status"]): void {
     this.#finishedTaskIds.add(id);
     this.#taskIds.delete(id);
-    const toolId = this.#taskToolIds.get(id);
-    this.#taskToolIds.delete(id);
-    if (toolId)
+    const start = this.#taskStarts.get(id);
+    this.#taskStarts.delete(id);
+    // A sub-agent's row is keyed by the tool call that spawned it.
+    if (start?.kind === "subagent" && start.toolId)
       this.#outbox.push({
         type: "subagent_stopped",
         sessionId: this.id,
         ts: Date.now(),
-        subagentId: toolId,
+        subagentId: start.toolId,
+      });
+    else if (start && start.kind !== "subagent")
+      this.#outbox.push({
+        type: "background_task_ended",
+        sessionId: this.id,
+        ts: Date.now(),
+        taskId: id,
+        kind: start.kind,
+        title: start.title,
+        status,
       });
     this.#publishBackgroundTasks();
   }

@@ -15,7 +15,7 @@ import { markdownText, plainText } from "./markdown.ts";
 import type { TextDocument, TextSpan } from "./text-layout.ts";
 import { absurd } from "@loom/core/absurd";
 import { isAgentAuthor } from "@loom/core/agents";
-import type { HarnessEvent } from "@loom/core/events";
+import type { BackgroundTaskEndedEvent, HarnessEvent } from "@loom/core/events";
 import type { QueueDelivery, QueueEntryView } from "@loom/core/message-queue";
 import { sessionStateLabel } from "@loom/core/session-state";
 import type { HistoryCursor, HistoryPage, PushFrame, TranscriptId } from "@loom/core/wire";
@@ -125,6 +125,20 @@ export const NON_TRANSCRIPT: ReadonlySet<string> = new Set([
 // ---------------------------------------------------------------------------
 // event → log line
 // ---------------------------------------------------------------------------
+
+const TASK_KIND_LABEL: Record<BackgroundTaskEndedEvent["kind"], string> = {
+  subagent: "sub-agent",
+  shell: "shell",
+  workflow: "workflow",
+  monitor: "monitor",
+  other: "task",
+};
+
+const TASK_END_LABEL: Record<BackgroundTaskEndedEvent["status"], string> = {
+  completed: "finished",
+  failed: "failed",
+  stopped: "stopped",
+};
 
 export const toLogLine = (
   id: TranscriptId | null,
@@ -330,6 +344,12 @@ export const formatEvent = (ev: HarnessEvent, toolName?: string): EventFormat =>
       };
     case "subagent_stopped":
       return { glyph: "⤴", text: `sub-agent finished`, tone: "dim" };
+    case "background_task_ended":
+      return {
+        glyph: "⤴",
+        text: `background ${TASK_KIND_LABEL[ev.kind]} ${TASK_END_LABEL[ev.status]} · ${oneLine(ev.title, 80)}`,
+        tone: ev.status === "failed" ? "bad" : "dim",
+      };
     case "background_tasks":
       // Never reaches the log (filtered in applyPush); here for exhaustiveness.
       return {
@@ -1176,6 +1196,8 @@ const transcriptHeader = (l: LogLine): string | null => {
       return "sub-agent started";
     case "subagent_stopped":
       return "sub-agent finished";
+    case "background_task_ended":
+      return "background task ended";
     case "rewind":
       return "rewound";
     case "provider_changed":

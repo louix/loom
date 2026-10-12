@@ -259,6 +259,17 @@ export const backgroundTasksEventSchema = harnessEventBaseSchema.extend({
 });
 export type BackgroundTasksEvent = z.infer<typeof backgroundTasksEventSchema>;
 
+/** A background task that is not a sub-agent ended — a shell, a monitor, a
+ *  workflow. A sub-agent's end is `subagent_stopped`. */
+export const backgroundTaskEndedEventSchema = harnessEventBaseSchema.extend({
+  type: z.literal("background_task_ended"),
+  taskId: z.string(),
+  kind: backgroundTaskKindSchema,
+  title: z.string(),
+  status: z.enum(["completed", "failed", "stopped"]),
+});
+export type BackgroundTaskEndedEvent = z.infer<typeof backgroundTaskEndedEventSchema>;
+
 export const statusChangedEventSchema = harnessEventBaseSchema.extend({
   type: z.literal("status_changed"),
   status: sessionStateSchema,
@@ -522,6 +533,7 @@ export const harnessEventSchema = z.discriminatedUnion("type", [
   subagentStartedEventSchema,
   subagentStoppedEventSchema,
   backgroundTasksEventSchema,
+  backgroundTaskEndedEventSchema,
   statusChangedEventSchema,
   startupProgressEventSchema,
   errorEventSchema,
