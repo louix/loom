@@ -386,3 +386,44 @@ test("undo with restoreWorktree refuses a dirty worktree", async () => {
   assert.equal((await c.request<SessionSnapshot>("session.get", { id })).turns, 2);
   await c.close();
 });
+
+test("with no branch prefix, removing a session deletes only the branch its row records", async () => {
+  // given a user branch named like a session id, and two sessions on bare branches
+  const own = await makeHarness({ config: JSON.stringify({ session: { branch_prefix: "" } }) });
+  const git = (...args: string[]) =>
+    execFileSync("git", ["-C", own.repoRoot, ...args], { encoding: "utf8" }).trim();
+  try {
+    git("branch", "deadbeef");
+    const c = await LoomClient.connect({
+      repoRoot: own.repoRoot,
+      sockPath: own.sockPath,
+      autospawn: false,
+    });
+    try {
+      const a = await c.request<SessionSnapshot>("session.create", {
+        prompt: "first",
+        provider: "fake",
+      });
+      const b = await c.request<SessionSnapshot>("session.create", {
+        prompt: "second",
+        provider: "fake",
+      });
+      assert.equal(a.branch, a.id.slice(0, 8));
+      // when
+      const r = await c.request<{ branchDeleted: boolean }>("session.remove", {
+        id: a.id,
+        deleteBranch: true,
+      });
+      // then
+      assert.equal(r.branchDeleted, true);
+      assert.deepEqual(
+        git("branch", "--format=%(refname:short)").split("\n").sort(),
+        [b.branch!, "deadbeef", "main"].sort(),
+      );
+    } finally {
+      await c.close();
+    }
+  } finally {
+    await own.cleanup();
+  }
+});

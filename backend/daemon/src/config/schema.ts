@@ -16,6 +16,7 @@ import {
   extraHostsSchema,
 } from "../../../../runtime/src/session-vm/network-policy.ts";
 import { gitVisibleRefsSchema } from "../../../../runtime/src/session-vm/git-relay.ts";
+import { branchPrefixSchema } from "../daemon/session-branch.ts";
 import type { HookEvent, LoomConfig } from "./config.ts";
 import { gitIdentitySchema } from "./git-identity.ts";
 
@@ -398,6 +399,11 @@ export const createConfigSchema = (d: LoomConfig, events: readonly HookEvent[]) 
         worktree_dir: optionalText().describe(
           "Exact worktree directory (absolute, ~/ or relative to the repository). Omitted: $XDG_DATA_HOME/loom/worktrees/<repo>-<hash>, defaulting to ~/.local/share. Existing sessions keep their paths. Restart to apply.",
         ),
+        branch_prefix: branchPrefixSchema
+          .prefault(d.branchPrefix.join("/"))
+          .describe(
+            'What the branches of new worktree and clone sessions are named under: <prefix>/<session id> at first, <prefix>/<title slug> once titled. "" for none (<session id>, then <title slug>); slashes nest (me/loom). Defaults to loom. Existing sessions keep their branch names, and a session titled later keeps the prefix it was created with. session.clone.visible_refs may not cover these branches.',
+          ),
         worktree: deprecated("Replaced by session.defaults.workspace."),
         auto_rebase: z
           .enum(["off", "rebase", "merge"])

@@ -15,11 +15,14 @@ const prefixSchema = z
   .string()
   .refine((v) => v.startsWith("refs/") && v !== "refs/" && validPath(v.replace(/\/$/, "")));
 
-/** Trusted host configuration. Sibling sessions stay hidden whatever it lists. */
+/**
+ * Trusted host configuration. Which branches are sessions' depends on the
+ * daemon's branch prefix and its session rows: it keeps them out of this list.
+ */
 export const gitVisibleRefsSchema = z
   .array(
     prefixSchema.refine(
-      (v) => v !== "refs/heads/" && v !== "refs/heads" && !v.startsWith("refs/heads/loom"),
+      (v) => v !== "refs/heads/" && v !== "refs/heads",
       "session branches cannot be made visible",
     ),
   )

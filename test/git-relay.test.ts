@@ -223,16 +223,11 @@ Deno.test("git relay bounds connections and shutdown ends running services", asy
   }
 });
 
-Deno.test("configured visible refs can never expose session branches", async () => {
+// Which branches are sessions' is the config's to check (test/session-branch.test.ts).
+Deno.test("configured visible refs can never expose every branch", async () => {
   const { gitVisibleRefsSchema } = await import("../runtime/src/session-vm/git-relay.ts");
   assert.deepEqual(gitVisibleRefsSchema.parse(undefined), []);
   assert.ok(gitVisibleRefsSchema.safeParse(["refs/tags/", "refs/heads/develop"]).success);
-  for (const value of [
-    "refs/heads/",
-    "refs/heads",
-    "refs/heads/loom/",
-    "refs/heads/loom/abc",
-    "refs/",
-  ])
+  for (const value of ["refs/heads/", "refs/heads", "refs/"])
     assert.ok(!gitVisibleRefsSchema.safeParse([value]).success, value);
 });

@@ -2,6 +2,7 @@ import type { McpGrants } from "../../../../core/src/mcp-config.ts";
 import type { z } from "zod";
 import type { agentProfileSchema, mcpDefinitionSchema } from "./schema.ts";
 import type { McpOAuthConfig } from "../daemon/mcp-oauth-model.ts";
+import { advertisesBranchesUnder, type BranchPrefix } from "../daemon/session-branch.ts";
 import {
   normalizeSessionEnvironment,
   type SessionEnvironment,
@@ -261,6 +262,8 @@ export interface LoomConfig {
    */
   baseBranch?: string;
   worktreeDir: string;
+  /** `session.branch_prefix`: what new sessions' branches are named under. */
+  branchPrefix: BranchPrefix;
   /**
    * Claude config directories to expose as providers. Always non-empty —
    * defaults to a single `~/.claude` (id `claude`). Order is stable: entry 0 is
@@ -444,6 +447,7 @@ export const DEFAULT_CONFIG: LoomConfig = {
   autoNix: false,
   tui: { includeEventLogInEditor: false, compat: false },
   worktreeDir: "",
+  branchPrefix: ["loom"],
   providerAccess: { deny: [] },
   defaults: { isolation: "none", workspace: "worktree" },
   isolation: { extraAllowedHosts: [] },
@@ -751,6 +755,14 @@ export const normalizeConfig = (
     throw new Error("Define mcp_servers by name and select them under session.mcp_servers.");
   const migrated = migrateConfigLayer(r);
   const { value: settings, unknownKeys } = parseSettings(settingsSchema, migrated.layer);
+  const { branch_prefix, clone } = settings.session;
+  const exposed = clone.visible_refs.findIndex((ref) =>
+    advertisesBranchesUnder(ref, branch_prefix),
+  );
+  if (exposed !== -1)
+    throw new Error(
+      `session.clone.visible_refs[${exposed}]: covers the branches of sessions (session.branch_prefix "${branch_prefix.join("/")}"; with "" that is every branch), which cannot be made visible`,
+    );
   const {
     session: {
       isolation,
@@ -835,6 +847,7 @@ export const normalizeConfig = (
       ? { baseBranch: settings.session.defaults.base_branch }
       : {}),
     worktreeDir: settings.session.worktree_dir ?? "",
+    branchPrefix: settings.session.branch_prefix,
     providerAccess,
     isolation: {
       idleStopMinutes: isolation.idle_stop_minutes,

@@ -133,6 +133,7 @@ import { mkSessionQueue, type SessionQueue } from "./session-queue.ts";
 import { cheapModelFor, startTitle } from "./titler.ts";
 import { sweepWorkerScratch, WORKER_SCRATCH_ROOT } from "./worker-scratch.ts";
 import { WorktreeManager, commitIdentity, type RebaseOutcome } from "./worktrees.ts";
+import { advertisesBranchesUnder, genericBranchPrefix } from "./session-branch.ts";
 import { resolveGitIdentity } from "../config/git-identity.ts";
 import { ProviderRegistry } from "./provider-registry.ts";
 import type { ConnectorManifest, SessionExecutions } from "@loom/core/connector";
@@ -497,7 +498,7 @@ export class Daemon {
           return {
             branch: row.branch,
             base: row.baseBranch ?? legacyBaseBranch(this.config),
-            visible: checkout?.visibleRefs ?? [],
+            visible: this.#cloneVisibleRefs(id),
             // Only the clone config's default; the session's resolved identity replaces it.
             identity: commitIdentity(row.model || row.provider),
             ...(checkout ? { maxPushBytes: checkout.maxPushBytes } : {}),
@@ -1876,13 +1877,20 @@ export class Daemon {
             parent.baseBranch && this.#worktrees.branchHead(parent.baseBranch)
               ? parent.baseBranch
               : this.#worktrees.defaultBranch(this.config.baseBranch);
-          const made = this.#worktrees.createBranch(newId, baseRef ? { baseRef } : {});
+          const made = this.#worktrees.createBranch(newId, {
+            branchPrefix: this.config.branchPrefix,
+            ...(baseRef ? { baseRef } : {}),
+          });
           wt = {
             path: await this.#clonePath(newId, providerId),
             branch: made.branch,
             baseRef: inherited,
           };
-        } else wt = this.#worktrees.create(newId, baseRef ? { baseRef } : {});
+        } else
+          wt = this.#worktrees.create(newId, {
+            branchPrefix: this.config.branchPrefix,
+            ...(baseRef ? { baseRef } : {}),
+          });
       } catch (err) {
         const m = err instanceof Error ? err.message : String(err);
         throw new RpcError("worktree_error", `could not create the fork's worktree: ${m}`);
@@ -2322,7 +2330,10 @@ export class Daemon {
 
         if (workspace === "clone") {
           try {
-            const made = this.#worktrees.createBranch(id, from ? { baseRef: from } : {});
+            const made = this.#worktrees.createBranch(id, {
+              branchPrefix: this.config.branchPrefix,
+              ...(from ? { baseRef: from } : {}),
+            });
             // Stored before the await below, never after it: a supervisor's
             // rename meanwhile rewrites the stored base, and must not be undone.
             this.#registry.setFields(id, { branch: made.branch, baseBranch: made.baseRef });
@@ -2337,7 +2348,10 @@ export class Daemon {
           }
         } else if (wantWorktree) {
           try {
-            wt = this.#worktrees.create(id, from ? { baseRef: from } : {});
+            wt = this.#worktrees.create(id, {
+              branchPrefix: this.config.branchPrefix,
+              ...(from ? { baseRef: from } : {}),
+            });
           } catch (cause) {
             throw new RpcError(
               "worktree_error",
@@ -3150,7 +3164,7 @@ export class Daemon {
     if (!snap?.title || snap.status.kind === "done") return;
     const store = this.#registry.store;
     const needsTitle = !store.titleLocked(id) && !store.autoTitleDone(id);
-    const needsBranch = snap.branch === `loom/${id.slice(0, 8)}` || snap.branch === `loom/${id}`;
+    const needsBranch = genericBranchPrefix(id, snap.branch) !== null;
     if (!needsTitle && !needsBranch) return;
     this.#titling.add(id);
     try {
@@ -3199,8 +3213,10 @@ export class Daemon {
       if (this.#stopping) return;
       const snap = this.#registry.get(id);
       if (!snap?.title || !snap.worktree || snap.status.kind === "done") return;
-      if (snap.branch !== `loom/${id.slice(0, 8)}` && snap.branch !== `loom/${id}`) return;
-      const branch = this.#worktrees.renameBranch(snap.title, snap.branch);
+      // Under the prefix it was created with: a changed prefix renames no existing session.
+      const prefix = genericBranchPrefix(id, snap.branch);
+      if (!snap.branch || !prefix) return;
+      const branch = this.#worktrees.renameBranch(snap.title, snap.branch, prefix);
       if (branch === snap.branch) return;
       this.#registry.setFields(id, { branch });
       // Its agents branched from it, and count ahead / behind against it:
@@ -3240,7 +3256,7 @@ export class Daemon {
     await writeGitPolicy(directory, {
       branch: row.branch,
       base,
-      visible: this.config.clone?.visibleRefs ?? [],
+      visible: this.#cloneVisibleRefs(id),
     });
     const running = await readRecovery(directory).catch(() => undefined);
     if (!running?.git || running.recovery.reaped) return;
@@ -3250,6 +3266,20 @@ export class Daemon {
       branch: row.branch,
       base,
     });
+  }
+
+  /**
+   * `session.clone.visible_refs` for `id`, less any that would show another
+   * session's branch. Config validation knows only the current prefix; older
+   * sessions keep the names they were created under.
+   */
+  #cloneVisibleRefs(id: string): string[] {
+    const branches = this.#registry
+      .list()
+      .flatMap((row) => (row.id !== id && row.branch ? [row.branch.split("/")] : []));
+    return (this.config.clone?.visibleRefs ?? []).filter(
+      (ref) => !branches.some((branch) => advertisesBranchesUnder(ref, branch)),
+    );
   }
 
   /**
@@ -3993,6 +4023,7 @@ export class Daemon {
     this.config.autoNix = next.autoNix;
     if (this.config.isolation.environment) this.config.isolation.environment.autoNix = next.autoNix;
     this.config.autoRebase = next.autoRebase;
+    this.config.branchPrefix = next.branchPrefix;
     this.config.commitReminder = next.commitReminder;
     // Read per start and resume; clients list the profiles off the snapshot.
     if (JSON.stringify(next.agents) !== JSON.stringify(before.agents)) {

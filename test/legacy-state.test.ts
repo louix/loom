@@ -202,7 +202,7 @@ test("worktrees that name the legacy hooks move to the regenerated ones", async 
       baseBranch: "main",
       log: makeLogger("test"),
     });
-    const tree = old.create("hooked");
+    const tree = old.create("hooked", { branchPrefix: ["loom"] });
     assert.equal(git(tree.path, "config", "core.hooksPath"), legacyHooks);
 
     const daemon = await start(f);

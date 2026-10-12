@@ -41,7 +41,9 @@ const fixture = () => {
     baseBranch: "main",
     log: makeLogger("test"),
   });
-  const wt = manager.create("aaaaaaaa-1111-2222-3333-444444444444").path;
+  const wt = manager.create("aaaaaaaa-1111-2222-3333-444444444444", {
+    branchPrefix: ["loom"],
+  }).path;
   // A real (unstaged) change keeps every dirty/diff branch of the probes live.
   writeFileSync(join(wt, "a.txt"), "changed\n");
   const index = git(wt, "rev-parse", "--path-format=absolute", "--git-path", "index");
@@ -103,7 +105,9 @@ test("read-only Git probes never take the worktree's index lock", async () => {
       assert.equal(facts.git.dirty, true);
     },
     "copyChanges (source)": () => {
-      const target = f.manager.create("bbbbbbbb-1111-2222-3333-444444444444").path;
+      const target = f.manager.create("bbbbbbbb-1111-2222-3333-444444444444", {
+        branchPrefix: ["loom"],
+      }).path;
       f.manager.copyChanges(f.wt, target);
       assert.equal(readFileSync(join(target, "a.txt"), "utf8"), "changed\n");
     },

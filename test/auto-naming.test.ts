@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { execFileSync } from "node:child_process";
+import { writeFileSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 import { LoomClient } from "@loom/client";
 import type { SessionSnapshot } from "@loom/core/wire";
@@ -16,8 +17,8 @@ const waitFor = async (pred: () => boolean | Promise<boolean>) => {
   }
 };
 
-const setup = async () => {
-  const h = await makeHarness();
+const setup = async (config?: string) => {
+  const h = await makeHarness(config === undefined ? {} : { config });
   const c = await LoomClient.connect({
     repoRoot: h.repoRoot,
     sockPath: h.sockPath,
@@ -204,5 +205,71 @@ test("a title still generating at shutdown is abandoned before the store closes"
     setLogStderr(true);
     await Deno.remove(logFile);
     await t.cleanup();
+  }
+});
+
+test("a nested branch prefix names the generic and the titled branch", async () => {
+  const t = await setup(JSON.stringify({ session: { branch_prefix: "me/x" } }));
+  try {
+    assert.equal(t.s.branch, `me/x/${t.s.id.slice(0, 8)}`);
+    t.fake.titleReply = "Repair automatic session naming";
+    t.session.finishTurn();
+    await waitFor(async () => (await t.get()).branch === "me/x/repair-automatic-session-naming");
+  } finally {
+    await t.cleanup();
+  }
+});
+
+test("no branch prefix names bare branches and suffixes a title slug that is taken", async () => {
+  const t = await setup(JSON.stringify({ session: { branch_prefix: "" } }));
+  try {
+    assert.equal(t.s.branch, t.s.id.slice(0, 8));
+    execFileSync("git", ["-C", t.h.repoRoot, "branch", "repair-automatic-session-naming"]);
+    t.fake.titleReply = "Repair automatic session naming";
+    t.session.finishTurn();
+    await waitFor(async () => (await t.get()).branch !== t.s.branch);
+    assert.match((await t.get()).branch!, /^repair-automatic-session-naming-[0-9a-f]{6}$/);
+    assert.equal(
+      execFileSync("git", ["-C", t.s.worktree!, "branch", "--show-current"], {
+        encoding: "utf8",
+      }).trim(),
+      (await t.get()).branch,
+    );
+  } finally {
+    await t.cleanup();
+  }
+});
+
+test("a changed branch prefix renames an existing session under the prefix it was created with", async () => {
+  const t = await setup();
+  try {
+    // given a session still on its generic loom/<id> branch
+    assert.equal(t.s.branch, `loom/${t.s.id.slice(0, 8)}`);
+    // when the prefix changes before it is titled
+    writeFileSync(t.h.configPath, JSON.stringify({ session: { branch_prefix: "" } }));
+    await t.c.close();
+    await t.h.restart();
+    const c = await LoomClient.connect({
+      repoRoot: t.h.repoRoot,
+      sockPath: t.h.sockPath,
+      autospawn: false,
+    });
+    try {
+      const renamed = await c.request<SessionSnapshot>("session.setTitle", {
+        id: t.s.id,
+        title: "User chosen label",
+      });
+      // then it keeps loom, while a new session takes the new prefix
+      assert.equal(renamed.branch, "loom/user-chosen-label");
+      const fresh = await c.request<SessionSnapshot>("session.create", {
+        provider: "fake",
+        prompt: "another task",
+      });
+      assert.equal(fresh.branch, fresh.id.slice(0, 8));
+    } finally {
+      await c.close();
+    }
+  } finally {
+    await t.h.cleanup();
   }
 });

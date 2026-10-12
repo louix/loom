@@ -39,8 +39,10 @@ const mgr = (root: string): WorktreeManager => {
   });
 };
 
+const LOOM = { branchPrefix: ["loom"] };
+
 /** A stand-in session id whose first 8 chars are `short` — the branch a
- *  worktree gets is `loom/<first 8 chars of the id>`. */
+ *  worktree gets is `<prefix>/<first 8 chars of the id>`. */
 const fakeId = (short: string): string => {
   assert.equal(short.length, 8, "fakeId prefix must be 8 chars");
   return `${short}-1111-2222-3333-444444444444`;
@@ -58,7 +60,7 @@ test("create makes a worktree + branch off base with a push block and no pinned 
   const { root, cleanup } = repo();
   try {
     const m = mgr(root);
-    const wt = m.create(fakeId("aaaaaaaa"));
+    const wt = m.create(fakeId("aaaaaaaa"), LOOM);
     assert.equal(wt.slug, "aaaaaaaa"); // dir is named after the session id
     assert.equal(wt.branch, "loom/aaaaaaaa"); // branch is named after the session id
     assert.equal(wt.baseRef, "main");
@@ -91,7 +93,7 @@ test("clearLegacyIdentity drops only the old Loom identity, and only in a sessio
   const { root, cleanup } = repo();
   try {
     const m = mgr(root);
-    const wt = m.create(fakeId("aaaaaaaa"));
+    const wt = m.create(fakeId("aaaaaaaa"), LOOM);
     const git = (path: string, ...a: string[]) =>
       execFileSync("git", ["-C", path, ...a], { encoding: "utf8" }).trim();
     // What older versions pinned in every session tree.
@@ -119,8 +121,8 @@ test("colliding id prefixes get distinct dirs", () => {
   const { root, cleanup } = repo();
   try {
     const m = mgr(root);
-    const a = m.create(fakeId("aaaaaaaa"));
-    const b = m.create(fakeId("aaaaaaaa"));
+    const a = m.create(fakeId("aaaaaaaa"), LOOM);
+    const b = m.create(fakeId("aaaaaaaa"), LOOM);
     assert.notEqual(a.slug, b.slug);
     assert.equal(a.slug, "aaaaaaaa");
     assert.match(b.slug, /^aaaaaaaa-[0-9a-z]+$/);
@@ -133,7 +135,7 @@ test("the pre-push hook rejects a push", () => {
   const { root, cleanup } = repo();
   try {
     const m = mgr(root);
-    const wt = m.create(fakeId("aaaaaaaa"));
+    const wt = m.create(fakeId("aaaaaaaa"), LOOM);
     const bare = mkdtempSync(join(tmpdir(), "loom-bare-"));
     try {
       execFileSync("git", ["init", "-q", "--bare", bare]);
@@ -158,7 +160,7 @@ test("facts report branch, commits, ahead/behind, dirty, last subject", () => {
   const { root, cleanup } = repo();
   try {
     const m = mgr(root);
-    const wt = m.create(fakeId("aaaaaaaa"));
+    const wt = m.create(fakeId("aaaaaaaa"), LOOM);
 
     let f = m.facts(wt.path, "main");
     assert.ok(f);
@@ -218,10 +220,13 @@ test("renameBranch rebrands loom/<id> from a title, keeping the tree dir", () =>
   const { root, cleanup } = repo();
   try {
     const m = mgr(root);
-    const wt = m.create(fakeId("aaaaaaaa"));
+    const wt = m.create(fakeId("aaaaaaaa"), LOOM);
     assert.equal(wt.branch, "loom/aaaaaaaa");
 
-    assert.equal(m.renameBranch('"Add OAuth login flow"', wt.branch), "loom/add-oauth-login-flow");
+    assert.equal(
+      m.renameBranch('"Add OAuth login flow"', wt.branch, LOOM.branchPrefix),
+      "loom/add-oauth-login-flow",
+    );
 
     // new ref exists, old is gone, the worktree's HEAD followed, dir unchanged
     execFileSync("git", ["-C", root, "rev-parse", "--verify", "loom/add-oauth-login-flow"]);
@@ -246,14 +251,91 @@ test("renameBranch suffixes on a name clash and no-ops when the slug already mat
   const { root, cleanup } = repo();
   try {
     const m = mgr(root);
-    const a = m.create(fakeId("aaaaaaaa"));
-    const b = m.create(fakeId("bbbbbbbb"));
+    const a = m.create(fakeId("aaaaaaaa"), LOOM);
+    const b = m.create(fakeId("bbbbbbbb"), LOOM);
 
-    assert.equal(m.renameBranch("Same Title", a.branch), "loom/same-title");
-    assert.match(m.renameBranch("Same Title", b.branch), /^loom\/same-title-[0-9a-f]{6}$/);
+    assert.equal(m.renameBranch("Same Title", a.branch, LOOM.branchPrefix), "loom/same-title");
+    assert.match(
+      m.renameBranch("Same Title", b.branch, LOOM.branchPrefix),
+      /^loom\/same-title-[0-9a-f]{6}$/,
+    );
     // already `loom/<slug>` for this title → left alone
-    assert.equal(m.renameBranch("same title", "loom/same-title"), "loom/same-title");
+    assert.equal(
+      m.renameBranch("same title", "loom/same-title", LOOM.branchPrefix),
+      "loom/same-title",
+    );
     execFileSync("git", ["-C", root, "rev-parse", "--verify", "loom/same-title"]);
+  } finally {
+    cleanup();
+  }
+});
+
+test("a nested branch prefix names generic, renamed and clone branches under it", () => {
+  const { root, cleanup } = repo();
+  try {
+    // given
+    const m = mgr(root);
+    const prefix = { branchPrefix: ["me", "x"] };
+    // when
+    const wt = m.create(fakeId("aaaaaaaa"), prefix);
+    const renamed = m.renameBranch("Add OAuth login flow", wt.branch, prefix.branchPrefix);
+    const clone = m.createBranch(fakeId("bbbbbbbb"), prefix);
+    // then
+    assert.equal(wt.branch, "me/x/aaaaaaaa");
+    assert.equal(renamed, "me/x/add-oauth-login-flow");
+    assert.equal(clone.branch, "me/x/bbbbbbbb");
+    assert.equal(
+      execFileSync("git", ["-C", wt.path, "symbolic-ref", "--short", "HEAD"], {
+        encoding: "utf8",
+      }).trim(),
+      "me/x/add-oauth-login-flow",
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test("no branch prefix names bare branches and suffixes a slug that is taken", () => {
+  const { root, cleanup } = repo();
+  try {
+    // given
+    const m = mgr(root);
+    const none = { branchPrefix: [] };
+    execFileSync("git", ["-C", root, "branch", "same-title"]);
+    // when
+    const a = m.create(fakeId("aaaaaaaa"), none);
+    const b = m.create(fakeId("bbbbbbbb"), none);
+    const clone = m.createBranch(fakeId("cccccccc"), none);
+    // then
+    assert.equal(a.branch, "aaaaaaaa");
+    assert.equal(b.branch, "bbbbbbbb");
+    assert.equal(clone.branch, "cccccccc");
+    assert.equal(m.renameBranch("Add OAuth login flow", a.branch, []), "add-oauth-login-flow");
+    assert.match(m.renameBranch("Same Title", b.branch, []), /^same-title-[0-9a-f]{6}$/);
+    assert.equal(m.renameBranch("same title", "same-title", []), "same-title");
+  } finally {
+    cleanup();
+  }
+});
+
+test("no branch prefix leaves a user's branch named like a session's short id alone", () => {
+  const { root, cleanup } = repo();
+  const git = (...args: string[]) =>
+    execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim();
+  try {
+    // given
+    const m = mgr(root);
+    git("commit", "-q", "--allow-empty", "-m", "user work");
+    git("branch", "aaaaaaaa");
+    git("reset", "-q", "--hard", "HEAD~1");
+    const userTip = git("rev-parse", "aaaaaaaa");
+    // when
+    const wt = m.create(fakeId("aaaaaaaa"), { branchPrefix: [] });
+    m.remove(wt.path, { force: true });
+    m.deleteBranch(wt.branch);
+    // then
+    assert.equal(wt.branch, fakeId("aaaaaaaa"));
+    assert.equal(git("rev-parse", "aaaaaaaa"), userTip);
   } finally {
     cleanup();
   }
@@ -272,7 +354,7 @@ test("syncOntoBase: no-base when the base ref is unknown, current when nothing t
   const { root, cleanup } = repo();
   try {
     const m = mgr(root);
-    const wt = m.create(fakeId("aaaaaaaa"));
+    const wt = m.create(fakeId("aaaaaaaa"), LOOM);
     assert.equal(m.syncOntoBase(wt.path, "nope/missing", "rebase").outcome, "no-base");
     assert.equal(m.syncOntoBase(wt.path, "main", "rebase").outcome, "current");
   } finally {
@@ -284,7 +366,7 @@ test("syncOntoBase: replays the branch onto an advanced base", () => {
   const { root, cleanup } = repo();
   try {
     const m = mgr(root);
-    const wt = m.create(fakeId("aaaaaaaa"));
+    const wt = m.create(fakeId("aaaaaaaa"), LOOM);
     writeFileSync(join(wt.path, "branch.txt"), "mine");
     execFileSync("git", ["-C", wt.path, "add", "-A"]);
     execFileSync("git", ["-C", wt.path, "commit", "-q", "-m", "branch work"]);
@@ -318,7 +400,7 @@ test("syncOntoBase: replayed and merge commits carry the session's identity", ()
         encoding: "utf8",
       }).trim();
     for (const mode of ["rebase", "merge"] as const) {
-      const wt = m.create(fakeId(mode === "rebase" ? "aaaaaaaa" : "bbbbbbbb"));
+      const wt = m.create(fakeId(mode === "rebase" ? "aaaaaaaa" : "bbbbbbbb"), LOOM);
       writeFileSync(join(wt.path, `${mode}.txt`), "mine");
       execFileSync("git", ["-C", wt.path, "add", "-A"]);
       execFileSync("git", ["-C", wt.path, "commit", "-q", "-m", "branch work"]);
@@ -341,7 +423,7 @@ test("syncOntoBase: leaves the tree untouched on a conflict", () => {
   const { root, cleanup } = repo();
   try {
     const m = mgr(root);
-    const wt = m.create(fakeId("aaaaaaaa"));
+    const wt = m.create(fakeId("aaaaaaaa"), LOOM);
     writeFileSync(join(wt.path, "clash.txt"), "branch side");
     execFileSync("git", ["-C", wt.path, "add", "-A"]);
     execFileSync("git", ["-C", wt.path, "commit", "-q", "-m", "branch clash"]);
@@ -370,7 +452,7 @@ test("syncOntoBase: skips a dirty worktree", () => {
   const { root, cleanup } = repo();
   try {
     const m = mgr(root);
-    const wt = m.create(fakeId("aaaaaaaa"));
+    const wt = m.create(fakeId("aaaaaaaa"), LOOM);
     advanceMain(root, "base.txt", "theirs");
     writeFileSync(join(wt.path, "wip.txt"), "uncommitted");
 
@@ -387,7 +469,7 @@ test("syncOntoBase: mode 'merge' brings the base in as a merge commit", () => {
   const { root, cleanup } = repo();
   try {
     const m = mgr(root);
-    const wt = m.create(fakeId("aaaaaaaa"));
+    const wt = m.create(fakeId("aaaaaaaa"), LOOM);
     writeFileSync(join(wt.path, "branch.txt"), "mine");
     execFileSync("git", ["-C", wt.path, "add", "-A"]);
     execFileSync("git", ["-C", wt.path, "commit", "-q", "-m", "branch work"]);
@@ -417,7 +499,7 @@ test("syncOntoBase: bails 'busy' when the agent has its own rebase in progress (
   const { root, cleanup } = repo();
   try {
     const m = mgr(root);
-    const wt = m.create(fakeId("aaaaaaaa"));
+    const wt = m.create(fakeId("aaaaaaaa"), LOOM);
     // The agent's own branch has a commit that will clash with an interactive
     // rebase it starts and then pauses at a conflict.
     writeFileSync(join(wt.path, "clash.txt"), "agent side\n");
@@ -463,7 +545,7 @@ test("a worktree still runs the repo's own pre-commit hook (G12)", () => {
     writeExecutableSync(hookPath, `#!/bin/sh\ntouch "${marker}"\n`, 0o755);
 
     const m = mgr(root);
-    const wt = m.create(fakeId("aaaaaaaa"));
+    const wt = m.create(fakeId("aaaaaaaa"), LOOM);
 
     writeFileSync(join(wt.path, "f.txt"), "x\n");
     execFileSync("git", ["-C", wt.path, "add", "-A"]);
@@ -481,7 +563,7 @@ test("remove drops the worktree", () => {
   const { root, cleanup } = repo();
   try {
     const m = mgr(root);
-    const wt = m.create(fakeId("aaaaaaaa"));
+    const wt = m.create(fakeId("aaaaaaaa"), LOOM);
     assert.ok(m.list().some((w) => w.path === wt.path));
     m.remove(wt.path, { force: true });
     assert.ok(!m.list().some((w) => w.path === wt.path));
@@ -498,7 +580,7 @@ test("fork copies staged, unstaged, binary, deleted and untracked files without 
   const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-C", cwd, ...args]);
   try {
     const m = mgr(root);
-    const parent = m.create("parent");
+    const parent = m.create("parent", LOOM);
     writeFileSync(join(parent.path, "file"), "base\n");
     writeFileSync(join(parent.path, "deleted"), "base\n");
     git(parent.path, "add", ".");
@@ -510,7 +592,7 @@ test("fork copies staged, unstaged, binary, deleted and untracked files without 
     rmSync(join(parent.path, "deleted"));
     writeFileSync(join(parent.path, "untracked"), "new\n");
     const status = git(parent.path, "status", "--porcelain").toString();
-    const fork = m.create("fork", { baseRef: m.headSha(parent.path)! });
+    const fork = m.create("fork", { ...LOOM, baseRef: m.headSha(parent.path)! });
     m.copyChanges(parent.path, fork.path);
     assert.equal(git(fork.path, "status", "--porcelain").toString(), status);
     assert.deepEqual(git(fork.path, "diff", "--binary"), git(parent.path, "diff", "--binary"));
@@ -530,7 +612,7 @@ test("forking in-place changes omits Loom runtime state even if not gitignored",
   try {
     const m = mgr(root);
     writeFileSync(join(root, "untracked"), "keep me");
-    const fork = m.create("in-place-fork");
+    const fork = m.create("in-place-fork", LOOM);
     m.copyChanges(root, fork.path);
     assert.equal(Deno.readTextFileSync(join(fork.path, "untracked")), "keep me");
     assert.equal(existsSync(join(fork.path, ".loom")), false);
@@ -564,7 +646,7 @@ for (const layout of [
       if (layout === "bare-enabled") git(main, "config", "extensions.worktreeConfig", "true");
       const source = layout === "bare" || layout === "bare-enabled" ? main : linked;
       const m = mgr(source);
-      const wt = m.create(fakeId("cccccccc"));
+      const wt = m.create(fakeId("cccccccc"), LOOM);
       assert.equal(git(wt.path, "rev-parse", "--show-toplevel"), wt.path);
       assert.equal(git(wt.path, "status", "--porcelain"), "");
       assert.equal(git(linked, "rev-parse", "--show-toplevel"), Deno.realPathSync(linked));
@@ -601,12 +683,12 @@ test("failed config migration preserves main checkout settings and can be retrie
     const lock = join(root, ".git", "config.worktree.lock");
     writeFileSync(lock, "locked");
     const m = mgr(root);
-    assert.throws(() => m.create("blocked1"), /git config migration failed/);
+    assert.throws(() => m.create("blocked1", LOOM), /git config migration failed/);
     assert.equal(git("config", "--local", "core.worktree"), "..");
     assert.equal(git("rev-parse", "--show-toplevel"), Deno.realPathSync(root));
     assert.equal(existsSync(join(root, ".loom", "trees", "blocked1")), false);
     rmSync(lock);
-    const wt = m.create("retried1");
+    const wt = m.create("retried1", LOOM);
     assert.equal(git("rev-parse", "--show-toplevel"), Deno.realPathSync(root));
     assert.equal(m.facts(wt.path, "main")?.dirty, false);
   } finally {
@@ -618,7 +700,7 @@ test("async removal preserves dirty trees unless forced and keeps the branch", a
   const { root, cleanup } = repo();
   try {
     const m = mgr(root);
-    const wt = m.create(fakeId("async123"));
+    const wt = m.create(fakeId("async123"), LOOM);
     writeFileSync(join(wt.path, "uncommitted.txt"), "keep until forced");
     await assert.rejects(m.removeAsync(wt.path), /git worktree remove failed/);
     assert.ok(existsSync(join(wt.path, "uncommitted.txt")));
@@ -636,13 +718,13 @@ test("a clone session gets a branch and ref facts without a worktree", () => {
   const { root, cleanup } = repo();
   try {
     const m = mgr(root);
-    const made = m.createBranch(fakeId("dddddddd"));
+    const made = m.createBranch(fakeId("dddddddd"), LOOM);
     assert.deepEqual(made, { branch: "loom/dddddddd", baseRef: "main" });
     assert.equal(m.list().length, 1, "no worktree was added");
     assert.equal(m.branchHead(made.branch), m.branchHead("main"));
     assert.equal(m.branchHead("loom/missing"), null);
     assert.throws(
-      () => m.createBranch(fakeId("eeeeeeee"), { baseRef: "nope" }),
+      () => m.createBranch(fakeId("eeeeeeee"), { ...LOOM, baseRef: "nope" }),
       /does not resolve/,
     );
 

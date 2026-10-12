@@ -14,6 +14,21 @@ so the repository mount no longer exposes sibling session worktrees.
 The `session.worktree_dir` config setting overrides
 the directory, including a location on another drive.
 
+Each worktree or clone session gets its own branch, `loom/<id>` (the first eight
+characters of the session id) until its title is generated, then
+`loom/<title-slug>`, with a short hex suffix if that name is taken.
+`session.branch_prefix` replaces `loom`: `"me/loom"` nests deeper, and `""` drops
+the prefix and its slash (`<id>`, then `<title-slug>`). The value is checked like
+a Git ref: slash-separated components, no leading or trailing slash, and nothing
+`git check-ref-format` rejects. It can be set per `repos[]` entry and applies to
+new sessions without a restart. Existing sessions keep their branch names, and a
+session still on its `<prefix>/<id>` branch keeps that prefix when it is renamed.
+Loom tells its sessions' branches apart by the session rows, never by the prefix,
+so deleting a branch (`session.remove` with `deleteBranch`, or a failed fork's
+cleanup) only touches a branch a session row records as its own. With `""`,
+`session.clone.visible_refs` cannot list anything under `refs/heads/`, since
+any branch could be a session's.
+
 External worktrees require another mount. Older x86 Linux VM configurations
 have exhausted virtual-device IRQs with additional mounts and a persistent
 provider profile. Host Git and mount-layout tests cover external paths; a real

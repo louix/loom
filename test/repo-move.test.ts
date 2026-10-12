@@ -73,7 +73,7 @@ test("loom repo move carries state, session paths, worktree links and hooks to t
       hooksDir: old.hooks,
       baseBranch: "main",
       log: makeLogger("test"),
-    }).create("moved");
+    }).create("moved", { branchPrefix: ["loom"] });
     const clone = join(sessionCloneRoot(from), "clone-1", "checkout");
     mkdirSync(clone, { recursive: true });
     write(join(old.packageCache, "deno", "marker"), "cached\n");

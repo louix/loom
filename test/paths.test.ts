@@ -108,7 +108,7 @@ test("repository discovery handles checkouts, linked worktrees, and bare reposit
       baseBranch: "main",
       log: makeLogger("test"),
     });
-    const session = manager.create("identity");
+    const session = manager.create("identity", { branchPrefix: ["loom"] });
     for (const launch of [bare, bareLinked, alias, session.path])
       assert.equal(findRepoRoot(launch), bare);
     assert.throws(() => findRepoRoot(root), /not inside a git repository/);

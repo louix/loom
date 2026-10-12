@@ -22,6 +22,7 @@ import { dirname, join, resolve } from "node:path";
 import { READ_ONLY_GIT_OPTIONS } from "@loom/core/git-read";
 import type { Logger } from "@loom/core/logger";
 import type { GitFacts } from "@loom/core/wire";
+import { type BranchPrefix, sessionBranch } from "./session-branch.ts";
 
 /**
  * The former session identity, `Loom (<model>) <loom+<model>@localhost>`. Now
@@ -265,7 +266,7 @@ export class WorktreeManager {
   }
 
   /**
-   * `git worktree add <trees>/<shortId> -b loom/<shortId> <base>`, then pin the
+   * `git worktree add <trees>/<shortId> -b <prefix>/<shortId> <base>`, then pin the
    * hooks path for that tree. `opts.baseRef` branches off something other than
    * the configured base (a parent session's branch, for a hard fork). Commit
    * identity is not pinned: sessions receive it in their environment, and the
@@ -274,7 +275,7 @@ export class WorktreeManager {
    * (truncated to the fleet view's short id) so a tree is traceable back to the
    * session.
    */
-  create(id: string, opts: { baseRef?: string } = {}): WorktreeInfo {
+  create(id: string, opts: { branchPrefix: BranchPrefix; baseRef?: string }): WorktreeInfo {
     this.ensureSetup();
     let baseRef: string;
     const baseRefOverride = opts.baseRef;
@@ -291,7 +292,7 @@ export class WorktreeManager {
     }
     const slug = this.#uniqueDir(id);
     const path = join(this.#treesDir, slug);
-    const branch = this.#uniqueBranch(id);
+    const branch = this.#uniqueBranch(opts.branchPrefix, id);
 
     const add = this.#git(["worktree", "add", path, "-b", branch, baseRef]);
     if (!add.ok) {
@@ -394,14 +395,14 @@ export class WorktreeManager {
   }
 
   /**
-   * Rebrand a session's still-generic `loom/<shortId>` branch from its freshly
-   * generated title — `git branch -m` to `loom/<slug>` (git updates the linked
+   * Rebrand a session's still-generic `<prefix>/<shortId>` branch from its freshly
+   * generated title — `git branch -m` to `<prefix>/<slug>` (git updates the linked
    * worktree's HEAD). The worktree *directory* is left as-is: the running
    * session holds it as its cwd, and the dir name is cosmetic. Returns the new
    * branch, or `currentBranch` unchanged on a no-op / failure.
    */
-  renameBranch(hint: string, currentBranch: string): string {
-    const branch = this.#uniqueBranchNamed(slugify(hint), currentBranch);
+  renameBranch(hint: string, currentBranch: string, branchPrefix: BranchPrefix): string {
+    const branch = this.#uniqueBranchNamed(branchPrefix, slugify(hint), currentBranch);
     if (branch === currentBranch) return currentBranch;
 
     const res = this.#git(["branch", "-m", currentBranch, branch]);
@@ -673,7 +674,10 @@ export class WorktreeManager {
    * A clone session's branch, with no worktree. The host creates the ref once;
    * every later movement is a push from the guest through the relay.
    */
-  createBranch(id: string, opts: { baseRef?: string } = {}): { branch: string; baseRef: string } {
+  createBranch(
+    id: string,
+    opts: { branchPrefix: BranchPrefix; baseRef?: string },
+  ): { branch: string; baseRef: string } {
     this.ensureSetup();
     if (opts.baseRef && !this.#git(["rev-parse", "--verify", "--quiet", opts.baseRef]).ok)
       throw new Error(`base ref "${opts.baseRef}" does not resolve`);
@@ -681,7 +685,7 @@ export class WorktreeManager {
     // The relay exposes the base by name, so a clone session needs a branch, not HEAD.
     if (baseRef === "HEAD") baseRef = this.#gitRead(["symbolic-ref", "--short", "-q", "HEAD"]);
     if (!baseRef) throw new Error("clone sessions need a base branch; HEAD is detached");
-    const branch = this.#uniqueBranch(id);
+    const branch = this.#uniqueBranch(opts.branchPrefix, id);
     const res = this.#git(["branch", branch, baseRef]);
     if (!res.ok) throw new Error(`git branch failed: ${res.stderr.trim() || res.error}`);
     return { branch, baseRef };
@@ -950,23 +954,30 @@ export class WorktreeManager {
     }
   }
 
-  /** `loom/<first 8 chars of id>`, falling back to the full id on collision
+  /** `<prefix>/<first 8 chars of id>`, falling back to the full id on collision
    *  (astronomically rare — ids are random UUIDs). */
-  #uniqueBranch(id: string): string {
-    const short = `loom/${id.slice(0, 8)}`;
-    if (!this.#git(["rev-parse", "--verify", "--quiet", short]).ok) return short;
-    return `loom/${id}`;
+  #uniqueBranch(prefix: BranchPrefix, id: string): string {
+    const short = sessionBranch(prefix, id.slice(0, 8));
+    if (!this.#nameTaken(short)) return short;
+    return sessionBranch(prefix, id);
   }
 
-  /** `loom/<slug>`, with a short hex suffix if that ref is already taken.
+  /** `<prefix>/<slug>`, with a short hex suffix if that name is already taken.
    *  `exclude` (the branch being renamed away from) doesn't count as taken. */
-  #uniqueBranchNamed(slug: string, exclude?: string): string {
+  #uniqueBranchNamed(prefix: BranchPrefix, slug: string, exclude: string): string {
     for (let attempt = 0; ; attempt++) {
-      const name = attempt === 0 ? `loom/${slug}` : `loom/${slug}-${randomSuffix()}`;
+      const name = sessionBranch(prefix, attempt === 0 ? slug : `${slug}-${randomSuffix()}`);
       if (name === exclude) return name;
-      if (!this.#git(["rev-parse", "--verify", "--quiet", name]).ok) return name;
-      if (attempt > 20) return `loom/${slug}-${Date.now().toString(36)}`;
+      if (!this.#nameTaken(name)) return name;
+      if (attempt > 20) return sessionBranch(prefix, `${slug}-${Date.now().toString(36)}`);
     }
+  }
+
+  /** Anything the bare name resolves to counts, not only a branch: with no
+   *  prefix, a branch named like a tag or an abbreviated SHA would be ambiguous
+   *  wherever Git is handed the name bare. */
+  #nameTaken(name: string): boolean {
+    return this.#git(["rev-parse", "--verify", "--quiet", name]).ok;
   }
 
   #git(

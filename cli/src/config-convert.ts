@@ -50,6 +50,7 @@ const STAYS: Record<string, string> = {
   daemon: "daemon lifetime",
   "session.defaults.base_branch": "session workspace policy",
   "session.worktree_dir": "session workspace policy",
+  "session.branch_prefix": "session workspace policy",
   git: "Git identity of Loom sessions",
   mcp_servers: tools,
   "session.mcp_servers": tools,

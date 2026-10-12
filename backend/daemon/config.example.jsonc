@@ -54,6 +54,10 @@
     // Omitted: ~/.local/share/loom/worktrees/<repo>-<hash> (respects XDG_DATA_HOME).
     // Override per repo with an absolute, ~/ or repo-relative directory.
     // "worktree_dir": "/mnt/fast-drive/loom/worktrees",
+    // Branches of new sessions: <prefix>/<session id>, then <prefix>/<title slug>.
+    // "" for none (<session id>, <title slug>); slashes nest ("me/loom").
+    // Existing sessions keep their branch names.
+    "branch_prefix": "loom",
     "auto_rebase": "off", // or rebase, merge
     "auto_resume": true,
     "commit_reminder": true,
