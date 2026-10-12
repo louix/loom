@@ -24,6 +24,15 @@ Discovery validates the configured resource and advertised issuer, requires S256
 and independently validates each endpoint. Metadata fallback is limited to
 HTTP 404/410; malformed metadata, identity mismatch and redirects fail login.
 
+The authorization server's `issuer` must be the string the protected-resource
+metadata advertised, exactly (RFC 8414 §3.3), with one exception: an issuer that
+is only an origin may differ by its trailing slash (`https://as.example` and
+`https://as.example/`). URL serialization adds that slash to a bare origin, and
+AWS sign-in advertises one form while publishing the other. Nothing else is
+normalized: host case, an explicit default port, dot segments and any non-empty
+path must match. Loom keeps the server's own `issuer` string and checks a
+callback's `iss` against it.
+
 Explicit scopes take precedence; otherwise Loom uses the resource challenge,
 then protected-resource scopes, then omits scope. It never silently adds
 `offline_access` or broadens scopes after an authorization failure.

@@ -251,3 +251,95 @@ test("MCP discovery rejects metadata DNS answers that rebind to private or loopb
     assert(!f.requested.includes(destination));
   }
 });
+
+// Copied from https://aws-mcp.us-east-1.api.aws and https://us-east-1.oauth.signin.aws (2026-10-12).
+const awsResource = "https://aws-mcp.us-east-1.api.aws/mcp";
+const awsAdvertisedIssuer = "https://us-east-1.oauth.signin.aws/";
+const awsAsMetadata = () => ({
+  issuer: "https://us-east-1.oauth.signin.aws",
+  authorization_endpoint: "https://us-east-1.oauth.signin.aws/v1/authorize",
+  token_endpoint: "https://us-east-1.oauth.signin.aws/v1/token",
+  registration_endpoint: "https://us-east-1.oauth.signin.aws/v1/register",
+  token_endpoint_auth_methods_supported: ["none"],
+  response_types_supported: ["code"],
+  grant_types_supported: ["authorization_code", "refresh_token"],
+  authorization_response_iss_parameter_supported: false,
+  code_challenge_methods_supported: ["S256"],
+});
+const awsFixture = (advertised: string, published: Record<string, unknown>) => {
+  const documents = new Map<string, () => Response>([
+    [
+      awsResource,
+      () =>
+        Response.json(
+          {
+            jsonrpc: "2.0",
+            id: "",
+            result: null,
+            error: { code: -32600, message: "HTTP method not supported." },
+          },
+          { status: 405 },
+        ),
+    ],
+    [
+      "https://aws-mcp.us-east-1.api.aws/.well-known/oauth-protected-resource/mcp",
+      () => Response.json({ resource: awsResource, authorization_servers: [advertised] }),
+    ],
+    [
+      "https://us-east-1.oauth.signin.aws/.well-known/oauth-authorization-server",
+      () => Response.json(published),
+    ],
+  ]);
+  const network: OAuthDiscoveryNetwork = {
+    resolve: (url) => Promise.resolve(prepareOAuthEndpoint({ url, addresses: ["8.8.8.8"] })),
+    get: (plan) =>
+      Promise.resolve(documents.get(plan.url)?.() ?? new Response(null, { status: 404 })),
+  };
+  return network;
+};
+
+test("MCP discovery accepts a bare-origin issuer that differs only by its trailing slash", async () => {
+  const result = await discoverMcpOAuth(awsResource, {
+    network: awsFixture(awsAdvertisedIssuer, awsAsMetadata()),
+  });
+  assert.equal(result.issuer, "https://us-east-1.oauth.signin.aws");
+  assert.equal(result.authorizationServer.issuer, "https://us-east-1.oauth.signin.aws");
+  assert.equal(result.scopes, undefined);
+  assert.equal(result.endpoints.token.url, "https://us-east-1.oauth.signin.aws/v1/token");
+  assert.equal(
+    result.endpoints.registration?.url,
+    "https://us-east-1.oauth.signin.aws/v1/register",
+  );
+  assert.equal(result.endpoints.revocation, undefined);
+  const reversed = await discoverMcpOAuth(awsResource, {
+    network: awsFixture("https://us-east-1.oauth.signin.aws", {
+      ...awsAsMetadata(),
+      issuer: awsAdvertisedIssuer,
+    }),
+  });
+  assert.equal(reversed.issuer, awsAdvertisedIssuer);
+});
+
+test("MCP discovery still rejects a bare-origin issuer on another host, path, port or case", async () => {
+  for (const published of [
+    "https://eu-west-1.oauth.signin.aws",
+    "https://us-east-1.oauth.signin.aws/tenant",
+    "https://us-east-1.oauth.signin.aws//",
+    "https://us-east-1.oauth.signin.aws:443",
+    "https://US-EAST-1.oauth.signin.aws",
+    "http://us-east-1.oauth.signin.aws",
+  ])
+    await assert.rejects(
+      discoverMcpOAuth(awsResource, {
+        network: awsFixture(awsAdvertisedIssuer, { ...awsAsMetadata(), issuer: published }),
+      }),
+      errorCode("issuer_mismatch"),
+      published,
+    );
+  await assert.rejects(
+    discoverMcpOAuth(awsResource, {
+      network: awsFixture(awsAdvertisedIssuer, { ...awsAsMetadata(), issuer: 1 }),
+    }),
+    errorCode("issuer_mismatch"),
+  );
+});

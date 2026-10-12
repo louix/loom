@@ -48,6 +48,18 @@ const scopes = (value: unknown): string[] => {
     invalid();
   return [...new Set(result)];
 };
+// RFC 8414 §3.3 asks for the identical string. A bare origin is the one case
+// URL serialization itself makes ambiguous (`new URL("https://as.test").href`
+// gains a "/"), and AWS sign-in advertises "https://us-east-1.oauth.signin.aws/"
+// but publishes the issuer without it. Case, ports, dot segments and any
+// non-empty path still have to match exactly.
+const sameIssuer = (advertised: string, published: string): boolean => {
+  const bare = (s: string) => (s.endsWith("/") ? s.slice(0, -1) : s);
+  return (
+    advertised === published ||
+    (bare(advertised) === bare(published) && new URL(advertised).pathname === "/")
+  );
+};
 const wellKnown = (url: URL, name: string): string[] => {
   const path = url.pathname === "/" ? "" : url.pathname;
   return [
@@ -147,12 +159,19 @@ export const discoverMcpOAuth = async (
       ]);
       if (!asDocument) continue;
       let as: oauth.AuthorizationServer;
-      // The library normalizes URLs for comparison. Check the original string too.
+      // The library compares `.href`, which also folds case, default ports and
+      // dot segments. Check the original string too.
       const body: unknown = await asDocument.response
         .clone()
         .json()
         .catch(() => invalid());
-      if (!body || typeof body !== "object" || !("issuer" in body) || body.issuer !== issuer)
+      if (
+        !body ||
+        typeof body !== "object" ||
+        !("issuer" in body) ||
+        typeof body.issuer !== "string" ||
+        !sameIssuer(issuer, body.issuer)
+      )
         throw new OAuthDiscoveryError("issuer_mismatch");
       try {
         as = await oauth.processDiscoveryResponse(issuerUrl, asDocument.response);
@@ -205,7 +224,8 @@ export const discoverMcpOAuth = async (
       return {
         resource: resource.href,
         resourceMetadataUrl: document.url,
-        issuer,
+        // A callback `iss` uses the server's own spelling, not the advertised one.
+        issuer: as.issuer,
         authorizationServer: as,
         scopes: selectedScopes,
         endpoints,
