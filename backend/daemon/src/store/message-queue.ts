@@ -84,7 +84,7 @@ export interface HoldApplied {
 }
 
 /** A live entry as dispatch reads it: no text. */
-export type QueueSlot = Pick<QueueEntry, "id" | "state" | "delivery" | "uncertain">;
+export type QueueSlot = Pick<QueueEntry, "id" | "state" | "delivery" | "uncertain" | "author">;
 
 interface Row {
   id: string;
@@ -156,10 +156,12 @@ export class MessageQueueStore {
   slots(sessionId: string): QueueSlot[] {
     const rows = this.#db
       .prepare(
-        `SELECT id, state, delivery, uncertain FROM session_queue ` +
+        `SELECT id, state, delivery, uncertain, author FROM session_queue ` +
           `WHERE session_id = ? AND ${LIVE} ORDER BY ${ORDER}`,
       )
-      .all(sessionId) as unknown as Array<Pick<Row, "id" | "state" | "delivery" | "uncertain">>;
+      .all(sessionId) as unknown as Array<
+      Pick<Row, "id" | "state" | "delivery" | "uncertain" | "author">
+    >;
     return rows.map((r) => ({ ...r, uncertain: r.uncertain === 1 }));
   }
 

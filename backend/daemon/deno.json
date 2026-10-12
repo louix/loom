@@ -29,6 +29,7 @@
     "./daemon/claude-worker": "./src/daemon/claude-worker.ts",
     "./daemon/worker-provider": "./src/daemon/worker-provider.ts",
     "./daemon/message-queue": "./src/daemon/message-queue.ts",
+    "./daemon/queue-machine": "./src/daemon/queue-machine.ts",
     "./store/db": "./src/store/db.ts",
     "./store/message-queue": "./src/store/message-queue.ts",
     "./store/migrations": "./src/store/migrations.ts",
