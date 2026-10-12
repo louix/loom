@@ -33,6 +33,9 @@
  *                                       runs; a message sent now during a running Bash
  *                                       lands before the Bash ends (Claude only: the
  *                                       Codex variables are not needed)
+ *   codex-turn-facts                    what Codex reports about a turn: its item times
+ *                                       stamp Loom's calls and results, the account's plan
+ *                                       is named, a user stop stays the user's
  */
 import assert from "node:assert/strict";
 import { join } from "node:path";
@@ -156,15 +159,21 @@ const start = async () => {
       plan_review: () => ({ implementMode: event["implementMode"] }),
       permission_request: () => ({ tool: event["tool"] }),
       error: () => ({ message: String(event["message"]).slice(0, 200) }),
-      result: () => ({ kind: event["kind"] }),
+      result: () => ({ kind: event["kind"], reason: event["reason"] }),
       background_tasks: () => ({
         ids: ((event["tasks"] as Array<{ id: string }> | undefined) ?? []).map((t) => t.id),
       }),
       // The queue check orders these: a root tool, and the message folded in.
-      tool_call: () => ({ id: event["id"], name: event["name"], agentId: event["agentId"] }),
+      tool_call: () => ({
+        id: event["id"],
+        name: event["name"],
+        agentId: event["agentId"],
+        ts: event["ts"],
+      }),
       tool_result: () => ({
         id: event["id"],
         agentId: event["agentId"],
+        ts: event["ts"],
         output: JSON.stringify(event["output"] ?? "").slice(0, 200),
       }),
       user_message: () => ({
@@ -1199,6 +1208,88 @@ const agents = async (provider: string) => {
   });
 };
 
+/**
+ * Two Codex turns, read against Codex's own stdout. A timed command's call and
+ * result carry Codex's `startedAtMs` / `completedAtMs`; the account's plan is
+ * named on the provider; a user stop mid-command ends `interrupted · user`
+ * whatever Codex reports on the turn it completes for that stop.
+ */
+const codexTurnFacts = async () => {
+  const tap = await cliTap("codex-facts", codexCli!, { stdout: '"threadId":"' });
+  await writeConfig({ codexCli: tap.tap });
+  await start();
+  await waitCatalogue(CODEX);
+  const model = await cheapModel(CODEX);
+  type Item = { id?: string; type?: string };
+  type Note = {
+    method?: string;
+    params?: { item?: Item; turn?: Record<string, unknown> } & Record<string, unknown>;
+  };
+  const notes = async () => (await tap.stdout()) as Note[];
+  const s = await create(
+    CODEX,
+    "Run exactly this shell command once: `sleep 2 && echo loom-timing`. Then reply with just: done.",
+    { model },
+  );
+  const raw = await notes();
+  const of = (method: string) =>
+    raw.find((m) => m.method === method && m.params?.item?.type === "commandExecution")?.params;
+  const started = of("item/started");
+  const completed = of("item/completed");
+  const itemId = started?.item?.id;
+  const loom = (type: string) =>
+    events.find((e) => e.id === s.id && e.type === type && (e.detail as Item).id === itemId)
+      ?.detail as { ts?: number } | undefined;
+  log("item timing", {
+    model,
+    codex: { startedAtMs: started?.["startedAtMs"], completedAtMs: completed?.["completedAtMs"] },
+    loom: { call: loom("tool_call")?.ts, result: loom("tool_result")?.ts },
+  });
+  assert(typeof started?.["startedAtMs"] === "number", "Codex stamped the command's start");
+  assert(typeof completed?.["completedAtMs"] === "number", "Codex stamped its completion");
+  assert.equal(loom("tool_call")?.ts, started["startedAtMs"]);
+  assert.equal(loom("tool_result")?.ts, completed["completedAtMs"]);
+  // Codex stamps the start once the command is under way: a little under the sleep.
+  assert((completed["completedAtMs"] as number) - (started["startedAtMs"] as number) >= 1000);
+
+  const providers =
+    await rpc<Array<{ id: string; account?: { loginMethod: string } }>>("providers.list");
+  const account = providers.find((p) => p.id === CODEX)?.account;
+  log("plan", { account });
+  assert.match(account?.loginMethod ?? "", /^ChatGPT /);
+
+  const seen = events.length;
+  await rpc("session.send", {
+    id: s.id,
+    text: "Run exactly this shell command once: `sleep 60`. Then reply with just: done.",
+  });
+  await settleFor(
+    () =>
+      events
+        .slice(seen)
+        .find(
+          (e) =>
+            e.id === s.id &&
+            e.type === "tool_call" &&
+            (e.detail as { name?: string }).name === "Bash",
+        ),
+    "the sleep to start",
+  );
+  await rpc("session.interrupt", { id: s.id });
+  const stopped = await settle(s.id, (x) => x.status.kind === "interrupted");
+  await new Promise((r) => setTimeout(r, 2000));
+  const completion = (await notes()).filter((m) => m.method === "turn/completed").at(-1)
+    ?.params?.turn;
+  log("user stop", {
+    status: stopped.status,
+    codexTurn: { status: completion?.["status"], error: completion?.["error"] },
+    results: events.slice(seen).filter((e) => e.id === s.id && e.type === "result"),
+  });
+  assert.deepEqual(stopped.status, { kind: "interrupted", by: "user" });
+  assert.deepEqual((await get(s.id)).status, { kind: "interrupted", by: "user" });
+  assert.equal(completion?.["status"], "interrupted");
+};
+
 const settleFor = async <T>(cond: () => T | undefined, what: string, ms = 300_000) => {
   const deadline = Date.now() + ms;
   for (;;) {
@@ -1224,6 +1315,7 @@ const run = async () => {
     else if (check === "agents-codex") await agents(CODEX);
     else if (check === "codex-tools") await codexTools(Deno.args[1]);
     else if (check === "tail-claude") await tail();
+    else if (check === "codex-turn-facts") await codexTurnFacts();
     else throw new Error("unknown check " + check);
     log("PASSED");
     passed = true;
