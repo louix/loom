@@ -19,9 +19,10 @@ import {
   writeFileSync,
 } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import type { Logger } from "@loom/core/logger";
 import { ensureLoomDirectories, loomPaths, type LoomPaths } from "@loom/core/paths";
+import { removeLoomDirectories } from "../harness/src/loom-directories.ts";
 import { openDb } from "@loom/daemon/store/db";
 import { Daemon } from "@loom/daemon/daemon/daemon";
 import { WorktreeManager } from "@loom/daemon/daemon/worktrees";
@@ -53,14 +54,8 @@ const mkFixture = (): Fixture => {
     paths,
     config,
     remove: () => {
-      for (const dir of [
-        paths.runtime,
-        paths.state,
-        dirname(paths.packageCache),
-        paths.trees,
-        repo,
-      ])
-        rmSync(dir, { recursive: true, force: true });
+      removeLoomDirectories(paths);
+      rmSync(repo, { recursive: true, force: true });
     },
   };
 };

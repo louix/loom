@@ -31,6 +31,16 @@ import { sessionCloneRoot } from "../backend/daemon/src/daemon/session-vm-state.
 import { repoBaseDirectory } from "../runtime/src/session-vm/repo-base.ts";
 import { lockRepository } from "@loom/daemon/daemon/lifecycle";
 import { moveRepository } from "../cli/src/repo-move.ts";
+import { loomDirectories, removeLoomDirectories } from "../harness/src/loom-directories.ts";
+import { readRecentRepositories, recentRepositoriesPath } from "../cli/src/recent-repositories.ts";
+
+/** Undo `rememberRepository(repo)`; the history is shared, so only `repo`'s entry goes. */
+const forgetRecentRepository = (repo: string): void => {
+  const path = recentRepositoriesPath();
+  const rest = readRecentRepositories(path).filter((entry) => entry !== repo);
+  if (rest.length === 0) rmSync(path, { force: true });
+  else writeFileSync(path, JSON.stringify(rest) + "\n", { mode: 0o600 });
+};
 
 const git = (cwd: string, ...args: string[]): string =>
   execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
@@ -54,9 +64,9 @@ test("loom repo move carries state, session paths, worktree links and hooks to t
     execFileSync("git", ["init", "-q", "-b", "main", from]);
     git(from, "commit", "-q", "--allow-empty", "-m", "base");
     const old = loomPaths(from);
+    cleanup.push(...loomDirectories(old));
     ensureLoomDirectories(old);
     const trees = worktreeDirectory(from);
-    cleanup.push(trees);
     const tree = new WorktreeManager({
       repoRoot: from,
       treesDir: trees,
@@ -80,8 +90,7 @@ test("loom repo move carries state, session paths, worktree links and hooks to t
     renameSync(from, to);
     const report = await moveRepository(from, to);
     const moved = loomPaths(to);
-    cleanup.push(moved.runtime, moved.state, dirname(moved.packageCache), sessionCloneRoot(to));
-    cleanup.push(repoBaseDirectory(to));
+    cleanup.push(...loomDirectories(moved));
 
     assert.equal(report.from, from);
     assert.equal(report.to, to);
@@ -120,6 +129,7 @@ test("loom repo move carries state, session paths, worktree links and hooks to t
     assert.ok(existsSync(join(moved.hooks, "pre-push")));
     assert.ok(report.notes.some((note) => /key their history by working directory/.test(note)));
   } finally {
+    forgetRecentRepository(to);
     for (const dir of cleanup) rmSync(dir, { recursive: true, force: true });
   }
 });
@@ -143,11 +153,7 @@ test("loom repo move refuses while a daemon runs for either path", async () => {
     // Nothing moved.
     assert.ok(existsSync(loomPaths(from).state));
   } finally {
-    for (const repo of [from, to]) {
-      const paths = loomPaths(repo);
-      rmSync(paths.runtime, { recursive: true, force: true });
-      rmSync(paths.state, { recursive: true, force: true });
-    }
+    for (const repo of [from, to]) removeLoomDirectories(loomPaths(repo));
     rmSync(root, { recursive: true, force: true });
   }
 });
@@ -171,7 +177,7 @@ test("loom repo move finds the old state when the old path now leads into the ne
   const from = join(root, "a", "repo");
   const to = join(root, "b", "repo");
   const old = loomPaths(from);
-  const cleanup = [root, old.state, old.runtime];
+  const cleanup = [root, ...loomDirectories(old)];
   try {
     execFileSync("git", ["init", "-q", "-b", "main", from]);
     ensureLoomDirectories(old);
@@ -183,7 +189,7 @@ test("loom repo move finds the old state when the old path now leads into the ne
     renameSync(join(root, "a"), join(root, "b"));
     symlinkSync(join(root, "b"), join(root, "a"));
     const moved = loomPaths(to);
-    cleanup.push(moved.state, moved.runtime);
+    cleanup.push(...loomDirectories(moved));
     assert.notEqual(loomPaths(from).state, old.state, "the old path's key changed");
 
     // when
@@ -207,6 +213,7 @@ test("loom repo move finds the old state when the old path now leads into the ne
       rows.close();
     }
   } finally {
+    forgetRecentRepository(to);
     for (const dir of cleanup) rmSync(dir, { recursive: true, force: true });
   }
 });
@@ -217,14 +224,14 @@ test("loom repo move skips the new checkout's own state that a symlinked old pat
   const from = join(root, "a", "repo");
   const to = join(root, "b", "repo");
   const old = loomPaths(from);
-  const cleanup = [root, old.state, old.runtime];
+  const cleanup = [root, ...loomDirectories(old)];
   try {
     execFileSync("git", ["init", "-q", "-b", "main", from]);
     ensureLoomDirectories(old);
     renameSync(join(root, "a"), join(root, "b"));
     symlinkSync(join(root, "b"), join(root, "a"));
     const moved = loomPaths(to);
-    cleanup.push(moved.state, moved.runtime);
+    cleanup.push(...loomDirectories(moved));
     ensureLoomDirectories(moved);
     assert.equal(loomPaths(from).state, moved.state, "the old path keys the new state");
 
@@ -237,6 +244,7 @@ test("loom repo move skips the new checkout's own state that a symlinked old pat
     assert.equal(existsSync(old.state), false);
     assert.equal(readRepoRecord(moved.record), to);
   } finally {
+    forgetRecentRepository(to);
     for (const dir of cleanup) rmSync(dir, { recursive: true, force: true });
   }
 });
@@ -247,7 +255,7 @@ test("loom repo move finds the old state through a symlink in the old path", asy
   const from = join(root, "real", "repo");
   const to = join(root, "new", "repo");
   const old = loomPaths(from);
-  const cleanup = [root, old.state, old.runtime];
+  const cleanup = [root, ...loomDirectories(old)];
   try {
     execFileSync("git", ["init", "-q", "-b", "main", from]);
     ensureLoomDirectories(old);
@@ -255,7 +263,7 @@ test("loom repo move finds the old state through a symlink in the old path", asy
     mkdirSync(join(root, "new"));
     renameSync(from, to);
     const moved = loomPaths(to);
-    cleanup.push(moved.state, moved.runtime);
+    cleanup.push(...loomDirectories(moved));
 
     // when
     const report = await moveRepository(join(root, "link", "repo"), to);
@@ -265,6 +273,7 @@ test("loom repo move finds the old state through a symlink in the old path", asy
     assert.ok(report.moved.includes(`${old.state} -> ${moved.state}`));
     assert.equal(readRepoRecord(moved.record), to);
   } finally {
+    forgetRecentRepository(to);
     for (const dir of cleanup) rmSync(dir, { recursive: true, force: true });
   }
 });
@@ -286,10 +295,7 @@ test("loom repo move refuses a new path that already has sessions", async () => 
     await assert.rejects(moveRepository(from, to), /already has Loom sessions/);
     assert.ok(existsSync(source.state));
   } finally {
-    for (const paths of [source, target]) {
-      rmSync(paths.runtime, { recursive: true, force: true });
-      rmSync(paths.state, { recursive: true, force: true });
-    }
+    for (const paths of [source, target]) removeLoomDirectories(paths);
     rmSync(root, { recursive: true, force: true });
   }
 });

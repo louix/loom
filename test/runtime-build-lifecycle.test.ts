@@ -9,7 +9,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import type { HarnessEvent } from "@loom/core/events";
 import { repoBaseDirectory } from "../runtime/src/session-vm/repo-base.ts";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { makeHarness } from "@loom/harness";
@@ -369,6 +369,9 @@ test("with a runtime build pending, a send during an environment refresh replies
     if (previous === undefined) Deno.env.delete("LOOM_BUNDLED_RUNTIMES");
     else Deno.env.set("LOOM_BUNDLED_RUNTIMES", previous);
     await Deno.remove(artifact).catch(() => {});
+    // Only while empty: other builds may share them.
+    for (const dir of [dirname(artifact), dirname(dirname(artifact))])
+      await Deno.remove(dir).catch(() => {});
     await Deno.remove(bundleDir, { recursive: true });
   }
 });

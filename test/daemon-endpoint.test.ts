@@ -11,6 +11,7 @@ import { execFileSync } from "node:child_process";
 import { daemonEndpoint, daemonLock, legacyDaemonPid } from "@loom/core/daemon-endpoint";
 import { ensureLoomDirectories, loomPaths, type LoomPaths } from "@loom/core/paths";
 import { Daemon } from "@loom/daemon/daemon/daemon";
+import { removeLoomDirectories } from "../harness/src/loom-directories.ts";
 import { LegacyDaemonRunning, lockRepository } from "@loom/daemon/daemon/lifecycle";
 
 interface Fixture {
@@ -29,7 +30,7 @@ const mkFixture = (): Fixture => {
     repo,
     paths,
     remove: () => {
-      rmSync(paths.runtime, { recursive: true, force: true });
+      removeLoomDirectories(paths);
       rmSync(repo, { recursive: true, force: true });
     },
   };

@@ -23,6 +23,7 @@ import {
 import { WorktreeManager } from "@loom/daemon/daemon/worktrees";
 import { makeLogger } from "@loom/core/logger";
 import { loadConfig } from "@loom/daemon/config/config";
+import { removeLoomDirectories } from "../harness/src/loom-directories.ts";
 
 test("repository discovery handles checkouts, linked worktrees, and bare repositories", () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "loom-paths-")));
@@ -112,6 +113,7 @@ test("repository discovery handles checkouts, linked worktrees, and bare reposit
       assert.equal(findRepoRoot(launch), bare);
     assert.throws(() => findRepoRoot(root), /not inside a git repository/);
   } finally {
+    removeLoomDirectories(loomPaths(join(root, ".bare"), join(root, "trees")));
     rmSync(root, { recursive: true, force: true });
   }
 });

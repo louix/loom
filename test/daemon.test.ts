@@ -18,6 +18,7 @@ import type {
   SessionSnapshot,
 } from "@loom/core/wire";
 import { loomPaths } from "@loom/core/paths";
+import { removeLoomDirectories } from "../harness/src/loom-directories.ts";
 import { stateIdle, stateRunning } from "@loom/core/session-state";
 import type { FakeProvider } from "@loom/connector-mock";
 import { Daemon } from "@loom/daemon/daemon/daemon";
@@ -2260,6 +2261,7 @@ test("a live daemon reports claude's catalog as loading until the probe settles 
     process.env["XDG_CONFIG_HOME"] = realXdg;
     if (realCache === undefined) delete process.env["XDG_CACHE_HOME"];
     else process.env["XDG_CACHE_HOME"] = realCache;
+    removeLoomDirectories(loomPaths(repoRoot));
     rmSync(repoRoot, { recursive: true, force: true });
     rmSync(xdg, { recursive: true, force: true });
   }

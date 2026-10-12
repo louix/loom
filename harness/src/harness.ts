@@ -1,12 +1,13 @@
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import type { ConnectorManifest } from "@loom/core/connector";
 import { loomPaths } from "@loom/core/paths";
 import { setLogLevel } from "@loom/core/logger";
 import { TEST_HOME_VARIABLE } from "@loom/core/user-dirs";
 import { Daemon, type DaemonStartOptions } from "@loom/daemon/daemon/daemon";
+import { removeLoomDirectories } from "./loom-directories.ts";
 
 /** Every connector, for a harness daemon that may exercise any provider. */
 const CONNECTORS: ConnectorManifest = {
@@ -100,10 +101,7 @@ export const makeHarness = async (
     async cleanup() {
       await daemon.stop("test-cleanup").catch(() => {});
       rmSync(configDir, { recursive: true, force: true });
-      rmSync(paths.trees, { recursive: true, force: true });
-      rmSync(paths.runtime, { recursive: true, force: true });
-      rmSync(paths.state, { recursive: true, force: true });
-      rmSync(dirname(paths.packageCache), { recursive: true, force: true });
+      removeLoomDirectories(paths);
       rmSync(repoRoot, { recursive: true, force: true });
     },
   } as Harness;

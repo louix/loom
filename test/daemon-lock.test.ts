@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { daemonEndpoint, daemonLock, runningDaemon } from "@loom/core/daemon-endpoint";
 import { releaseFlock } from "@loom/core/flock";
 import { ensureLoomDirectories, loomPaths } from "@loom/core/paths";
+import { removeLoomDirectories } from "../harness/src/loom-directories.ts";
 import { DaemonAlreadyRunning, lockRepository } from "@loom/daemon/daemon/lifecycle";
 
 test("lockRepository refuses while another daemon holds the lock, and takes it once released", async () => {
@@ -113,8 +114,7 @@ test("a held lock is a running daemon before its holder records itself", async (
     }
     assert.equal(runningDaemon(paths), null);
   } finally {
-    rmSync(paths.runtime, { recursive: true, force: true });
-    rmSync(paths.state, { recursive: true, force: true });
+    removeLoomDirectories(paths);
     rmSync(repo, { recursive: true, force: true });
   }
 });

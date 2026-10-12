@@ -90,3 +90,42 @@ test("a test run refuses per-user paths outside its roots", () => {
     "/home/someone/.local/share",
   );
 });
+
+test("a test file run without the runner refuses per-user paths outside temporary directories", async () => {
+  const scratch = Deno.makeTempDirSync({ prefix: "loom-bare-probe-" });
+  try {
+    const probe = join(scratch, "probe.test.ts");
+    const userDirs = new URL("../core/src/user-dirs.ts", import.meta.url).href;
+    Deno.writeTextFileSync(
+      probe,
+      `import assert from "node:assert/strict";
+import { test } from "node:test";
+import { userDirectory } from ${JSON.stringify(userDirs)};
+test("refused", () => {
+  assert.throws(() => userDirectory("state", { HOME: "/home/someone" }), /deno task test/);
+});
+test("temporary", () => {
+  assert.equal(userDirectory("state", { XDG_STATE_HOME: "/tmp/state" }), "/tmp/state");
+});
+`,
+    );
+    // No LOOM_TEST_HOME: what `deno test <file>` gives a developer.
+    const result = await new Deno.Command(Deno.execPath(), {
+      args: ["test", "--no-check", "--no-lock", "-A", probe],
+      clearEnv: true,
+      env: Object.fromEntries(
+        ["PATH", "DENO_DIR"].flatMap((name) => {
+          const value = Deno.env.get(name);
+          return value === undefined ? [] : [[name, value]];
+        }),
+      ),
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    const output =
+      new TextDecoder().decode(result.stdout) + new TextDecoder().decode(result.stderr);
+    assert.ok(result.success, output);
+  } finally {
+    Deno.removeSync(scratch, { recursive: true });
+  }
+});

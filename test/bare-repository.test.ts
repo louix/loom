@@ -12,6 +12,7 @@ import { ipcPermissions } from "@loom/core/network-permissions";
 import { setLogLevel } from "@loom/core/logger";
 import type { SessionSnapshot } from "@loom/core/wire";
 import { Daemon } from "@loom/daemon/daemon/daemon";
+import { removeLoomDirectories } from "../harness/src/loom-directories.ts";
 
 setLogLevel("error");
 
@@ -146,6 +147,7 @@ test("bare repo and linked launches share sessions, base HEAD, config, and CLI r
   } finally {
     await client?.close();
     await daemon?.stop("test-cleanup");
+    removeLoomDirectories(loomPaths(join(root, ".bare")));
     xdg.forEach((key, i) =>
       previous[i] === undefined ? Deno.env.delete(key) : Deno.env.set(key, previous[i]),
     );

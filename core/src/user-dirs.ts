@@ -40,7 +40,14 @@ export const temporaryRoots = (): string[] => {
   return [...roots, ...roots.flatMap(real)];
 };
 
-/** Throw if a test run resolves a per-user path outside its throwaway roots. */
+/** The test files `deno test` runs, as the main module: this repository names all of them `*.test.ts`. */
+const TEST_FILE = /\.test\.(ts|tsx|mts|js|mjs|jsx)$/;
+
+/**
+ * Throw if a test run resolves a per-user path outside its throwaway roots.
+ * A test file run bare (`deno test <file>`, no LOOM_TEST_HOME) has no throwaway
+ * home at all, so it may only resolve into temporary directories.
+ */
 export const assertTestHome = (
   path: string,
   env: Record<string, string | undefined> = Deno.env.toObject(),
@@ -48,6 +55,15 @@ export const assertTestHome = (
   const root = env[TEST_HOME_VARIABLE];
   if (root && ![root, ...temporaryRoots()].some((allowed) => inside(allowed, path)))
     throw new Error(`Test run resolved ${path} outside ${TEST_HOME_VARIABLE}=${root}`);
+  // The process's own variable, not `env`: tests resolve against made-up environments.
+  if (
+    !Deno.env.get(TEST_HOME_VARIABLE) &&
+    TEST_FILE.test(Deno.mainModule) &&
+    !temporaryRoots().some((allowed) => inside(allowed, path))
+  )
+    throw new Error(
+      `Test file resolved ${path}, a per-user directory, without a throwaway home: run it with \`deno task test <file>\`, not \`deno test\``,
+    );
   return path;
 };
 

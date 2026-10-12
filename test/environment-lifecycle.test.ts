@@ -136,7 +136,6 @@ test("base updates wait for idle, preserve the session, and queue messages throu
     resumeGate.resolve();
     await c.close();
     await h.cleanup();
-    await Deno.remove(home, { recursive: true });
   }
 });
 
@@ -402,6 +401,5 @@ test("a refresh its agent profile refuses is not retried until the next environm
   } finally {
     await c.close();
     await h.cleanup();
-    await Deno.remove(home, { recursive: true });
   }
 });

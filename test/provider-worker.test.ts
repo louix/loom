@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { ipcPermissions } from "../core/src/network-permissions.ts";
 import { loomPaths } from "../core/src/paths.ts";
 import assert from "node:assert/strict";
+import { rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 Deno.test("a network-denied host runs provider turns in a worker with host transcript persistence", async () => {
   let requests = 0;
@@ -98,6 +99,8 @@ Deno.test("a network-denied host runs provider turns in a worker with host trans
       assert(daemon.success, new TextDecoder().decode(daemon.stderr));
       assert(requests >= 2);
     } finally {
+      // The daemon child inherits the runtime base and leaves its directory there.
+      rmSync(loomPaths(fixture.repo).runtime, { recursive: true, force: true });
       await fixture.close();
     }
   } finally {

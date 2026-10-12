@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { join } from "node:path";
+import { repoCacheDirectory } from "../core/src/paths.ts";
 import {
   readStartupProgress,
   classifyStartupFailure,
@@ -150,6 +151,7 @@ test("missing or incompatible Nix caches do not block session startup", async ()
   } finally {
     if (previous === undefined) Deno.env.delete("XDG_STATE_HOME");
     else Deno.env.set("XDG_STATE_HOME", previous);
+    await Deno.remove(repoCacheDirectory(root), { recursive: true }).catch(() => {});
     await Deno.remove(root, { recursive: true });
   }
 });
