@@ -45,13 +45,14 @@ const executable = async (name: string) => {
 /**
  * The guest's config dir is the session's `profile` directory, so its adapter
  * finds the profile's skills there as it would on the host. The guest writes
- * there too: what it left is replaced, never written through.
+ * there too: what it left is replaced, never written through. Returns the
+ * symlinks left out of the copy.
  */
 export const profileSkills = async (
   sessionDirectory: string,
   claudeProfile: string,
   input: CreateSessionOptions | SessionRef,
-): Promise<void> => {
+): Promise<string[]> => {
   const profile = join(sessionDirectory, "profile");
   await Deno.mkdir(profile, { recursive: true, mode: 0o700 });
   if ((await Deno.lstat(profile)).isSymlink)
@@ -59,9 +60,10 @@ export const profileSkills = async (
   await Deno.remove(join(profile, "skills"), { recursive: true }).catch((error) => {
     if (!(error instanceof Deno.errors.NotFound)) throw error;
   });
-  if (!input.skills?.length) return;
+  if (!input.skills?.length) return [];
   const copy = copyClaudeSkills(claudeProfile, input.skills, join(profile, "skills"));
   if (copy.kind === "invalid") throw new Error(copy.message);
+  return copy.skipped;
 };
 
 /** A provider's VM launches: one isolation coordinator, injected by tests. */
@@ -164,7 +166,9 @@ export const withVmSessions = async <T extends AgentProvider>(
       });
       const sessionDirectory = sessionVmDirectory(vm.repoRoot, input.sessionId);
       await stoppedSessionVm(vm.repoRoot, input.sessionId);
-      if (claudeProfile !== undefined) await profileSkills(sessionDirectory, claudeProfile, input);
+      if (claudeProfile !== undefined)
+        for (const skipped of await profileSkills(sessionDirectory, claudeProfile, input))
+          ctx.logger.warn("skill symlink not copied", { sessionId: input.sessionId, skipped });
       if (resume && kind !== "aisdk") {
         const ref = (input as SessionRef).providerRef;
         if (!/^[0-9a-f-]{36}$/i.test(ref)) throw new Error(`Invalid ${kind} resume reference`);

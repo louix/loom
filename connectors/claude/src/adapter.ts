@@ -380,7 +380,11 @@ const queryEnv = (opts: {
  * rest of the user settings along; a plugin loads under any setting sources.
  * The Skill tool resolves a bare `coding-style` to `loom:coding-style`.
  */
-const skillsPlugin = (configDir: string | undefined, names: readonly string[]): string => {
+const skillsPlugin = (
+  configDir: string | undefined,
+  names: readonly string[],
+  log: Logger,
+): string => {
   const profile = configDir
     ? expandTilde(configDir)
     : (Deno.env.get("CLAUDE_CONFIG_DIR") ?? join(homedir(), ".claude"));
@@ -390,6 +394,7 @@ const skillsPlugin = (configDir: string | undefined, names: readonly string[]): 
     Deno.removeSync(root, { recursive: true });
     throw new Error(copy.message);
   }
+  for (const skipped of copy.skipped) log.warn("skill symlink not copied", { skipped });
   Deno.mkdirSync(join(root, ".claude-plugin"));
   Deno.writeTextFileSync(
     join(root, ".claude-plugin", "plugin.json"),
@@ -622,7 +627,7 @@ class ClaudeSession implements AgentSession {
   /** Build the `query()` and start pumping its messages into the outbox. */
   start(opts: CreateSessionOptions, extra: StartExtra = {}): void {
     if (opts.skills?.length && !opts.oneShot && !this.#skillsPlugin)
-      this.#skillsPlugin = skillsPlugin(extra.configDir, opts.skills);
+      this.#skillsPlugin = skillsPlugin(extra.configDir, opts.skills, this.#log);
     let init: ReturnType<typeof claudeInitHooks> | undefined;
     if (opts.initHooks?.hooks.length && !opts.oneShot) {
       this.#initDirectory = Deno.makeTempDirSync({ prefix: "loom-init-" });
