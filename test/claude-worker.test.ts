@@ -329,15 +329,16 @@ test(
   async () => {
     const f = await fixture();
     let s: AgentSession | undefined;
+    // ps, not /proc: macOS has no /proc, where a missing stat file read as dead.
     const dead = async (pid: number) => {
       for (let i = 0; i < 100; i++) {
-        try {
-          const stat = await Deno.readTextFile(`/proc/${pid}/stat`);
-          if (stat.split(") ")[1]?.startsWith("Z")) return;
-        } catch (e) {
-          if (e instanceof Deno.errors.NotFound) return;
-          throw e;
-        }
+        const ps = await new Deno.Command("ps", {
+          args: ["-o", "stat=", "-p", String(pid)],
+          stdout: "piped",
+          stderr: "null",
+        }).output();
+        const state = new TextDecoder().decode(ps.stdout).trim();
+        if (!state || state.startsWith("Z")) return;
         await delay(10);
       }
       throw new Error(`native child ${pid} survived`);
