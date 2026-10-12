@@ -54,6 +54,7 @@ import type {
   ProviderCapabilities,
   SessionMode,
   SessionRef,
+  TaskOutput,
   UserInput,
 } from "@loom/core/types";
 import type { SendOptions } from "@loom/core/message-queue";
@@ -106,6 +107,24 @@ const COMPACT_CEILING_MS = 15 * 60_000;
  * a round-trip to the claude.ai usage endpoint.
  */
 const PLAN_POLL_MIN_GAP_MS = 60_000;
+
+/**
+ * How long a background task's output read may take before it fails. Under
+ * the worker's request timeout, which would take the whole worker down.
+ */
+const TASK_OUTPUT_TIMEOUT_MS = 5_000;
+
+/**
+ * `get_task_output` (CLI 2.1.287, SDK 0.3.287): the SDK's `Query` has the
+ * method at runtime, but its public type does not declare it yet.
+ */
+interface TaskOutputQuery {
+  getTaskOutput?(taskId: string): Promise<{
+    output: string;
+    total_bytes: number;
+    truncated: boolean;
+  }>;
+}
 
 /**
  * How long a resumed query holds its first user message while asking the CLI
@@ -1232,6 +1251,45 @@ class ClaudeSession implements AgentSession {
   async refreshPlanUsage(): Promise<void> {
     if (this.#closing) return;
     void this.#pollPlanUsage();
+  }
+
+  /**
+   * The last 8 KiB of a background shell or Monitor task's output — the tail
+   * the CLI's own task view reads. The CLI refuses any other task (an agent,
+   * or an id not of this session), and an older CLI has no such request:
+   * both read as `unreadable`.
+   */
+  async readTaskOutput(taskId: string): Promise<TaskOutput> {
+    const q = this.#query as (Query & TaskOutputQuery) | null;
+    if (this.#closing || !q || typeof q.getTaskOutput !== "function") return { t: "unreadable" };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let timedOut = false;
+    try {
+      const r = await Promise.race([
+        q.getTaskOutput(taskId),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            timedOut = true;
+            reject(new Error("timed out reading the task output"));
+          }, TASK_OUTPUT_TIMEOUT_MS);
+        }),
+      ]);
+      return {
+        t: "output",
+        output: typeof r.output === "string" ? r.output : "",
+        totalBytes: Number.isInteger(r.total_bytes) && r.total_bytes >= 0 ? r.total_bytes : 0,
+        truncated: r.truncated === true,
+      };
+    } catch (err) {
+      if (timedOut) throw err;
+      this.#log.debug("task output refused", {
+        taskId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+      return { t: "unreadable" };
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   async respondToPlan(id: string, decision: PlanDecision): Promise<void> {

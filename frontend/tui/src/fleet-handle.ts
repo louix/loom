@@ -34,7 +34,7 @@ import { closeSync, openSync, readSync, statSync } from "node:fs";
 import type { Key } from "ink";
 import { absurd } from "@loom/core/absurd";
 import { isLiveState } from "@loom/core/session-state";
-import type { SessionMode } from "@loom/core/types";
+import type { SessionMode, TaskOutput } from "@loom/core/types";
 import { foldInteraction, type SessionInteraction } from "@loom/core/interaction";
 import { isAmbiguousFailure, type ClientState } from "@loom/client";
 import { makeLogger } from "@loom/core/logger";
@@ -70,7 +70,8 @@ import type { QueueDelivery } from "@loom/core/message-queue";
 import { queueRows } from "./queue-view.tsx";
 import { mkModeControl, pendingMode } from "./mode-control.ts";
 import { mkSearchControl, queryOf, searchStale, searchMatches, type Find } from "./fleet-search.ts";
-import { cycleLogFilter, mkTranscript, transcriptText } from "./transcript.ts";
+import { cycleLogFilter, mkTranscript, taskTailLines, transcriptText } from "./transcript.ts";
+import { mkTaskTail, type TaskTailControl, type TaskTailTarget } from "./task-tail.ts";
 import type { ChildrenOnClose } from "@loom/core/agents";
 import {
   agentsOf,
@@ -318,6 +319,8 @@ export interface FleetHandle {
   readonly modes: ReturnType<typeof mkModeControl>;
   readonly searches: ReturnType<typeof mkSearchControl>;
   readonly transcript: ReturnType<typeof mkTranscript>;
+  /** The focused background task's output tail, while its pane shows it. */
+  readonly taskTail: TaskTailControl;
   readonly animation: {
     get: () => { tick: number; now: number };
     getNow: () => number;
@@ -725,7 +728,12 @@ export const mkFleetHandle = ({
       return page;
     },
     connected,
-    shown: (transcript) => shownLog({ ...state, transcript }),
+    shown: (transcript) => {
+      const lines = shownLog({ ...state, transcript });
+      return focusedChildOf(state)?.source === "bg" && state.selectedId
+        ? [...lines, ...taskTailLines(state.selectedId, taskTail.get())]
+        : lines;
+    },
     // Width the log pane renders at for the current body (see app.tsx): the
     // zoomed and session views give it the whole terminal, the overview split
     // its right column.
@@ -735,6 +743,27 @@ export const mkFleetHandle = ({
     },
     pageRows: () => store.get().logPage,
   });
+
+  // A background task's output is read only while its row is focused and the
+  // events pane is on screen; agents' tasks show their own events instead.
+  const taskTail = mkTaskTail({
+    read: ({ sessionId, taskId }) =>
+      client.request<TaskOutput>("session.taskOutput", { id: sessionId, taskId }),
+  });
+  const taskTailTarget = (): TaskTailTarget | null => {
+    const child = focusedChildOf(state);
+    const body = store.get().body.t;
+    if (
+      !connected() ||
+      !state.selectedId ||
+      state.sessionTab !== "chat" ||
+      (body !== "split" && body !== "sessionPane") ||
+      child?.source !== "bg" ||
+      child.taskKind === "subagent"
+    )
+      return null;
+    return { sessionId: state.selectedId, taskId: child.id };
+  };
 
   const inspectionKey = () => state.selectedId + ":" + state.sessionTab;
   const inspectionText = (): string => {
@@ -843,6 +872,7 @@ export const mkFleetHandle = ({
     store.set(view());
     clock.settle();
     refreshInspection();
+    taskTail.want(taskTailTarget());
   };
 
   // One shared beat for every animated thing on screen, and none at all when
@@ -2996,6 +3026,10 @@ export const mkFleetHandle = ({
         transcripts.contentChanged();
         publish();
       }),
+      taskTail.subscribe(() => {
+        transcripts.contentChanged();
+        publish();
+      }),
       modes.subscribe(publish),
       searches.subscribe(() => {
         const find = searches.get();
@@ -3070,6 +3104,7 @@ export const mkFleetHandle = ({
       searches.dispose();
       transcripts.dispose();
       for (const off of offs) off();
+      taskTail.dispose();
     };
   };
 
@@ -3157,6 +3192,7 @@ export const mkFleetHandle = ({
     modes,
     searches,
     transcript: transcripts,
+    taskTail,
     animation: {
       get: animation.get,
       subscribe: animation.subscribe,

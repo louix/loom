@@ -388,6 +388,28 @@ test(
 );
 
 test(
+  "a background task's output tail crosses the worker; a failed read leaves it running",
+  { timeout: 15_000 },
+  async () => {
+    const provider = await WorkerProvider.create("fake", scripted);
+    const s = await provider.createSession(opts("task-output"));
+    try {
+      assert.deepEqual(await s.readTaskOutput!("bash-1"), {
+        t: "output",
+        output: "tick 1\n",
+        totalBytes: 7,
+        truncated: false,
+      });
+      assert.deepEqual(await s.readTaskOutput!("agent-1"), { t: "unreadable" });
+      await assert.rejects(s.readTaskOutput!("boom"));
+      assert.deepEqual(await s.readTaskOutput!("bash-1").then((r) => r.t), "output");
+    } finally {
+      await s.close();
+    }
+  },
+);
+
+test(
   "worker crash fails its session while its peer keeps running",
   { timeout: 15_000 },
   async () => {

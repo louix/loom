@@ -365,6 +365,7 @@ const Working = ({ handle, starting }: { handle: FleetHandle; starting: boolean 
 
 const LogArea = ({ view, handle, width }: PaneProps): ReactNode => {
   const tr = useSyncExternalStore(handle.transcript.subscribe, handle.transcript.get);
+  const tail = useSyncExternalStore(handle.taskTail.subscribe, handle.taskTail.get);
   // The session's queue rides its snapshot: drawn after the log, every client
   // the same.
   const queue = view.sel?.queue?.entries;
@@ -391,8 +392,9 @@ const LogArea = ({ view, handle, width }: PaneProps): ReactNode => {
         width,
         view.splitLogH,
         tr.scroll,
+        tail,
       ),
-    [tr, queue, id, logFilter, child, spinning, width, view.splitLogH],
+    [tr, queue, id, logFilter, child, spinning, width, view.splitLogH, tail],
   );
   const starting = !child && view.sel?.status.kind === "starting";
   const spinner = useMemo(

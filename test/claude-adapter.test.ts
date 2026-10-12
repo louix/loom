@@ -1438,3 +1438,51 @@ test("refreshPlanUsage polls a live session's plan windows past the per-turn thr
     await session.close();
   }
 });
+
+test("readTaskOutput reads the CLI's task tail and says when a task has none", async () => {
+  const asked: string[] = [];
+  const q = Object.assign(fakeQuery(), {
+    getTaskOutput: async (taskId: string) => {
+      asked.push(taskId);
+      if (taskId === "agent-1") throw new Error("not a shell or Monitor task of this session");
+      return { output: "tick 3\n", total_bytes: 9000, truncated: true };
+    },
+  });
+  __setClaudeSdk({ query: () => q as never });
+  const s = await new ClaudeProvider().createSession({
+    sessionId: "tail",
+    cwd: "/tmp",
+    prompt: "go",
+    mode: "default",
+    mcpServers: [],
+    loomServer: false,
+  });
+  try {
+    assert.ok(s.readTaskOutput);
+    assert.deepEqual(await s.readTaskOutput("bash-1"), {
+      t: "output",
+      output: "tick 3\n",
+      totalBytes: 9000,
+      truncated: true,
+    });
+    assert.deepEqual(await s.readTaskOutput("agent-1"), { t: "unreadable" });
+    assert.deepEqual(asked, ["bash-1", "agent-1"]);
+  } finally {
+    await s.close();
+  }
+  // A CLI without the request (older than 2.1.287) reads as unreadable too.
+  __setClaudeSdk({ query: () => fakeQuery() as never });
+  const old = await new ClaudeProvider().createSession({
+    sessionId: "tail-old",
+    cwd: "/tmp",
+    prompt: "go",
+    mode: "default",
+    mcpServers: [],
+    loomServer: false,
+  });
+  try {
+    assert.deepEqual(await old.readTaskOutput?.("bash-1"), { t: "unreadable" });
+  } finally {
+    await old.close();
+  }
+});

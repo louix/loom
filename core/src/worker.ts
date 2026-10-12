@@ -16,6 +16,7 @@ import {
   permissionDecisionSchema,
   planDecisionSchema,
   mcpServerHandleSchema,
+  taskOutputSchema,
 } from "./types.ts";
 
 // v4: `send` takes the queued input's `{ inputId, midTurn }`.
@@ -23,7 +24,9 @@ import {
 // v6: `setBase` renames a live session's base.
 // v7: `refreshPlanUsage` polls a live session's plan windows; a `usage`
 //     utility worker answers `readPlanUsage` with a `planUsage` frame.
-export const WORKER_VERSION = 7;
+// v8: `readTaskOutput` reads a background task's output tail, answered
+//     with a `taskOutput` frame.
+export const WORKER_VERSION = 8;
 export const MAX_FRAME_BYTES = 1024 * 1024;
 export const MAX_PENDING = 128;
 
@@ -99,6 +102,7 @@ export const workerCommandSchema = z.discriminatedUnion("method", [
   command("respondToAgentCall", z.tuple([z.string(), agentCallResultSchema])),
   command("setBase", z.tuple([z.string()])),
   command("refreshPlanUsage", z.tuple([])),
+  command("readTaskOutput", z.tuple([z.string().min(1).max(256)])),
   command("interrupt", z.tuple([])),
   command("close", z.tuple([])),
   command("listModels", z.tuple([])),
@@ -148,6 +152,7 @@ export const workerFrameSchema = z.discriminatedUnion("kind", [
     id: z.int().positive(),
     windows: z.array(planWindowSchema),
   }),
+  z.object({ kind: z.literal("taskOutput"), id: z.int().positive(), output: taskOutputSchema }),
   z.object({ kind: z.literal("end") }),
 ]);
 export type WorkerFrame = z.infer<typeof workerFrameSchema>;

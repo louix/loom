@@ -10,6 +10,7 @@
  */
 import { stripVTControlCharacters } from "node:util";
 import { mkStore, type Store } from "./store.ts";
+import type { TaskTailView } from "./task-tail.ts";
 import { markdownText, plainText } from "./markdown.ts";
 import type { TextDocument, TextSpan } from "./text-layout.ts";
 import { absurd } from "@loom/core/absurd";
@@ -86,7 +87,7 @@ export interface LogLine {
   id: TranscriptId | null;
   sessionId: string;
   /** The event kind, so `chat` view can collapse tool / thinking runs. */
-  kind: HarnessEvent["type"] | "echo";
+  kind: HarnessEvent["type"] | "echo" | "task_output";
   /** Sub-agent that produced the event, when applicable. */
   agentId?: string;
   /** For a `user_message`: who queued it. For a queued-message marker, the
@@ -659,6 +660,61 @@ export const queuedLines = (sessionId: string, entries: readonly QueueEntryView[
     ];
   });
 
+const kib = (n: number): string => {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KiB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MiB`;
+};
+
+/**
+ * A focused background task's output tail ({@link TaskTailView}), drawn after
+ * its events: a dim line saying what it is, then the output as plain text —
+ * {@link lineLayout} strips the escape sequences a command prints.
+ */
+export const taskTailLines = (sessionId: string, view: TaskTailView | null): LogLine[] => {
+  if (view === null || view.target.sessionId !== sessionId) return [];
+  const line = (glyph: string, text: string, tone: Tone, ts: number, full?: string): LogLine => ({
+    id: null,
+    sessionId,
+    kind: "task_output",
+    glyph,
+    text,
+    ...(full !== undefined ? { full } : {}),
+    tone,
+    ts,
+  });
+  const { tail } = view;
+  switch (tail.t) {
+    case "loading":
+      return [line("⧗", "reading output…", "dim", 0)];
+    case "unreadable":
+      return [
+        line(
+          "·",
+          "no output to show for this task (only shell and monitor tasks have one)",
+          "dim",
+          0,
+        ),
+      ];
+    case "unsupported":
+      return [line("·", "this provider cannot show a background task's output", "dim", 0)];
+    case "failed":
+      return [
+        line("!", `could not read the output: ${oneLine(tail.message, 120)}`, "warn", tail.at),
+      ];
+    case "shown": {
+      const output = tail.output.replace(/\s+$/, "");
+      const head = tail.truncated
+        ? `output · last ${kib(new TextEncoder().encode(tail.output).length)} of ${kib(tail.totalBytes)}`
+        : `output · ${kib(tail.totalBytes)}`;
+      if (output === "") return [line("·", "no output yet", "dim", tail.at)];
+      return [line("▤", head, "dim", tail.at), line(" ", output, "plain", tail.at)];
+    }
+    default:
+      return absurd(tail);
+  }
+};
+
 // ---------------------------------------------------------------------------
 // the resource
 // ---------------------------------------------------------------------------
@@ -1093,6 +1149,8 @@ const transcriptHeader = (l: LogLine): string | null => {
     case "user_message":
     case "echo":
       return `you${midTurn}`;
+    case "task_output":
+      return "task output";
     case "question":
       return "agent asks";
     case "answer":

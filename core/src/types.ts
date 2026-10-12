@@ -152,6 +152,27 @@ const agentSessionFields = {
 export const agentCallResultSchema = z.object({ ok: z.boolean(), text: z.string() });
 export type AgentCallResult = z.infer<typeof agentCallResultSchema>;
 
+/**
+ * The end of a background task's output, read on demand
+ * ({@link AgentSession.readTaskOutput}). `output` is what the command printed,
+ * escape sequences included, so render it as plain text. `unreadable`: the
+ * provider has no output for this task (Claude: only shell and Monitor tasks
+ * have one); `unsupported`: the provider cannot read task output at all.
+ */
+export const taskOutputSchema = z.discriminatedUnion("t", [
+  z.object({
+    t: z.literal("output"),
+    output: z.string(),
+    /** The size of the whole output in bytes. */
+    totalBytes: z.int().nonnegative(),
+    /** `output` is only the end of a longer output. */
+    truncated: z.boolean(),
+  }),
+  z.object({ t: z.literal("unreadable") }),
+  z.object({ t: z.literal("unsupported") }),
+]);
+export type TaskOutput = z.infer<typeof taskOutputSchema>;
+
 export const createSessionOptionsSchema = z.object({
   /** Trusted workspace_start commands, consumed once per worker start, including resume. */
   initHooks: z
@@ -370,6 +391,12 @@ export interface AgentSession {
    * `rate_limit` events. Absent on adapters with no subscription plan.
    */
   refreshPlanUsage?(): Promise<void>;
+  /**
+   * The end of a background task's output (`taskId` as `background_tasks`
+   * reports it), for a client showing the task while it runs. Read-only; no
+   * turn. Absent on adapters that cannot read task output.
+   */
+  readTaskOutput?(taskId: string): Promise<TaskOutput>;
   /**
    * Stop the current turn. Together with {@link close}, this MUST cancel any
    * in-flight long-running operation — a turn, a compaction, a sub-agent, a

@@ -4571,6 +4571,21 @@ export class Daemon {
       return { ...this.#enrich(this.#registry.mustGet(params.id), false), ...sent };
     });
 
+    d.register("session.taskOutput", async (params) => {
+      this.#registry.mustGet(params.id);
+      let output;
+      try {
+        output = await this.#sessions.readTaskOutput(params.id, params.taskId);
+      } catch (err) {
+        throw new RpcError("provider_error", err instanceof Error ? err.message : String(err), {
+          sessionId: params.id,
+        });
+      }
+      if (output === null)
+        throw new RpcError("refused", "The session is not running.", { sessionId: params.id });
+      return output;
+    });
+
     d.register("session.queueEntry", (params) => {
       this.#registry.mustGet(params.id);
       const entry = this.#messageQueue.entry(params.id, params.entryId);

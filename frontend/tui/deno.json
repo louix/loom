@@ -28,6 +28,7 @@
     "./new-session-header": "./src/new-session-header.ts",
     "./new-workspace": "./src/new-workspace.ts",
     "./queue-view": "./src/queue-view.tsx",
+    "./task-tail": "./src/task-tail.ts",
     "./ui": "./src/ui.tsx"
   }
 }

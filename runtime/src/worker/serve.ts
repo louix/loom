@@ -233,6 +233,13 @@ export const serveWorker = async (
       case "refreshPlanUsage":
         await session.refreshPlanUsage?.();
         break;
+      case "readTaskOutput": {
+        const output = session.readTaskOutput
+          ? await session.readTaskOutput(...r.args)
+          : { t: "unsupported" as const };
+        if (!closing) await writer.send({ kind: "taskOutput", id: r.id, output });
+        return;
+      }
       case "interrupt":
         await session.interrupt();
         break;

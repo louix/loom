@@ -42,6 +42,7 @@ import type {
   PlanDecision,
   SessionMode,
   SessionRef,
+  TaskOutput,
 } from "@loom/core/types";
 import {
   DeliveryUncertainError,
@@ -1662,6 +1663,17 @@ export class SessionManager {
     if (!run || run.ended || !run.session.refreshPlanUsage) return false;
     await run.session.refreshPlanUsage();
     return true;
+  }
+
+  /**
+   * The end of a background task's output, from the live adapter. Null when
+   * the session is not running: its tasks went with it.
+   */
+  async readTaskOutput(id: string, taskId: string): Promise<TaskOutput | null> {
+    const run = this.#running.get(id);
+    if (!run || run.ended) return null;
+    if (!run.session.readTaskOutput) return { t: "unsupported" };
+    return await run.session.readTaskOutput(taskId);
   }
 
   async respondToPlan(

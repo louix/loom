@@ -60,6 +60,12 @@ class ScriptedSession extends FakeSession {
   async refreshPlanUsage() {
     this.emit({ type: "rate_limit", status: "allowed", window: "five_hour", utilization: 7 });
   }
+  async readTaskOutput(taskId: string) {
+    if (taskId === "boom") throw new Error("fixture read failure");
+    return taskId === "bash-1"
+      ? { t: "output" as const, output: "tick 1\n", totalBytes: 7, truncated: false }
+      : { t: "unreadable" as const };
+  }
 }
 class ScriptedProvider extends FakeProvider {
   override async createSession(opts: CreateSessionOptions) {

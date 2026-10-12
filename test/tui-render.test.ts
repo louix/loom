@@ -5425,6 +5425,57 @@ test("a Loom agent is entered like a child row, and keeps its session verbs ther
   }
 });
 
+test("a focused shell task's output is read while its chat pane shows, and not otherwise", async () => {
+  const fake = mkFakeClient();
+  fake.deliver(
+    fleetOf(
+      snap({
+        id: "a",
+        status: "running",
+        backgroundTasks: [
+          { id: "bash-1", kind: "shell", title: "sleep loop" },
+          { id: "agent-1", kind: "subagent", title: "audit" },
+        ],
+      }),
+    ),
+  );
+  const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+  const stop = handle.effectStart();
+  const press = (input: string, key = {}) => handle.handleKey(input, key as Key);
+  const reads = () => fake.of("session.taskOutput").map((c) => c.params["taskId"]);
+  try {
+    assert.deepEqual(reads(), [], "nothing is read on the session row");
+    press("", { rightArrow: true });
+    assert.equal(handle.getView().ui.selectedChild, "bg:bash-1");
+    assert.deepEqual(reads(), ["bash-1"]);
+    assert.deepEqual(fake.of("session.taskOutput")[0]?.params, { id: "a", taskId: "bash-1" });
+    fake
+      .of("session.taskOutput")[0]!
+      .resolve({ t: "output", output: "tick 7\n", totalBytes: 7, truncated: false });
+    await delay(0);
+    assert.equal(handle.taskTail.get()?.tail.t, "shown");
+    press("2");
+    assert.equal(handle.taskTail.get(), null, "another tab hides the pane: the poll stops");
+    press("1");
+    assert.deepEqual(reads(), ["bash-1", "bash-1"], "back on the chat tab, read again");
+    press("", { downArrow: true });
+    assert.equal(handle.getView().ui.selectedChild, "bg:agent-1");
+    assert.equal(handle.taskTail.get(), null, "an agent task shows its own events instead");
+    press("", { upArrow: true });
+    assert.equal(reads().length, 3, "focused again, read again");
+    press("", { leftArrow: true });
+    assert.equal(handle.taskTail.get(), null);
+    // The task ends: its row goes, and so does the poll.
+    press("", { rightArrow: true });
+    assert.equal(handle.taskTail.get()?.target.taskId, "bash-1");
+    fake.deliver(fleetOf(snap({ id: "a", status: "idle", backgroundTasks: [] })));
+    assert.equal(handle.taskTail.get(), null);
+    assert.equal(reads().length, 4);
+  } finally {
+    stop();
+  }
+});
+
 test("number tabs preserve navigation, isolate scroll, and leave text editing alone", async () => {
   const fake = mkFakeClient();
   fake.deliver(

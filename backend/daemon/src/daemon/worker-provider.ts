@@ -23,6 +23,7 @@ import type {
   SessionMode,
   SessionRef,
   DiscoveredModel,
+  TaskOutput,
 } from "../../../../core/src/types.ts";
 import {
   decodeWorkerFrame,
@@ -283,6 +284,11 @@ export class RemoteWorkerSession implements AgentSession {
   async refreshPlanUsage(): Promise<void> {
     await this.#request({ method: "refreshPlanUsage", args: [] });
   }
+  async readTaskOutput(taskId: string): Promise<TaskOutput> {
+    const frame = await this.#request({ method: "readTaskOutput", args: [taskId] });
+    if (frame.kind !== "taskOutput") throw new Error("invalid task output response");
+    return frame.output;
+  }
   async interrupt(): Promise<void> {
     await this.#request({ method: "interrupt", args: [] });
   }
@@ -372,6 +378,7 @@ export class RemoteWorkerSession implements AgentSession {
       listModels: "models",
       listPersistedSessions: "sessions",
       readPlanUsage: "planUsage",
+      readTaskOutput: "taskOutput",
     };
     const expected = kinds[command.method] ?? "response";
     this.#pending.set(id, { resolve: d.resolve, reject: d.reject, timer, expected });
@@ -409,6 +416,7 @@ export class RemoteWorkerSession implements AgentSession {
         case "models":
         case "sessions":
         case "planUsage":
+        case "taskOutput":
         case "response": {
           const p = this.#pending.get(f.id);
           if (!p) throw new Error("unexpected worker response");

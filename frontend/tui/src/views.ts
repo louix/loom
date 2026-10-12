@@ -2,6 +2,7 @@
 import type { ClientState } from "@loom/client";
 import type { QueueEntryView } from "@loom/core/message-queue";
 import type { Find } from "./fleet-search.ts";
+import type { TaskTailView } from "./task-tail.ts";
 import { fleetFilterStatus, searchStale } from "./fleet-search.ts";
 import {
   fleetDaemon,
@@ -21,6 +22,7 @@ import {
   filterLog,
   transcriptLines,
   queuedLines,
+  taskTailLines,
   type Transcript,
   type LogFilter,
   type PhysicalRow,
@@ -157,10 +159,18 @@ export const logView = (
   width: number,
   height: number,
   scroll: number,
+  /** The focused background task's output tail, drawn after its events. */
+  tail: TaskTailView | null = null,
 ): LogView => {
   const capacity = Math.max(1, height - 4);
   const lines = [...transcriptLines(transcript), ...queuedLines(sessionId ?? "", queue)];
-  const ctx = logContext(filterLog(lines, filter, child?.id ?? null), width);
+  const ctx = logContext(
+    [
+      ...filterLog(lines, filter, child?.id ?? null),
+      ...(child?.source === "bg" ? taskTailLines(sessionId ?? "", tail) : []),
+    ],
+    width,
+  );
   const total = totalRows(ctx);
   const off = Math.min(scroll, Math.max(0, total - capacity));
   const end = total - off;
