@@ -21,6 +21,7 @@ For contributors:
 - [TUI state, ordering and request feedback](tui-state.md)
 - [Event-stream Markdown rendering](events-markdown.md)
 - [Remaining work](roadmap.md)
+- [Config cleanup proposal](config-cleanup-proposal.md)
 
 Keep current behavior in these guides and outstanding work in the roadmap.
 Completed plans, spikes and dated reviews belong in Git history.
