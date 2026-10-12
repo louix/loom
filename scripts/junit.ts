@@ -8,6 +8,8 @@ export type JunitCase = {
   ms: number;
   failureMessage: string | null;
   failureBody: string | null;
+  /** A step (`t.test`) or `describe` child, whose time its parent case already includes. */
+  nested: boolean;
 };
 
 export type JunitSuite = {
@@ -63,10 +65,37 @@ export const parseJunit = (xml: string): JunitReport => {
       const failureMessage = failMatch ? attr(`<x ${failMatch[1]}>`, "message") : null;
       const failureBody = failMatch ? unescapeXml(failMatch[2]!.trim()) : null;
 
-      cases.push({ name, ms, failureMessage, failureBody });
+      cases.push({ name, ms, failureMessage, failureBody, nested: false });
     }
     suites.push({ file, cases });
   }
 
-  return { wallMs, suites };
+  return { wallMs, suites: attributeNested(suites) };
+};
+
+// `node:test` `describe` children are registered from inside Deno's node
+// shim, so JUnit files them under a suite named after the shim's location
+// (`ext:deno_node/testing.ts`, `ext:core/01_core.js`) instead of the test
+// file. Their names are "<describe> > <child>": file each one with the suite
+// holding its parent case.
+const attributeNested = (suites: JunitSuite[]): JunitSuite[] => {
+  const isShim = (suite: JunitSuite) => suite.file.startsWith("ext:");
+  const files = suites.filter((suite) => !isShim(suite));
+  const shimCases = suites.filter(isShim).flatMap((suite) => suite.cases);
+  const ownerOf = (c: JunitCase) =>
+    files.find((suite) => suite.cases.some((parent) => c.name.startsWith(`${parent.name} > `)));
+  const unowned = shimCases.filter((c) => !ownerOf(c));
+  const placed = files.map((suite) => {
+    const cases = [...suite.cases, ...shimCases.filter((c) => ownerOf(c) === suite)];
+    return {
+      file: suite.file,
+      cases: cases.map((c) => ({
+        ...c,
+        nested: cases.some((parent) => c.name.startsWith(`${parent.name} > `)),
+      })),
+    };
+  });
+  return unowned.length > 0
+    ? [...placed, { file: "(unattributed describe children)", cases: unowned }]
+    : placed;
 };
