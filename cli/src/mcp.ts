@@ -106,7 +106,13 @@ export const mcpCommand = async (
       if (entry.source.kind === "command") {
         const { command } = entry.source;
         if (!onPath(command)) throw new Error(`Host command ${command} is unavailable`);
-        rows.push({ name, status: "ready", transport: "command", command });
+        rows.push({
+          name,
+          status: "ready",
+          transport: "command",
+          command,
+          vm_sessions: entry.vm_sessions ?? "refuse",
+        });
         continue;
       }
       const runtime = entry.source.kind === "nix" ? nixMcpRuntime(entry.source) : entry.source.ref;

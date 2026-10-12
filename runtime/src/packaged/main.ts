@@ -1,6 +1,7 @@
 /** One session's VM supervisor. Parent EOF owns its lifetime, including startup. */
 import { FrameWriter, readFrames } from "../worker/transport.ts";
 import { stdioHttp } from "../mcp/stdio-http.ts";
+import { MAX_FRAME_BYTES } from "../framing.ts";
 import { mcpRequestTimeoutMsSchema } from "../../../core/src/mcp-worker.ts";
 import { decodeManifest } from "./artifact.ts";
 import {
@@ -81,9 +82,13 @@ try {
       }),
     )
     .catch(() => {});
-  starting = stdioHttp(child.stdin, child.stdout, b.token, requestTimeoutMs.data).then(
-    (value) => (bridge = value),
-  );
+  starting = stdioHttp(
+    child.stdin,
+    child.stdout,
+    b.token,
+    requestTimeoutMs.data,
+    MAX_FRAME_BYTES,
+  ).then((value) => (bridge = value));
   void starting.catch(() => {});
   const ready = await Promise.race([starting, parent.then(() => undefined)]);
   if (ready) {

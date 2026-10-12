@@ -14,6 +14,8 @@ export const stdioHttp = async (
   output: ReadableStream<Uint8Array>,
   token: string,
   requestTimeoutMs: number,
+  /** One message from the server; a larger one ends the bridge. */
+  maxServerFrameBytes: number,
 ) => {
   const writer = new FrameWriter(input);
   let sequence = 0;
@@ -36,11 +38,16 @@ export const stdioHttp = async (
   let dead = false;
   const pump = (async () => {
     try {
-      for await (const frame of readFrames(output, (v) => {
-        if (!v || typeof v !== "object" || (v as Rpc).jsonrpc !== "2.0")
-          throw new Error("Invalid MCP frame");
-        return v as Rpc;
-      })) {
+      for await (const frame of readFrames(
+        output,
+        (v) => {
+          if (!v || typeof v !== "object" || (v as Rpc).jsonrpc !== "2.0")
+            throw new Error("Invalid MCP frame");
+          return v as Rpc;
+        },
+        undefined,
+        maxServerFrameBytes,
+      )) {
         if (frame.method) {
           // This tools bridge advertises no sampling/elicitation client capabilities.
           if (frame.id !== undefined)
@@ -118,7 +125,7 @@ export const stdioHttp = async (
       capabilities: {},
       clientInfo: { name: "loom-runtime", version: "1" },
     });
-    if (hello.error || !hello.result) throw new Error("Packaged MCP initialization failed");
+    if (hello.error || !hello.result) throw new Error("MCP initialization failed");
     await writer.send({ jsonrpc: "2.0", method: "notifications/initialized" });
     const lifetime = new AbortController();
     const server = Deno.serve(

@@ -128,6 +128,12 @@ export const mcpDefinitionSchema = z
       .describe(
         "Seconds one MCP request may take, 1–3600. Loom's relays for http, nix and runtime sources stop a request after this (omitted: 60); Claude and Codex get it as the server's tool-call timeout.",
       ),
+    vm_sessions: z
+      .enum(["refuse", "relay"])
+      .optional()
+      .describe(
+        "Command sources only: refuse (the default) fails a VM session that selects it; relay runs the command on the host, one process per session, and relays it into the VM. The command still runs unconfined and the VM agent drives it — for a browser, its file access and scripts in your real browser. Without cwd it starts in the session's host worktree, which the agent can write, or else your home directory.",
+      ),
     auth: z
       .strictObject({
         bearer_token_env: requiredText.optional(),
@@ -167,6 +173,12 @@ export const mcpDefinitionSchema = z
       ctx.addIssue({
         code: "custom",
         message: "A host command runs unconfined; grants apply only to nix and runtime sources",
+      });
+    if (value.source.kind !== "command" && value.vm_sessions !== undefined)
+      ctx.addIssue({
+        code: "custom",
+        path: ["vm_sessions"],
+        message: `vm_sessions applies only to command sources; a ${value.source.kind} source already serves VM sessions`,
       });
   });
 export const toolSettingsSchema = z.object({

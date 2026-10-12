@@ -359,6 +359,8 @@ export interface LoomConfig {
           /** Daemon environment variables copied into `env` at launch. */
           passEnv?: string[];
           cwd?: string;
+          /** Opted in to serve VM sessions: run on the host and relayed into the guest. */
+          vmSessions?: "relay";
         }
       | { runtime: string; isolation: "vm"; grants?: McpGrants }
     )

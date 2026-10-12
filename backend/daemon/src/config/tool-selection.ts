@@ -57,6 +57,7 @@ export const resolveToolSelection = (raw: ToolSettings): Pick<LoomConfig, "mcp" 
           ...(Object.keys(env).length > 0 ? { env } : {}),
           ...(pass_env.length > 0 ? { passEnv: pass_env } : {}),
           ...(cwd !== undefined ? { cwd: expandHome(cwd) } : {}),
+          ...(entry.vm_sessions === "relay" ? { vmSessions: "relay" as const } : {}),
         });
         break;
       }
@@ -88,11 +89,11 @@ export const toolExecutionError = (config: LoomConfig, provider: string): string
   let vm = config.isolation.aisdk;
   if (isClaudeId(provider)) vm = config.isolation.claude;
   else if (config.providers.aisdk[provider]?.sdk === "chatgpt") vm = config.isolation.codex;
-  const host = config.mcp.filter((m) => "command" in m);
+  const host = config.mcp.filter((m) => "command" in m && m.vmSessions !== "relay");
   if ((config.defaults.isolation === "vm" || vm) && host.length)
     return (
       `Provider ${provider} runs in a VM but host commands are selected: ${host.map((m) => m.name).join(", ")}. ` +
-      'Remove them from session.mcp_servers, or select servers whose source.kind is "nix", "runtime" or "http".'
+      'Remove them from session.mcp_servers, set vm_sessions: "relay" on them to run them on the host for VM sessions, or select servers whose source.kind is "nix", "runtime" or "http".'
     );
 };
 

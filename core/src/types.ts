@@ -110,6 +110,8 @@ export const mcpServerHandleSchema = z.object({
       env: z.record(z.string(), z.string()).optional(),
       /** Absolute; absent runs it in the session's working directory. */
       cwd: z.string().optional(),
+      /** A VM session runs it on the host and relays it into the guest; absent, it refuses it. */
+      vmSessions: z.literal("relay").optional(),
     }),
     z.object({
       transport: z.literal("http"),

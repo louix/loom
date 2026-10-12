@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { experimental_createMCPClient } from "@ai-sdk/mcp";
 import { stdioHttp } from "../runtime/src/mcp/stdio-http.ts";
 import { FrameWriter, readFrames } from "../runtime/src/worker/transport.ts";
+import { MAX_FRAME_BYTES } from "../runtime/src/framing.ts";
 import { MCP_REQUEST_TIMEOUT_DEFAULT_MS } from "../core/src/mcp-worker.ts";
 
 const fixture = async (requestTimeoutMs: number) => {
@@ -53,7 +54,13 @@ const fixture = async (requestTimeoutMs: number) => {
       await writer.close();
     }
   })();
-  const bridge = await stdioHttp(input.writable, output.readable, "token", requestTimeoutMs);
+  const bridge = await stdioHttp(
+    input.writable,
+    output.readable,
+    "token",
+    requestTimeoutMs,
+    MAX_FRAME_BYTES,
+  );
   const url = `http://127.0.0.1:${bridge.port}/mcp`;
   const headers = { Authorization: "Bearer token", "Content-Type": "application/json" };
   return {

@@ -4,7 +4,8 @@ Define servers in trusted user configuration and select them under
 `session.mcp_servers`. Definitions and preparation do not enable a server.
 `source.kind` says where a server runs: `nix` and `runtime` servers run in
 their own per-session smolvm container/VM, independently of the agent's
-execution mode; `command` servers run on the host; `http` servers are remote.
+execution mode; `command` servers run on the host (and serve VM sessions only
+when relayed); `http` servers are remote.
 
 ```jsonc
 {
@@ -306,17 +307,89 @@ own MCP client starts it:
 }
 ```
 
-Only sessions that run on the host can use one. Selecting a host command for a
-session whose agent runs in a VM (`session.defaults.isolation: "vm"`, or a VM
-runtime for that provider) fails before any session resources are created; a
-host command is never silently moved into a VM, and a failed VM never falls back
-to the host. Package the server with Nix (`source.kind: "nix"`) to run it beside
-a VM agent. `grants` do not apply to a host command and are rejected. A missing
-executable fails preflight.
+By default only sessions that run on the host can use one. Selecting a host
+command for a session whose agent runs in a VM (`session.defaults.isolation:
+"vm"`, or a VM runtime for that provider) fails before any session resources are
+created; a host command is never silently moved into a VM, and a failed VM never
+falls back to the host. Package the server with Nix (`source.kind: "nix"`) to run
+it beside a VM agent, or [relay it](#relaying-a-host-command-to-vm-sessions).
+`grants` do not apply to a host command and are rejected. A missing executable
+fails preflight.
 
 Some MCP clients give a host command only a few variables (`PATH`, `HOME`, …).
 `pass_env` names variables to copy from the daemon's environment when a session
 starts, such as an API key; one that is unset fails preflight.
+
+### Relaying a host command to VM sessions
+
+`vm_sessions: "relay"` lets VM sessions use a host command too: Loom runs the
+command on the host and relays it into the session's VM, as it does for remote
+servers. The default, `"refuse"`, is the behaviour above. Only `command` sources
+take the field.
+
+**The command still runs unconfined on the host, and the VM agent drives it.**
+Whatever the command can do, the agent can now do from inside its VM: for a
+browser, read the files the browser can open and run scripts in your real
+browser, including on sites you are signed in to. Relay only a command you would
+let the agent run on the host.
+
+The motivating case is [chrome-devtools-mcp](https://github.com/ChromeDevTools/chrome-devtools-mcp)
+driving a host Chromium, so a VM agent can debug the dev server on your
+`localhost` — which the browser reaches because it runs on the host, outside the
+VM's network policy:
+
+```jsonc
+{
+  "mcp_servers": {
+    "chrome-devtools": {
+      "source": {
+        "kind": "command",
+        "command": "npx",
+        "args": [
+          "--yes",
+          "chrome-devtools-mcp@1.10.1",
+          // A throwaway profile, not your everyday one.
+          "--isolated",
+          "--executablePath=/usr/bin/chromium",
+          // Send nothing to Google: no usage statistics, no CrUX lookups for
+          // the URLs the agent traces.
+          "--no-usage-statistics",
+          "--performance-crux=false",
+        ],
+        // Not the session's worktree: the VM agent writes there, and npx
+        // resolves packages and .npmrc from its working directory.
+        "cwd": "~/",
+      },
+      "vm_sessions": "relay",
+    },
+  },
+  "session": { "mcp_servers": ["chrome-devtools"] },
+}
+```
+
+- **One process per session.** Each VM session that selects the server gets its
+  own process, started before its VM boots and stopped with the session; sessions
+  never share one. A command that exits ends its session's run; resume the session
+  to start it again.
+- **No orphans.** The process runs in a process group Loom ends — SIGTERM, then
+  SIGKILL after 2 seconds — when the session stops, when the daemon stops, and
+  when the daemon dies. A descendant that puts itself in a process group of its
+  own, as browser launchers commonly do, is outside that and is stopped by the
+  command's own SIGTERM handling.
+- **Environment.** The command inherits the daemon's environment, with `env` and
+  `pass_env` applied as for a host session.
+- **Working directory.** `cwd` when set; otherwise the session's host worktree,
+  or your home directory when the session has none (a VM session with a private
+  clone). The worktree is writable by the VM agent, so set `cwd` for a command
+  that loads code or configuration from its working directory, as `npx` does.
+- **Limits.** Those of Loom's HTTP relay: a request times out after 60 seconds,
+  a request is at most 1 MiB and a response 8 MiB, and at most 32 requests are in
+  flight. A larger message from the command ends the session's run.
+
+Preflight is unchanged: the command must be on the daemon's `PATH` and every
+`pass_env` variable set before any session resources are created. Agent
+profiles' `mcp_servers` and `session.mcp_servers` select a relayed server like
+any other.
 
 ## Common configurations
 
@@ -350,7 +423,7 @@ definitions above. Host/VM agent execution and the workspace come from
 Node, Python and other programs inside an agent VM belong to its
 [development environment](session-environments.md), not to an MCP server.
 `loom doctor` reports the selected servers with their placement and warns about
-host commands incompatible with configured VM agents.
+host commands, not relayed, that configured VM agents would refuse.
 
 ## Old tool catalogs
 

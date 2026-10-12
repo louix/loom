@@ -13,6 +13,7 @@ import { startMcpWorker, type ManagedMcp } from "./mcp-worker.ts";
 import { startOAuthMcp } from "./mcp-oauth-owner.ts";
 import type { LoomConfig } from "../config/config.ts";
 import { startRuntimeMcp } from "./runtime-mcp.ts";
+import { hostCommandCwd, startHostCommandMcp } from "./host-command-mcp.ts";
 
 export const withExternalMcp = async (
   create: CreateProvider,
@@ -21,6 +22,7 @@ export const withExternalMcp = async (
   startRuntime = startRuntimeMcp,
   repoRoot?: string,
   httpDefinitions: LoomConfig["httpMcp"] = [],
+  startHostCommand = startHostCommandMcp,
 ): Promise<AgentProvider> => {
   const base = await create(context);
   const open = async (
@@ -36,10 +38,12 @@ export const withExternalMcp = async (
     };
     // Reject incompatible selections before starting any external MCP workers.
     if (context.config.sessionVm && !("oneShot" in input && input.oneShot)) {
-      const host = input.mcpServers?.find((h) => h.spec.transport === "stdio");
+      const host = input.mcpServers?.find(
+        (h) => h.spec.transport === "stdio" && h.spec.vmSessions !== "relay",
+      );
       if (host)
         throw new Error(
-          `Host command ${host.name} cannot be used by a VM agent; select an MCP server whose source.kind is nix, runtime or http instead.`,
+          `Host command ${host.name} cannot be used by a VM agent; set vm_sessions: "relay" on it to run it on the host for VM sessions, or select an MCP server whose source.kind is nix, runtime or http instead.`,
         );
     }
     const cleanup = async () => {
@@ -54,7 +58,18 @@ export const withExternalMcp = async (
     };
     try {
       const mount = async (handle: McpServerHandle): Promise<McpServerHandle> => {
-        if (handle.spec.transport === "stdio") return handle;
+        const repo = repoRoot ?? context.config.sessionVm?.repoRoot;
+        if (handle.spec.transport === "stdio") {
+          // A host session's connector runs it; a VM session gets it relayed (vetted above).
+          if (!context.config.sessionVm) return handle;
+          const worker = await startHostCommand(
+            handle.name,
+            handle.spec,
+            handle.spec.cwd ?? (await hostCommandCwd(input.cwd, repo)),
+          );
+          workers.push(worker);
+          return { ...handle, spec: worker.handle.spec };
+        }
         const definition = httpDefinitions.find(
           (m) =>
             m.name === handle.name && handle.spec.transport === "http" && m.url === handle.spec.url,
@@ -64,7 +79,7 @@ export const withExternalMcp = async (
           worker = await startRuntime(handle.name, handle.spec.runtime, input.cwd, undefined, {
             sessionId: input.sessionId,
             provider: context.id,
-            repo: repoRoot ?? context.config.sessionVm?.repoRoot,
+            repo,
             ...(handle.spec.grants ? { grants: handle.spec.grants } : {}),
             ...(handle.requestTimeoutMs ? { requestTimeoutMs: handle.requestTimeoutMs } : {}),
           });

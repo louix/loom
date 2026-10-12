@@ -2,12 +2,17 @@
 // Equal to core/src/worker.ts's limit, which the worker protocol tests exercise through this module.
 export const MAX_FRAME_BYTES = 1024 * 1024;
 
-/** Byte-bounded NDJSON. Partial/invalid UTF-8 and EOF in a frame fail closed. */
+/**
+ * Byte-bounded NDJSON. Partial/invalid UTF-8 and EOF in a frame fail closed.
+ * `maxFrame_bytes` absent: MAX_FRAME_BYTES.
+ */
 export const readFrames = async function* <T>(
   stream: ReadableStream<Uint8Array>,
   decode: (v: unknown) => T,
   signal?: AbortSignal,
+  maxFrame_bytes?: number,
 ): AsyncGenerator<T> {
+  const limit_bytes = maxFrame_bytes ?? MAX_FRAME_BYTES;
   const reader = stream.getReader();
   const cancel = () => {
     void reader.cancel().catch(() => {});
@@ -26,8 +31,7 @@ export const readFrames = async function* <T>(
       for (let i = 0; i < value.length; i++) {
         if (value[i] !== 10) continue;
         const part = value.subarray(start, i);
-        if (buffered.length + part.length > MAX_FRAME_BYTES)
-          throw new Error("worker frame too large");
+        if (buffered.length + part.length > limit_bytes) throw new Error("worker frame too large");
         const bytes = new Uint8Array(buffered.length + part.length);
         bytes.set(buffered);
         bytes.set(part, buffered.length);
@@ -36,8 +40,7 @@ export const readFrames = async function* <T>(
         start = i + 1;
       }
       const rest = value.subarray(start);
-      if (buffered.length + rest.length > MAX_FRAME_BYTES)
-        throw new Error("worker frame too large");
+      if (buffered.length + rest.length > limit_bytes) throw new Error("worker frame too large");
       const next = new Uint8Array(buffered.length + rest.length);
       next.set(buffered);
       next.set(rest, buffered.length);

@@ -192,6 +192,11 @@
             "minimum": 1,
             "maximum": 3600
           },
+          "vm_sessions": {
+            "description": "Command sources only: refuse (the default) fails a VM session that selects it; relay runs the command on the host, one process per session, and relays it into the VM. The command still runs unconfined and the VM agent drives it — for a browser, its file access and scripts in your real browser. Without cwd it starts in the session's host worktree, which the agent can write, or else your home directory.",
+            "type": "string",
+            "enum": ["refuse", "relay"]
+          },
           "auth": {
             "type": "object",
             "properties": {
@@ -1723,6 +1728,11 @@
                   "type": "integer",
                   "minimum": 1,
                   "maximum": 3600
+                },
+                "vm_sessions": {
+                  "description": "Command sources only: refuse (the default) fails a VM session that selects it; relay runs the command on the host, one process per session, and relays it into the VM. The command still runs unconfined and the VM agent drives it — for a browser, its file access and scripts in your real browser. Without cwd it starts in the session's host worktree, which the agent can write, or else your home directory.",
+                  "type": "string",
+                  "enum": ["refuse", "relay"]
                 },
                 "auth": {
                   "type": "object",

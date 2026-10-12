@@ -5668,7 +5668,7 @@ export class Daemon {
             ...(m.grants ? { grants: m.grants } : {}),
           },
         };
-      const { command, args, env, passEnv = [], cwd } = m;
+      const { command, args, env, passEnv = [], cwd, vmSessions } = m;
       const passed = Object.fromEntries(
         passEnv.map((name) => {
           const value = Deno.env.get(name);
@@ -5688,6 +5688,7 @@ export class Daemon {
           args: args ?? [],
           ...(Object.keys(childEnv).length > 0 ? { env: childEnv } : {}),
           ...(cwd !== undefined ? { cwd } : {}),
+          ...(vmSessions ? { vmSessions } : {}),
         },
       };
     });

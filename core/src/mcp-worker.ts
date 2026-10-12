@@ -50,3 +50,20 @@ export const mcpWorkerBindingSchema = z.object({
 export type McpWorkerBinding = z.infer<typeof mcpWorkerBindingSchema>;
 export const decodeMcpBinding = (value: unknown): McpWorkerBinding =>
   decode(mcpWorkerBindingSchema, value, "invalid MCP binding");
+
+/** Private daemon → host command worker bootstrap: one VM session's relayed stdio server. */
+export const HOST_COMMAND_WORKER_VERSION = 1;
+const hostCommandBindingSchema = z.strictObject({
+  version: z.literal(HOST_COMMAND_WORKER_VERSION),
+  command: z.string().min(1),
+  args: z.array(z.string()),
+  /** The whole environment: the command's own, not added to the worker's. */
+  env: z.record(z.string(), z.string()),
+  cwd: z.string().startsWith("/"),
+  token: z.string().min(32),
+  requestTimeoutMs: mcpRequestTimeoutMsSchema,
+  maxServerFrameBytes: z.number().int().positive(),
+});
+export type HostCommandBinding = z.infer<typeof hostCommandBindingSchema>;
+export const decodeHostCommandBinding = (value: unknown): HostCommandBinding =>
+  decode(hostCommandBindingSchema, value, "invalid host command binding");
