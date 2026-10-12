@@ -94,7 +94,7 @@ export const showArchiveReminder = (
     const about = [c.finished, ...(facts ? [showWorkspace(facts)] : [])].join(", ");
     return `${c.id.slice(0, 8)} "${c.title ?? ""}" (${about})`;
   });
-  const agents = children.length === 1 ? "agent that has" : "agents that have";
+  const agents = children.length === 1 ? "sub-agent that has" : "sub-agents that have";
   return (
     `[loom] You have ${children.length} ${agents} finished and ${children.length === 1 ? "is" : "are"} not archived: ` +
     `${named.join("; ")}. Archive each with agent_stop once its work is merged or no longer ` +

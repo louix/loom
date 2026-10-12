@@ -203,15 +203,15 @@ describe("agentsWaitingLine", () => {
   test("names each waiting agent and the way to it", () => {
     assert.equal(
       agentsWaitingLine(waiting, 100),
-      "? 2 agents waiting on you: aaaaaaaa Verify the widget, bbbbbbbb Port the parser  → opens",
+      "? 2 sub-agents waiting on you: aaaaaaaa Verify the widget, bbbbbbbb Port the parser  → opens",
     );
-    assert.match(agentsWaitingLine(waiting.slice(0, 1), 100), /^\? 1 agent waiting on you: /);
+    assert.match(agentsWaitingLine(waiting.slice(0, 1), 100), /^\? 1 sub-agent waiting on you: /);
   });
 
   test("a narrow pane cuts the names, never the hint", () => {
     const line = agentsWaitingLine(waiting, 50);
     assert.ok([...line].length <= 50, line);
-    assert.match(line, /^\? 2 agents waiting on you: aaaaa.*  → opens$/);
+    assert.match(line, /^\? 2 sub-agents waiting on you: aaaaa.*  → opens$/);
   });
 });
 
@@ -278,7 +278,7 @@ describe("a supervisor whose agents wait on the person", () => {
         renderToString(detailLayout(lead, { width: 100, waiting }).render(0), { columns: 100 }),
       );
     const out = render(waitingAgentsIn(list)(lead));
-    assert.match(out, /\? 2 agents waiting on you: ask Verify, also Port {2}→ opens/);
+    assert.match(out, /\? 2 sub-agents waiting on you: ask Verify, also Port {2}→ opens/);
     assert.doesNotMatch(render([]), /waiting on you/);
   });
 });

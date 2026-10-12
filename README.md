@@ -22,7 +22,7 @@ configuration, tools, Git workflow and execution environment.
   option. Fork conversations, undo supported turns, rebase, archive and resume.
 - **Agent controls.** Manual approval, plan, accept-edits and auto modes. Review a
   plan before implementation, switch models, interrupt, queue messages and compact
-  context. Follow subagents and background tasks.
+  context. Follow sub-agents and background tasks.
 - **Usage visibility.** Token counts, context usage, reported or estimated costs,
   and prompt-cache activity where the provider exposes them.
 - **Tools and hooks.** Local and HTTP MCP servers, including filesystem tools and

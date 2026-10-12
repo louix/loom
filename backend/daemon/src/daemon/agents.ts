@@ -154,7 +154,7 @@ const childNote = (supervisorId: string, title: string | null, supervises: boole
     "Questions and permission requests go to the user, as usual.",
     ...(supervises
       ? [
-          "If you start agents of your own, archive each with agent_stop once its work is merged or abandoned.",
+          "If you start sub-agents of your own, archive each with agent_stop once its work is merged or abandoned.",
         ]
       : []),
   ].join(" ");
@@ -488,9 +488,11 @@ export class AgentSupervision {
     const match = this.#host.children(caller).filter((s) => s.id.startsWith(id));
     if (match.length === 1) return match[0]!;
     if (match.length > 1)
-      refuse(`"${id}" matches more than one of your children; give the full id`);
+      refuse(`"${id}" matches more than one of your sub-agents; give the full id`);
     return exact
-      ? refuse(`${short(id)} is not one of your children; you can act only on agents you started`)
+      ? refuse(
+          `${short(id)} is not one of your sub-agents; you can act only on sub-agents you started`,
+        )
       : refuse(`no such session: ${id}`);
   }
 
@@ -524,8 +526,8 @@ export class AgentSupervision {
       ...lines,
       "",
       nested
-        ? "Children can start agents of their own unless their profile leaves out loom-agents."
-        : `Children cannot start agents of their own (agents.max_depth ${agents.maxDepth}).`,
+        ? "Sub-agents can start sub-agents of their own unless their profile leaves out loom-agents."
+        : `Sub-agents cannot start sub-agents of their own (agents.max_depth ${agents.maxDepth}).`,
     ].join("\n");
   }
 
@@ -567,11 +569,11 @@ export class AgentSupervision {
     const depth = supervisionDepth(caller, (id) => this.#host.get(id));
     if (depth >= agents.maxDepth)
       refuse(
-        `agents.max_depth is ${agents.maxDepth} and this session is at depth ${depth}: it cannot start agents`,
+        `agents.max_depth is ${agents.maxDepth} and this session is at depth ${depth}: it cannot start sub-agents`,
       );
     if (me.checkout === "clone")
       refuse(
-        "A session in a private clone cannot start agents yet: clone children arrive in stage 2 of Loom agents (docs/loom-agents.md). Use a worktree or in-place session as the supervisor.",
+        "A session in a private clone cannot start sub-agents yet: clone sub-agents arrive in stage 2 of Loom agents (docs/loom-agents.md). Use a worktree or in-place session as the supervisor.",
       );
     const profile = str(input, "profile") ?? refuse("profile is required");
     const task = str(input, "task") ?? refuse("task is required");
@@ -581,8 +583,8 @@ export class AgentSupervision {
     // In place, the child branches from what is checked out; in a worktree,
     // from the supervisor's own branch.
     const base = me.inPlace
-      ? (this.#host.headBase() ?? refuse("the repository has no commit to branch a child from"))
-      : (me.branch ?? refuse("this session has no branch to branch a child from"));
+      ? (this.#host.headBase() ?? refuse("the repository has no commit to branch a sub-agent from"))
+      : (me.branch ?? refuse("this session has no branch to branch a sub-agent from"));
     const workdir = me.inPlace ? this.#host.repoRoot : me.worktree;
     const dirty = workdir !== null && this.#host.dirty(workdir);
     const child = await this.#host.start({
@@ -597,14 +599,14 @@ export class AgentSupervision {
     });
     const runs = [child.provider, child.model].filter(Boolean).join("/");
     return [
-      `Started agent ${child.id} "${title}" on profile ${profile} (${runs}, mode ${child.mode}).`,
+      `Started sub-agent ${child.id} "${title}" on profile ${profile} (${runs}, mode ${child.mode}).`,
       child.branch
         ? `It works on branch ${child.branch}${child.worktree ? ` in ${child.worktree}` : ""}, from ${child.baseBranch ?? base}.`
         : `It branches from ${child.baseBranch ?? base}.`,
       "You are notified when it finishes a turn, fails or is interrupted (not when it waits on the user): end your turn to wait for it.",
       ...(dirty
         ? [
-            `Warning: you have uncommitted changes, and they do not carry over — the child starts from the last commit on ${base}. Commit first if it needs them.`,
+            `Warning: you have uncommitted changes, and they do not carry over — the sub-agent starts from the last commit on ${base}. Commit first if it needs them.`,
           ]
         : []),
     ].join("\n");
@@ -616,7 +618,7 @@ export class AgentSupervision {
     const delivery: QueueDelivery =
       input["delivery"] === "end_of_turn" ? "end_of_turn" : "next_boundary";
     if (child.status.kind === "done")
-      refuse(`${short(child.id)} is archived; start a new agent instead`);
+      refuse(`${short(child.id)} is archived; start a new sub-agent instead`);
     // A child the user stopped stays stopped: the message waits behind the
     // user's hold. Any other (the supervisor's own stop, a crash, a restart)
     // it lifts, reviving the child, as the user's send would.
@@ -662,7 +664,7 @@ export class AgentSupervision {
   #status(caller: string, input: Record<string, unknown>): string {
     if (str(input, "id")) return this.#describe(this.#child(caller, input));
     const mine = this.#host.children(caller);
-    if (mine.length === 0) return "You have no agents. Start one with agent_start.";
+    if (mine.length === 0) return "You have no sub-agents. Start one with agent_start.";
     return mine.map((s) => this.#describe(s)).join("\n\n");
   }
 
@@ -846,7 +848,7 @@ export class AgentSupervision {
       ? `Its workspace: ${gitSummary(git)}${git.dirty ? "" : ", nothing uncommitted"}.`
       : null;
     const body = [
-      `[from your agent ${short(child.id)} "${child.title ?? ""}" (profile ${child.agentProfile ?? SELF_PROFILE})] It ${event}.`,
+      `[from your sub-agent ${short(child.id)} "${child.title ?? ""}" (profile ${child.agentProfile ?? SELF_PROFILE})] It ${event}.`,
       ...(workspace ? [workspace] : []),
       ...(firstLine ? [`Summary${summary.cut ? " (truncated)" : ""}: ${summary.text}`] : []),
       `For full details: run \`agent_read\` with id \`${child.id}\``,

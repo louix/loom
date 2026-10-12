@@ -87,7 +87,7 @@ const idleSession = async (
 };
 
 const idOf = (text: string): string => {
-  const m = /Started agent ([0-9a-f-]{36})/.exec(text);
+  const m = /Started sub-agent ([0-9a-f-]{36})/.exec(text);
   assert.ok(m, `no id in: ${text}`);
   return m[1]!;
 };
@@ -240,7 +240,7 @@ describe("loom agents", { concurrency: 4 }, () => {
       listed.text,
       /implementer — Cheap; give it a specific, verifiable task \(fake-2, mode auto; the rest as yours\)/,
     );
-    assert.match(listed.text, /cannot start agents of their own \(agents\.max_depth 2\)/);
+    assert.match(listed.text, /cannot start sub-agents of their own \(agents\.max_depth 2\)/);
   });
 
   test("messages reach a child through its queue, labelled; only its supervisor may send them", async (env) => {
@@ -268,9 +268,9 @@ describe("loom agents", { concurrency: 4 }, () => {
     ] as const) {
       const res = await other.fs.callAgentTool(tool, input);
       assert.equal(res.ok, false, tool);
-      assert.match(res.text, /not one of your children/, tool);
+      assert.match(res.text, /not one of your sub-agents/, tool);
     }
-    assert.match((await other.fs.callAgentTool("agent_status")).text, /You have no agents/);
+    assert.match((await other.fs.callAgentTool("agent_status")).text, /You have no sub-agents/);
   });
 
   test("a child's turn end wakes an idle supervisor with its final message", async (env) => {
@@ -280,7 +280,7 @@ describe("loom agents", { concurrency: 4 }, () => {
     await finish(env, child, "Widget added; tests pass.");
     await waitFor(() => lead.fs.sends.length > before);
     const note = lead.fs.sends.at(-1)!;
-    assert.match(note, new RegExp(`^\\[from your agent ${child.id.slice(0, 8)} "Widget"`));
+    assert.match(note, new RegExp(`^\\[from your sub-agent ${child.id.slice(0, 8)} "Widget"`));
     assert.match(note, /It finished a turn\./);
     assert.match(note, /Its workspace: 0 commits ahead of its base, nothing uncommitted\./);
     assert.match(note, /\nSummary: Widget added; tests pass\.\n/);
@@ -429,7 +429,7 @@ describe("loom agents", { concurrency: 4 }, () => {
 
     await assert.rejects(
       env.c.request("session.markDone", { id: lead.id }),
-      /supervises 2 open agents: choose children "stop"/,
+      /supervises 2 open sub-agents: choose children "stop"/,
     );
     assert.notEqual((await get(env.c, lead.id)).status.kind, "done", "nothing happened");
     await env.c.request("session.markDone", { id: lead.id, children: "detach" });
@@ -493,7 +493,7 @@ describe("loom agents", { concurrency: 4 }, () => {
   test("a supervisor is not woken by its own interrupt or stop; a user's interrupt is reported", async (env) => {
     const lead = await idleSession(env);
     const child = await startChild(env, lead.fs);
-    const notes = () => lead.fs.sends.filter((s) => s.startsWith("[from your agent"));
+    const notes = () => lead.fs.sends.filter((s) => s.startsWith("[from your sub-agent"));
     child.fs.emit({ type: "assistant_text", text: "busy" });
     await waitFor(async () => (await get(env.c, child.id)).status.kind === "running");
     const interrupted = await lead.fs.callAgentTool("agent_interrupt", { id: child.id });
@@ -558,7 +558,7 @@ describe("loom agents", { concurrency: 4 }, () => {
   test("a child is never nudged: its turn end reports its uncommitted work, once; a root is reminded", async (env) => {
     const lead = await idleSession(env);
     const child = await startChild(env, lead.fs);
-    const notes = () => lead.fs.sends.filter((s) => s.startsWith("[from your agent"));
+    const notes = () => lead.fs.sends.filter((s) => s.startsWith("[from your sub-agent"));
     const reminded = (fs: FakeSession) =>
       fs.sends.some((s) => /uncommitted changes in your worktree/.test(s));
     writeFileSync(join((await get(env.c, child.id)).worktree!, "wip.txt"), "uncommitted\n");
@@ -609,7 +609,7 @@ describe("loom agents", { concurrency: 4 }, () => {
 
     await env.c.request("session.queueRelease", { id: lead.id });
     await waitFor(() => lead.fs.sends.length > sendsBefore);
-    assert.match(lead.fs.sends.at(-1)!, /^\[from your agent [\s\S]*Widget added\./);
+    assert.match(lead.fs.sends.at(-1)!, /^\[from your sub-agent [\s\S]*Widget added\./);
   });
 
   test("a cold, held supervisor is not revived by a report; releasing it revives it and delivers", async (env) => {
@@ -631,7 +631,7 @@ describe("loom agents", { concurrency: 4 }, () => {
     await waitFor(() => env.provider.resumes.some((r) => r.sessionId === lead.id));
     await waitFor(() => env.provider.session(lead.id) !== lead.fs);
     const revived = env.provider.session(lead.id)!;
-    await waitFor(() => revived.sends.some((s) => s.startsWith("[from your agent")));
+    await waitFor(() => revived.sends.some((s) => s.startsWith("[from your sub-agent")));
     assert.equal((await get(env.c, lead.id)).queue, undefined);
   });
 
@@ -720,7 +720,7 @@ describe("loom agents", { concurrency: 4 }, () => {
   test("H7: a child's report to a busy supervisor is queued, not lost, and goes once it is not", async (env) => {
     const lead = await idleSession(env);
     const child = await startChild(env, lead.fs);
-    const notes = () => lead.fs.sends.filter((s) => s.startsWith("[from your agent"));
+    const notes = () => lead.fs.sends.filter((s) => s.startsWith("[from your sub-agent"));
     // As while a clone supervisor's guest Git runs (a turn-end sync).
     env.h.daemon.sessions.setBusy(lead.id, true);
     await finish(env, child, "Widget added.");
@@ -789,7 +789,7 @@ describe("loom agents", { concurrency: 4 }, () => {
     assert.equal(row.status.kind, "done");
     assert.equal(row.queue?.hold, "interrupt");
     assert.equal(row.queue?.holdBy, "user");
-    assert.ok(!lead.fs.sends.some((s) => s.startsWith("[from your agent")), "not handed over");
+    assert.ok(!lead.fs.sends.some((s) => s.startsWith("[from your sub-agent")), "not handed over");
     assert.ok(!env.provider.resumes.some((r) => r.sessionId === lead.id), "not revived");
   });
 
@@ -838,7 +838,10 @@ describe("loom agents", { concurrency: 4 }, () => {
       assert.equal(row.status.kind, "interrupted");
       assert.equal(row.queue?.hold, "interrupt");
       assert.equal(row.queue?.entries[0]?.author, `agent:${child.id}`);
-      assert.ok(!lead.fs.sends.some((s) => s.startsWith("[from your agent")), "not handed over");
+      assert.ok(
+        !lead.fs.sends.some((s) => s.startsWith("[from your sub-agent")),
+        "not handed over",
+      );
       assert.ok(!provider.resumes.some((r) => r.sessionId === lead.id), "not revived");
     } finally {
       await c.close();
@@ -902,7 +905,7 @@ describe("loom agents", { concurrency: 4 }, () => {
   test("a user's interrupt joining the supervisor's own is reported", async (env) => {
     const lead = await idleSession(env);
     const child = await startChild(env, lead.fs);
-    const notes = () => lead.fs.sends.filter((s) => s.startsWith("[from your agent"));
+    const notes = () => lead.fs.sends.filter((s) => s.startsWith("[from your sub-agent"));
     child.fs.emit({ type: "assistant_text", text: "busy" });
     await waitFor(async () => (await get(env.c, child.id)).status.kind === "running");
     let stop!: () => void;
@@ -921,7 +924,7 @@ describe("loom agents", { concurrency: 4 }, () => {
 
   test("what a supervisor's stop ends in is its own, however late it lands", async (env) => {
     const lead = await idleSession(env);
-    const notes = () => lead.fs.sends.filter((s) => s.startsWith("[from your agent"));
+    const notes = () => lead.fs.sends.filter((s) => s.startsWith("[from your sub-agent"));
     // An interrupt the adapter reports a failure for after it settled.
     const first = await startChild(env, lead.fs, { title: "One" });
     first.fs.emit({ type: "assistant_text", text: "busy" });
@@ -965,7 +968,7 @@ describe("loom agents", { concurrency: 4 }, () => {
       return childId !== "";
     });
     await env.c.request("session.interrupt", { id: childId });
-    const notes = () => lead.fs.sends.filter((s) => s.startsWith("[from your agent"));
+    const notes = () => lead.fs.sends.filter((s) => s.startsWith("[from your sub-agent"));
     await waitFor(() => notes().length > 0);
     assert.match(notes()[0]!, /It was interrupted \(user\)\./);
     release();
@@ -1020,7 +1023,7 @@ describe("loom agents", { concurrency: 4 }, () => {
     writeFileSync(join(tree, "widget.txt"), "widget\n");
     git(tree, "add", "widget.txt");
     git(tree, "commit", "-q", "-m", "widget");
-    const notes = () => lead.fs.sends.filter((s) => s.startsWith("[from your agent"));
+    const notes = () => lead.fs.sends.filter((s) => s.startsWith("[from your sub-agent"));
     // Each report starts a supervisor turn; the second waits for the first's end.
     await finish(env, merged, "Nothing to change.");
     await waitFor(() => notes().length === 1);
@@ -1035,7 +1038,10 @@ describe("loom agents", { concurrency: 4 }, () => {
     await waitFor(() => reminders(lead.fs).length === 1);
     // In the fleet's order of the children.
     const reminder = reminders(lead.fs)[0]!;
-    assert.match(reminder, /^\[loom\] You have 2 agents that have finished and are not archived: /);
+    assert.match(
+      reminder,
+      /^\[loom\] You have 2 sub-agents that have finished and are not archived: /,
+    );
     assert.ok(reminder.includes(`${merged.id.slice(0, 8)} "Merged" (idle, branch merged)`));
     assert.ok(
       reminder.includes(`${ahead.id.slice(0, 8)} "Ahead" (idle, 1 commit not merged into yours)`),
@@ -1067,7 +1073,7 @@ describe("loom agents", { concurrency: 4 }, () => {
     const lead = await idleSession(env);
     const child = await startChild(env, lead.fs);
     await finish(env, child, "Widget added.");
-    await waitFor(() => lead.fs.sends.some((s) => s.startsWith("[from your agent")));
+    await waitFor(() => lead.fs.sends.some((s) => s.startsWith("[from your sub-agent")));
     // A hold on a supervisor whose turn then ends idle.
     env.h.daemon.sessions.holdForStop(lead.id, "user");
     lead.fs.finishTurn();
@@ -1104,7 +1110,7 @@ describe("loom agents", { concurrency: 4 }, () => {
 });
 
 const reminders = (fs: FakeSession): string[] =>
-  fs.sends.filter((s) => /^\[loom\] You have \d+ agents? that ha/.test(s));
+  fs.sends.filter((s) => /^\[loom\] You have \d+ sub-agents? that ha/.test(s));
 
 // Outside the concurrent suite: it stubs Git for the whole process.
 nodeTest("a child whose report is still being made is not in its supervisor's reminder", (t) =>
@@ -1112,7 +1118,7 @@ nodeTest("a child whose report is still being made is not in its supervisor's re
     const lead = await idleSession(env);
     const child = await startChild(env, lead.fs);
     const tree = (await get(env.c, child.id)).worktree!;
-    const notes = () => lead.fs.sends.filter((s) => s.startsWith("[from your agent"));
+    const notes = () => lead.fs.sends.filter((s) => s.startsWith("[from your sub-agent"));
     const gate = Promise.withResolvers<void>();
     const original = WorktreeManager.prototype.factsAsync;
     let probed = false;
@@ -1154,7 +1160,7 @@ nodeTest("a child's turn-end workspace facts are read off the daemon thread", (t
     const child = await startChild(env, lead.fs);
     const tree = (await get(env.c, child.id)).worktree!;
     writeFileSync(join(tree, "wip.txt"), "uncommitted\n");
-    const notes = () => lead.fs.sends.filter((s) => s.startsWith("[from your agent"));
+    const notes = () => lead.fs.sends.filter((s) => s.startsWith("[from your sub-agent"));
     const gate = Promise.withResolvers<void>();
     const original = WorktreeManager.prototype.factsAsync;
     let probed = false;

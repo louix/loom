@@ -1044,7 +1044,7 @@ test("chat view collapses tool traffic and thinking; chat_and_tools keeps calls 
 test("chat view hides a child's notifications, taken up or queued; the other filters show them", () => {
   // The queue's markers count by wait: the boundary one counts only the
   // child's notification, so chat hides it; the other counts the user's.
-  const note = '[from your agent kid12345 "Kid" (profile self)] It finished a turn.';
+  const note = '[from your sub-agent kid12345 "Kid" (profile self)] It finished a turn.';
   const a = snap({
     id: "a",
     status: "running",
@@ -1129,7 +1129,7 @@ test("toLogLine names an ended background task by its kind, never as a sub-agent
   assert.equal(ended("monitor", "stopped").text, "background monitor stopped · npm test");
   assert.equal(
     toLogLine(2, ev({ type: "subagent_stopped", subagentId: "t" })).text,
-    "sub-agent finished",
+    "provider sub-agent finished",
   );
 });
 

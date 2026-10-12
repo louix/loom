@@ -148,7 +148,7 @@ describe("showArchiveReminder", () => {
     // then
     assert.equal(
       text,
-      "[loom] You have 4 agents that have finished and are not archived: " +
+      "[loom] You have 4 sub-agents that have finished and are not archived: " +
         '11111111 "Merged" (idle, branch merged); ' +
         '22222222 "Ahead" (failed, 3 commits not merged into yours, uncommitted changes); ' +
         '33333333 "One" (interrupted, 1 commit not merged into yours); ' +
@@ -164,6 +164,6 @@ describe("showArchiveReminder", () => {
       mkGit({}),
     );
     // then
-    assert.match(text, /^\[loom\] You have 1 agent that has finished and is not archived: /);
+    assert.match(text, /^\[loom\] You have 1 sub-agent that has finished and is not archived: /);
   });
 });

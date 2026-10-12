@@ -183,7 +183,7 @@ loom config convert [FILE] [--out NEW] [--json]
   \`loom send <id>\` later checks the branch back out into a fresh worktree and
   resumes. The branch has to be clean unless:
   --force                      archive even a dirty worktree (discards changes)
-  --children stop|detach      for a supervisor: archive its open agents too, or detach them`,
+  --children stop|detach      for a supervisor: archive its open sub-agents too, or detach them`,
   gc: `loom gc  — remove worktrees for done sessions (branches kept)
 
   --id ONE                     just this session (may also target an error row)
@@ -193,7 +193,7 @@ loom config convert [FILE] [--out NEW] [--json]
   closes any live run, removes the worktree (not the repo root for an in-place
   session), drops the row and its stored transcript. The branch is left unless:
   --delete-branch              also \`git branch -D\` the session's branch
-  --children stop|detach      for a supervisor: archive its open agents, or detach them`,
+  --children stop|detach      for a supervisor: archive its open sub-agents, or detach them`,
 };
 
 const encoder = new TextEncoder();

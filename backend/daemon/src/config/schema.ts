@@ -221,7 +221,7 @@ const sessionMode = preprocess(
 /** One `agents.profiles` entry: what a child started with it runs as. */
 export const agentProfileSchema = z.strictObject({
   description: requiredText.describe(
-    "What the profile is for, as the agents choosing a child read it.",
+    "What the profile is for, as supervisors choosing a sub-agent read it.",
   ),
   provider: requiredText
     .optional()
@@ -233,7 +233,7 @@ export const agentProfileSchema = z.strictObject({
     .describe("Permission mode; omitted takes the spawner's own (plan becomes manual)."),
   mcp: deprecated("Replaced by mcp_servers."),
   mcp_servers: names("MCP servers").describe(
-    `The session MCP servers it gets, by name, plus ${LOOM_AGENTS_SERVER} to let it start agents of its own. Omitted: all of them.`,
+    `The session MCP servers it gets, by name, plus ${LOOM_AGENTS_SERVER} to let it start sub-agents of its own. Omitted: all of them.`,
   ),
   skills: names("skills").describe(
     "Claude skills to load from the provider's <config_dir>/skills/<name>/SKILL.md, by name; omitted keeps the CLI's own.",
@@ -259,14 +259,16 @@ const agentsSchema = (maxDepth: number) =>
       .max(8)
       .default(maxDepth)
       .describe(
-        `How deep supervision may go: 1 starts no agents, 2 (the default) a supervisor and its children. Sessions at the limit get no ${LOOM_AGENTS_SERVER}.`,
+        `How deep supervision may go: 1 starts no sub-agents, 2 (the default) a supervisor and its sub-agents. Sessions at the limit get no ${LOOM_AGENTS_SERVER}.`,
       ),
     profiles: z
       // Names are checked in config.ts: a record key's own error says only
       // "Invalid key in record".
       .record(z.string(), agentProfileSchema)
       .default({})
-      .describe(`Named agent profiles; ${SELF_PROFILE} (the spawner's own settings) is built in.`),
+      .describe(
+        `Named sub-agent profiles; ${SELF_PROFILE} (the spawner's own settings) is built in.`,
+      ),
   });
 
 export const createConfigSchema = (d: LoomConfig, events: readonly HookEvent[]) => {

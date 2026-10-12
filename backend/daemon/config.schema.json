@@ -1417,13 +1417,13 @@
       "properties": {
         "max_depth": {
           "default": 2,
-          "description": "How deep supervision may go: 1 starts no agents, 2 (the default) a supervisor and its children. Sessions at the limit get no loom-agents.",
+          "description": "How deep supervision may go: 1 starts no sub-agents, 2 (the default) a supervisor and its sub-agents. Sessions at the limit get no loom-agents.",
           "type": "integer",
           "minimum": 1,
           "maximum": 8
         },
         "profiles": {
-          "description": "Named agent profiles; self (the spawner's own settings) is built in.",
+          "description": "Named sub-agent profiles; self (the spawner's own settings) is built in.",
           "type": "object",
           "propertyNames": {
             "type": "string"
@@ -1433,7 +1433,7 @@
             "properties": {
               "description": {
                 "type": "string",
-                "description": "What the profile is for, as the agents choosing a child read it."
+                "description": "What the profile is for, as supervisors choosing a sub-agent read it."
               },
               "provider": {
                 "description": "Provider id, e.g. claude:personal or codex; omitted runs on the spawner's own.",
@@ -1457,7 +1457,7 @@
                 "description": "Replaced by mcp_servers."
               },
               "mcp_servers": {
-                "description": "The session MCP servers it gets, by name, plus loom-agents to let it start agents of its own. Omitted: all of them.",
+                "description": "The session MCP servers it gets, by name, plus loom-agents to let it start sub-agents of its own. Omitted: all of them.",
                 "type": "array",
                 "items": {
                   "type": "string"
@@ -2928,13 +2928,13 @@
             "properties": {
               "max_depth": {
                 "default": 2,
-                "description": "How deep supervision may go: 1 starts no agents, 2 (the default) a supervisor and its children. Sessions at the limit get no loom-agents.",
+                "description": "How deep supervision may go: 1 starts no sub-agents, 2 (the default) a supervisor and its sub-agents. Sessions at the limit get no loom-agents.",
                 "type": "integer",
                 "minimum": 1,
                 "maximum": 8
               },
               "profiles": {
-                "description": "Named agent profiles; self (the spawner's own settings) is built in.",
+                "description": "Named sub-agent profiles; self (the spawner's own settings) is built in.",
                 "type": "object",
                 "propertyNames": {
                   "type": "string"
@@ -2944,7 +2944,7 @@
                   "properties": {
                     "description": {
                       "type": "string",
-                      "description": "What the profile is for, as the agents choosing a child read it."
+                      "description": "What the profile is for, as supervisors choosing a sub-agent read it."
                     },
                     "provider": {
                       "description": "Provider id, e.g. claude:personal or codex; omitted runs on the spawner's own.",
@@ -2968,7 +2968,7 @@
                       "description": "Replaced by mcp_servers."
                     },
                     "mcp_servers": {
-                      "description": "The session MCP servers it gets, by name, plus loom-agents to let it start agents of its own. Omitted: all of them.",
+                      "description": "The session MCP servers it gets, by name, plus loom-agents to let it start sub-agents of its own. Omitted: all of them.",
                       "type": "array",
                       "items": {
                         "type": "string"

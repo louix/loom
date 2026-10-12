@@ -537,7 +537,7 @@ const FleetChildRow = ({
 /** Detail's line for a supervisor's agents waiting on the person: who, and
  *  that → walks into them. The hint survives truncation; the names do not. */
 export const agentsWaitingLine = (waiting: readonly SessionSnapshot[], width: number): string => {
-  const lede = `? ${waiting.length} agent${waiting.length === 1 ? "" : "s"} waiting on you: `;
+  const lede = `? ${waiting.length} sub-agent${waiting.length === 1 ? "" : "s"} waiting on you: `;
   const hint = "  → opens";
   const names = waiting.map((a) => `${shortId(a.id)} ${titleLine(a.title)}`).join(", ");
   return lede + truncate(names, Math.max(1, width - lede.length - hint.length)) + hint;
@@ -613,7 +613,7 @@ export const detailLayout = (
       addLine(truncate(`⑂ shares the worktree of ${shortId(s.worktreeOwner)}`, w));
     if (s.supervisorId || s.agentProfile) {
       const parts = [
-        ...(s.supervisorId ? [`agent of ${shortId(s.supervisorId)}`] : []),
+        ...(s.supervisorId ? [`sub-agent of ${shortId(s.supervisorId)}`] : []),
         ...(s.agentProfile ? [`profile ${s.agentProfile}`] : []),
         ...(s.taskId ? [`task ${s.taskId}`] : []),
       ];
@@ -701,7 +701,7 @@ export const detailLayout = (
       add(
         <Field label="">
           <Text tone={known ? "good" : "faint"}>{`Σ ${showTreeCost(withAgents)}`}</Text>
-          <Text tone="faint">{` with agents${scope}`}</Text>
+          <Text tone="faint">{` with sub-agents${scope}`}</Text>
         </Field>,
       );
     }
@@ -753,7 +753,7 @@ export const detailLayout = (
         addLine(line, "warn");
     if (s.subagents.length)
       addLine(
-        `⑂ ${s.subagents.filter((a) => a.active).length}/${s.subagents.length} sub-agent${s.subagents.length === 1 ? "" : "s"} · ${truncate(s.subagents.map((a) => (a.active ? a.name : `${a.name} ✓`)).join(", "), w - 20)}`,
+        `⑂ ${s.subagents.filter((a) => a.active).length}/${s.subagents.length} provider sub-agent${s.subagents.length === 1 ? "" : "s"} · ${truncate(s.subagents.map((a) => (a.active ? a.name : `${a.name} ✓`)).join(", "), w - 20)}`,
         "dim",
       );
     if (s.backgroundTasks.length)
@@ -826,7 +826,7 @@ export const EventLog = memo(
     const palette = useTheme();
     const { child, rows } = view;
     let empty = child
-      ? `  (no events from this ${child.source === "sub" ? "sub-agent" : "task"})`
+      ? `  (no events from this ${child.source === "sub" ? "provider sub-agent" : "task"})`
       : "  (quiet)";
     if (view.loading) empty = "  (loading history…)";
     // Pane title: the focused child's name while drilled in, else the plain header.
@@ -1360,7 +1360,7 @@ const deletionLayout = (confirm: DeleteConfirmState, width: number) => {
 
 /** What closing a supervisor does to its open agents, as its confirm says it. */
 const childrenLine = (c: ChildrenChoice): string => {
-  const n = `${c.count} open agent${c.count === 1 ? "" : "s"}`;
+  const n = `${c.count} open sub-agent${c.count === 1 ? "" : "s"}`;
   return c.choice === "stop"
     ? `It supervises ${n}: they are stopped and archived with it.`
     : `It supervises ${n}: they are detached and keep running as sessions of their own.`;
@@ -1423,7 +1423,7 @@ const DeleteSessionConfirm = ({
             items={[
               {
                 keys: "c",
-                label: confirm.children.choice === "stop" ? "detach agents" : "stop agents",
+                label: confirm.children.choice === "stop" ? "detach sub-agents" : "stop sub-agents",
               },
             ]}
           />
@@ -1497,7 +1497,12 @@ export const Confirm = ({
         items={[
           { keys: "enter", label: actionText },
           ...(agents
-            ? [{ keys: "c", label: agents.choice === "stop" ? "detach agents" : "stop agents" }]
+            ? [
+                {
+                  keys: "c",
+                  label: agents.choice === "stop" ? "detach sub-agents" : "stop sub-agents",
+                },
+              ]
             : []),
           { keys: "esc", label: "cancel" },
         ]}

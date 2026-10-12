@@ -4118,7 +4118,7 @@ export class Daemon {
     if (kids.length > 0 && !children)
       throw new RpcError(
         "conflict",
-        `This session supervises ${kids.length} open agent${kids.length === 1 ? "" : "s"}: choose children "stop" to archive them too, or "detach" to keep them as sessions of their own.`,
+        `This session supervises ${kids.length} open sub-agent${kids.length === 1 ? "" : "s"}: choose children "stop" to archive them too, or "detach" to keep them as sessions of their own.`,
         { children: kids.map((k) => k.id) },
       );
     return kids;

@@ -240,7 +240,10 @@ describe("tui-render", { concurrency: 4 }, () => {
       await settle();
       const frame = stripVTControlCharacters(stdout.last);
       assert.match(frame, /Σ~\$3\.40/);
-      assert.match(frame, /\$1\.20 reported\s+│\n.*│ {9}Σ ~\$3\.40 with agents, part estimated/);
+      assert.match(
+        frame,
+        /\$1\.20 reported\s+│\n.*│ {9}Σ ~\$3\.40 with sub-agents, part estimated/,
+      );
     } finally {
       app.unmount();
     }
@@ -1346,8 +1349,8 @@ describe("tui-render", { concurrency: 4 }, () => {
       fs?.emit({ type: "subagent_started", subagentId: "t1", name: "reviewer" });
       fs?.emit({ type: "subagent_started", subagentId: "t2", name: "tester" });
       fs?.emit({ type: "assistant_text", text: "checking imports", agentId: "t1" });
-      await waitFor(stdout, /2\/2 sub-agents · reviewer, tester/);
-      assert.match(stdout.last, /2\/2 sub-agents · reviewer, tester/);
+      await waitFor(stdout, /2\/2 provider sub-agents · reviewer, tester/);
+      assert.match(stdout.last, /2\/2 provider sub-agents · reviewer, tester/);
       assert.doesNotMatch(
         stdout.last,
         /checking imports/,

@@ -297,7 +297,7 @@ test("agent_start refuses a clone supervisor, the depth limit and missing fields
   ]);
   const clone = await s.call("clone", "agent_start", { profile: "self", task: "t", title: "T" });
   assert.equal(clone.ok, false);
-  assert.match(clone.text, /clone children arrive in stage 2/);
+  assert.match(clone.text, /clone sub-agents arrive in stage 2/);
   const deep = await s.call("kid", "agent_start", { profile: "self", task: "t", title: "T" });
   assert.match(deep.text, /agents\.max_depth is 2 and this session is at depth 2/);
   assert.match(
@@ -320,7 +320,7 @@ test("a child is found by an unambiguous prefix of its id, and only among one's 
   assert.match((await s.call("lead", "agent_status", { id: "abc" })).text, /more than one/);
   assert.match(
     (await s.call("lead", "agent_status", { id: "xyz999" })).text,
-    /not one of your children/,
+    /not one of your sub-agents/,
   );
   assert.match((await s.call("lead", "agent_status", { id: "nope" })).text, /no such session/);
   const all = await s.call("lead", "agent_status");
@@ -562,7 +562,7 @@ test("a notification carries the first line of the final message as its summary,
   assert.equal(
     await settle(1, stateIdle),
     [
-      '[from your agent kid "Kid" (profile verifier)] It finished a turn.',
+      '[from your sub-agent kid "Kid" (profile verifier)] It finished a turn.',
       "Its workspace: 1 commit ahead of its base, nothing uncommitted.",
       "Summary: Widget added; tests pass.",
       pointer,
@@ -586,7 +586,7 @@ test("a notification carries the first line of the final message as its summary,
   assert.equal(
     await settle(3, stateError("the worker crashed")),
     [
-      '[from your agent kid "Kid" (profile verifier)] It failed: the worker crashed.',
+      '[from your sub-agent kid "Kid" (profile verifier)] It failed: the worker crashed.',
       "Its workspace: 1 commit ahead of its base, nothing uncommitted.",
       "Summary: Halfway: the build broke.",
       pointer,
@@ -596,7 +596,7 @@ test("a notification carries the first line of the final message as its summary,
   assert.equal(
     await settle(4, stateInterrupted("user")),
     [
-      '[from your agent kid "Kid" (profile verifier)] It was interrupted (user).',
+      '[from your sub-agent kid "Kid" (profile verifier)] It was interrupted (user).',
       "Its workspace: 1 commit ahead of its base, nothing uncommitted.",
       pointer,
     ].join("\n"),

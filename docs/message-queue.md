@@ -54,7 +54,7 @@ reorderable and switchable between delivery modes; interrupt holds the queue
 
 ## Model
 
-One queue per root session; child rows (sub-agents, background tasks) have none.
+One queue per root session; child rows (provider sub-agents, background tasks) have none.
 
 ```ts
 // core/src/message-queue.ts (new; schemas re-exported from wire.ts)
@@ -90,7 +90,7 @@ type QueueHoldBy = "user" | "supervisor"; // whose stop; absent for Loom's own
 - Hold: a session-level flag; while set nothing is dispatched automatically.
   It records its cause: the reason (`interrupt`, `restart`, `crash`,
   `rejected`) and, for a stop, whose it is (`by`: the user's, or a Loom
-  supervisor's on its child). Loom's own holds (a crash, a restart, a doubtful
+  supervisor's on its sub-agent). Loom's own holds (a crash, a restart, a doubtful
   hand-over) are no one's. Who sets, lifts and combines holds is defined in
   one place, [Holds](#holds).
 - Any client may act on any entry (single user). Authors render as you or
@@ -188,10 +188,10 @@ The keys (`i`, ⌥i) and `session.interrupt` are unchanged. In
 `SessionManager.interrupt` (:798):
 
 1. Before calling the adapter, set hold `interrupt` — always for the user's
-   stop, even with nothing queued; for a Loom agent supervisor's
+   stop, even with nothing queued; for a supervisor's
    (`agent_interrupt`) only if any entry is queued or delivering — so dispatch
    cannot race the stop. A user's stop is a hold, so what is queued after it
-   (a Loom agent's notification, [loom-agents.md](loom-agents.md#communication))
+   (a sub-agent's notification, [loom-agents.md](loom-agents.md#communication))
    waits behind it instead of starting a turn. The same holds for a user
    interrupting a session still starting, and for stopping its VM. A user's
    interrupt joining one already under way sets the hold too. An interrupt
@@ -235,7 +235,7 @@ follow the ordinary rules relative to the turn it started, so a held
 - **Cold resume** (by send or `session.resume`) leaves the queue and its hold
   alone. **Archive** is a stop like an interrupt, by whoever archives: the
   hold is set in `SessionManager.close(by)` before the close awaits anything,
-  as for a VM stop, so nothing queued during the close (a child's report)
+  as for a VM stop, so nothing queued during the close (a sub-agent's report)
   reaches the closing adapter or revives it (H6). **Delete** cascades.
   **Forks** start with an empty queue.
 
@@ -261,7 +261,7 @@ type Push = none | forced { entryId, now } | now { entryId }; // H3, H4
 type Delivery = ready | backoff | scheduled { op } | handing_over { op, ids, fresh, at };
 type Stop = none | holding { by } | lifted { by }; // `by`: whom the turn's end is attributed to
 type Spell = unwritten | in { state, turn }; // a settled turn's identity
-type Report = idle { last } | making { turn }; // as a Loom agent's child
+type Report = idle { last } | making { turn }; // as a sub-agent
 ```
 
 The tables below are the code's tables: `WAITS` (H2), `stopOn` / `loomOn`
@@ -270,12 +270,12 @@ The tables below are the code's tables: `WAITS` (H2), `stopOn` / `loomOn`
 **H2 — who waits behind which hold** (`WAITS`). A message that does not wait
 lifts the hold and goes first, alone (`push: forced`).
 
-| Hold         | Set by                                                                                                                                                                                                   | The user's send | A supervisor's `agent_message` | A child's report |
-| ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- | ------------------------------ | ---------------- |
-| `free`       |                                                                                                                                                                                                          | goes            | goes                           | goes             |
-| `user`       | The user's stop — `session.interrupt` (joining one under way, or of a session still starting), a VM stop, an archive — even with nothing queued; the user stopping a compaction, only while entries wait | lifts           | waits                          | waits            |
-| `supervisor` | `agent_interrupt`, `agent_stop`, the supervisor stopping a compaction — only while entries wait                                                                                                          | lifts           | lifts, reviving a cold child   | waits            |
-| `loom`       | `interrupt`: input the adapter discarded with no one's stop under way; `crash`: a fatal root error or the stream ending unexpectedly, while entries wait; `restart`; `rejected`                          | lifts           | lifts, reviving a cold child   | waits            |
+| Hold         | Set by                                                                                                                                                                                                   | The user's send | A supervisor's `agent_message`   | A sub-agent's report |
+| ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- | -------------------------------- | -------------------- |
+| `free`       |                                                                                                                                                                                                          | goes            | goes                             | goes                 |
+| `user`       | The user's stop — `session.interrupt` (joining one under way, or of a session still starting), a VM stop, an archive — even with nothing queued; the user stopping a compaction, only while entries wait | lifts           | waits                            | waits                |
+| `supervisor` | `agent_interrupt`, `agent_stop`, the supervisor stopping a compaction — only while entries wait                                                                                                          | lifts           | lifts, reviving a cold sub-agent | waits                |
+| `loom`       | `interrupt`: input the adapter discarded with no one's stop under way; `crash`: a fatal root error or the stream ending unexpectedly, while entries wait; `restart`; `rejected`                          | lifts           | lifts, reviving a cold sub-agent | waits                |
 
 The user's release (`r`) lifts any hold.
 
@@ -373,7 +373,7 @@ they say so.
   sync, a rebase, republishing a renamed branch — the daemon marks the
   session busy (`SessionManager.setBusy`, the `busy` event). Dispatch reads
   it with the rest of rule 1, so it stops every path alike: the pump, a
-  send, a release, send now, notifications and agents' messages. Only the
+  send, a release, send now, notifications and supervisors' messages. Only the
   user's `session.send` and `session.queueRelease` are refused as `busy`
   meanwhile (their contract); everything else is queued as usual and goes
   when the operation ends, which re-evaluates the queue.
@@ -440,11 +440,11 @@ client saw; a stale one gets `conflict` and changes nothing.
   Without `origin` the CLI never moves anything: it lets the call finish,
   ends the turn and runs the message as a new one (CLI 2.1.287, observed).
   Other providers ignore `now`.
-  Every entry a person wrote (not a child's report, `agent:…`, nor a
+  Every entry a person wrote (not a sub-agent's report, `agent:…`, nor a
   supervisor's message, `supervisor:…`) carries `human`, as does a
   `session.create` opening prompt (`promptByHuman`): Claude stamps those
   `origin: {kind: "human"}`, as the SDK asks of hosts relaying keyboard input.
-  Loom's own messages (nudges, hook feedback) and a child's task go unattributed.
+  Loom's own messages (nudges, hook feedback) and a sub-agent's task go unattributed.
 - `session.queueRemove {id, entries: [{entryId, revision}]}` cancels queued and
   uncertain entries. A delivering, certain entry is refused ("already handed to
   the agent") until an adapter offers per-input cancel (Claude's

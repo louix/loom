@@ -242,7 +242,7 @@ test("Detail shows a supervisor's spend with its agents' under its own, as the f
   const out = detail(lead, all);
   assert.match(
     out,
-    /\$1\.00 reported\s+│\n│ {9}Σ \$2\.00 with agents\s+│\n/,
+    /\$1\.00 reported\s+│\n│ {9}Σ \$2\.00 with sub-agents\s+│\n/,
     "own first, combined under it",
   );
   assert.doesNotMatch(detail(other, all), /with agents|Σ/, "a session with no agents: unchanged");
@@ -258,10 +258,10 @@ test("Detail shows a supervisor's spend with its agents' under its own, as the f
     createdAt: 21,
   });
   const deep = [...all, grand];
-  assert.match(detail(lead, deep), / Σ ~\$2\.75 with agents, part estimated\s+│\n/);
+  assert.match(detail(lead, deep), / Σ ~\$2\.75 with sub-agents, part estimated\s+│\n/);
   assert.match(
     detail(kids[0]!, deep),
-    /\$0\.50 reported\s+│\n│ {9}Σ ~\$1\.25 with agents, part estimated\s+│\n/,
+    /\$0\.50 reported\s+│\n│ {9}Σ ~\$1\.25 with sub-agents, part estimated\s+│\n/,
   );
   const state = withFleet(deep);
   const view = fleetPaneView(state.fleet, fleetLayout(state, 40), "lead", null, null);
@@ -272,7 +272,7 @@ test("Detail shows a supervisor's spend with its agents' under its own, as the f
   );
   assert.match(fleetOut, /Coordinate\s+\?1 Σ~\$2\.75/, "the fleet row agrees");
   const estimated = [lead, ...kids].map((x) => ({ ...x, costSource: "table" as const }));
-  assert.match(detail(estimated[0]!, estimated), / Σ ~\$2\.00 with agents, estimated\s+│\n/);
+  assert.match(detail(estimated[0]!, estimated), / Σ ~\$2\.00 with sub-agents, estimated\s+│\n/);
 });
 
 test("an unpriced agent leaves the Σ what is known, marked partial, on the fleet row and in Detail", () => {
@@ -302,7 +302,7 @@ test("an unpriced agent leaves the Σ what is known, marked partial, on the flee
   const partial = both([lead, ...kids, free]);
   assert.deepEqual(partial.cost, { kind: "partial", usd: 2, estimated: false });
   assert.match(partial.row, /Coordinate\s+\?1 Σ\$2\.00\+/);
-  assert.match(partial.detail, / Σ \$2\.00\+ with agents, part unpriced\s+│\n/);
+  assert.match(partial.detail, / Σ \$2\.00\+ with sub-agents, part unpriced\s+│\n/);
 
   // A session that is itself part unpriced adds the part it knows.
   const half = { ...kids[0]!, costUsd: 0.5, costSource: "partial" as const };
@@ -315,13 +315,13 @@ test("an unpriced agent leaves the Σ what is known, marked partial, on the flee
   const guess = { ...kids[1]!, costUsd: 0.4, costSource: "table" as const };
   const mixed = both([lead, kids[0]!, guess, kids[2]!, free]);
   assert.match(mixed.row, /Coordinate\s+\?1 Σ~\$2\.15\+/);
-  assert.match(mixed.detail, / Σ ~\$2\.15\+ with agents, part unpriced\s+│\n/);
+  assert.match(mixed.detail, / Σ ~\$2\.15\+ with sub-agents, part unpriced\s+│\n/);
 
   const none = [lead, ...kids].map((x) => ({ ...x, costUsd: 0, costSource: "none" as const }));
   const unpriced = both([...none, free]);
   assert.deepEqual(unpriced.cost, { kind: "unpriced" });
   assert.match(unpriced.row, /Coordinate\s+\?1 Σ--/);
-  assert.match(unpriced.detail, / Σ -- with agents, unavailable\s+│\n/);
+  assert.match(unpriced.detail, / Σ -- with sub-agents, unavailable\s+│\n/);
   assert.match(unpriced.detail, /-- unavailable/, "its own cost: unchanged");
 });
 
@@ -341,7 +341,7 @@ test("archiving or deleting a supervisor asks about its agents, c toggles stop a
       },
     },
   });
-  assert.ok(footerHints(state).some((h) => h.keys === "c" && h.label === "stop agents"));
+  assert.ok(footerHints(state).some((h) => h.keys === "c" && h.label === "stop sub-agents"));
   state = reduce(state, { t: "toggleConfirmChildren" });
   assert.equal(
     state.overlay.t === "confirm" && state.overlay.confirm.action === "archiveSession"
@@ -349,13 +349,13 @@ test("archiving or deleting a supervisor asks about its agents, c toggles stop a
       : null,
     "stop",
   );
-  assert.ok(footerHints(state).some((h) => h.keys === "c" && h.label === "detach agents"));
+  assert.ok(footerHints(state).some((h) => h.keys === "c" && h.label === "detach sub-agents"));
 });
 
 test("queued messages from agents say who sent them", () => {
   const entry = (author: string) => ({ author }) as Parameters<typeof entryAuthor>[0];
   assert.equal(entryAuthor(entry("me"), "me"), "you");
   assert.equal(entryAuthor(entry("supervisor:0123456789abcdef"), "me"), "supervisor 01234567");
-  assert.equal(entryAuthor(entry("agent:fedcba9876543210"), "me"), "agent fedcba98");
+  assert.equal(entryAuthor(entry("agent:fedcba9876543210"), "me"), "sub-agent fedcba98");
   assert.equal(entryAuthor(entry("someone"), "me"), "other client");
 });

@@ -47,7 +47,7 @@ const rowTone = (e: QueueEntryView): "warn" | "text" | "dim" => {
 export const entryAuthor = (e: QueueEntryView, clientId: string): string => {
   if (e.author === clientId) return "you";
   if (e.author.startsWith("supervisor:")) return `supervisor ${e.author.slice(11, 19)}`;
-  if (e.author.startsWith("agent:")) return `agent ${e.author.slice(6, 14)}`;
+  if (e.author.startsWith("agent:")) return `sub-agent ${e.author.slice(6, 14)}`;
   return "other client";
 };
 

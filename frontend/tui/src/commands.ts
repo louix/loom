@@ -275,13 +275,14 @@ const COMMANDS = {
     scope: "view",
     keys: "←",
     label: "fleet",
-    description: "Step back out of the session's sub-agents, tasks and agents.",
+    description:
+      "Step back out of the session's background tasks, provider sub-agents and sub-agents.",
   },
   childEnter: {
     scope: "view",
     keys: "→",
     label: "inspect",
-    description: "Drill into the session's sub-agents, background tasks and Loom agents.",
+    description: "Drill into the session's background tasks, provider sub-agents and sub-agents.",
   },
   viewlog: {
     scope: "view",
@@ -1136,7 +1137,12 @@ export const footerHints = (ctx: CommandContext): BarItem[] => {
           ? [{ keys: "b", label: c.deleteBranch ? "keep branch" : "+ branch" }]
           : []),
         ...(children
-          ? [{ keys: "c", label: children.choice === "stop" ? "detach agents" : "stop agents" }]
+          ? [
+              {
+                keys: "c",
+                label: children.choice === "stop" ? "detach sub-agents" : "stop sub-agents",
+              },
+            ]
           : []),
         { keys: "esc", label: "cancel" },
       ];

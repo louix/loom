@@ -127,7 +127,7 @@ export const NON_TRANSCRIPT: ReadonlySet<string> = new Set([
 // ---------------------------------------------------------------------------
 
 const TASK_KIND_LABEL: Record<BackgroundTaskEndedEvent["kind"], string> = {
-  subagent: "sub-agent",
+  subagent: "provider sub-agent",
   shell: "shell",
   workflow: "workflow",
   monitor: "monitor",
@@ -339,11 +339,11 @@ export const formatEvent = (ev: HarnessEvent, toolName?: string): EventFormat =>
     case "subagent_started":
       return {
         glyph: "⤷",
-        text: `sub-agent “${ev.name}” started`,
+        text: `provider sub-agent “${ev.name}” started`,
         tone: "dim",
       };
     case "subagent_stopped":
-      return { glyph: "⤴", text: `sub-agent finished`, tone: "dim" };
+      return { glyph: "⤴", text: `provider sub-agent finished`, tone: "dim" };
     case "background_task_ended":
       return {
         glyph: "⤴",
@@ -1193,9 +1193,9 @@ const transcriptHeader = (l: LogLine): string | null => {
     case "notice":
       return "notice";
     case "subagent_started":
-      return "sub-agent started";
+      return "provider sub-agent started";
     case "subagent_stopped":
-      return "sub-agent finished";
+      return "provider sub-agent finished";
     case "background_task_ended":
       return "background task ended";
     case "rewind":

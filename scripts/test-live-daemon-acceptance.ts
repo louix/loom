@@ -1197,11 +1197,11 @@ const agents = async (provider: string) => {
     turns: [sup.turns, woken.turns],
     reply: texts.get(sup.id)?.slice(-300),
   });
-  assert.match((notified.detail as { text: string }).text, /^\[from your agent /);
+  assert.match((notified.detail as { text: string }).text, /^\[from your sub-agent /);
   const isReminder = (e: { id: string; type: string; detail?: unknown }) =>
     e.id === sup.id &&
     e.type === "user_message" &&
-    (e.detail as { text: string }).text.startsWith("[loom] You have 1 agent");
+    (e.detail as { text: string }).text.startsWith("[loom] You have 1 sub-agent");
   const reminded = await settleFor(() => events.find(isReminder), "the archive reminder");
   // The turns can all be over before a poll sees one: wait on the reminder
   // turn's own end.
