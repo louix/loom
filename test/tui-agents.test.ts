@@ -15,7 +15,6 @@ import type { AgentProfileInfo } from "@loom/core/agents";
 import type { ProviderInfo, SessionSnapshot } from "@loom/core/wire";
 import { describeCommands, footerHints } from "@loom/tui/commands";
 import {
-  agentSummary,
   fleetEntries,
   fleetLayout,
   fleetSessions,
@@ -178,19 +177,15 @@ test("agents sit under their supervisor, sorted like the fleet, the archived hid
   );
   const rows = fleetEntries(state).flatMap((e) =>
     e.kind === "session"
-      ? [[e.s.id, e.status, e.nest?.isLast ?? null, e.agents?.summary ?? null]]
+      ? [[e.s.id, e.status, e.nest?.isLast ?? null, e.agents !== undefined]]
       : [],
   );
   assert.deepEqual(rows, [
-    ["other", "running", null, null],
-    ["lead", "working_background", null, "1 needs input · 1 working · +1 done"],
-    ["kid2", "awaiting_input", false, null],
-    ["kid1", "running", true, null],
+    ["other", "running", null, false],
+    ["lead", "working_background", null, true],
+    ["kid2", "awaiting_input", false, false],
+    ["kid1", "running", true, false],
   ]);
-  assert.equal(
-    agentSummary(kids, (s) => s.status.kind),
-    "1 needs input · 1 working",
-  );
   assert.deepEqual(treeCost(lead, fleetSessions(state)), { costUsd: 2, costSource: "provider" });
   // ↑ from the supervisor reaches the row above it, not an agent.
   let s = reduce(state, { t: "select", id: "lead" });
@@ -211,7 +206,7 @@ test("a nested agent is a full session: every session verb, none withheld as a c
     assert.doesNotMatch(a.disabled ?? "", /Select the session row/, a.id);
 });
 
-test("the fleet draws agents on tree branches, and a supervisor's summary and combined cost", () => {
+test("the fleet draws agents on tree branches, and a supervisor's combined cost without a summary", () => {
   const { lead, kids, other } = tree();
   const state = withFleet([lead, ...kids, other]);
   const view = fleetPaneView(state.fleet, fleetLayout(state, 40), "kid1", null, null);
@@ -221,7 +216,8 @@ test("the fleet draws agents on tree branches, and a supervisor's summary and co
     }),
   );
   const line = (id: string) => out.split("\n").find((l) => l.includes(id.slice(0, 8)))!;
-  assert.match(line("lead"), /◐ .*Coordinate\s+1 needs input · 1 working · \+1 done\s+Σ\$2\.00/);
+  assert.match(line("lead"), /◐ .*Coordinate\s+Σ\$2\.00/);
+  assert.doesNotMatch(line("lead"), /needs input|working|done/);
   assert.match(line("kid2"), /├ .*kid2.*Verify/);
   assert.match(line("kid1"), /└ .*kid1.*Implement/);
   assert.equal(out.includes("Old"), false, "the archived agent waits for the supervisor's →");

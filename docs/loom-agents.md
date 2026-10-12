@@ -251,15 +251,15 @@ Children are listed nested under their supervisor, sorted like the fleet's
 own rows (status, then latest turn boundary), and reached like background
 tasks: `↑`/`↓` walk the top-level rows, `→` enters a session's tasks and
 then its children, `←`/`Esc` step back out. Selecting one gives the full
-session with all controls. Archived children stay hidden (counted as "+2
-done") until the supervisor is entered, then follow the open ones, dimmed.
-The supervisor row shows a summary such as "2 working · 1 needs input" and
-the combined cost of itself and its children.
+session with all controls. Archived children stay hidden until the supervisor
+is entered, then follow the open ones, dimmed. The supervisor row's cost is
+`Σ` its own plus its children's, as a display total only; the stored costs
+stay per session.
 
 A supervisor whose own turn has ended shows as background work while any
 child is running or working in the background; a question, error, live turn
 or stop of its own still shows as itself, and a child's questions or failures
-show only on the child's row and in the summary. This is the fleet's reading
+show only on the child's row. This is the fleet's reading
 only: the supervisor's state stays idle, which is what lets the queue hand it
 its children's reports while others still run.
 

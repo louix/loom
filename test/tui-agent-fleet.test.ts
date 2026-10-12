@@ -224,15 +224,11 @@ describe("the cursor in a supervision tree", () => {
       rows(top).map(([id]) => id),
       ["top", "lead", "ask", "work", "bottom"],
     );
-    const summary = (s: TuiState) =>
-      fleetEntries(s).flatMap((e) => (e.kind === "session" && e.agents ? [e.agents.summary] : []));
-    assert.deepEqual(summary(top), ["1 needs input · 1 working · +1 done"]);
     const inside = reduce(top, { t: "childEnter" });
     assert.deepEqual(
       rows(inside).map(([id]) => id),
       ["top", "lead", "ask", "work", "old", "bottom"],
     );
-    assert.deepEqual(summary(inside), ["1 needs input · 1 working"]);
     const onOld = steps(inside, { t: "childMove", delta: 9 });
     assert.deepEqual(cursor(onOld), ["old", null]);
     assert.ok(rows(onOld).some(([id, status]) => id === "old" && status === "done"));

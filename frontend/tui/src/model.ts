@@ -1400,26 +1400,6 @@ export const groupsOf = (
 export const agentsOf = (sessions: readonly SessionSnapshot[], id: string): SessionSnapshot[] =>
   sessions.filter((s) => s.supervisorId === id && s.id !== id);
 
-/** A supervisor's open agents in a few words, by what each shows —
- *  "2 working · 1 needs input"; "" with none open. Archived ones are left out. */
-export const agentSummary = (
-  agents: readonly SessionSnapshot[],
-  shown: (s: SessionSnapshot) => SessionStateKind,
-): string => {
-  const words: Array<[string, (k: SessionStateKind) => boolean]> = [
-    ["needs input", (k) => k === "awaiting_input"],
-    ["working", (k) => k === "running" || k === "starting" || k === "working_background"],
-    ["failed", (k) => k === "error"],
-    ["interrupted", (k) => k === "interrupted"],
-    ["idle", (k) => k === "idle"],
-  ];
-  return words
-    .map(([word, is]) => [agents.filter((a) => is(shown(a))).length, word] as const)
-    .filter(([n]) => n > 0)
-    .map(([n, word]) => `${n} ${word}`)
-    .join(" · ");
-};
-
 /** What a supervisor and every agent under it (however deep) have spent. */
 export const treeCost = (
   s: SessionSnapshot,
@@ -1470,9 +1450,9 @@ export type FleetEntry =
       /** A Loom agent drawn under its supervisor: how deep, and whether it is
        *  that supervisor's last. Absent for a row at the top of its group. */
       nest?: { depth: number; isLast: boolean };
-      /** For a supervisor: its open agents in words, and its spend with
-       *  theirs. Absent for a session that supervises none. */
-      agents?: { summary: string; cost: Pick<SessionSnapshot, "costUsd" | "costSource"> };
+      /** For a supervisor: its spend with its agents' (display only). Absent
+       *  for a session that supervises none. */
+      agents?: { cost: Pick<SessionSnapshot, "costUsd" | "costSource"> };
     }
   | { kind: "child"; s: SessionSnapshot; c: FleetChild; isLast: boolean }
   | { kind: "childMore"; s: SessionSnapshot; extra: number };
@@ -1495,17 +1475,12 @@ export const fleetEntries = (
     if (placed.has(s.id)) return;
     placed.add(s.id);
     const mine = agentsOf(all, s.id);
-    // Archived agents stay out of the way until their supervisor is entered.
-    const archived = entered.has(s.id) ? 0 : mine.filter((a) => status(a) === "done").length;
-    const summary = [agentSummary(mine, status), archived > 0 ? `+${archived} done` : ""]
-      .filter((x) => x !== "")
-      .join(" · ");
     out.push({
       kind: "session",
       s,
       status: status(s),
       ...(nest ? { nest } : {}),
-      ...(mine.length > 0 ? { agents: { summary, cost: treeCost(s, all) } } : {}),
+      ...(mine.length > 0 ? { agents: { cost: treeCost(s, all) } } : {}),
     });
     const kids = childrenOf(s);
     // Mirrors the FLEET row cap: 4 children shown, lifted while drilled in.

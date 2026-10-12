@@ -384,7 +384,7 @@ const FleetRow = ({
    *  the work rows a session fans out, but a session row in full. */
   nest?: { depth: number; isLast: boolean };
   /** A supervisor's open agents in words, and its spend with theirs. */
-  agents?: { summary: string; cost: Pick<SessionSnapshot, "costUsd" | "costSource"> };
+  agents?: { cost: Pick<SessionSnapshot, "costUsd" | "costSource"> };
   selected: boolean;
   /** The fleet is drilled into this row's children — its cursor goes dim and
    *  the bright one moves onto the focused child row. */
@@ -424,10 +424,7 @@ const FleetRow = ({
     6,
     iw - (2 + branch.length + 2 + idText.length + 3 + 2 + 2 + cost.length + 1),
   );
-  // The summary takes what the title leaves, and gives way first.
-  const summaryRoom = Math.min(agents?.summary.length ?? 0, width - 12);
-  const summary = agents?.summary && summaryRoom >= 6 ? truncate(agents.summary, summaryRoom) : "";
-  const room = Math.max(6, width - (summary ? summary.length + 2 : 0));
+  const room = width;
   const title = truncate(
     archiving ? "archiving… " + titleLine(s.title) : titleLine(s.title),
     room,
@@ -451,7 +448,6 @@ const FleetRow = ({
       <Text color={hovered ? C.text : titleColor} bold={selected && !blocked} underline={hovered}>
         {title}
       </Text>
-      {summary ? <Text tone="dim">{`  ${summary}`}</Text> : null}
       <Text tone="faint">{` ${cost}`}</Text>
     </Line>
   );
