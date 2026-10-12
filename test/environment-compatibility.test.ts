@@ -132,14 +132,14 @@ test("environment preflight warns only for enabled VM providers needing a compat
       },
     },
   });
-  config.providerAccess.only = ["codex"];
+  config.providerAccess.allow = ["codex"];
   assert.equal(
     await repoEnvironmentWarning("/repo", config),
     "Environment image missing or out of date.",
   );
-  config.providerAccess.disabled = ["codex"];
+  config.providerAccess.deny = ["codex"];
   assert.equal(await repoEnvironmentWarning("/repo", config), null);
-  config.providerAccess.disabled = [];
+  config.providerAccess.deny = [];
   delete config.isolation.codex;
   assert.equal(await repoEnvironmentWarning("/repo", config), null);
 });

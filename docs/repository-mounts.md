@@ -11,7 +11,7 @@ Preparation uses the same layout with a disposable worktree.
 Session worktrees default to `$XDG_DATA_HOME/loom/worktrees/<repo>-<hash>/<id>`
 (`~/.local/share` when unset). Only the selected external worktree is mounted,
 so the repository mount no longer exposes sibling session worktrees.
-The `worktree_dir` config setting overrides
+The `session.worktree_dir` config setting overrides
 the directory, including a location on another drive.
 
 External worktrees require another mount. Older x86 Linux VM configurations

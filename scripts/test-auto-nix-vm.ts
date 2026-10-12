@@ -29,7 +29,7 @@ try {
         providers: { codex: { profiles: { default: {} } } },
         session: {
           auto_nix: true,
-          provider_access: { only: ["codex"] },
+          provider_access: { allow: ["codex"] },
           isolation: { enabled: true, codex: { artifact, smolvm } },
         },
       }),

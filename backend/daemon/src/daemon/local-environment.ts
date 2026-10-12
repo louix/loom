@@ -85,7 +85,7 @@ export const activateLocalEnvironment = async (
     signal.throwIfAborted();
     if (result.code !== 0)
       throw new Error(
-        `Nix activation ${result.timedOut ? "timed out" : `exited ${result.code}`}:\n${result.output || "(no output)"}\nCheck Nix and the selected dev shell, or set session.auto_nix to false.`,
+        `Nix activation ${result.timedOut ? "timed out" : `exited ${result.code}`}:\n${result.output || "(no output)"}\nCheck Nix and the selected dev shell, or set session.environment.auto_nix to false.`,
       );
     if ((await Deno.stat(snapshot)).size > 1024 * 1024)
       throw new Error("Nix environment exceeds 1 MiB");

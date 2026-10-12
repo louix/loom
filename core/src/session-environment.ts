@@ -11,42 +11,42 @@ export interface SessionEnvironment {
 }
 
 /** Input units stay in seconds/MiB for config validation and editor schemas. */
-export const sessionEnvironmentSchema = z
-  .strictObject({
-    command_prefix: z
-      .array(
-        z
-          .string()
-          .min(1)
-          .max(4096)
-          .refine((v) => !v.includes("\0")),
-      )
-      .max(64)
-      .nullish()
-      .transform((v) => v ?? []),
-    timeout_seconds: z
-      .number()
-      .int()
-      .min(1)
-      .max(2_073_600)
-      .nullish()
-      .transform((v) => v ?? 900),
-    memory_mib: z
-      .number()
-      .int()
-      .min(512)
-      .max(65536)
-      .nullish()
-      .transform((v) => v ?? 2048),
-    cpus: z
-      .number()
-      .int()
-      .min(1)
-      .max(64)
-      .nullish()
-      .transform((v) => v ?? 1),
-  })
-  .prefault({});
+export const sessionEnvironmentFields = {
+  command_prefix: z
+    .array(
+      z
+        .string()
+        .min(1)
+        .max(4096)
+        .refine((v) => !v.includes("\0")),
+    )
+    .max(64)
+    .nullish()
+    .transform((v) => v ?? []),
+  timeout_seconds: z
+    .number()
+    .int()
+    .min(1)
+    .max(2_073_600)
+    .nullish()
+    .transform((v) => v ?? 900),
+  memory_mib: z
+    .number()
+    .int()
+    .min(512)
+    .max(65536)
+    .nullish()
+    .transform((v) => v ?? 2048),
+  cpus: z
+    .number()
+    .int()
+    .min(1)
+    .max(64)
+    .nullish()
+    .transform((v) => v ?? 1),
+};
+
+const sessionEnvironmentSchema = z.strictObject(sessionEnvironmentFields).prefault({});
 
 export const normalizeSessionEnvironment = (
   value: unknown,
@@ -56,7 +56,7 @@ export const normalizeSessionEnvironment = (
   if (!result.success) {
     throw new Error(
       result.error.issues
-        .map((i) => `isolation.environment.${i.path.join(".")}: ${i.message}`)
+        .map((i) => `session.environment.${i.path.join(".")}: ${i.message}`)
         .join("; "),
     );
   }

@@ -61,9 +61,10 @@ const connectorConfigFields = z.object({
   /** Claude: explicit path to the `claude` executable ("" = discover / bundled). */
   cliPath: z.string(),
   /**
-   * Prompt-cache TTL. Claude: "5m" | "1h" | "" (the CLI decides). aisdk with
-   * `sdk = "anthropic"`: the same, plus "off" to stop asking for a cache
-   * breakpoint at all. Ignored by the other aisdk backends.
+   * Prompt-cache TTL: "5m" | "1h" | "off" | "" (the provider's own default).
+   * Claude: "off" disables prompt caching in the CLI. aisdk with
+   * `sdk = "anthropic"`: "off" stops asking for a cache breakpoint at all.
+   * Ignored by the other aisdk backends.
    */
   promptCacheTtl: z.string(),
   /**
@@ -82,8 +83,10 @@ export const connectorWireConfigSchema = connectorConfigFields.partial();
 export type ConnectorWireConfig = z.infer<typeof connectorWireConfigSchema>;
 
 export interface ConnectorConfig extends ConnectorWireConfig {
-  /** Operator-selected Deno network hosts for a connector worker. */
+  /** Operator-selected Deno network hosts for a connector worker, replacing its own list. */
   workerAllowedHosts?: string[];
+  /** Hosts a connector worker may reach besides its own list. */
+  workerExtraHosts?: string[];
   /** Host-selected Claude session VM policy. */
   sessionVm?: {
     artifact: string;

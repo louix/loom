@@ -70,7 +70,7 @@ test("a group a titler ends after the providers have closed still gets its grace
   const h = await makeHarness({
     connectors,
     config: JSON.stringify({
-      session: { auto_resume: { enabled: false } },
+      session: { auto_resume: false },
     }),
   });
   const c = await LoomClient.connect({
@@ -146,7 +146,7 @@ test("a session close outlasting the shutdown drain still gives its group a grac
   const h = await makeHarness({
     connectors,
     config: JSON.stringify({
-      session: { auto_resume: { enabled: false } },
+      session: { auto_resume: false },
     }),
   });
   const c = await LoomClient.connect({

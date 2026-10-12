@@ -115,10 +115,10 @@ const writeConfig = async (opts: {
         },
         ...(opts.profiles ? { agents: { profiles: opts.profiles } } : {}),
         session: {
-          commit_reminder: { enabled: false },
+          commit_reminder: false,
           isolation: {
             enabled: opts.vm ?? false,
-            idle_timeout_minutes: opts.idleMinutes ?? 0,
+            idle_stop_minutes: opts.idleMinutes ?? 0,
             ...(runtime ? { claude: runtime, codex: runtime } : {}),
           },
         },

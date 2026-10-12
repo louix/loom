@@ -120,8 +120,8 @@ test("session VM shells, hooks and inspection use the environment's leases", asy
     connectors,
     config: JSON.stringify({
       session: {
-        auto_resume: { enabled: false },
-        auto_rebase: { enabled: false },
+        auto_resume: false,
+        auto_rebase: "off",
         isolation: {
           enabled: true,
           claude: { artifact: "/test-runtime" },

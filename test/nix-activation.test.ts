@@ -100,7 +100,7 @@ test("Nix is opt-in, independent of downloads, and repo overrides merge before v
     false,
   );
   assert.deepEqual(
-    normalizeConfig({ session: { auto_nix: true } }).isolation.extraAllowedHosts,
+    normalizeConfig({ session: { environment: { auto_nix: true } } }).isolation.extraAllowedHosts,
     [],
   );
   const f = await fixture();
@@ -110,29 +110,41 @@ test("Nix is opt-in, independent of downloads, and repo overrides merge before v
     await Deno.writeTextFile(
       configPath,
       JSON.stringify({
-        session: { auto_nix: false },
-        repos: [{ path: repo, session: { auto_nix: true } }],
+        session: { environment: { auto_nix: false } },
+        repos: [{ path: repo, session: { environment: { auto_nix: true } } }],
       }),
     );
     assert.equal(loadConfig(repo, configPath).autoNix, true);
     assert.equal(loadConfig(repo, configPath).isolation.environment?.autoNix, true);
     assert.equal(loadConfig(f.root, configPath).autoNix, false);
     for (const auto_nix of ["yes", {}, null, 1]) {
-      assert.throws(() => normalizeConfig({ session: { auto_nix } }), /session.auto_nix/);
+      assert.throws(
+        () => normalizeConfig({ session: { environment: { auto_nix } } }),
+        /session\.environment\.auto_nix/,
+      );
+      // The old key moves first, so its bad value is reported under the new one.
+      assert.throws(
+        () => normalizeConfig({ session: { auto_nix } }),
+        /session\.environment\.auto_nix/,
+      );
     }
     assert.throws(
       () =>
         normalizeConfig({
           session: { environment: { nix: { auto_activate: true } } },
         }),
-      /replaced by session.auto_nix/,
+      /replaced by session\.environment\.auto_nix/,
     );
-    assert.throws(
-      () =>
-        normalizeConfig({
-          session: { isolation: { environment: { nix: true } } },
-        }),
-      /supplies the writable Nix store automatically/,
+    assert.deepEqual(
+      normalizeConfig({ session: { isolation: { environment: { nix: true } } } }).configKeyNotices,
+      [
+        {
+          kind: "removed",
+          key: "session.isolation.environment.nix",
+          reason:
+            "Loom supplies the writable Nix store automatically; session.environment.auto_nix allows project shell activation",
+        },
+      ],
     );
     assert.equal(detectNixActivation(repo, false), undefined);
   } finally {

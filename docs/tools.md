@@ -15,7 +15,6 @@ of the agent's execution mode.
         "executable": "tilth",
         "args": ["--mcp", "--edit"],
       },
-      "execution": "vm",
       "grants": { "workspace": "read-write", "network": { "allowed_hosts": [] } },
       "default_for": ["read", "write", "edit", "find", "grep"],
     },
@@ -87,7 +86,8 @@ supported. Named provider compatibility has not yet been verified. See the
 
 ## Permissions
 
-Local definitions require `execution: "vm"`. Omitted grants mean
+A local `source` (`nix`, `runtime`) always runs in a VM; the old
+`execution: "vm"` is no longer needed and is ignored. Omitted grants mean
 `{ "workspace": "none", "network": { "allowed_hosts": [], "presets": [] } }`.
 
 - `workspace`: `none`, `read-only`, or `read-write`. The VM mount enforces
@@ -132,7 +132,6 @@ Use a Nix package for a new local MCP; Loom builds its runtime wrapper:
         "executable": "my-mcp",
         "args": ["--stdio"],
       },
-      "execution": "vm",
       "grants": { "workspace": "read-only", "network": { "allowed_hosts": ["api.example.com"] } },
     },
   },

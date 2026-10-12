@@ -48,8 +48,8 @@ const STAYS: Record<string, string> = {
   default_provider: "agent provider selection",
   tui: "TUI settings",
   daemon: "daemon lifetime",
-  base_branch: "session workspace policy",
-  worktree_dir: "session workspace policy",
+  "session.defaults.base_branch": "session workspace policy",
+  "session.worktree_dir": "session workspace policy",
   git: "Git identity of Loom sessions",
   search: "agent web search",
   mcp_servers: tools,
@@ -64,27 +64,27 @@ const STAYS: Record<string, string> = {
   "session.auto_resume": "session policy (auto-resume)",
   "session.commit_reminder": "session policy",
   "session.provider_access": "agent provider access",
-  "session.isolation.claude": "an agent provider's runtime; launch profiles run plain entrypoints",
-  "session.isolation.aisdk": "an agent provider's runtime; launch profiles run plain entrypoints",
-  "session.isolation.codex": "an agent provider's runtime; launch profiles run plain entrypoints",
-  "session.isolation.checkout.visible_refs": "private-clone publication policy",
-  "session.isolation.checkout.max_push_bytes": "private-clone publication policy",
+  "session.isolation.runtimes": "agent provider runtimes; launch profiles run plain entrypoints",
+  "session.clone": "private-clone publication policy",
 };
 const CONVERTED: Record<string, string> = {
-  "session.auto_nix": "environment.nix.auto",
-  "session.isolation.environment": "environment.commandPrefix/timeoutSeconds/resources",
+  "session.environment.auto_nix": "environment.nix.auto",
+  "session.environment.command_prefix": "environment.commandPrefix",
+  "session.environment.timeout_seconds": "environment.timeoutSeconds",
+  "session.environment.cpus": "environment.resources.cpus",
+  "session.environment.memory_mib": "environment.resources.memoryMiB",
   "session.isolation.network.allowed_hosts": "access.network.allowedHosts",
   "session.isolation.network.presets": "access.network.presets",
   "session.defaults.isolation": "lifecycle.execution",
   "session.defaults.workspace": "lifecycle.workspace",
-  "session.isolation.idle_timeout_minutes": "lifecycle.idleTimeoutMinutes",
+  "session.isolation.idle_stop_minutes": "lifecycle.idleTimeoutMinutes",
 };
 const SECTIONS = new Set([
   "session",
   "session.defaults",
+  "session.environment",
   "session.isolation",
   "session.isolation.network",
-  "session.isolation.checkout",
 ]);
 const WORKSPACE_EVENTS = { workspace_prepare: "prepare", workspace_start: "start" } as const;
 
@@ -103,17 +103,18 @@ const effective = (settings: Settings) => {
         // Keep Loom's labels: an unnamed hook is named by its first word.
         name: hook.name || hook.run.split(/\s+/)[0]!,
         run: hook.run,
-        timeoutSeconds: Math.ceil(hook.timeout / 1000),
+        timeoutSeconds: Math.ceil(hook.timeout_seconds / 1000),
       }));
-  const prefix = isolation.environment.command_prefix;
+  const { environment } = session;
+  const prefix = environment.command_prefix;
   return {
     environment: {
       // Loom ignores auto_nix while a command prefix is set; the new format rejects both.
-      nix: session.auto_nix && !prefix.length,
+      nix: environment.auto_nix && !prefix.length,
       commandPrefix: prefix,
-      timeoutSeconds: isolation.environment.timeout_seconds,
-      cpus: isolation.environment.cpus,
-      memoryMiB: isolation.environment.memory_mib,
+      timeoutSeconds: environment.timeout_seconds,
+      cpus: environment.cpus,
+      memoryMiB: environment.memory_mib,
       prepare: hooks("workspace_prepare"),
       start: hooks("workspace_start"),
     },
@@ -124,9 +125,9 @@ const effective = (settings: Settings) => {
     lifecycle: {
       workspace: session.defaults.workspace,
       execution: session.defaults.isolation === "vm" ? ("vm" as const) : ("local" as const),
-      idleTimeoutMinutes: isolation.idle_timeout_minutes,
+      idleTimeoutMinutes: isolation.idle_stop_minutes,
     },
-    autoNixIgnored: session.auto_nix && prefix.length > 0,
+    autoNixIgnored: environment.auto_nix && prefix.length > 0,
   };
 };
 type Effective = ReturnType<typeof effective>;
@@ -175,10 +176,10 @@ export const convertLoomConfig = (raw: Raw, source: string): ConversionReport =>
 
   /** Classify every setting present in one layer of the old file, under current names. */
   const classify = (raw: Raw, prefix: string, target: string) => {
-    const { layer, deprecated } = migrateConfigLayer(raw, prefix);
+    const { layer, notices } = migrateConfigLayer(raw, prefix);
     const renamedFrom = (at: string) =>
-      deprecated.filter((d) => d.kind === "renamed" && d.replacement === at).map((d) => d.key);
-    for (const d of deprecated) {
+      notices.filter((d) => d.kind === "renamed" && d.replacement === at).map((d) => d.key);
+    for (const d of notices) {
       if (d.kind === "removed")
         report.unsupported.push({ path: d.key, reason: "no longer read: " + d.reason });
       if (d.kind === "superseded")
@@ -248,7 +249,7 @@ export const convertLoomConfig = (raw: Raw, source: string): ConversionReport =>
 
   const parse = (layer: Raw) => {
     normalizeConfig(layer); // Loom's own validation: never convert a file Loom rejects
-    return effective(parseSettings(settingsSchema, layer));
+    return effective(parseSettings(settingsSchema, layer).value);
   };
   // Each layer in current names before merging, as Loom reads them.
   const current = (layer: Raw) => migrateConfigLayer(layer).layer;
@@ -256,7 +257,7 @@ export const convertLoomConfig = (raw: Raw, source: string): ConversionReport =>
   classify(defaults, "", "");
   if (global.autoNixIgnored)
     report.unsupported.push({
-      path: "session.auto_nix",
+      path: "session.environment.auto_nix",
       reason: "Loom ignores it while a command_prefix is set; the new format rejects both",
     });
   const user: Raw = { version: 1 };
@@ -282,12 +283,12 @@ export const convertLoomConfig = (raw: Raw, source: string): ConversionReport =>
     classify(overrides, prefix, "repos[].");
     if (repo.autoNixIgnored && !global.autoNixIgnored)
       report.unsupported.push({
-        path: prefix + "session.auto_nix",
+        path: prefix + "session.environment.auto_nix",
         reason: "Loom ignores it while a command_prefix is set; the new format rejects both",
       });
     const entry: Raw = { path: resolve(absolute) };
     const environment = environmentLayer(repo.environment, global.environment, (what) =>
-      report.unsupported.push({ path: prefix + "session.isolation.environment", reason: what }),
+      report.unsupported.push({ path: prefix + "session.environment", reason: what }),
     );
     if (environment) entry.environment = environment;
     const network: Raw = {};

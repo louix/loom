@@ -91,7 +91,7 @@ test("environment configuration validates commands and bounded setup time", () =
     { cpus: "2" },
     { cpus: 1.5 },
   ])
-    assert.throws(() => normalizeSessionEnvironment(invalid), /isolation.environment/);
+    assert.throws(() => normalizeSessionEnvironment(invalid), /session\.environment/);
   assert.equal(sessionStartupTimeout(normalizeSessionEnvironment(undefined)), 120_000);
   assert.equal(
     sessionStartupTimeout(

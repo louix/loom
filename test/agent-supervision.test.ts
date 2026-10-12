@@ -44,14 +44,14 @@ const AGENTS: LoomConfig["agents"] = {
       provider: "codex",
       model: "astra",
       prompt: "Verify.",
-      mcp: ["tilth"],
+      mcpServers: ["tilth"],
       tools: { deny: ["WebFetch"] },
     },
     claudeish: { description: "Claude reviewer", skills: ["pdf"], tools: { allow: ["Read"] } },
   },
 };
 
-const CONFIG: AgentConfig = { agents: AGENTS, providerAccess: { disabled: [] } };
+const CONFIG: AgentConfig = { agents: AGENTS, providerAccess: { deny: [] } };
 
 const row = (over: Partial<SessionSnapshot> & { id: string }): SessionSnapshot =>
   ({
@@ -239,7 +239,7 @@ test("a profile on a provider the repository does not allow is neither listed no
   // and follows its spawner, so it is out for a codex spawner too.
   const config: AgentConfig = {
     agents: AGENTS,
-    providerAccess: { only: ["claude"], disabled: [] },
+    providerAccess: { allow: ["claude"], deny: [] },
   };
   const s = stub(
     [row({ id: "lead" }), row({ id: "cx", provider: "codex" })],

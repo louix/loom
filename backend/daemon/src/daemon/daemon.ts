@@ -37,7 +37,6 @@ import { writeRecoveryFile } from "../../../../runtime/src/session-vm/persistenc
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, rmSync, watchFile, unwatchFile } from "node:fs";
 import { join, resolve } from "node:path";
-import { absurd } from "@loom/core/absurd";
 import { makeLogger, setLogFile, type Logger } from "@loom/core/logger";
 import {
   ensureLoomDirectories,
@@ -54,10 +53,11 @@ import {
   claudeProfileId,
   legacyBaseBranch,
   lintConfig,
-  removedConfigWarnings,
+  configKeyWarnings,
   loadConfig,
   resolveApiKey,
   type LoomConfig,
+  type PromptCacheTtl,
 } from "../config/config.ts";
 import { readClaudeAccount } from "../config/claude-profile.ts";
 import { isClaudeId } from "@loom/core/provider-id";
@@ -180,6 +180,10 @@ const settledWithin = async (promise: Promise<unknown>, ms: number): Promise<voi
 };
 /** Host branch `branch` as `row`'s agent names it from its checkout: a private
  *  clone sees the host's branches only as `origin/*`. */
+/** How a branch catches up with its base; a manual rebase with `auto_rebase` off replays. */
+const rebaseMode = (auto: LoomConfig["autoRebase"]): "rebase" | "merge" =>
+  auto === "merge" ? "merge" : "rebase";
+
 const checkoutRef = (row: Pick<SessionSnapshot, "checkout">, branch: string): string =>
   (row.checkout === "clone" ? "origin/" : "") + branch;
 /** Re-prime once the prompt cache has this little of its TTL left — the TUI's "red" band. */
@@ -474,7 +478,7 @@ export class Daemon {
         clone: (id) => {
           const row = this.#registry.get(id);
           if (row?.checkout !== "clone" || !row.branch) return;
-          const checkout = this.config.isolation.checkout;
+          const checkout = this.config.clone;
           // The launch's checkout is to fetch this base; whether it did is
           // known once the launch succeeds (#launched).
           if (row.baseBranch) this.#cloneLaunchBase.set(id, row.baseBranch);
@@ -712,7 +716,7 @@ export class Daemon {
       this.#sessions.statusWritten(id, state);
       this.#agents.observe(id, state);
     });
-    this.#idle = new IdleTimer(this.config.daemon.idleShutdownMinutes, () => {
+    this.#idle = new IdleTimer(this.config.daemon.idleStopMinutes, () => {
       this.#log.info("idle shutdown");
       void this.stop("idle");
     });
@@ -832,7 +836,7 @@ export class Daemon {
     const interrupted = (this.#hygiene?.interruptedSessions ?? []).filter(
       ({ id }) => !recoveredVms.has(id),
     );
-    if (this.config.autoResume.enabled && interrupted.length > 0) {
+    if (this.config.autoResume && interrupted.length > 0) {
       void this.#autoResumeInterrupted(interrupted);
     }
 
@@ -1089,7 +1093,7 @@ export class Daemon {
     nudge: boolean,
   ): Promise<{ outcome: RebaseOutcome; nudged: boolean }> {
     const snap = this.#registry.mustGet(id);
-    const mode = this.config.autoRebase.mode;
+    const mode = rebaseMode(this.config.autoRebase);
     const res = await this.#cloneGit(snap).sync(
       snap.branch!,
       snap.baseBranch,
@@ -1255,17 +1259,8 @@ export class Daemon {
   }
 
   get #cacheTtlMinutes(): number {
-    const ttl = this.config.providers.claude.promptCacheTtl;
-    switch (ttl) {
-      case "1h":
-        return 60;
-      case "5m":
-        return 5;
-      case "":
-        return 0;
-      default:
-        return absurd(ttl);
-    }
+    const minutes: Record<PromptCacheTtl, number> = { "1h": 60, "5m": 5, default: 0, off: 0 };
+    return minutes[this.config.providers.claude.promptCacheTtl];
   }
 
   /**
@@ -1498,7 +1493,7 @@ export class Daemon {
     // must be a branch that exists here.
     let unavailableReason: string | undefined;
     if (configured && !this.#worktrees.resolves(ref))
-      unavailableReason = `base_branch "${ref}" does not resolve in this repository.`;
+      unavailableReason = `session.defaults.base_branch "${ref}" does not resolve in this repository.`;
     else if (!configured && !this.#worktrees.isBranch(ref))
       unavailableReason = `The default branch "${ref}" does not exist in this repository.`;
     const current = this.#worktrees.currentBase();
@@ -1558,7 +1553,7 @@ export class Daemon {
           ...catalogue,
           defaultModel: this.#defaultModelFor(id),
           defaultEffort: this.#defaultEffortFor(id),
-          defaultMode: mode,
+          defaultMode: this.#defaultMode(id),
           defaultIsolation: this.#providers.defaultIsolation(id),
           ...(this.#providers.vmUnavailableReason(id)
             ? { vmUnavailableReason: this.#providers.vmUnavailableReason(id)! }
@@ -1607,7 +1602,7 @@ export class Daemon {
           : {}),
       });
     }
-    if (this.config.providers.echo?.enabled) {
+    if (this.config.providers.echo) {
       out.push({
         id: "echo",
         models: ["echo"],
@@ -1639,13 +1634,19 @@ export class Daemon {
   }
 
   /**
-   * The permission mode a new session uses when the caller names none: the
-   * last mode a session was created with (persisted in `meta`), else `default`
+   * The permission mode a new session on `providerId` uses when the caller
+   * names none: the last mode a session was created with (persisted in
+   * `meta`), else Claude's `providers.claude.default_mode`, else `default`
    * (manual).
    */
-  #defaultMode(): SessionMode {
+  #defaultMode(providerId?: string): SessionMode {
     const remembered = this.#providerDefaults.mode();
-    return remembered && isSessionMode(remembered) ? remembered : "default";
+    if (remembered && isSessionMode(remembered)) return remembered;
+    const configured =
+      providerId !== undefined && isClaudeId(providerId)
+        ? this.config.providers.claude.defaultMode
+        : undefined;
+    return configured ?? "default";
   }
 
   /**
@@ -2762,7 +2763,7 @@ export class Daemon {
           // later turn are that turn's business, and its own end handles them.
           if (!ended()) return;
           const rebaseNudged =
-            this.config.autoRebase.enabled && this.#cloneCanSync(id)
+            this.config.autoRebase !== "off" && this.#cloneCanSync(id)
               ? (await this.#syncClone(id, nudges)).nudged
               : false;
           if (!rebaseNudged && !(nudges && this.#maybeCommitNudge(id)))
@@ -2877,7 +2878,7 @@ export class Daemon {
    * keeps it from racing an incoming `session.send`.
    */
   #maybeAutoRebase(id: string, nudge: boolean): boolean {
-    if (this.#stopping || !this.config.autoRebase.enabled) return false;
+    if (this.#stopping || this.config.autoRebase === "off") return false;
     const snap = this.#registry.get(id);
     if (!snap?.worktree) return false; // in-place sessions have no branch to move
     // A clone's branch is moved only by its guest; syncing it is a guest operation.
@@ -2896,7 +2897,7 @@ export class Daemon {
     const snap = this.#registry.get(id);
     if (!snap?.worktree || snap.checkout === "clone") return { outcome: null, nudged: false };
 
-    const { mode } = this.config.autoRebase;
+    const mode = rebaseMode(this.config.autoRebase);
     const res = this.#worktrees.syncOntoBase(
       snap.worktree,
       snap.baseBranch,
@@ -2973,7 +2974,7 @@ export class Daemon {
    * record. Never commits anything itself. True when it messaged the agent.
    */
   #maybeCommitNudge(id: string): boolean {
-    if (this.#stopping || !this.config.commitReminder.enabled) return false;
+    if (this.#stopping || !this.config.commitReminder) return false;
     const snap = this.#registry.get(id);
     if (!snap?.worktree) return false; // in-place sessions have no isolated tree
     const clone = snap.checkout === "clone" ? this.#cloneFacts.get(id) : undefined;
@@ -3169,7 +3170,7 @@ export class Daemon {
     await writeGitPolicy(directory, {
       branch: row.branch,
       base,
-      visible: this.config.isolation.checkout?.visibleRefs ?? [],
+      visible: this.config.clone?.visibleRefs ?? [],
     });
     const running = await readRecovery(directory).catch(() => undefined);
     if (!running?.git || running.recovery.reaped) return;
@@ -3722,7 +3723,7 @@ export class Daemon {
 
   /** Stop disposable runtime generations, keeping the session's files and history. */
   async sweepIdleVms(now = Date.now()): Promise<void> {
-    const grace = (this.config.isolation.idleTimeoutMinutes ?? 10) * 60_000;
+    const grace = (this.config.isolation.idleStopMinutes ?? 10) * 60_000;
     if (this.#stopping || grace === 0) {
       this.#vmIdleSince.clear();
       return;
@@ -3899,7 +3900,7 @@ export class Daemon {
     // Hot-apply: these are read afresh when a session starts, or drive a timer.
     // The isolation default waits for a restart, like the VM runtimes it enables.
     this.config.defaults = { ...this.config.defaults, workspace: next.defaults.workspace };
-    this.config.deprecatedKeys = next.deprecatedKeys ?? [];
+    this.config.configKeyNotices = next.configKeyNotices ?? [];
     this.config.autoNix = next.autoNix;
     if (this.config.isolation.environment) this.config.isolation.environment.autoNix = next.autoNix;
     this.config.autoRebase = next.autoRebase;
@@ -3915,12 +3916,12 @@ export class Daemon {
       this.config.hooks = next.hooks;
       this.#hooks.setHooks(next.hooks);
     }
-    if (next.daemon.idleShutdownMinutes !== before.daemon.idleShutdownMinutes) {
+    if (next.daemon.idleStopMinutes !== before.daemon.idleStopMinutes) {
       this.config.daemon = {
         ...this.config.daemon,
-        idleShutdownMinutes: next.daemon.idleShutdownMinutes,
+        idleStopMinutes: next.daemon.idleStopMinutes,
       };
-      this.#idle.setMinutes(next.daemon.idleShutdownMinutes);
+      this.#idle.setMinutes(next.daemon.idleStopMinutes);
       this.#idle.poke(this.#isBusy());
     }
 
@@ -4345,7 +4346,7 @@ export class Daemon {
     d.register("config.check", () => ({
       warnings: [
         ...lintConfig(this.config),
-        ...removedConfigWarnings(this.config),
+        ...configKeyWarnings(this.config),
         ...this.#orphanedProviderWarnings(),
       ],
     }));
@@ -4501,7 +4502,7 @@ export class Daemon {
         );
 
       const providerId = p.provider ?? profile?.provider ?? this.#defaultProviderId();
-      const mode = p.mode ?? profile?.mode ?? this.#defaultMode();
+      const mode = p.mode ?? profile?.mode ?? this.#defaultMode(providerId);
       const aisdkProfile = this.config.providers.aisdk[providerId];
       // Its model and effort name its provider's; another provider has its own.
       const applies = profile !== undefined && (profile.provider ?? providerId) === providerId;
@@ -5576,7 +5577,7 @@ export class Daemon {
    */
   /** A removed setting still parses; say so once, not on every reload. */
   #warnRemovedSettings(): void {
-    for (const warning of removedConfigWarnings(this.config)) {
+    for (const warning of configKeyWarnings(this.config)) {
       if (this.#removedWarned.has(warning)) continue;
       this.#removedWarned.add(warning);
       this.#log.warn("config", { warning });
@@ -5674,7 +5675,7 @@ export class Daemon {
       },
       configWarnings: [
         ...lintConfig(this.config),
-        ...removedConfigWarnings(this.config),
+        ...configKeyWarnings(this.config),
         ...this.#orphanedProviderWarnings(),
       ],
     };

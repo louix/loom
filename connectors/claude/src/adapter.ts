@@ -366,7 +366,9 @@ const queryEnv = (opts: {
   delete env["FORCE_COLOR"];
   delete env["CLICOLOR_FORCE"];
   // Pinning the cache TTL makes the TUI's liveness countdown exact.
-  if (opts.promptCacheTtl) env["CLAUDE_CODE_PROMPT_CACHE_TTL"] = opts.promptCacheTtl;
+  // DISABLE_PROMPT_CACHING is Claude Code's documented switch for no caching at all.
+  if (opts.promptCacheTtl === "off") env["DISABLE_PROMPT_CACHING"] = "1";
+  else if (opts.promptCacheTtl) env["CLAUDE_CODE_PROMPT_CACHE_TTL"] = opts.promptCacheTtl;
   // Points this session's `claude` at a non-default profile dir.
   if (opts.configDir) env["CLAUDE_CONFIG_DIR"] = expandTilde(opts.configDir);
   return env;
@@ -1897,7 +1899,7 @@ export interface ClaudeProviderOptions {
   id?: string;
   /** `providers.claude.cli_path` — "" means discover / bundled. */
   cliPath?: string;
-  /** `providers.claude.prompt_cache_ttl` — "5m" | "1h" | "" (CLI decides). */
+  /** `providers.claude.prompt_cache_ttl` — "5m" | "1h" | "off" | "" (CLI decides). */
   promptCacheTtl?: string;
   /** `CLAUDE_CONFIG_DIR` for this profile — "" leaves the SDK's default. */
   configDir?: string;

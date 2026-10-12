@@ -33,7 +33,7 @@ Deno.test("environment settings convert into host layers; Loom settings stay", (
     providers: { claude: { model: "claude-opus-5" } },
     session: {
       auto_nix: true,
-      auto_resume: { enabled: false },
+      auto_resume: false,
       worktree: { enabled: true },
       isolation: {
         enabled: true,
@@ -69,23 +69,29 @@ Deno.test("environment settings convert into host layers; Loom settings stay", (
   assert.deepEqual(
     report.converted.map((entry) => entry.from + " -> " + entry.to),
     [
-      "session.auto_nix -> environment.nix.auto",
-      "session.isolation.environment -> environment.commandPrefix/timeoutSeconds/resources",
       "session.isolation.network.allowed_hosts -> access.network.allowedHosts",
       "session.isolation.network.presets -> access.network.presets",
       "session.defaults.isolation -> lifecycle.execution",
       "session.defaults.workspace -> lifecycle.workspace",
+      "session.environment.auto_nix -> environment.nix.auto",
+      "session.environment.timeout_seconds -> environment.timeoutSeconds",
+      "session.environment.cpus -> environment.resources.cpus",
+      "session.environment.memory_mib -> environment.resources.memoryMiB",
       "hooks[0] (workspace_prepare) -> environment.prepare",
       "hooks[1] (workspace_start) -> environment.start",
     ],
   );
   assert.deepEqual(
-    report.converted.slice(2, 6).map((entry) => entry.note),
+    report.converted.slice(0, 8).map((entry) => entry.note),
     [
       "written as deprecated session.isolation.extra_allowed_hosts",
       "written as deprecated session.isolation.network_presets",
       "written as deprecated session.isolation.enabled",
       "written as deprecated session.worktree.enabled and session.isolation.checkout.mode",
+      "written as deprecated session.auto_nix",
+      "written as deprecated session.isolation.environment.timeout_seconds",
+      "written as deprecated session.isolation.environment.cpus",
+      "written as deprecated session.isolation.environment.memory_mib",
     ],
   );
   assert.match(report.converted.at(-1)!.note!, /fails startup/);
@@ -96,8 +102,8 @@ Deno.test("environment settings convert into host layers; Loom settings stay", (
     "tui",
     "providers",
     "session.auto_resume",
-    "session.isolation.checkout.visible_refs",
-    "session.isolation.claude",
+    "session.isolation.runtimes",
+    "session.clone",
     "hooks[1] (turn_end)",
     "hooks[4] (waiting)",
   ]);
@@ -152,8 +158,8 @@ Deno.test("repo overrides become diffs; appended hooks are listed explicitly", (
     },
     { path: "/work/c", environment: { commandPrefix: ["nix-shell"] } },
   ]);
-  assert.deepEqual(paths(report.staysInLoomConfig), ["repos[1].base_branch"]);
-  assert.deepEqual(paths(report.unsupported), ["repos[2].session.auto_nix"]);
+  assert.deepEqual(paths(report.staysInLoomConfig), ["repos[1].session.defaults.base_branch"]);
+  assert.deepEqual(paths(report.unsupported), ["repos[2].session.environment.auto_nix"]);
   assert.match(
     report.converted.find((entry) => entry.from === "repos[0].hooks[0] (workspace_start)")!.note!,
     /appended/,
@@ -208,7 +214,7 @@ Deno.test("a file Loom rejects is not converted", () => {
     () => convert({ session: { isolation: { checkout: { mode: "other" } } } }),
     /session\.defaults\.workspace/,
   );
-  assert.throws(() => convert({ session: { environment: {} } }), /auto_nix/);
+  assert.throws(() => convert({ session: { environment: { nix: true } } }), /auto_nix/);
   assert.throws(() => convert({ repos: [{ path: "relative" }] }), /absolute/);
 });
 

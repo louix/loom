@@ -19,12 +19,12 @@ import { onPath, tryFindRepoRoot } from "@loom/core/paths";
 import { isClaudeId } from "@loom/core/provider-id";
 import type { McpCapability, SessionMode } from "@loom/core/types";
 import { DEFAULT_MAX_DEPTH, LOOM_AGENTS_SERVER, SELF_PROFILE } from "@loom/core/agents";
-import { createConfigSchema, providerSchema, parseSettings } from "./schema.ts";
+import { createConfigSchema, providerSchema, parseSettings, unknownSettingKeys } from "./schema.ts";
 import { userConfigPath } from "../config-path.ts";
 import type { GitIdentityConfig } from "./git-identity.ts";
 import type { PriceRow } from "./pricing.ts";
 import { resolveToolSelection, toolExecutionError } from "./tool-selection.ts";
-import { migrateConfigLayer, showDeprecatedKey, type DeprecatedKey } from "./legacy-keys.ts";
+import { migrateConfigLayer, showConfigKeyNotice, type ConfigKeyNotice } from "./legacy-keys.ts";
 import type { WorkspaceMode } from "@loom/core/wire";
 
 /**
@@ -105,7 +105,7 @@ export interface AisdkProfile {
    */
   color: string;
   /**
-   * Prompt-cache TTL for `sdk = "anthropic"`: "5m", "1h", or "off". Default ""
+   * Prompt-cache TTL for `sdk = "anthropic"`: "5m", "1h", or "off". Default
    * — cache with the API's own default lifetime (5 minutes).
    *
    * Loom asks for one cache breakpoint per turn, so each turn caches the
@@ -117,7 +117,7 @@ export interface AisdkProfile {
    * Ignored by the other SDKs: OpenAI-compatible endpoints cache implicitly
    * server-side with no request field to set, and Gemini has its own scheme.
    */
-  promptCacheTtl: "5m" | "1h" | "off" | "";
+  promptCacheTtl: PromptCacheTtl;
   /** Cheap model for one-shot auto-titling; "" → a cheap default for this provider. */
   titleModel: string;
   /** Codex home directory; empty uses CODEX_HOME, then ~/.codex. */
@@ -223,9 +223,12 @@ interface HookFields {
   timeoutMs: number;
 }
 
+/** `prompt_cache_ttl`, for every provider. */
+export type PromptCacheTtl = "default" | "5m" | "1h" | "off";
+
 export interface LoomConfig {
-  /** Removed or renamed settings the file still sets; reported by removedConfigWarnings. */
-  deprecatedKeys?: readonly DeprecatedKey[];
+  /** Removed, renamed and unknown settings the file sets; reported by configKeyWarnings. */
+  configKeyNotices?: readonly ConfigKeyNotice[];
   /** `session.defaults`: what a new session gets unless it chooses. Existing sessions keep theirs. */
   defaults: {
     /** Runtime availability is separate: each session can still choose the other. */
@@ -235,7 +238,8 @@ export interface LoomConfig {
   };
   autoNix: boolean;
   tui: { includeEventLogInEditor: boolean; compat: boolean };
-  providerAccess: { only?: string[]; disabled: string[] };
+  /** `session.provider_access`: `allow` absent allows every provider. */
+  providerAccess: { allow?: string[]; deny: string[] };
   isolation: {
     /** Available runtimes, including ones disabled as the default. */
     runtimes?: Partial<Record<"claude" | "aisdk" | "codex", { artifact: string; smolvm: string }>>;
@@ -243,13 +247,13 @@ export interface LoomConfig {
     aisdk?: { artifact: string; smolvm: string };
     codex?: { artifact: string; smolvm: string };
     extraAllowedHosts: string[];
-    idleTimeoutMinutes?: number;
+    idleStopMinutes?: number;
     environment?: SessionEnvironment;
-    /** Private-clone publication policy for clone sessions. */
-    checkout?: { visibleRefs: string[]; maxPushBytes: number };
   };
+  /** `session.clone`: private-clone publication policy for clone sessions. */
+  clone?: { visibleRefs: string[]; maxPushBytes: number };
   /**
-   * `base_branch`, when set (globally or by a matching `repos[]` entry): the
+   * `session.defaults.base_branch`, when set (globally or by a matching `repos[]` entry): the
    * default branch new sessions branch from. Unset, a new session starts from
    * the checked-out branch (HEAD's commit when detached), and the default
    * branch is the remote's default branch, else `init.defaultBranch`, else
@@ -264,31 +268,31 @@ export interface LoomConfig {
    */
   claudeProfiles: ClaudeProfile[];
   /**
-   * Keep a session's branch current with its base. When `enabled`, the daemon —
+   * Keep a session's branch current with its base. Unless `off`, the daemon —
    * each time a session goes idle — replays (or merges) the branch onto the
    * base branch if the base has advanced and the worktree is clean. A clean
    * update is silent (an operator notice only); a conflict, or an uncommitted
    * worktree, sends the agent a message asking it to integrate the base itself.
    * Off by default: history is only rewritten when you opt in.
    */
-  autoRebase: { enabled: boolean; mode: "rebase" | "merge" };
+  autoRebase: "off" | "rebase" | "merge";
   /**
-   * Re-drive agents a daemon restart cut off mid-turn. When `enabled` (the
+   * Re-drive agents a daemon restart cut off mid-turn. When on (the
    * default), sessions the previous daemon left actively working (`running` /
    * `starting` / `working_background`) are revived from their persisted
    * transcript and sent a message to continue. Sessions blocked on a human
    * decision (`awaiting_input`) are always left interrupted — Loom never
    * answers a permission prompt or question by itself.
    */
-  autoResume: { enabled: boolean };
+  autoResume: boolean;
   /**
-   * Remind the agent about an uncommitted worktree. When `enabled` (the
+   * Remind the agent about an uncommitted worktree. When on (the
    * default), a session that goes idle with uncommitted changes gets a one-off
    * message suggesting it commit — one per commit boundary, so a tree left dirty
    * on purpose stops nagging until the next commit. Never commits anything
    * itself; in-place sessions (no isolated worktree) are exempt.
    */
-  commitReminder: { enabled: boolean };
+  commitReminder: boolean;
   /**
    * Session commit identity overrides; absent uses the user's ordinary Git
    * identity. A matching `repos[].git` merges over the global `git` field by field.
@@ -297,7 +301,7 @@ export interface LoomConfig {
   /** Provider id new sessions use when the client doesn't name one. */
   defaultProvider: string;
   daemon: {
-    idleShutdownMinutes: number;
+    idleStopMinutes: number;
   };
   providers: {
     claude: {
@@ -308,16 +312,21 @@ export interface LoomConfig {
        *  the Claude CLI for its catalog at start-up; set it to pin a curated
        *  list and skip that probe. */
       models: string[];
-      permissionDefault: "default" | "plan" | "acceptEdits" | "bypassPermissions";
+      /** A new Claude session's mode until one has been remembered. */
+      defaultMode?: SessionMode;
       settingSources: string[];
       disableBuiltin: string[];
       /** Override the Claude Code executable. Empty = discover `claude` on PATH, else the SDK's bundled binary. */
       cliPath: string;
-      workerAllowedHosts?: string[];
       /**
-       * Prompt-cache TTL for the main conversation: "5m", "1h", or "" (the
-       * default — let the CLI decide, which is 1h on a subscription within its
-       * usage limits and 5m on an API key, Bedrock, Vertex or Foundry).
+       * The worker's network hosts: `network.allowed_hosts` adds to the
+       * built-in list; the deprecated `worker_allowed_hosts` replaces it.
+       */
+      workerHosts?: { kind: "add" | "replace"; hosts: string[] };
+      /**
+       * Prompt-cache TTL for the main conversation: "5m", "1h", "off", or
+       * "default" — let the CLI decide, which is 1h on a subscription within its
+       * usage limits and 5m on an API key, Bedrock, Vertex or Foundry.
        *
        * Loom used to pin "1h" so the cache countdown had a number to run on;
        * it now measures the TTL off each response instead, so the pin is no
@@ -325,12 +334,12 @@ export interface LoomConfig {
        * the better judge. Set it only to override that judgement, remembering
        * a 1h cache write costs 2x base input against 1.25x for 5m.
        */
-      promptCacheTtl: "5m" | "1h" | "";
+      promptCacheTtl: PromptCacheTtl;
     };
     /** Resolved native API, Codex and OpenAI-compatible profiles, keyed by id. */
     aisdk: Record<string, AisdkProfile>;
-    /** Expose the built-in echo provider in the TUI when explicitly configured. */
-    echo?: { enabled: boolean };
+    /** `providers.echo` is set: expose the built-in echo provider in the TUI. */
+    echo: boolean;
   };
   mcpServers?: Record<string, z.output<typeof mcpDefinitionSchema>>;
   mcp: Array<
@@ -394,7 +403,7 @@ export interface AgentProfileConfig {
   effort?: string;
   mode?: SessionMode;
   /** Session MCP servers by name, plus `loom-agents`; absent keeps them all. */
-  mcp?: string[];
+  mcpServers?: string[];
   /** Claude skills to load from the provider's config dir; absent keeps the CLI's own. */
   skills?: string[];
   tools?: { allow?: string[]; deny?: string[] };
@@ -409,7 +418,7 @@ export interface AgentProfileConfig {
  */
 /** Does `session.provider_access` allow provider `id`? */
 export const providerAllowed = (access: LoomConfig["providerAccess"], id: string): boolean =>
-  (!access.only || access.only.includes(id)) && !access.disabled.includes(id);
+  (!access.allow || access.allow.includes(id)) && !access.deny.includes(id);
 
 /**
  * The profiles a session in this repository can use: each whose provider —
@@ -438,29 +447,29 @@ export const DEFAULT_CONFIG: LoomConfig = {
   autoNix: false,
   tui: { includeEventLogInEditor: false, compat: false },
   worktreeDir: "",
-  providerAccess: { disabled: [] },
+  providerAccess: { deny: [] },
   defaults: { isolation: "none", workspace: "worktree" },
   isolation: { extraAllowedHosts: [] },
   claudeProfiles: [{ dir: "~/.claude", name: "", color: "" }],
-  autoRebase: { enabled: false, mode: "rebase" },
-  autoResume: { enabled: true },
-  commitReminder: { enabled: true },
+  autoRebase: "off",
+  autoResume: true,
+  commitReminder: true,
   defaultProvider: "claude",
   daemon: {
-    idleShutdownMinutes: 30,
+    idleStopMinutes: 30,
   },
   providers: {
     claude: {
       model: "claude-sonnet-5",
       titleModel: "",
       models: [],
-      permissionDefault: "default",
       settingSources: ["project"],
       disableBuiltin: [],
       cliPath: "",
-      promptCacheTtl: "",
+      promptCacheTtl: "default",
     },
     aisdk: {},
+    echo: false,
   },
   mcp: [],
   httpMcp: [],
@@ -542,10 +551,10 @@ const buildAisdkProfile = (
   t: Record<string, unknown>,
   sdk: AisdkKind,
 ): AisdkProfile | null => {
-  const p = parseSettings(providerSchema, t);
-  const baseUrl = p.base_url;
+  const p = parseSettings(providerSchema, t).value;
+  const baseUrl = p.base_url ?? "";
   if (sdk === "openai" && baseUrl === "") return null;
-  const model = p.model;
+  const model = p.model ?? "";
   const models = p.models ?? (model ? [model] : []);
   const autoModels = model === "" && models.length === 0;
   if (autoModels && sdk !== "openai" && sdk !== "chatgpt") return null;
@@ -556,8 +565,8 @@ const buildAisdkProfile = (
   return {
     sdk,
     baseUrl,
-    apiKeyEnv: p.api_key_env,
-    apiKey: p.api_key,
+    apiKeyEnv: p.api_key_env ?? "",
+    apiKey: p.api_key ?? "",
     model: effectiveModel,
     models: models.length > 0 ? models : effectiveModelList,
     modelContext: {},
@@ -568,11 +577,11 @@ const buildAisdkProfile = (
     includeUsage: p.include_usage,
     autoModels,
     tag: p.tag ?? defaultTag,
-    color: p.color,
+    color: p.color ?? "",
     promptCacheTtl: p.prompt_cache_ttl,
-    titleModel: p.title_model,
-    configDir: expandTilde(p.config_dir),
-    codexCliPath: expandTilde(p.cli_path),
+    titleModel: p.title_model ?? "",
+    configDir: expandTilde(p.config_dir ?? ""),
+    codexCliPath: expandTilde(p.cli_path ?? ""),
     codexBuiltinWebSearch: p.builtin_web_search,
   };
 };
@@ -619,15 +628,21 @@ export const resolveApiKey = (
   return "";
 };
 
-const deprecatedKeys = (keys: readonly DeprecatedKey[]): Pick<LoomConfig, "deprecatedKeys"> =>
-  keys.length > 0 ? { deprecatedKeys: keys } : {};
+const configKeyNotices = (
+  notices: readonly ConfigKeyNotice[],
+): Pick<LoomConfig, "configKeyNotices"> =>
+  notices.length > 0 ? { configKeyNotices: notices } : {};
+
+const unknownKeyNotices = (layer: Record<string, unknown>, at = ""): ConfigKeyNotice[] =>
+  unknownSettingKeys(settingsSchema, layer).map((key) => ({ kind: "unknown", key: at + key }));
 
 /**
- * One line per removed or renamed setting the config still sets. Both parse:
- * a removed one is ignored, a renamed one read as its replacement.
+ * One line per removed, renamed or unknown setting the config sets. All of
+ * them parse: a removed or unknown one is ignored, a renamed one read as its
+ * replacement.
  */
-export const removedConfigWarnings = (cfg: LoomConfig): string[] =>
-  (cfg.deprecatedKeys ?? []).map(showDeprecatedKey);
+export const configKeyWarnings = (cfg: LoomConfig): string[] =>
+  (cfg.configKeyNotices ?? []).map(showConfigKeyNotice);
 
 /**
  * Human-readable warnings about the loaded config — misconfigured providers,
@@ -732,8 +747,8 @@ export const lintConfig = (
 
 /**
  * Parse a raw config object into a fully-populated LoomConfig, filling any missing
- * key from DEFAULT_CONFIG. Unknown keys are ignored. Enum-typed fields fall back
- * to the default when the value is not one of the permitted literals.
+ * key from DEFAULT_CONFIG. A value of the wrong type is an error naming its key;
+ * an unknown key of a lenient section is ignored and reported.
  * `repoProviders` names the profiles whose provider the repository's own
  * `repos[]` entry sets: one that entry also disables is a config error.
  */
@@ -747,23 +762,23 @@ export const normalizeConfig = (
       "Define local_tools, vm_tools or remote_tools by name and select them under session.",
     );
   const migrated = migrateConfigLayer(r);
-  const settings = parseSettings(settingsSchema, migrated.layer);
+  const { value: settings, unknownKeys } = parseSettings(settingsSchema, migrated.layer);
   const {
     session: {
       isolation,
-      provider_access: { only, disabled },
+      provider_access: { allow, deny },
     },
     providers: { claude },
   } = settings;
   const vmEnabled = settings.session.defaults.isolation === "vm";
   const runtimes: NonNullable<LoomConfig["isolation"]["runtimes"]> = {};
   for (const name of ["claude", "aisdk", "codex"] as const) {
-    const value = isolation[name];
+    const value = isolation.runtimes[name];
     const bundle = bundledRuntime(name);
     const artifact = value["artifact"] ?? bundle?.artifact;
     if (artifact === undefined) {
       if (value["smolvm"] !== undefined)
-        throw new Error(`session.isolation.${name} requires an artifact path`);
+        throw new Error(`session.isolation.runtimes.${name} requires an artifact path`);
       continue;
     }
     runtimes[name] = {
@@ -775,54 +790,66 @@ export const normalizeConfig = (
   const claudeProfiles = parseClaudeProfiles(
     Object.entries(claude.profiles).map(([name, p]) => ({
       name: name === "default" ? "" : name,
-      dir: p.config_dir,
+      dir: p.config_dir ?? "",
       ...(p.tag !== undefined ? { tag: p.tag } : {}),
-      color: p.color,
+      color: p.color ?? "",
     })),
   );
   for (const profile of claudeProfiles) {
     profile.tag = profile.tag ?? claude.tag ?? (profile.name || "Claude");
   }
   const claudeIds = new Set(claudeProfiles.map(claudeProfileId));
+  const echo = settings.providers.echo !== undefined;
+  const providerAccess = { ...(allow ? { allow } : {}), deny };
 
   // The default provider must actually be configured; fall back to claude.
-  const wantDefault = settings.default_provider;
+  const wantDefault = settings.default_provider ?? DEFAULT_CONFIG.defaultProvider;
   const defaultProvider =
     claudeIds.has(wantDefault) ||
     wantDefault in aisdk ||
     ["fake", "mock"].includes(wantDefault) ||
-    (wantDefault === "echo" && settings.providers.echo?.enabled === true)
+    (wantDefault === "echo" && echo)
       ? wantDefault
       : "claude";
 
   const { mcp, httpMcp } = resolveToolSelection(settings);
   const agents = resolveAgents(settings.agents, {
-    providers: [
-      ...claudeIds,
-      ...Object.keys(aisdk),
-      "fake",
-      "mock",
-      ...(settings.providers.echo?.enabled === true ? ["echo"] : []),
-    ],
-    allowed: (id) => providerAllowed({ ...(only ? { only } : {}), disabled }, id),
+    providers: [...claudeIds, ...Object.keys(aisdk), "fake", "mock", ...(echo ? ["echo"] : [])],
+    allowed: (id) => providerAllowed(providerAccess, id),
     repoProviders,
     codex: (id) => aisdk[id]?.sdk === "chatgpt",
     mcp: [...mcp, ...httpMcp].map((m) => m.name),
   });
+  const { auto_nix: autoNix, ...environment } = settings.session.environment;
+  const workerHosts = ((): LoomConfig["providers"]["claude"]["workerHosts"] => {
+    if (claude.network.allowed_hosts !== undefined)
+      return { kind: "add", hosts: claude.network.allowed_hosts };
+    if (claude.worker_allowed_hosts !== undefined)
+      return { kind: "replace", hosts: claude.worker_allowed_hosts };
+    return undefined;
+  })();
 
   return {
-    ...deprecatedKeys(migrated.deprecated),
-    defaults: settings.session.defaults,
-    autoNix: settings.session.auto_nix,
+    ...configKeyNotices([
+      ...migrated.notices,
+      ...unknownKeys.map((key): ConfigKeyNotice => ({ kind: "unknown", key })),
+    ]),
+    defaults: {
+      isolation: settings.session.defaults.isolation,
+      workspace: settings.session.defaults.workspace,
+    },
+    autoNix,
     tui: {
       includeEventLogInEditor: settings.tui.include_event_log_in_editor,
       compat: settings.tui.compat,
     },
-    ...(settings.base_branch ? { baseBranch: settings.base_branch } : {}),
-    worktreeDir: settings.worktree_dir,
-    providerAccess: { ...(only ? { only } : {}), disabled },
+    ...(settings.session.defaults.base_branch
+      ? { baseBranch: settings.session.defaults.base_branch }
+      : {}),
+    worktreeDir: settings.session.worktree_dir ?? "",
+    providerAccess,
     isolation: {
-      idleTimeoutMinutes: isolation.idle_timeout_minutes,
+      idleStopMinutes: isolation.idle_stop_minutes,
       runtimes,
       extraAllowedHosts: [
         ...new Set([
@@ -830,12 +857,12 @@ export const normalizeConfig = (
           ...expandNetworkPresets(isolation.network.presets),
         ]),
       ],
-      environment: normalizeSessionEnvironment(isolation.environment, settings.session.auto_nix),
-      checkout: {
-        visibleRefs: isolation.checkout.visible_refs,
-        maxPushBytes: isolation.checkout.max_push_bytes,
-      },
+      environment: normalizeSessionEnvironment(environment, autoNix),
       ...(vmEnabled ? runtimes : {}),
+    },
+    clone: {
+      visibleRefs: settings.session.clone.visible_refs,
+      maxPushBytes: settings.session.clone.max_push_bytes,
     },
     claudeProfiles,
     autoRebase: settings.session.auto_rebase,
@@ -844,24 +871,22 @@ export const normalizeConfig = (
     ...(settings.git ? { git: settings.git } : {}),
     defaultProvider,
     daemon: {
-      idleShutdownMinutes: settings.daemon.idle_shutdown_minutes,
+      idleStopMinutes: settings.daemon.idle_stop_minutes,
     },
     providers: {
       claude: {
         model: claude.model,
-        titleModel: claude.title_model,
+        titleModel: claude.title_model ?? "",
         models: claude.models,
-        permissionDefault: claude.permission_default,
+        ...(claude.default_mode !== undefined ? { defaultMode: claude.default_mode } : {}),
         settingSources: claude.setting_sources,
         disableBuiltin: claude.disable_builtin,
-        cliPath: claude.cli_path,
-        ...(claude["worker_allowed_hosts"] !== undefined
-          ? { workerAllowedHosts: claude.worker_allowed_hosts }
-          : {}),
+        cliPath: claude.cli_path ?? "",
+        ...(workerHosts ? { workerHosts } : {}),
         promptCacheTtl: claude.prompt_cache_ttl,
       },
       aisdk,
-      ...(settings.providers.echo ? { echo: settings.providers.echo } : {}),
+      echo,
     },
     mcp,
     httpMcp,
@@ -870,19 +895,19 @@ export const normalizeConfig = (
       ...(h.kind === "check"
         ? { kind: h.kind, on: h.on as WriteHookEvent[] }
         : { kind: h.kind, on: h.on }),
-      name: h.name || h.run.split(/\s+/)[0]!,
+      name: h.name ?? h.run.split(/\s+/)[0]!,
       run: h.run,
       when: h.when,
-      project: expandTilde(h.project),
+      project: expandTilde(h.project ?? ""),
       match: h.match,
-      timeoutMs: h.timeout,
+      timeoutMs: h.timeout_seconds,
       async: h.async,
     })),
     search: {
       backend: settings.search.backend,
-      apiKeyEnv: settings.search.api_key_env,
-      apiKey: settings.search.api_key,
-      apiBase: settings.search.api_base,
+      apiKeyEnv: settings.search.api_key_env ?? "",
+      apiKey: settings.search.api_key ?? "",
+      apiBase: settings.search.api_base ?? "",
       maxResults: settings.search.max_results,
     },
     agents,
@@ -930,10 +955,10 @@ const resolveAgents = (
           `${at}.provider: this repository's entry names "${p.provider}", which its session.provider_access disables`,
         );
     }
-    for (const server of p.mcp ?? [])
+    for (const server of p.mcp_servers ?? [])
       if (server !== LOOM_AGENTS_SERVER && !known.mcp.includes(server))
         throw new Error(
-          `${at}.mcp: "${server}" is not one of the session's MCP servers (${[...known.mcp, LOOM_AGENTS_SERVER].join(", ")})`,
+          `${at}.mcp_servers: "${server}" is not one of the session's MCP servers (${[...known.mcp, LOOM_AGENTS_SERVER].join(", ")})`,
         );
     // Checked only against a provider this repository allows.
     const provider = p.provider !== undefined && known.allowed(p.provider) ? p.provider : undefined;
@@ -947,7 +972,7 @@ const resolveAgents = (
       ...(p.model !== undefined ? { model: p.model } : {}),
       ...(p.effort !== undefined ? { effort: p.effort } : {}),
       ...(p.mode !== undefined ? { mode: p.mode } : {}),
-      ...(p.mcp !== undefined ? { mcp: p.mcp } : {}),
+      ...(p.mcp_servers !== undefined ? { mcpServers: p.mcp_servers } : {}),
       ...(p.skills !== undefined ? { skills: p.skills } : {}),
       ...(p.tools !== undefined
         ? {
@@ -1066,11 +1091,18 @@ export const loadConfig = (repoRoot: string, configFile = userConfigPath()): Loo
     .map(([name]) => name);
   // Each layer in current names before merging, so a repo entry's old key
   // still overrides a global new one.
+  const at = `repos[${selectedPath}].`;
   const global = migrateConfigLayer(defaults);
-  const repo = migrateConfigLayer(selected, `repos[${selectedPath}].`);
+  const repo = migrateConfigLayer(selected, at);
   return {
     ...normalizeConfig(mergeRepoOverride(global.layer, repo.layer), new Set(repoProviders)),
-    ...deprecatedKeys([...global.deprecated, ...repo.deprecated]),
+    // Per layer, so a key is reported where it is written.
+    ...configKeyNotices([
+      ...global.notices,
+      ...repo.notices,
+      ...unknownKeyNotices(global.layer),
+      ...unknownKeyNotices(repo.layer, at),
+    ]),
   };
 };
 

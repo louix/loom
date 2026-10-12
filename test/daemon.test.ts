@@ -571,16 +571,15 @@ test("providers.list default colours follow provider ids, not config order", asy
 test("providers.list exposes opt-in echo and respects visibility and access settings", async () => {
   for (const [echo, access, visible] of [
     [{}, {}, true],
-    [{ enabled: true }, {}, true],
-    [{ enabled: false }, {}, false],
-    [{}, { disabled: ["echo"] }, false],
-    [{}, { only: ["claude"] }, false],
+    [undefined, {}, false],
+    [{}, { deny: ["echo"] }, false],
+    [{}, { allow: ["claude"] }, false],
   ] as const) {
     const hh = await makeHarness({
       config: JSON.stringify({
         default_provider: "echo",
         providers: { echo },
-        session: { provider_access: access, isolation: { enabled: true } },
+        session: { provider_access: access, defaults: { isolation: "vm" } },
       }),
     });
     try {
@@ -1480,9 +1479,7 @@ test("[auto_resume] off: a restart leaves mid-run sessions interrupted", async (
   const hh = await makeHarness({
     config: `{
   "session": {
-    "auto_resume": {
-      "enabled": false
-    }
+    "auto_resume": false
   }
 }`,
   });
@@ -1620,9 +1617,7 @@ test("[auto_rebase]: a clean idle replays the branch onto an advanced base, sile
   const hh = await makeHarness({
     config: `{
   "session": {
-    "auto_rebase": {
-      "enabled": true
-    }
+    "auto_rebase": "rebase"
   }
 }`,
   });
@@ -1680,9 +1675,7 @@ test("[auto_rebase]: a conflict leaves the tree alone and asks the agent to inte
   const hh = await makeHarness({
     config: `{
   "session": {
-    "auto_rebase": {
-      "enabled": true
-    }
+    "auto_rebase": "rebase"
   }
 }`,
   });
@@ -3042,7 +3035,7 @@ test("disabled and missing providers stay read-only and can fork to an enabled p
   "default_provider": "fake",
   "session": {
     "provider_access": {
-      "disabled": [
+      "deny": [
         "claude"
       ]
     }

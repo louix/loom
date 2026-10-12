@@ -284,8 +284,8 @@ substitution and locking.
 ## Project controls
 
 Repository overrides and execution defaults are described in [isolation](isolation.md).
-Set `repos[].session.provider_access.only` to restrict a project to selected profiles,
-or `disabled` to exclude profiles. Remove development runtime pins to follow package
+Set `repos[].session.provider_access.allow` to restrict a project to selected profiles,
+or `deny` to exclude profiles. Remove development runtime pins to follow package
 upgrades. Restart the daemon after changing provider or isolation policy.
 
 ## Startup timing

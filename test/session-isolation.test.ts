@@ -62,9 +62,7 @@ test("VM and local sessions share a provider, keep modes across restart, and for
   const config = (enabled: boolean) =>
     `{
   "session": {
-    "auto_resume": {
-      "enabled": false
-    },
+    "auto_resume": false,
     "isolation": {
       "enabled": ${enabled},
       "claude": {

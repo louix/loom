@@ -83,8 +83,8 @@ export const environmentProviders = (config: LoomConfig): string[] => {
   const seen = new Set<string>();
   return providers.filter((id) => {
     if (
-      config.providerAccess.disabled.includes(id) ||
-      (config.providerAccess.only && !config.providerAccess.only.includes(id))
+      config.providerAccess.deny.includes(id) ||
+      (config.providerAccess.allow && !config.providerAccess.allow.includes(id))
     ) {
       return false;
     }
@@ -129,9 +129,9 @@ export const prepareRepoEnvironment = async (repo: string) => {
   ) {
     const reason = config.autoNix
       ? "No devenv.nix, flake.nix, shell.nix or default.nix found at the repository root in committed HEAD (also used for bare repos)."
-      : "Nix auto-activation is disabled (session.auto_nix).";
+      : "Nix auto-activation is disabled (session.environment.auto_nix).";
     throw new Error(
-      `No session environment found. ${reason} Enable session.auto_nix for a project shell, or configure a workspace_prepare hook.`,
+      `No session environment found. ${reason} Enable session.environment.auto_nix for a project shell, or configure a workspace_prepare hook.`,
     );
   }
   const runtimes = environmentPreparationRuntimes(config);

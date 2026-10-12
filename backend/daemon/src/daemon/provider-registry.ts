@@ -28,6 +28,7 @@ import {
   resolveApiKey,
   type ClaudeProfile,
   type LoomConfig,
+  type PromptCacheTtl,
 } from "../config/config.ts";
 import { isClaudeId } from "@loom/core/provider-id";
 import type { AgentProvider } from "@loom/core/types";
@@ -49,6 +50,9 @@ const CLAUDE = "@loom/connector-claude";
 const GEMINI = "@loom/connector-gemini";
 const GENERIC = "@loom/connector-generic";
 const CHATGPT = "@loom/connector-chatgpt";
+
+// Connectors, including ones already packaged into VM runtimes, read "" as the provider's default.
+const connectorCacheTtl = (ttl: PromptCacheTtl): string => (ttl === "default" ? "" : ttl);
 
 export class ProviderRegistry {
   readonly #vmLifecycle: ConnectorContext["vmLifecycle"];
@@ -103,7 +107,7 @@ export class ProviderRegistry {
       // header comment promises both are always known.
       "fake",
       "mock",
-      ...(config.providers.echo?.enabled ? ["echo"] : []),
+      ...(config.providers.echo ? ["echo"] : []),
       ...config.claudeProfiles.map(claudeProfileId),
       ...Object.keys(config.providers.aisdk),
     ]);
@@ -412,9 +416,10 @@ export class ProviderRegistry {
         id,
         config: {
           cliPath: c.cliPath,
-          promptCacheTtl: c.promptCacheTtl,
+          promptCacheTtl: connectorCacheTtl(c.promptCacheTtl),
           configDir,
-          ...(c.workerAllowedHosts ? { workerAllowedHosts: c.workerAllowedHosts } : {}),
+          ...(c.workerHosts?.kind === "replace" ? { workerAllowedHosts: c.workerHosts.hosts } : {}),
+          ...(c.workerHosts?.kind === "add" ? { workerExtraHosts: c.workerHosts.hosts } : {}),
         },
         baseBranch,
         logger,
@@ -434,7 +439,7 @@ export class ProviderRegistry {
       ...(p.codexBuiltinWebSearch ? { codexBuiltinWebSearch: true } : {}),
       ...(Object.keys(p.modelContext).length > 0 ? { modelContext: p.modelContext } : {}),
       includeUsage: p.includeUsage,
-      promptCacheTtl: p.promptCacheTtl,
+      promptCacheTtl: connectorCacheTtl(p.promptCacheTtl),
     };
     return {
       id,

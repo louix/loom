@@ -59,8 +59,8 @@ test("clone sessions live on host refs and the daemon never runs Git in the clon
     connectors,
     config: `{
   "session": {
-    "auto_resume": { "enabled": false },
-    "auto_rebase": { "enabled": true },
+    "auto_resume": false,
+    "auto_rebase": "rebase",
     "defaults": { "isolation": "vm", "workspace": "clone" },
     "isolation": {
       "claude": { "artifact": "/test-runtime" }

@@ -36,7 +36,7 @@ test("a profile keeps what it sets and follows the spawner for the rest", () => 
           model: "claude-sonnet-5-5",
           effort: "medium",
           mode: "manual",
-          mcp: ["tilth"],
+          mcp_servers: ["tilth"],
           skills: ["pdf"],
           tools: { deny: ["WebFetch"] },
           prompt: "You implement exactly the task you are given.\n",
@@ -52,7 +52,7 @@ test("a profile keeps what it sets and follows the spawner for the rest", () => 
     model: "claude-sonnet-5-5",
     effort: "medium",
     mode: "default",
-    mcp: ["tilth"],
+    mcpServers: ["tilth"],
     skills: ["pdf"],
     tools: { deny: ["WebFetch"] },
     prompt: "You implement exactly the task you are given.",
@@ -67,8 +67,8 @@ test("profiles are validated against the configured providers, MCP servers and s
       /agents\.profiles\.implementer\.provider: "claude:nope" is not a configured provider \(configured: claude/,
     ],
     [
-      { implementer: { description: "x", mcp: ["kagi"] } },
-      /agents\.profiles\.implementer\.mcp: "kagi" is not one of the session's MCP servers \(loom-agents\)/,
+      { implementer: { description: "x", mcp_servers: ["kagi"] } },
+      /agents\.profiles\.implementer\.mcp_servers: "kagi" is not one of the session's MCP servers \(loom-agents\)/,
     ],
     [
       { implementer: { description: "x", provider: "codex", skills: ["pdf"] } },
@@ -83,15 +83,15 @@ test("profiles are validated against the configured providers, MCP servers and s
     [{ implementer: { description: "x", colour: "red" } }, /Unknown setting.*colour/],
     [{ self: { description: "x" } }, /self is built in/],
     [{ "a b": { description: "x" } }, /letters, digits/],
-    [{ implementer: { description: "x", mcp: ["a", "a"] } }, /duplicate MCP servers/],
+    [{ implementer: { description: "x", mcp_servers: ["a", "a"] } }, /duplicate MCP servers/],
   ];
   for (const [profiles, error] of bad)
     assert.throws(() => cfg({ providers: { codex: {} }, agents: { profiles } }), error);
   assert.throws(() => cfg({ agents: { max_depth: 0 } }), /agents\.max_depth/);
   // loom-agents is always nameable: it is how a profile lets a child spawn.
   assert.deepEqual(
-    cfg({ agents: { profiles: { lead: { description: "x", mcp: ["loom-agents"] } } } }).agents
-      .profiles["lead"]?.mcp,
+    cfg({ agents: { profiles: { lead: { description: "x", mcp_servers: ["loom-agents"] } } } })
+      .agents.profiles["lead"]?.mcpServers,
     ["loom-agents"],
   );
 });
@@ -132,7 +132,7 @@ test("a global profile on a provider a repository does not allow is unavailable 
           follower: { description: "Follows its spawner" },
         },
       },
-      repos: [{ session: { provider_access: { only: ["fake"] } } }],
+      repos: [{ session: { provider_access: { allow: ["fake"] } } }],
     },
     (repo, user) => {
       const config = loadConfig(repo, user);
@@ -147,12 +147,12 @@ test("a global profile on a provider a repository does not allow is unavailable 
   );
   // Disabled rather than left out of `only`: the same.
   const c = cfg({
-    session: { provider_access: { disabled: ["codex"] } },
+    session: { provider_access: { deny: ["codex"] } },
     providers: { codex: {} },
     agents: { profiles: { implementer: { description: "x", provider: "codex", skills: ["pdf"] } } },
   });
   assert.deepEqual(availableProfiles(c), {});
-  assert.deepEqual(Object.keys(availableProfiles({ ...c, providerAccess: { disabled: [] } })), [
+  assert.deepEqual(Object.keys(availableProfiles({ ...c, providerAccess: { deny: [] } })), [
     "implementer",
   ]);
 });
@@ -164,7 +164,7 @@ test("a repository's own profile on a provider it disables is a config error", (
       agents: { profiles: { coder: { description: "global coder" } } },
       repos: [
         {
-          session: { provider_access: { disabled: ["codex"] } },
+          session: { provider_access: { deny: ["codex"] } },
           agents: { profiles: { coder: { provider: "codex" } } },
         },
       ],
@@ -178,7 +178,7 @@ test("a repository's own profile on a provider it disables is a config error", (
   // Disabled globally and not re-allowed by the repository: still its own contradiction.
   withUserConfig(
     {
-      session: { provider_access: { disabled: ["codex"] } },
+      session: { provider_access: { deny: ["codex"] } },
       providers: { codex: {} },
       repos: [{ agents: { profiles: { coder: { description: "x", provider: "codex" } } } }],
     },

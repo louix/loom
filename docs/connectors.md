@@ -43,10 +43,13 @@ Deno environment permission over the curated child environment; unrelated
 provider/search keys are not copied. Native launch and existing Git tools require
 subprocess permission. FFI stays disabled.
 
-`providers.claude.worker_allowed_hosts` replaces the Deno network allowlist.
-Defaults are `api.anthropic.com`, `claude.ai`, `platform.claude.com`,
-`registry.npmjs.org` and `npmjs.com`; an empty list denies worker network access.
-Additional proxy/API endpoints must be configured explicitly. These Deno grants
+The Claude worker's Deno network allowlist is `api.anthropic.com`, `claude.ai`,
+`platform.claude.com`, `registry.npmjs.org` and `npmjs.com`.
+`providers.claude.network.allowed_hosts` adds hosts (`host` or `host:port`) to
+that list, for a proxy or another API endpoint. The deprecated
+`providers.claude.worker_allowed_hosts` still replaces the whole list (an empty
+list denies worker network access); Loom warns about it, and ignores it when
+`network.allowed_hosts` is also set. These Deno grants
 do not constrain native subprocess filesystem or network access. For native confinement, enable [Claude session VMs](claude-session-vm.md).
 The Deno-only backend makes no native confinement claim.
 
@@ -162,7 +165,7 @@ To show **Echo** in the TUI provider picker, add this to your Loom config:
 
 Echo replies with `Echo: <your message>` and finishes each turn with zero usage
 and cost. It needs no credentials and runs locally (no VM backend). Omit the
-entry or set `"enabled": false` to hide it. Provider access rules still apply.
+entry to hide it. Provider access rules still apply.
 
 ## The layers
 

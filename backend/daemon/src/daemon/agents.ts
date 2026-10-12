@@ -125,7 +125,8 @@ export const agentSessionPlan = (
       ? availableProfiles(ctx.config, row.provider)[row.agentProfile]
       : undefined;
   const depth = supervisionDepth(row.id, (id) => (id === row.id ? row : ctx.lookup(id)));
-  const keeps = (name: string) => profile?.mcp === undefined || profile.mcp.includes(name);
+  const keeps = (name: string) =>
+    profile?.mcpServers === undefined || profile.mcpServers.includes(name);
   const supervisor = row.supervisorId ? ctx.lookup(row.supervisorId) : undefined;
   const agentTools = depth < ctx.config.agents.maxDepth && keeps(LOOM_AGENTS_SERVER);
   const prompt = [

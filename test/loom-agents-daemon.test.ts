@@ -27,7 +27,7 @@ const CONFIG = JSON.stringify({
         mode: "auto",
         prompt: "IMPLEMENT exactly the task.",
       },
-      solo: { description: "Works alone", mcp: [] },
+      solo: { description: "Works alone", mcp_servers: [] },
     },
   },
 });
@@ -203,7 +203,7 @@ describe("loom agents", { concurrency: 4 }, () => {
         assert.equal((await get(env.c, self.id)).provider, "fake");
       },
       JSON.stringify({
-        session: { provider_access: { only: ["fake"] } },
+        session: { provider_access: { allow: ["fake"] } },
         agents: {
           profiles: {
             implementer: { description: "Follows its spawner" },

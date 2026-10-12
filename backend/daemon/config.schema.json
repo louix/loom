@@ -79,8 +79,8 @@
             ]
           },
           "execution": {
-            "type": "string",
-            "const": "vm"
+            "deprecated": true,
+            "description": "No longer read: a local source always runs in a VM."
           },
           "grants": {
             "type": "object",
@@ -196,10 +196,73 @@
     "session": {
       "type": "object",
       "properties": {
+        "environment": {
+          "default": {},
+          "type": "object",
+          "properties": {
+            "auto_nix": {
+              "default": false,
+              "description": "Allow automatic project shell activation (devenv, flake.nix, shell.nix, default.nix), locally and in VMs. Does not grant network access. Ignored while command_prefix is set.",
+              "type": "boolean"
+            },
+            "command_prefix": {
+              "anyOf": [
+                {
+                  "maxItems": 64,
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "timeout_seconds": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 2073600
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "memory_mib": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 512,
+                  "maximum": 65536
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "cpus": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 64
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
         "auto_nix": {
-          "default": false,
-          "description": "Allow automatic project shell activation (devenv, flake.nix, shell.nix, default.nix), locally and in VMs. Does not grant network access.",
-          "type": "boolean"
+          "deprecated": true,
+          "description": "Replaced by session.environment.auto_nix."
         },
         "local_tools": {
           "type": "array",
@@ -239,48 +302,37 @@
               "description": "What new sessions work in: in-place (the repository's own checkout, no branch), worktree (a git worktree on its own branch), or clone (VM sessions only: a private clone whose only remote is a host relay limited to the session's branch; host sessions get a worktree). Each new session can override it. Existing sessions keep theirs.",
               "type": "string",
               "enum": ["in-place", "worktree", "clone"]
+            },
+            "base_branch": {
+              "description": "The repository's default branch for new sessions: the alternative the new-session prompt's base toggle (Alt+B) offers to the checked-out branch, and the base of sessions created without one (loom run). Unset: the toggle offers the remote's default branch, else init.defaultBranch, else main, and a session created without a base starts from the checked-out branch (HEAD's commit when detached). Each session keeps the base it was created with. Restart to apply.",
+              "type": "string"
             }
           },
           "additionalProperties": false
+        },
+        "worktree_dir": {
+          "description": "Exact worktree directory (absolute, ~/ or relative to the repository). Omitted: $XDG_DATA_HOME/loom/worktrees/<repo>-<hash>, defaulting to ~/.local/share. Existing sessions keep their paths. Restart to apply.",
+          "type": "string"
         },
         "worktree": {
           "deprecated": true,
           "description": "Replaced by session.defaults.workspace."
         },
         "auto_rebase": {
-          "type": "object",
-          "properties": {
-            "enabled": {
-              "default": false,
-              "type": "boolean"
-            },
-            "mode": {
-              "default": "rebase",
-              "type": "string",
-              "enum": ["rebase", "merge"]
-            }
-          },
-          "additionalProperties": false
+          "default": "off",
+          "description": "Keep each idle session's branch current with its base: off, rebase (replay the branch) or merge. A conflict or an uncommitted worktree asks the agent to integrate instead.",
+          "type": "string",
+          "enum": ["off", "rebase", "merge"]
         },
         "auto_resume": {
-          "type": "object",
-          "properties": {
-            "enabled": {
-              "default": true,
-              "type": "boolean"
-            }
-          },
-          "additionalProperties": false
+          "default": true,
+          "description": "After a daemon restart, revive sessions it cut off mid-turn and ask them to continue. Sessions waiting on a person stay interrupted.",
+          "type": "boolean"
         },
         "commit_reminder": {
-          "type": "object",
-          "properties": {
-            "enabled": {
-              "default": true,
-              "type": "boolean"
-            }
-          },
-          "additionalProperties": false
+          "default": true,
+          "description": "Remind an agent that goes idle with uncommitted changes to commit, once per commit.",
+          "type": "boolean"
         },
         "titles": {
           "deprecated": true,
@@ -293,19 +345,51 @@
         "provider_access": {
           "type": "object",
           "properties": {
-            "only": {
+            "allow": {
+              "description": "Only these provider ids may start sessions; omitted allows every one.",
               "type": "array",
               "items": {
                 "type": "string",
                 "minLength": 1
               }
             },
-            "disabled": {
+            "deny": {
+              "description": "Provider ids that may not start sessions.",
               "type": "array",
               "items": {
                 "type": "string",
                 "minLength": 1
               }
+            },
+            "only": {
+              "deprecated": true,
+              "description": "Replaced by session.provider_access.allow."
+            },
+            "disabled": {
+              "deprecated": true,
+              "description": "Replaced by session.provider_access.deny."
+            }
+          },
+          "additionalProperties": false
+        },
+        "clone": {
+          "type": "object",
+          "properties": {
+            "visible_refs": {
+              "default": [],
+              "description": "Extra ref prefixes advertised to a clone session, such as refs/tags/. Its base and own branch are always advertised. Ref filtering is not a confidentiality boundary: clone sessions must be trusted to read repository history.",
+              "maxItems": 32,
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "max_push_bytes": {
+              "default": 536870912,
+              "description": "Largest push a clone session may publish to its branch, in bytes.",
+              "type": "integer",
+              "minimum": 1048576,
+              "maximum": 68719476736
             }
           },
           "additionalProperties": false
@@ -317,41 +401,60 @@
               "deprecated": true,
               "description": "Replaced by session.defaults.isolation."
             },
-            "claude": {
+            "runtimes": {
+              "description": "Per-provider session VM runtime overrides: artifact (and smolvm) paths for claude, aisdk and codex.",
               "type": "object",
               "properties": {
-                "artifact": {
-                  "type": "string"
+                "claude": {
+                  "type": "object",
+                  "properties": {
+                    "artifact": {
+                      "type": "string"
+                    },
+                    "smolvm": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
                 },
-                "smolvm": {
-                  "type": "string"
+                "aisdk": {
+                  "type": "object",
+                  "properties": {
+                    "artifact": {
+                      "type": "string"
+                    },
+                    "smolvm": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "codex": {
+                  "type": "object",
+                  "properties": {
+                    "artifact": {
+                      "type": "string"
+                    },
+                    "smolvm": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": {}
+            },
+            "claude": {
+              "deprecated": true,
+              "description": "Replaced by session.isolation.runtimes.claude."
             },
             "aisdk": {
-              "type": "object",
-              "properties": {
-                "artifact": {
-                  "type": "string"
-                },
-                "smolvm": {
-                  "type": "string"
-                }
-              },
-              "additionalProperties": false
+              "deprecated": true,
+              "description": "Replaced by session.isolation.runtimes.aisdk."
             },
             "codex": {
-              "type": "object",
-              "properties": {
-                "artifact": {
-                  "type": "string"
-                },
-                "smolvm": {
-                  "type": "string"
-                }
-              },
-              "additionalProperties": false
+              "deprecated": true,
+              "description": "Replaced by session.isolation.runtimes.codex."
             },
             "network": {
               "type": "object",
@@ -389,7 +492,8 @@
               "description": "Replaced by session.isolation.network.presets."
             },
             "environment": {
-              "default": {},
+              "deprecated": true,
+              "description": "Replaced by session.environment.",
               "type": "object",
               "properties": {
                 "command_prefix": {
@@ -447,41 +551,24 @@
               },
               "additionalProperties": false
             },
-            "idle_timeout_minutes": {
+            "idle_stop_minutes": {
               "default": 10,
-              "description": "Stop idle session VMs after this many minutes; preserve their workspace and history. Zero disables idle shutdown. Open shells, active tasks and keep-warm sessions are excluded.",
+              "description": "Stop idle session VMs after this many minutes; preserve their workspace and history. Zero disables idle stopping. Open shells, active tasks and keep-warm sessions are excluded.",
               "type": "integer",
               "minimum": 0,
               "maximum": 1440
+            },
+            "idle_timeout_minutes": {
+              "deprecated": true,
+              "description": "Replaced by session.isolation.idle_stop_minutes."
             },
             "launcher": {
               "deprecated": true,
               "description": "No longer read. Session VMs always start through the isolation library; remove this setting."
             },
             "checkout": {
-              "type": "object",
-              "properties": {
-                "mode": {
-                  "deprecated": true,
-                  "description": "Replaced by session.defaults.workspace."
-                },
-                "visible_refs": {
-                  "default": [],
-                  "description": "Extra ref prefixes advertised to a clone session, such as refs/tags/. Its base and own branch are always advertised. Ref filtering is not a confidentiality boundary: clone sessions must be trusted to read repository history.",
-                  "maxItems": 32,
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
-                },
-                "max_push_bytes": {
-                  "default": 536870912,
-                  "type": "integer",
-                  "minimum": 1048576,
-                  "maximum": 68719476736
-                }
-              },
-              "additionalProperties": false
+              "deprecated": true,
+              "description": "Replaced by session.defaults.workspace (mode) and session.clone (visible_refs, max_push_bytes)."
             }
           },
           "additionalProperties": false
@@ -585,13 +672,12 @@
       "type": "string"
     },
     "base_branch": {
-      "description": "The repository's default branch for new sessions: the alternative the new-session prompt's base toggle (Alt+B) offers to the checked-out branch, and the base of sessions created without one (loom run). Unset: the toggle offers the remote's default branch, else init.defaultBranch, else main, and a session created without a base starts from the checked-out branch (HEAD's commit when detached). Each session keeps the base it was created with. Restart to apply.",
-      "type": "string"
+      "deprecated": true,
+      "description": "Replaced by session.defaults.base_branch."
     },
     "worktree_dir": {
-      "default": "",
-      "description": "Exact worktree directory (absolute, ~/ or relative to the repository). Empty uses $XDG_DATA_HOME/loom/worktrees/<repo>-<hash>, defaulting to ~/.local/share. Existing sessions keep their paths. Restart to apply.",
-      "type": "string"
+      "deprecated": true,
+      "description": "Replaced by session.worktree_dir."
     },
     "db": {
       "deprecated": true,
@@ -655,16 +741,21 @@
       "description": "Session commit identity. Omit to use your normal Git identity. name/email set both roles; author/committer override one role. Values may use {model}, {modelSlug} and {profile}."
     },
     "default_provider": {
-      "default": "claude",
+      "description": "Provider id new sessions use when the client names none; omitted, or not a configured provider: claude.",
       "type": "string"
     },
     "daemon": {
       "type": "object",
       "properties": {
-        "idle_shutdown_minutes": {
+        "idle_stop_minutes": {
           "default": 30,
+          "description": "Stop the daemon after this many minutes with no client and no running session.",
           "type": "number",
           "minimum": 0
+        },
+        "idle_shutdown_minutes": {
+          "deprecated": true,
+          "description": "Replaced by daemon.idle_stop_minutes."
         }
       },
       "additionalProperties": false
@@ -699,7 +790,6 @@
               "type": "string"
             },
             "title_model": {
-              "default": "",
               "type": "string"
             },
             "models": {
@@ -709,9 +799,14 @@
                 "type": "string"
               }
             },
-            "permission_default": {
+            "default_mode": {
+              "description": "Permission mode of a new Claude session when none is chosen and none has been used yet; afterwards the last one used. Omitted: default (manual).",
               "type": "string",
-              "enum": ["manual", "default", "plan", "acceptEdits", "bypassPermissions"]
+              "enum": ["manual", "default", "plan", "acceptEdits", "auto"]
+            },
+            "permission_default": {
+              "deprecated": true,
+              "description": "Replaced by providers.claude.default_mode."
             },
             "setting_sources": {
               "default": ["project"],
@@ -728,20 +823,34 @@
               }
             },
             "cli_path": {
-              "default": "",
               "type": "string"
             },
+            "network": {
+              "type": "object",
+              "properties": {
+                "allowed_hosts": {
+                  "description": "Hosts (host or host:port) the Claude worker may reach besides its built-in list: api.anthropic.com, claude.ai, platform.claude.com, registry.npmjs.org, npmjs.com.",
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "additionalProperties": false
+            },
             "worker_allowed_hosts": {
-              "default": [],
+              "deprecated": true,
+              "description": "Replaced by network.allowed_hosts, which adds to the built-in hosts; this one replaces them.",
               "type": "array",
               "items": {
                 "type": "string"
               }
             },
             "prompt_cache_ttl": {
-              "default": "",
+              "description": "Prompt-cache lifetime: default (the provider's own choice), 5m, 1h, or off (no caching, full input price every turn).",
+              "default": "default",
               "type": "string",
-              "enum": ["5m", "1h", ""]
+              "enum": ["default", "5m", "1h", "off"]
             },
             "profiles": {
               "type": "object",
@@ -752,14 +861,12 @@
                 "type": "object",
                 "properties": {
                   "config_dir": {
-                    "default": "",
                     "type": "string"
                   },
                   "tag": {
                     "type": "string"
                   },
                   "color": {
-                    "default": "",
                     "type": "string"
                   }
                 },
@@ -770,11 +877,12 @@
           "additionalProperties": false
         },
         "echo": {
+          "description": "Present: show the local-only echo provider (no API calls or cost).",
           "type": "object",
           "properties": {
             "enabled": {
-              "default": true,
-              "type": "boolean"
+              "deprecated": true,
+              "description": "Replaced by the presence of providers.echo."
             }
           },
           "additionalProperties": false
@@ -783,23 +891,18 @@
           "type": "object",
           "properties": {
             "base_url": {
-              "default": "",
               "type": "string"
             },
             "api_key_env": {
-              "default": "",
               "type": "string"
             },
             "api_key": {
-              "default": "",
               "type": "string"
             },
             "model": {
-              "default": "",
               "type": "string"
             },
             "models": {
-              "default": [],
               "type": "array",
               "items": {
                 "type": "string"
@@ -809,7 +912,6 @@
               "type": "string"
             },
             "color": {
-              "default": "",
               "type": "string"
             },
             "include_usage": {
@@ -817,21 +919,19 @@
               "type": "boolean"
             },
             "prompt_cache_ttl": {
-              "default": "",
+              "description": "Prompt-cache lifetime: default (the provider's own choice), 5m, 1h, or off (no caching, full input price every turn).",
+              "default": "default",
               "type": "string",
-              "enum": ["5m", "1h", "off", ""]
+              "enum": ["default", "5m", "1h", "off"]
             },
             "title_model": {
-              "default": "",
               "description": "Model for automatic session titles; omit to use this provider’s default.",
               "type": "string"
             },
             "config_dir": {
-              "default": "",
               "type": "string"
             },
             "cli_path": {
-              "default": "",
               "type": "string"
             },
             "builtin_web_search": {
@@ -847,23 +947,18 @@
                 "type": "object",
                 "properties": {
                   "base_url": {
-                    "default": "",
                     "type": "string"
                   },
                   "api_key_env": {
-                    "default": "",
                     "type": "string"
                   },
                   "api_key": {
-                    "default": "",
                     "type": "string"
                   },
                   "model": {
-                    "default": "",
                     "type": "string"
                   },
                   "models": {
-                    "default": [],
                     "type": "array",
                     "items": {
                       "type": "string"
@@ -873,7 +968,6 @@
                     "type": "string"
                   },
                   "color": {
-                    "default": "",
                     "type": "string"
                   },
                   "include_usage": {
@@ -881,21 +975,19 @@
                     "type": "boolean"
                   },
                   "prompt_cache_ttl": {
-                    "default": "",
+                    "description": "Prompt-cache lifetime: default (the provider's own choice), 5m, 1h, or off (no caching, full input price every turn).",
+                    "default": "default",
                     "type": "string",
-                    "enum": ["5m", "1h", "off", ""]
+                    "enum": ["default", "5m", "1h", "off"]
                   },
                   "title_model": {
-                    "default": "",
                     "description": "Model for automatic session titles; omit to use this provider’s default.",
                     "type": "string"
                   },
                   "config_dir": {
-                    "default": "",
                     "type": "string"
                   },
                   "cli_path": {
-                    "default": "",
                     "type": "string"
                   },
                   "builtin_web_search": {
@@ -913,23 +1005,18 @@
           "type": "object",
           "properties": {
             "base_url": {
-              "default": "",
               "type": "string"
             },
             "api_key_env": {
-              "default": "",
               "type": "string"
             },
             "api_key": {
-              "default": "",
               "type": "string"
             },
             "model": {
-              "default": "",
               "type": "string"
             },
             "models": {
-              "default": [],
               "type": "array",
               "items": {
                 "type": "string"
@@ -939,7 +1026,6 @@
               "type": "string"
             },
             "color": {
-              "default": "",
               "type": "string"
             },
             "include_usage": {
@@ -947,21 +1033,19 @@
               "type": "boolean"
             },
             "prompt_cache_ttl": {
-              "default": "",
+              "description": "Prompt-cache lifetime: default (the provider's own choice), 5m, 1h, or off (no caching, full input price every turn).",
+              "default": "default",
               "type": "string",
-              "enum": ["5m", "1h", "off", ""]
+              "enum": ["default", "5m", "1h", "off"]
             },
             "title_model": {
-              "default": "",
               "description": "Model for automatic session titles; omit to use this provider’s default.",
               "type": "string"
             },
             "config_dir": {
-              "default": "",
               "type": "string"
             },
             "cli_path": {
-              "default": "",
               "type": "string"
             },
             "builtin_web_search": {
@@ -977,23 +1061,18 @@
                 "type": "object",
                 "properties": {
                   "base_url": {
-                    "default": "",
                     "type": "string"
                   },
                   "api_key_env": {
-                    "default": "",
                     "type": "string"
                   },
                   "api_key": {
-                    "default": "",
                     "type": "string"
                   },
                   "model": {
-                    "default": "",
                     "type": "string"
                   },
                   "models": {
-                    "default": [],
                     "type": "array",
                     "items": {
                       "type": "string"
@@ -1003,7 +1082,6 @@
                     "type": "string"
                   },
                   "color": {
-                    "default": "",
                     "type": "string"
                   },
                   "include_usage": {
@@ -1011,21 +1089,19 @@
                     "type": "boolean"
                   },
                   "prompt_cache_ttl": {
-                    "default": "",
+                    "description": "Prompt-cache lifetime: default (the provider's own choice), 5m, 1h, or off (no caching, full input price every turn).",
+                    "default": "default",
                     "type": "string",
-                    "enum": ["5m", "1h", "off", ""]
+                    "enum": ["default", "5m", "1h", "off"]
                   },
                   "title_model": {
-                    "default": "",
                     "description": "Model for automatic session titles; omit to use this provider’s default.",
                     "type": "string"
                   },
                   "config_dir": {
-                    "default": "",
                     "type": "string"
                   },
                   "cli_path": {
-                    "default": "",
                     "type": "string"
                   },
                   "builtin_web_search": {
@@ -1043,23 +1119,18 @@
           "type": "object",
           "properties": {
             "base_url": {
-              "default": "",
               "type": "string"
             },
             "api_key_env": {
-              "default": "",
               "type": "string"
             },
             "api_key": {
-              "default": "",
               "type": "string"
             },
             "model": {
-              "default": "",
               "type": "string"
             },
             "models": {
-              "default": [],
               "type": "array",
               "items": {
                 "type": "string"
@@ -1069,7 +1140,6 @@
               "type": "string"
             },
             "color": {
-              "default": "",
               "type": "string"
             },
             "include_usage": {
@@ -1077,21 +1147,19 @@
               "type": "boolean"
             },
             "prompt_cache_ttl": {
-              "default": "",
+              "description": "Prompt-cache lifetime: default (the provider's own choice), 5m, 1h, or off (no caching, full input price every turn).",
+              "default": "default",
               "type": "string",
-              "enum": ["5m", "1h", "off", ""]
+              "enum": ["default", "5m", "1h", "off"]
             },
             "title_model": {
-              "default": "",
               "description": "Model for automatic session titles; omit to use this provider’s default.",
               "type": "string"
             },
             "config_dir": {
-              "default": "",
               "type": "string"
             },
             "cli_path": {
-              "default": "",
               "type": "string"
             },
             "builtin_web_search": {
@@ -1107,23 +1175,18 @@
                 "type": "object",
                 "properties": {
                   "base_url": {
-                    "default": "",
                     "type": "string"
                   },
                   "api_key_env": {
-                    "default": "",
                     "type": "string"
                   },
                   "api_key": {
-                    "default": "",
                     "type": "string"
                   },
                   "model": {
-                    "default": "",
                     "type": "string"
                   },
                   "models": {
-                    "default": [],
                     "type": "array",
                     "items": {
                       "type": "string"
@@ -1133,7 +1196,6 @@
                     "type": "string"
                   },
                   "color": {
-                    "default": "",
                     "type": "string"
                   },
                   "include_usage": {
@@ -1141,21 +1203,19 @@
                     "type": "boolean"
                   },
                   "prompt_cache_ttl": {
-                    "default": "",
+                    "description": "Prompt-cache lifetime: default (the provider's own choice), 5m, 1h, or off (no caching, full input price every turn).",
+                    "default": "default",
                     "type": "string",
-                    "enum": ["5m", "1h", "off", ""]
+                    "enum": ["default", "5m", "1h", "off"]
                   },
                   "title_model": {
-                    "default": "",
                     "description": "Model for automatic session titles; omit to use this provider’s default.",
                     "type": "string"
                   },
                   "config_dir": {
-                    "default": "",
                     "type": "string"
                   },
                   "cli_path": {
-                    "default": "",
                     "type": "string"
                   },
                   "builtin_web_search": {
@@ -1173,23 +1233,18 @@
           "type": "object",
           "properties": {
             "base_url": {
-              "default": "",
               "type": "string"
             },
             "api_key_env": {
-              "default": "",
               "type": "string"
             },
             "api_key": {
-              "default": "",
               "type": "string"
             },
             "model": {
-              "default": "",
               "type": "string"
             },
             "models": {
-              "default": [],
               "type": "array",
               "items": {
                 "type": "string"
@@ -1199,7 +1254,6 @@
               "type": "string"
             },
             "color": {
-              "default": "",
               "type": "string"
             },
             "include_usage": {
@@ -1207,21 +1261,19 @@
               "type": "boolean"
             },
             "prompt_cache_ttl": {
-              "default": "",
+              "description": "Prompt-cache lifetime: default (the provider's own choice), 5m, 1h, or off (no caching, full input price every turn).",
+              "default": "default",
               "type": "string",
-              "enum": ["5m", "1h", "off", ""]
+              "enum": ["default", "5m", "1h", "off"]
             },
             "title_model": {
-              "default": "",
               "description": "Model for automatic session titles; omit to use this provider’s default.",
               "type": "string"
             },
             "config_dir": {
-              "default": "",
               "type": "string"
             },
             "cli_path": {
-              "default": "",
               "type": "string"
             },
             "builtin_web_search": {
@@ -1237,23 +1289,18 @@
                 "type": "object",
                 "properties": {
                   "base_url": {
-                    "default": "",
                     "type": "string"
                   },
                   "api_key_env": {
-                    "default": "",
                     "type": "string"
                   },
                   "api_key": {
-                    "default": "",
                     "type": "string"
                   },
                   "model": {
-                    "default": "",
                     "type": "string"
                   },
                   "models": {
-                    "default": [],
                     "type": "array",
                     "items": {
                       "type": "string"
@@ -1263,7 +1310,6 @@
                     "type": "string"
                   },
                   "color": {
-                    "default": "",
                     "type": "string"
                   },
                   "include_usage": {
@@ -1271,21 +1317,19 @@
                     "type": "boolean"
                   },
                   "prompt_cache_ttl": {
-                    "default": "",
+                    "description": "Prompt-cache lifetime: default (the provider's own choice), 5m, 1h, or off (no caching, full input price every turn).",
+                    "default": "default",
                     "type": "string",
-                    "enum": ["5m", "1h", "off", ""]
+                    "enum": ["default", "5m", "1h", "off"]
                   },
                   "title_model": {
-                    "default": "",
                     "description": "Model for automatic session titles; omit to use this provider’s default.",
                     "type": "string"
                   },
                   "config_dir": {
-                    "default": "",
                     "type": "string"
                   },
                   "cli_path": {
-                    "default": "",
                     "type": "string"
                   },
                   "builtin_web_search": {
@@ -1369,11 +1413,9 @@
             "enum": ["always", "unfocused", "disconnected"]
           },
           "name": {
-            "default": "",
             "type": "string"
           },
           "project": {
-            "default": "",
             "type": "string"
           },
           "match": {
@@ -1390,13 +1432,17 @@
             ]
           },
           "timeout": {
+            "deprecated": true,
+            "description": "Replaced by timeout_seconds."
+          },
+          "timeout_seconds": {
             "default": 30,
             "description": "Hook timeout in seconds; clamped to 1–3600.",
             "type": "number"
           }
         },
         "required": ["run"],
-        "additionalProperties": false
+        "additionalProperties": {}
       }
     },
     "search": {
@@ -1408,15 +1454,12 @@
           "enum": ["none", "brave", "tavily"]
         },
         "api_key_env": {
-          "default": "",
           "type": "string"
         },
         "api_key": {
-          "default": "",
           "type": "string"
         },
         "api_base": {
-          "default": "",
           "type": "string"
         },
         "max_results": {
@@ -1468,6 +1511,10 @@
                 "enum": ["manual", "default", "plan", "acceptEdits", "auto"]
               },
               "mcp": {
+                "deprecated": true,
+                "description": "Replaced by mcp_servers."
+              },
+              "mcp_servers": {
                 "description": "The session MCP servers it gets, by name, plus loom-agents to let it start agents of its own. Omitted: all of them.",
                 "type": "array",
                 "items": {
@@ -1601,8 +1648,8 @@
                   ]
                 },
                 "execution": {
-                  "type": "string",
-                  "const": "vm"
+                  "deprecated": true,
+                  "description": "No longer read: a local source always runs in a VM."
                 },
                 "grants": {
                   "type": "object",
@@ -1718,10 +1765,73 @@
           "session": {
             "type": "object",
             "properties": {
+              "environment": {
+                "default": {},
+                "type": "object",
+                "properties": {
+                  "auto_nix": {
+                    "default": false,
+                    "description": "Allow automatic project shell activation (devenv, flake.nix, shell.nix, default.nix), locally and in VMs. Does not grant network access. Ignored while command_prefix is set.",
+                    "type": "boolean"
+                  },
+                  "command_prefix": {
+                    "anyOf": [
+                      {
+                        "maxItems": 64,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 4096
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "timeout_seconds": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 2073600
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "memory_mib": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 512,
+                        "maximum": 65536
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "cpus": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 64
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              },
               "auto_nix": {
-                "default": false,
-                "description": "Allow automatic project shell activation (devenv, flake.nix, shell.nix, default.nix), locally and in VMs. Does not grant network access.",
-                "type": "boolean"
+                "deprecated": true,
+                "description": "Replaced by session.environment.auto_nix."
               },
               "local_tools": {
                 "type": "array",
@@ -1761,48 +1871,37 @@
                     "description": "What new sessions work in: in-place (the repository's own checkout, no branch), worktree (a git worktree on its own branch), or clone (VM sessions only: a private clone whose only remote is a host relay limited to the session's branch; host sessions get a worktree). Each new session can override it. Existing sessions keep theirs.",
                     "type": "string",
                     "enum": ["in-place", "worktree", "clone"]
+                  },
+                  "base_branch": {
+                    "description": "The repository's default branch for new sessions: the alternative the new-session prompt's base toggle (Alt+B) offers to the checked-out branch, and the base of sessions created without one (loom run). Unset: the toggle offers the remote's default branch, else init.defaultBranch, else main, and a session created without a base starts from the checked-out branch (HEAD's commit when detached). Each session keeps the base it was created with. Restart to apply.",
+                    "type": "string"
                   }
                 },
                 "additionalProperties": false
+              },
+              "worktree_dir": {
+                "description": "Exact worktree directory (absolute, ~/ or relative to the repository). Omitted: $XDG_DATA_HOME/loom/worktrees/<repo>-<hash>, defaulting to ~/.local/share. Existing sessions keep their paths. Restart to apply.",
+                "type": "string"
               },
               "worktree": {
                 "deprecated": true,
                 "description": "Replaced by session.defaults.workspace."
               },
               "auto_rebase": {
-                "type": "object",
-                "properties": {
-                  "enabled": {
-                    "default": false,
-                    "type": "boolean"
-                  },
-                  "mode": {
-                    "default": "rebase",
-                    "type": "string",
-                    "enum": ["rebase", "merge"]
-                  }
-                },
-                "additionalProperties": false
+                "default": "off",
+                "description": "Keep each idle session's branch current with its base: off, rebase (replay the branch) or merge. A conflict or an uncommitted worktree asks the agent to integrate instead.",
+                "type": "string",
+                "enum": ["off", "rebase", "merge"]
               },
               "auto_resume": {
-                "type": "object",
-                "properties": {
-                  "enabled": {
-                    "default": true,
-                    "type": "boolean"
-                  }
-                },
-                "additionalProperties": false
+                "default": true,
+                "description": "After a daemon restart, revive sessions it cut off mid-turn and ask them to continue. Sessions waiting on a person stay interrupted.",
+                "type": "boolean"
               },
               "commit_reminder": {
-                "type": "object",
-                "properties": {
-                  "enabled": {
-                    "default": true,
-                    "type": "boolean"
-                  }
-                },
-                "additionalProperties": false
+                "default": true,
+                "description": "Remind an agent that goes idle with uncommitted changes to commit, once per commit.",
+                "type": "boolean"
               },
               "titles": {
                 "deprecated": true,
@@ -1815,19 +1914,51 @@
               "provider_access": {
                 "type": "object",
                 "properties": {
-                  "only": {
+                  "allow": {
+                    "description": "Only these provider ids may start sessions; omitted allows every one.",
                     "type": "array",
                     "items": {
                       "type": "string",
                       "minLength": 1
                     }
                   },
-                  "disabled": {
+                  "deny": {
+                    "description": "Provider ids that may not start sessions.",
                     "type": "array",
                     "items": {
                       "type": "string",
                       "minLength": 1
                     }
+                  },
+                  "only": {
+                    "deprecated": true,
+                    "description": "Replaced by session.provider_access.allow."
+                  },
+                  "disabled": {
+                    "deprecated": true,
+                    "description": "Replaced by session.provider_access.deny."
+                  }
+                },
+                "additionalProperties": false
+              },
+              "clone": {
+                "type": "object",
+                "properties": {
+                  "visible_refs": {
+                    "default": [],
+                    "description": "Extra ref prefixes advertised to a clone session, such as refs/tags/. Its base and own branch are always advertised. Ref filtering is not a confidentiality boundary: clone sessions must be trusted to read repository history.",
+                    "maxItems": 32,
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "max_push_bytes": {
+                    "default": 536870912,
+                    "description": "Largest push a clone session may publish to its branch, in bytes.",
+                    "type": "integer",
+                    "minimum": 1048576,
+                    "maximum": 68719476736
                   }
                 },
                 "additionalProperties": false
@@ -1839,41 +1970,60 @@
                     "deprecated": true,
                     "description": "Replaced by session.defaults.isolation."
                   },
-                  "claude": {
+                  "runtimes": {
+                    "description": "Per-provider session VM runtime overrides: artifact (and smolvm) paths for claude, aisdk and codex.",
                     "type": "object",
                     "properties": {
-                      "artifact": {
-                        "type": "string"
+                      "claude": {
+                        "type": "object",
+                        "properties": {
+                          "artifact": {
+                            "type": "string"
+                          },
+                          "smolvm": {
+                            "type": "string"
+                          }
+                        },
+                        "additionalProperties": false
                       },
-                      "smolvm": {
-                        "type": "string"
+                      "aisdk": {
+                        "type": "object",
+                        "properties": {
+                          "artifact": {
+                            "type": "string"
+                          },
+                          "smolvm": {
+                            "type": "string"
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      "codex": {
+                        "type": "object",
+                        "properties": {
+                          "artifact": {
+                            "type": "string"
+                          },
+                          "smolvm": {
+                            "type": "string"
+                          }
+                        },
+                        "additionalProperties": false
                       }
                     },
-                    "additionalProperties": false
+                    "additionalProperties": {}
+                  },
+                  "claude": {
+                    "deprecated": true,
+                    "description": "Replaced by session.isolation.runtimes.claude."
                   },
                   "aisdk": {
-                    "type": "object",
-                    "properties": {
-                      "artifact": {
-                        "type": "string"
-                      },
-                      "smolvm": {
-                        "type": "string"
-                      }
-                    },
-                    "additionalProperties": false
+                    "deprecated": true,
+                    "description": "Replaced by session.isolation.runtimes.aisdk."
                   },
                   "codex": {
-                    "type": "object",
-                    "properties": {
-                      "artifact": {
-                        "type": "string"
-                      },
-                      "smolvm": {
-                        "type": "string"
-                      }
-                    },
-                    "additionalProperties": false
+                    "deprecated": true,
+                    "description": "Replaced by session.isolation.runtimes.codex."
                   },
                   "network": {
                     "type": "object",
@@ -1911,7 +2061,8 @@
                     "description": "Replaced by session.isolation.network.presets."
                   },
                   "environment": {
-                    "default": {},
+                    "deprecated": true,
+                    "description": "Replaced by session.environment.",
                     "type": "object",
                     "properties": {
                       "command_prefix": {
@@ -1969,41 +2120,24 @@
                     },
                     "additionalProperties": false
                   },
-                  "idle_timeout_minutes": {
+                  "idle_stop_minutes": {
                     "default": 10,
-                    "description": "Stop idle session VMs after this many minutes; preserve their workspace and history. Zero disables idle shutdown. Open shells, active tasks and keep-warm sessions are excluded.",
+                    "description": "Stop idle session VMs after this many minutes; preserve their workspace and history. Zero disables idle stopping. Open shells, active tasks and keep-warm sessions are excluded.",
                     "type": "integer",
                     "minimum": 0,
                     "maximum": 1440
+                  },
+                  "idle_timeout_minutes": {
+                    "deprecated": true,
+                    "description": "Replaced by session.isolation.idle_stop_minutes."
                   },
                   "launcher": {
                     "deprecated": true,
                     "description": "No longer read. Session VMs always start through the isolation library; remove this setting."
                   },
                   "checkout": {
-                    "type": "object",
-                    "properties": {
-                      "mode": {
-                        "deprecated": true,
-                        "description": "Replaced by session.defaults.workspace."
-                      },
-                      "visible_refs": {
-                        "default": [],
-                        "description": "Extra ref prefixes advertised to a clone session, such as refs/tags/. Its base and own branch are always advertised. Ref filtering is not a confidentiality boundary: clone sessions must be trusted to read repository history.",
-                        "maxItems": 32,
-                        "type": "array",
-                        "items": {
-                          "type": "string"
-                        }
-                      },
-                      "max_push_bytes": {
-                        "default": 536870912,
-                        "type": "integer",
-                        "minimum": 1048576,
-                        "maximum": 68719476736
-                      }
-                    },
-                    "additionalProperties": false
+                    "deprecated": true,
+                    "description": "Replaced by session.defaults.workspace (mode) and session.clone (visible_refs, max_push_bytes)."
                   }
                 },
                 "additionalProperties": false
@@ -2107,13 +2241,12 @@
             "type": "string"
           },
           "base_branch": {
-            "description": "The repository's default branch for new sessions: the alternative the new-session prompt's base toggle (Alt+B) offers to the checked-out branch, and the base of sessions created without one (loom run). Unset: the toggle offers the remote's default branch, else init.defaultBranch, else main, and a session created without a base starts from the checked-out branch (HEAD's commit when detached). Each session keeps the base it was created with. Restart to apply.",
-            "type": "string"
+            "deprecated": true,
+            "description": "Replaced by session.defaults.base_branch."
           },
           "worktree_dir": {
-            "default": "",
-            "description": "Exact worktree directory (absolute, ~/ or relative to the repository). Empty uses $XDG_DATA_HOME/loom/worktrees/<repo>-<hash>, defaulting to ~/.local/share. Existing sessions keep their paths. Restart to apply.",
-            "type": "string"
+            "deprecated": true,
+            "description": "Replaced by session.worktree_dir."
           },
           "db": {
             "deprecated": true,
@@ -2177,16 +2310,21 @@
             "description": "Session commit identity. Omit to use your normal Git identity. name/email set both roles; author/committer override one role. Values may use {model}, {modelSlug} and {profile}."
           },
           "default_provider": {
-            "default": "claude",
+            "description": "Provider id new sessions use when the client names none; omitted, or not a configured provider: claude.",
             "type": "string"
           },
           "daemon": {
             "type": "object",
             "properties": {
-              "idle_shutdown_minutes": {
+              "idle_stop_minutes": {
                 "default": 30,
+                "description": "Stop the daemon after this many minutes with no client and no running session.",
                 "type": "number",
                 "minimum": 0
+              },
+              "idle_shutdown_minutes": {
+                "deprecated": true,
+                "description": "Replaced by daemon.idle_stop_minutes."
               }
             },
             "additionalProperties": false
@@ -2221,7 +2359,6 @@
                     "type": "string"
                   },
                   "title_model": {
-                    "default": "",
                     "type": "string"
                   },
                   "models": {
@@ -2231,9 +2368,14 @@
                       "type": "string"
                     }
                   },
-                  "permission_default": {
+                  "default_mode": {
+                    "description": "Permission mode of a new Claude session when none is chosen and none has been used yet; afterwards the last one used. Omitted: default (manual).",
                     "type": "string",
-                    "enum": ["manual", "default", "plan", "acceptEdits", "bypassPermissions"]
+                    "enum": ["manual", "default", "plan", "acceptEdits", "auto"]
+                  },
+                  "permission_default": {
+                    "deprecated": true,
+                    "description": "Replaced by providers.claude.default_mode."
                   },
                   "setting_sources": {
                     "default": ["project"],
@@ -2250,20 +2392,34 @@
                     }
                   },
                   "cli_path": {
-                    "default": "",
                     "type": "string"
                   },
+                  "network": {
+                    "type": "object",
+                    "properties": {
+                      "allowed_hosts": {
+                        "description": "Hosts (host or host:port) the Claude worker may reach besides its built-in list: api.anthropic.com, claude.ai, platform.claude.com, registry.npmjs.org, npmjs.com.",
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "additionalProperties": false
+                  },
                   "worker_allowed_hosts": {
-                    "default": [],
+                    "deprecated": true,
+                    "description": "Replaced by network.allowed_hosts, which adds to the built-in hosts; this one replaces them.",
                     "type": "array",
                     "items": {
                       "type": "string"
                     }
                   },
                   "prompt_cache_ttl": {
-                    "default": "",
+                    "description": "Prompt-cache lifetime: default (the provider's own choice), 5m, 1h, or off (no caching, full input price every turn).",
+                    "default": "default",
                     "type": "string",
-                    "enum": ["5m", "1h", ""]
+                    "enum": ["default", "5m", "1h", "off"]
                   },
                   "profiles": {
                     "type": "object",
@@ -2274,14 +2430,12 @@
                       "type": "object",
                       "properties": {
                         "config_dir": {
-                          "default": "",
                           "type": "string"
                         },
                         "tag": {
                           "type": "string"
                         },
                         "color": {
-                          "default": "",
                           "type": "string"
                         }
                       },
@@ -2292,11 +2446,12 @@
                 "additionalProperties": false
               },
               "echo": {
+                "description": "Present: show the local-only echo provider (no API calls or cost).",
                 "type": "object",
                 "properties": {
                   "enabled": {
-                    "default": true,
-                    "type": "boolean"
+                    "deprecated": true,
+                    "description": "Replaced by the presence of providers.echo."
                   }
                 },
                 "additionalProperties": false
@@ -2305,23 +2460,18 @@
                 "type": "object",
                 "properties": {
                   "base_url": {
-                    "default": "",
                     "type": "string"
                   },
                   "api_key_env": {
-                    "default": "",
                     "type": "string"
                   },
                   "api_key": {
-                    "default": "",
                     "type": "string"
                   },
                   "model": {
-                    "default": "",
                     "type": "string"
                   },
                   "models": {
-                    "default": [],
                     "type": "array",
                     "items": {
                       "type": "string"
@@ -2331,7 +2481,6 @@
                     "type": "string"
                   },
                   "color": {
-                    "default": "",
                     "type": "string"
                   },
                   "include_usage": {
@@ -2339,21 +2488,19 @@
                     "type": "boolean"
                   },
                   "prompt_cache_ttl": {
-                    "default": "",
+                    "description": "Prompt-cache lifetime: default (the provider's own choice), 5m, 1h, or off (no caching, full input price every turn).",
+                    "default": "default",
                     "type": "string",
-                    "enum": ["5m", "1h", "off", ""]
+                    "enum": ["default", "5m", "1h", "off"]
                   },
                   "title_model": {
-                    "default": "",
                     "description": "Model for automatic session titles; omit to use this provider’s default.",
                     "type": "string"
                   },
                   "config_dir": {
-                    "default": "",
                     "type": "string"
                   },
                   "cli_path": {
-                    "default": "",
                     "type": "string"
                   },
                   "builtin_web_search": {
@@ -2369,23 +2516,18 @@
                       "type": "object",
                       "properties": {
                         "base_url": {
-                          "default": "",
                           "type": "string"
                         },
                         "api_key_env": {
-                          "default": "",
                           "type": "string"
                         },
                         "api_key": {
-                          "default": "",
                           "type": "string"
                         },
                         "model": {
-                          "default": "",
                           "type": "string"
                         },
                         "models": {
-                          "default": [],
                           "type": "array",
                           "items": {
                             "type": "string"
@@ -2395,7 +2537,6 @@
                           "type": "string"
                         },
                         "color": {
-                          "default": "",
                           "type": "string"
                         },
                         "include_usage": {
@@ -2403,21 +2544,19 @@
                           "type": "boolean"
                         },
                         "prompt_cache_ttl": {
-                          "default": "",
+                          "description": "Prompt-cache lifetime: default (the provider's own choice), 5m, 1h, or off (no caching, full input price every turn).",
+                          "default": "default",
                           "type": "string",
-                          "enum": ["5m", "1h", "off", ""]
+                          "enum": ["default", "5m", "1h", "off"]
                         },
                         "title_model": {
-                          "default": "",
                           "description": "Model for automatic session titles; omit to use this provider’s default.",
                           "type": "string"
                         },
                         "config_dir": {
-                          "default": "",
                           "type": "string"
                         },
                         "cli_path": {
-                          "default": "",
                           "type": "string"
                         },
                         "builtin_web_search": {
@@ -2435,23 +2574,18 @@
                 "type": "object",
                 "properties": {
                   "base_url": {
-                    "default": "",
                     "type": "string"
                   },
                   "api_key_env": {
-                    "default": "",
                     "type": "string"
                   },
                   "api_key": {
-                    "default": "",
                     "type": "string"
                   },
                   "model": {
-                    "default": "",
                     "type": "string"
                   },
                   "models": {
-                    "default": [],
                     "type": "array",
                     "items": {
                       "type": "string"
@@ -2461,7 +2595,6 @@
                     "type": "string"
                   },
                   "color": {
-                    "default": "",
                     "type": "string"
                   },
                   "include_usage": {
@@ -2469,21 +2602,19 @@
                     "type": "boolean"
                   },
                   "prompt_cache_ttl": {
-                    "default": "",
+                    "description": "Prompt-cache lifetime: default (the provider's own choice), 5m, 1h, or off (no caching, full input price every turn).",
+                    "default": "default",
                     "type": "string",
-                    "enum": ["5m", "1h", "off", ""]
+                    "enum": ["default", "5m", "1h", "off"]
                   },
                   "title_model": {
-                    "default": "",
                     "description": "Model for automatic session titles; omit to use this provider’s default.",
                     "type": "string"
                   },
                   "config_dir": {
-                    "default": "",
                     "type": "string"
                   },
                   "cli_path": {
-                    "default": "",
                     "type": "string"
                   },
                   "builtin_web_search": {
@@ -2499,23 +2630,18 @@
                       "type": "object",
                       "properties": {
                         "base_url": {
-                          "default": "",
                           "type": "string"
                         },
                         "api_key_env": {
-                          "default": "",
                           "type": "string"
                         },
                         "api_key": {
-                          "default": "",
                           "type": "string"
                         },
                         "model": {
-                          "default": "",
                           "type": "string"
                         },
                         "models": {
-                          "default": [],
                           "type": "array",
                           "items": {
                             "type": "string"
@@ -2525,7 +2651,6 @@
                           "type": "string"
                         },
                         "color": {
-                          "default": "",
                           "type": "string"
                         },
                         "include_usage": {
@@ -2533,21 +2658,19 @@
                           "type": "boolean"
                         },
                         "prompt_cache_ttl": {
-                          "default": "",
+                          "description": "Prompt-cache lifetime: default (the provider's own choice), 5m, 1h, or off (no caching, full input price every turn).",
+                          "default": "default",
                           "type": "string",
-                          "enum": ["5m", "1h", "off", ""]
+                          "enum": ["default", "5m", "1h", "off"]
                         },
                         "title_model": {
-                          "default": "",
                           "description": "Model for automatic session titles; omit to use this provider’s default.",
                           "type": "string"
                         },
                         "config_dir": {
-                          "default": "",
                           "type": "string"
                         },
                         "cli_path": {
-                          "default": "",
                           "type": "string"
                         },
                         "builtin_web_search": {
@@ -2565,23 +2688,18 @@
                 "type": "object",
                 "properties": {
                   "base_url": {
-                    "default": "",
                     "type": "string"
                   },
                   "api_key_env": {
-                    "default": "",
                     "type": "string"
                   },
                   "api_key": {
-                    "default": "",
                     "type": "string"
                   },
                   "model": {
-                    "default": "",
                     "type": "string"
                   },
                   "models": {
-                    "default": [],
                     "type": "array",
                     "items": {
                       "type": "string"
@@ -2591,7 +2709,6 @@
                     "type": "string"
                   },
                   "color": {
-                    "default": "",
                     "type": "string"
                   },
                   "include_usage": {
@@ -2599,21 +2716,19 @@
                     "type": "boolean"
                   },
                   "prompt_cache_ttl": {
-                    "default": "",
+                    "description": "Prompt-cache lifetime: default (the provider's own choice), 5m, 1h, or off (no caching, full input price every turn).",
+                    "default": "default",
                     "type": "string",
-                    "enum": ["5m", "1h", "off", ""]
+                    "enum": ["default", "5m", "1h", "off"]
                   },
                   "title_model": {
-                    "default": "",
                     "description": "Model for automatic session titles; omit to use this provider’s default.",
                     "type": "string"
                   },
                   "config_dir": {
-                    "default": "",
                     "type": "string"
                   },
                   "cli_path": {
-                    "default": "",
                     "type": "string"
                   },
                   "builtin_web_search": {
@@ -2629,23 +2744,18 @@
                       "type": "object",
                       "properties": {
                         "base_url": {
-                          "default": "",
                           "type": "string"
                         },
                         "api_key_env": {
-                          "default": "",
                           "type": "string"
                         },
                         "api_key": {
-                          "default": "",
                           "type": "string"
                         },
                         "model": {
-                          "default": "",
                           "type": "string"
                         },
                         "models": {
-                          "default": [],
                           "type": "array",
                           "items": {
                             "type": "string"
@@ -2655,7 +2765,6 @@
                           "type": "string"
                         },
                         "color": {
-                          "default": "",
                           "type": "string"
                         },
                         "include_usage": {
@@ -2663,21 +2772,19 @@
                           "type": "boolean"
                         },
                         "prompt_cache_ttl": {
-                          "default": "",
+                          "description": "Prompt-cache lifetime: default (the provider's own choice), 5m, 1h, or off (no caching, full input price every turn).",
+                          "default": "default",
                           "type": "string",
-                          "enum": ["5m", "1h", "off", ""]
+                          "enum": ["default", "5m", "1h", "off"]
                         },
                         "title_model": {
-                          "default": "",
                           "description": "Model for automatic session titles; omit to use this provider’s default.",
                           "type": "string"
                         },
                         "config_dir": {
-                          "default": "",
                           "type": "string"
                         },
                         "cli_path": {
-                          "default": "",
                           "type": "string"
                         },
                         "builtin_web_search": {
@@ -2695,23 +2802,18 @@
                 "type": "object",
                 "properties": {
                   "base_url": {
-                    "default": "",
                     "type": "string"
                   },
                   "api_key_env": {
-                    "default": "",
                     "type": "string"
                   },
                   "api_key": {
-                    "default": "",
                     "type": "string"
                   },
                   "model": {
-                    "default": "",
                     "type": "string"
                   },
                   "models": {
-                    "default": [],
                     "type": "array",
                     "items": {
                       "type": "string"
@@ -2721,7 +2823,6 @@
                     "type": "string"
                   },
                   "color": {
-                    "default": "",
                     "type": "string"
                   },
                   "include_usage": {
@@ -2729,21 +2830,19 @@
                     "type": "boolean"
                   },
                   "prompt_cache_ttl": {
-                    "default": "",
+                    "description": "Prompt-cache lifetime: default (the provider's own choice), 5m, 1h, or off (no caching, full input price every turn).",
+                    "default": "default",
                     "type": "string",
-                    "enum": ["5m", "1h", "off", ""]
+                    "enum": ["default", "5m", "1h", "off"]
                   },
                   "title_model": {
-                    "default": "",
                     "description": "Model for automatic session titles; omit to use this provider’s default.",
                     "type": "string"
                   },
                   "config_dir": {
-                    "default": "",
                     "type": "string"
                   },
                   "cli_path": {
-                    "default": "",
                     "type": "string"
                   },
                   "builtin_web_search": {
@@ -2759,23 +2858,18 @@
                       "type": "object",
                       "properties": {
                         "base_url": {
-                          "default": "",
                           "type": "string"
                         },
                         "api_key_env": {
-                          "default": "",
                           "type": "string"
                         },
                         "api_key": {
-                          "default": "",
                           "type": "string"
                         },
                         "model": {
-                          "default": "",
                           "type": "string"
                         },
                         "models": {
-                          "default": [],
                           "type": "array",
                           "items": {
                             "type": "string"
@@ -2785,7 +2879,6 @@
                           "type": "string"
                         },
                         "color": {
-                          "default": "",
                           "type": "string"
                         },
                         "include_usage": {
@@ -2793,21 +2886,19 @@
                           "type": "boolean"
                         },
                         "prompt_cache_ttl": {
-                          "default": "",
+                          "description": "Prompt-cache lifetime: default (the provider's own choice), 5m, 1h, or off (no caching, full input price every turn).",
+                          "default": "default",
                           "type": "string",
-                          "enum": ["5m", "1h", "off", ""]
+                          "enum": ["default", "5m", "1h", "off"]
                         },
                         "title_model": {
-                          "default": "",
                           "description": "Model for automatic session titles; omit to use this provider’s default.",
                           "type": "string"
                         },
                         "config_dir": {
-                          "default": "",
                           "type": "string"
                         },
                         "cli_path": {
-                          "default": "",
                           "type": "string"
                         },
                         "builtin_web_search": {
@@ -2891,11 +2982,9 @@
                   "enum": ["always", "unfocused", "disconnected"]
                 },
                 "name": {
-                  "default": "",
                   "type": "string"
                 },
                 "project": {
-                  "default": "",
                   "type": "string"
                 },
                 "match": {
@@ -2912,13 +3001,17 @@
                   ]
                 },
                 "timeout": {
+                  "deprecated": true,
+                  "description": "Replaced by timeout_seconds."
+                },
+                "timeout_seconds": {
                   "default": 30,
                   "description": "Hook timeout in seconds; clamped to 1–3600.",
                   "type": "number"
                 }
               },
               "required": ["run"],
-              "additionalProperties": false
+              "additionalProperties": {}
             }
           },
           "search": {
@@ -2930,15 +3023,12 @@
                 "enum": ["none", "brave", "tavily"]
               },
               "api_key_env": {
-                "default": "",
                 "type": "string"
               },
               "api_key": {
-                "default": "",
                 "type": "string"
               },
               "api_base": {
-                "default": "",
                 "type": "string"
               },
               "max_results": {
@@ -2990,6 +3080,10 @@
                       "enum": ["manual", "default", "plan", "acceptEdits", "auto"]
                     },
                     "mcp": {
+                      "deprecated": true,
+                      "description": "Replaced by mcp_servers."
+                    },
+                    "mcp_servers": {
                       "description": "The session MCP servers it gets, by name, plus loom-agents to let it start agents of its own. Omitted: all of them.",
                       "type": "array",
                       "items": {

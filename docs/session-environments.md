@@ -8,7 +8,7 @@ Enable automatic project shell activation in the trusted user config:
     {
       "path": "~/dev/my-project",
       "session": {
-        "auto_nix": true,
+        "environment": { "auto_nix": true },
         "isolation": { "network": { "presets": ["nix"] } },
       },
     },
@@ -16,14 +16,14 @@ Enable automatic project shell activation in the trusted user config:
 }
 ```
 
-These are independent controls. `session.auto_nix` permits project shell
+These are independent controls. `session.environment.auto_nix` permits project shell
 activation, locally and in VMs, and defaults to false. The `nix` network preset
 allows Nix downloads through the VM proxy; it neither enables activation nor
 controls host networking. A cached shell can activate without network access.
 Other package registries or custom binary caches may need additional presets or
 exact allowed hosts.
 
-Set `session.auto_nix` globally to enable it for all repositories, or override
+Set `session.environment.auto_nix` globally to enable it for all repositories, or override
 it in an existing `repos[]` entry. Repository-local Loom config is never read.
 Activation executes the project's shell hooks, so enable it for projects you
 trust.
@@ -92,7 +92,7 @@ Use a `workspace_start` hook for checkout dependencies:
 
 ```jsonc
 "hooks": [
-  { "on": "workspace_start", "run": "deno install --frozen", "timeout": 600 },
+  { "on": "workspace_start", "run": "deno install --frozen", "timeout_seconds": 600 },
 ]
 ```
 
@@ -107,7 +107,7 @@ For setup that can overlap with agent work, opt into background initialization:
 
 ```jsonc
 "hooks": [
-  { "on": "workspace_start", "run": "pnpm install --frozen-lockfile", "timeout": 600, "async": true },
+  { "on": "workspace_start", "run": "pnpm install --frozen-lockfile", "timeout_seconds": 600, "async": true },
 ]
 ```
 
@@ -125,8 +125,8 @@ Async hooks run again on resume or VM replacement.
 
 ## Advanced VM setup
 
-These optional `session.isolation.environment` settings are for custom VM setup.
-They are not needed for automatic Nix activation:
+These optional `session.environment` settings, beside `auto_nix`, are for custom
+VM setup. They are not needed for automatic Nix activation:
 
 - `command_prefix`: argv used to enter a custom environment at preparation and
   every session launch. It executes the appended command and propagates its exit
@@ -161,9 +161,11 @@ hosts. A known PID stays visible even when its counters cannot be read.
 
 ## Migrating older configuration
 
-Replace `session.environment.nix.auto_activate` with `session.auto_nix`, and
-remove `session.environment`. Automatic activation now defaults to false. Remove
-`session.isolation.environment.nix`; the writable store is automatic. The old
+Replace `session.environment.nix.auto_activate` with
+`session.environment.auto_nix`. Automatic activation now defaults to false.
+`session.auto_nix` and `session.isolation.environment` are still read as
+`session.environment`, with a warning. `session.isolation.environment.nix` is
+ignored; the writable store is automatic. The old
 `dev_shell` setting is removed; custom VM shell selection can use a prefix.
 
 Preparation no longer saves exported variables for later sessions. Move exports
@@ -173,7 +175,7 @@ Replace hook event `init` with `workspace_start`. Move
 `environment.init` into a `workspace_start` hook, then remove those settings.
 A hook can select both workspace events if it is blocking. Preparation hooks
 run in configuration order after activation, without provider credentials;
-failure aborts publication. Each hook has its own `timeout` (up to 3600 seconds).
+failure aborts publication. Each hook has its own `timeout_seconds` (up to 3600).
 Updated guest runtimes use environment format 7 and include devenv.
 Upgrade/rebuild older runtimes; older prepared disks are incompatible, but a new
 preparation is optional. On Apple Silicon, a Loom without a matching runtime
@@ -274,14 +276,14 @@ Configure installation using generic commands in your trusted repo settings:
   "defaults": { "workspace": "clone" },
   "isolation": {
     "network": { "presets": ["javascript"] },
-    "idle_timeout_minutes": 10,
+    "idle_stop_minutes": 10,
   },
 },
 "hooks": [
   {
     "on": ["workspace_prepare", "workspace_start"],
     "run": "pnpm install --frozen-lockfile --store-dir \"$LOOM_CACHE/pnpm\"",
-    "timeout": 600,
+    "timeout_seconds": 600,
   },
 ]
 ```
@@ -311,7 +313,7 @@ fs/network MCP kinds or combine tool network grants.
 
 Idle session VMs stop after ten minutes plus up to one sweep interval (30 seconds).
 Open shells, active work, outstanding requests, background tasks and keep-warm
-sessions prevent suspension. Set `idle_timeout_minutes: 0` to disable it.
+sessions prevent suspension. Set `session.isolation.idle_stop_minutes: 0` to disable it.
 The next message resumes the provider using its saved history and workspace.
 Local-provider sessions are not suspended by this policy. Confirmed-clean
 stopped inventory records are pruned after an hour; recoverable states remain.
@@ -361,7 +363,7 @@ For pnpm, an init command can explicitly select a shared store and copy imports:
           "name": "install dependencies",
           "on": "workspace_start",
           "run": "pnpm install --frozen-lockfile --store-dir=\"$XDG_DATA_HOME/pnpm/store\" --package-import-method=copy",
-          "timeout": 600,
+          "timeout_seconds": 600,
         },
       ],
     },

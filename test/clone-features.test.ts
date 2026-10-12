@@ -69,8 +69,8 @@ test("clone daemon routes auto/manual rebase, dirty reminders and checks through
     },
     config: JSON.stringify({
       session: {
-        auto_resume: { enabled: false },
-        auto_rebase: { enabled: true },
+        auto_resume: false,
+        auto_rebase: "rebase",
         isolation: {
           enabled: true,
           claude: { artifact: "/test-runtime" },

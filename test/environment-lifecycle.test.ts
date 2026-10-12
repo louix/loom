@@ -36,12 +36,8 @@ test("base updates wait for idle, preserve the session, and queue messages throu
     }
   ],
   "session": {
-    "commit_reminder": {
-      "enabled": false
-    },
-    "auto_rebase": {
-      "enabled": false
-    }
+    "commit_reminder": false,
+    "auto_rebase": "off"
   }
 }`,
     connectors: {
@@ -224,9 +220,7 @@ test("a fork initializes its new worktree once even when its transcript is resum
     }
   ],
   "session": {
-    "commit_reminder": {
-      "enabled": false
-    }
+    "commit_reminder": false
   }
 }`,
     connectors: { "@loom/connector-mock": async () => ({ createProvider: async () => fake }) },

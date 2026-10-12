@@ -9,7 +9,8 @@ import { MCP_CAPABILITIES } from "@loom/core/types";
 import { LOOM_AGENTS_SERVER, SELF_PROFILE } from "@loom/core/agents";
 import { mcpOAuthConfigSchema } from "../daemon/mcp-oauth-model.ts";
 import { validateOAuthUrl } from "../daemon/mcp-oauth-endpoint.ts";
-import { sessionEnvironmentSchema } from "../../../../core/src/session-environment.ts";
+import { sessionEnvironmentFields } from "../../../../core/src/session-environment.ts";
+import { sessionModeSchema } from "@loom/core/types";
 import {
   networkPresetsSchema,
   extraHostsSchema,
@@ -18,9 +19,7 @@ import { gitVisibleRefsSchema } from "../../../../runtime/src/session-vm/git-rel
 import type { HookEvent, LoomConfig } from "./config.ts";
 import { gitIdentitySchema } from "./git-identity.ts";
 
-const record = (v: unknown): Record<string, unknown> =>
-  v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
-// Tell JSON Schema about the values users write before our lenient preprocessing.
+// Tell JSON Schema about the values users write before preprocessing.
 const editorInputs = new WeakMap<object, z.ZodType>();
 const preprocess = <T extends z.ZodType>(
   fn: (v: unknown) => unknown,
@@ -31,15 +30,31 @@ const preprocess = <T extends z.ZodType>(
   editorInputs.set(result, input);
   return result;
 };
-const section = <T extends z.ZodRawShape>(shape: T) => preprocess(record, z.object(shape));
-const text = (fallback = "") => z.string().catch(fallback);
-const flag = (fallback: boolean) => z.boolean().catch(fallback);
-const strings = (fallback: string[] = []) =>
+// parseSettings drops a key flagged with this and reports it; the editor schema rejects it.
+const UNKNOWN_KEY = "loom_unknown_key";
+/** An object whose unknown keys are reported and ignored rather than rejected; null reads as absent. */
+const section = <T extends z.ZodRawShape>(shape: T) =>
   preprocess(
-    (v) => (Array.isArray(v) ? v.filter((x) => typeof x === "string") : v),
-    z.array(z.string()).catch(fallback),
+    (v) => v ?? {},
+    z.looseObject(shape).superRefine((value, ctx) => {
+      for (const key of Object.keys(value))
+        if (!Object.hasOwn(shape, key))
+          ctx.addIssue({
+            code: "custom",
+            path: [key],
+            message: "unknown setting",
+            params: { [UNKNOWN_KEY]: true },
+          });
+    }),
+    z.strictObject(shape),
   );
-const nonNegative = (fallback: number) => z.number().nonnegative().catch(fallback);
+const text = (fallback: string) => z.string().default(fallback);
+/** `""` reads as unset, which is what it always meant. */
+const optionalText = () =>
+  preprocess((v) => (v === "" ? undefined : v), z.string().optional(), z.string().optional());
+const flag = (fallback: boolean) => z.boolean().default(fallback);
+const strings = (fallback: string[] = []) => z.array(z.string()).default(fallback);
+const nonNegative = (fallback: number) => z.number().nonnegative().default(fallback);
 // Removed and renamed keys never reach the schema (legacy-keys.ts drops or moves
 // them first); listing them keeps editors from flagging an older config as invalid.
 const deprecated = (description: string) =>
@@ -53,7 +68,7 @@ const ids = z
   )
   .transform((v) => [...new Set(v)]);
 const runtime = preprocess(
-  record,
+  (v) => v ?? {},
   z.strictObject({
     artifact: z
       .string()
@@ -103,7 +118,7 @@ export const mcpDefinitionSchema = z
   .strictObject({
     ...toolDefaults,
     source: mcpSourceSchema,
-    execution: z.literal("vm").optional(),
+    execution: deprecated("No longer read: a local source always runs in a VM."),
     grants: mcpGrantsConfigSchema.optional(),
     auth: z
       .strictObject({
@@ -133,17 +148,13 @@ export const mcpDefinitionSchema = z
           });
         }
       }
-      if (value.execution || value.grants)
+      if (value.grants)
         ctx.addIssue({
           code: "custom",
-          message: "Remote MCPs cannot receive local execution or filesystem/network grants",
+          message: "Remote MCPs cannot receive filesystem/network grants",
         });
-    } else {
-      if (value.execution !== "vm")
-        ctx.addIssue({ code: "custom", message: "Local MCPs require execution: vm" });
-      if (value.auth)
-        ctx.addIssue({ code: "custom", message: "Authentication is only supported for HTTP MCPs" });
-    }
+    } else if (value.auth)
+      ctx.addIssue({ code: "custom", message: "Authentication is only supported for HTTP MCPs" });
   });
 export const toolSettingsSchema = z.object({
   mcp_servers: z.record(toolName, mcpDefinitionSchema).default({}),
@@ -202,23 +213,32 @@ export const toolSettingsSchema = z.object({
 });
 export type ToolSettings = z.output<typeof toolSettingsSchema>;
 
-const providerTag = z.string().optional().catch(undefined);
+const providerTag = z.string().optional();
+const trimmedText = () => optionalText().transform((v) => v?.trim() || undefined);
+/** One enum for every provider; `""` is what absent was spelled as before. */
+const promptCacheTtl = preprocess(
+  (v) => (v === "" ? undefined : v),
+  z.enum(["default", "5m", "1h", "off"]).default("default"),
+  z.enum(["default", "5m", "1h", "off"]).optional(),
+).describe(
+  "Prompt-cache lifetime: default (the provider's own choice), 5m, 1h, or off (no caching, full input price every turn).",
+);
 
 const providerFields = {
-  base_url: text(),
-  api_key_env: text(),
-  api_key: text(),
-  model: text(),
-  models: strings().optional(),
+  base_url: optionalText(),
+  api_key_env: optionalText(),
+  api_key: optionalText(),
+  model: optionalText(),
+  models: z.array(z.string()).optional(),
   tag: providerTag,
-  color: text(),
+  color: optionalText(),
   include_usage: flag(true),
-  prompt_cache_ttl: z.enum(["5m", "1h", "off", ""]).catch(""),
-  title_model: text().describe(
+  prompt_cache_ttl: promptCacheTtl,
+  title_model: optionalText().describe(
     "Model for automatic session titles; omit to use this provider’s default.",
   ),
-  config_dir: text(),
-  cli_path: text(),
+  config_dir: optionalText(),
+  cli_path: optionalText(),
   builtin_web_search: flag(false),
 };
 
@@ -235,6 +255,12 @@ const names = (what: string) =>
     .refine((v) => new Set(v).size === v.length, `duplicate ${what}`)
     .optional();
 
+const sessionMode = preprocess(
+  (v) => (v === "manual" ? "default" : v),
+  sessionModeSchema,
+  z.enum(["manual", ...sessionModeSchema.options]),
+);
+
 /** One `agents.profiles` entry: what a child started with it runs as. */
 export const agentProfileSchema = z.strictObject({
   description: requiredText.describe(
@@ -245,14 +271,11 @@ export const agentProfileSchema = z.strictObject({
     .describe("Provider id, e.g. claude:personal or codex; omitted runs on the spawner's own."),
   model: requiredText.optional().describe("Model id; omitted takes the provider's default."),
   effort: requiredText.optional().describe("Thinking effort, for models that accept one."),
-  mode: preprocess(
-    (v) => (v === "manual" ? "default" : v),
-    z.enum(["default", "plan", "acceptEdits", "auto"]),
-    z.enum(["manual", "default", "plan", "acceptEdits", "auto"]),
-  )
+  mode: sessionMode
     .optional()
     .describe("Permission mode; omitted takes the spawner's own (plan becomes manual)."),
-  mcp: names("MCP servers").describe(
+  mcp: deprecated("Replaced by mcp_servers."),
+  mcp_servers: names("MCP servers").describe(
     `The session MCP servers it gets, by name, plus ${LOOM_AGENTS_SERVER} to let it start agents of its own. Omitted: all of them.`,
   ),
   skills: names("skills").describe(
@@ -308,16 +331,17 @@ export const createConfigSchema = (d: LoomConfig, events: readonly HookEvent[]) 
       .enum(["always", "unfocused", "disconnected"])
       .default("always")
       .describe("Notification hooks: always, no focused TUI, or no connected TUI."),
-    name: text().transform((v) => v.trim()),
-    project: text().transform((v) => v.trim()),
+    name: trimmedText(),
+    project: trimmedText(),
     match: preprocess(
-      (v) => (Array.isArray(v) ? v : [v]),
+      (v) => (v === undefined || Array.isArray(v) ? v : [v]),
       strings(),
       z.union([z.string(), z.array(z.string())]).optional(),
     ),
-    timeout: z
+    timeout: deprecated("Replaced by timeout_seconds."),
+    timeout_seconds: z
       .number()
-      .catch(30)
+      .default(30)
       .describe("Hook timeout in seconds; clamped to 1–3600.")
       .transform((v) => Math.min(3_600_000, Math.max(1_000, Math.round(v * 1000)))),
   })
@@ -334,25 +358,25 @@ export const createConfigSchema = (d: LoomConfig, events: readonly HookEvent[]) 
       (h) => !h.async || h.on.every((e) => e === "workspace_start"),
       "async is only supported for workspace_start hooks",
     );
+  const runtimes = section({ claude: runtime, aisdk: runtime, codex: runtime });
   return section({
     ...toolSettingsSchema.shape,
     $schema: z.string().optional(),
-    base_branch: z
-      .string()
-      .optional()
-      .catch(undefined)
-      .describe(
-        "The repository's default branch for new sessions: the alternative the new-session prompt's base toggle (Alt+B) offers to the checked-out branch, and the base of sessions created without one (loom run). Unset: the toggle offers the remote's default branch, else init.defaultBranch, else main, and a session created without a base starts from the checked-out branch (HEAD's commit when detached). Each session keeps the base it was created with. Restart to apply.",
-      ),
-    worktree_dir: text(d.worktreeDir).describe(
-      "Exact worktree directory (absolute, ~/ or relative to the repository). Empty uses $XDG_DATA_HOME/loom/worktrees/<repo>-<hash>, defaulting to ~/.local/share. Existing sessions keep their paths. Restart to apply.",
-    ),
+    base_branch: deprecated("Replaced by session.defaults.base_branch."),
+    worktree_dir: deprecated("Replaced by session.worktree_dir."),
     db: deprecated(
       "No longer read. The database lives in $XDG_STATE_HOME/loom/repos/<repo>/loom.db; remove this setting.",
     ),
     git: gitIdentitySchema.optional(),
-    default_provider: text(d.defaultProvider),
-    daemon: section({ idle_shutdown_minutes: nonNegative(d.daemon.idleShutdownMinutes) }),
+    default_provider: optionalText().describe(
+      "Provider id new sessions use when the client names none; omitted, or not a configured provider: claude.",
+    ),
+    daemon: section({
+      idle_stop_minutes: nonNegative(d.daemon.idleStopMinutes).describe(
+        "Stop the daemon after this many minutes with no client and no running session.",
+      ),
+      idle_shutdown_minutes: deprecated("Replaced by daemon.idle_stop_minutes."),
+    }),
     tui: section({
       include_event_log_in_editor: flag(d.tui.includeEventLogInEditor).describe(
         "Open the event log alongside the input on Alt+E. Defaults to false; enabling this may require :wq! in Vim/Neovim.",
@@ -362,14 +386,20 @@ export const createConfigSchema = (d: LoomConfig, events: readonly HookEvent[]) 
       ),
     }),
     session: preprocess(
-      record,
+      (v) => v ?? {},
       z.strictObject({
-        auto_nix: z
-          .boolean()
-          .default(false)
-          .describe(
-            "Allow automatic project shell activation (devenv, flake.nix, shell.nix, default.nix), locally and in VMs. Does not grant network access.",
-          ),
+        environment: z
+          .strictObject({
+            auto_nix: z
+              .boolean()
+              .default(false)
+              .describe(
+                "Allow automatic project shell activation (devenv, flake.nix, shell.nix, default.nix), locally and in VMs. Does not grant network access. Ignored while command_prefix is set.",
+              ),
+            ...sessionEnvironmentFields,
+          })
+          .prefault({}),
+        auto_nix: deprecated("Replaced by session.environment.auto_nix."),
         local_tools: selections,
         vm_tools: selections,
         remote_tools: selections,
@@ -387,24 +417,58 @@ export const createConfigSchema = (d: LoomConfig, events: readonly HookEvent[]) 
             .describe(
               "What new sessions work in: in-place (the repository's own checkout, no branch), worktree (a git worktree on its own branch), or clone (VM sessions only: a private clone whose only remote is a host relay limited to the session's branch; host sessions get a worktree). Each new session can override it. Existing sessions keep theirs.",
             ),
+          base_branch: optionalText().describe(
+            "The repository's default branch for new sessions: the alternative the new-session prompt's base toggle (Alt+B) offers to the checked-out branch, and the base of sessions created without one (loom run). Unset: the toggle offers the remote's default branch, else init.defaultBranch, else main, and a session created without a base starts from the checked-out branch (HEAD's commit when detached). Each session keeps the base it was created with. Restart to apply.",
+          ),
         }),
+        worktree_dir: optionalText().describe(
+          "Exact worktree directory (absolute, ~/ or relative to the repository). Omitted: $XDG_DATA_HOME/loom/worktrees/<repo>-<hash>, defaulting to ~/.local/share. Existing sessions keep their paths. Restart to apply.",
+        ),
         worktree: deprecated("Replaced by session.defaults.workspace."),
-        auto_rebase: section({
-          enabled: flag(d.autoRebase.enabled),
-          mode: z.enum(["rebase", "merge"]).catch("rebase"),
-        }),
-        auto_resume: section({ enabled: flag(d.autoResume.enabled) }),
-        commit_reminder: section({ enabled: flag(d.commitReminder.enabled) }),
+        auto_rebase: z
+          .enum(["off", "rebase", "merge"])
+          .default(d.autoRebase)
+          .describe(
+            "Keep each idle session's branch current with its base: off, rebase (replay the branch) or merge. A conflict or an uncommitted worktree asks the agent to integrate instead.",
+          ),
+        auto_resume: flag(d.autoResume).describe(
+          "After a daemon restart, revive sessions it cut off mid-turn and ask them to continue. Sessions waiting on a person stay interrupted.",
+        ),
+        commit_reminder: flag(d.commitReminder).describe(
+          "Remind an agent that goes idle with uncommitted changes to commit, once per commit.",
+        ),
         titles: deprecated("No longer read; session titles are always generated."),
         notify: deprecated(
           "No longer read; use a hooks entry (on: waiting) instead of the webhook.",
         ),
-        provider_access: section({ only: ids.optional(), disabled: ids.default([]) }),
+        provider_access: section({
+          allow: ids
+            .optional()
+            .describe("Only these provider ids may start sessions; omitted allows every one."),
+          deny: ids.default([]).describe("Provider ids that may not start sessions."),
+          only: deprecated("Replaced by session.provider_access.allow."),
+          disabled: deprecated("Replaced by session.provider_access.deny."),
+        }),
+        clone: section({
+          visible_refs: gitVisibleRefsSchema.describe(
+            "Extra ref prefixes advertised to a clone session, such as refs/tags/. Its base and own branch are always advertised. Ref filtering is not a confidentiality boundary: clone sessions must be trusted to read repository history.",
+          ),
+          max_push_bytes: z
+            .number()
+            .int()
+            .min(1024 * 1024)
+            .max(64 * 1024 * 1024 * 1024)
+            .default(512 * 1024 * 1024)
+            .describe("Largest push a clone session may publish to its branch, in bytes."),
+        }),
         isolation: section({
           enabled: deprecated("Replaced by session.defaults.isolation."),
-          claude: runtime,
-          aisdk: runtime,
-          codex: runtime,
+          runtimes: runtimes.describe(
+            "Per-provider session VM runtime overrides: artifact (and smolvm) paths for claude, aisdk and codex.",
+          ),
+          claude: deprecated("Replaced by session.isolation.runtimes.claude."),
+          aisdk: deprecated("Replaced by session.isolation.runtimes.aisdk."),
+          codex: deprecated("Replaced by session.isolation.runtimes.codex."),
           network: section({
             allowed_hosts: extraHostsSchema.describe(
               "Exact DNS names VM sessions may reach over HTTPS (port 443); no URLs, IPs or wildcards.",
@@ -415,67 +479,80 @@ export const createConfigSchema = (d: LoomConfig, events: readonly HookEvent[]) 
           }),
           extra_allowed_hosts: deprecated("Replaced by session.isolation.network.allowed_hosts."),
           network_presets: deprecated("Replaced by session.isolation.network.presets."),
-          environment: sessionEnvironmentSchema,
-          idle_timeout_minutes: z
+          // Its settings moved to session.environment first; anything left is unknown.
+          environment: preprocess(
+            (v) => v,
+            z.strictObject({}).optional(),
+            z
+              .strictObject(sessionEnvironmentFields)
+              .optional()
+              .meta({ deprecated: true })
+              .describe("Replaced by session.environment."),
+          ),
+          idle_stop_minutes: z
             .number()
             .int()
             .min(0)
             .max(1440)
             .default(10)
             .describe(
-              "Stop idle session VMs after this many minutes; preserve their workspace and history. Zero disables idle shutdown. Open shells, active tasks and keep-warm sessions are excluded.",
+              "Stop idle session VMs after this many minutes; preserve their workspace and history. Zero disables idle stopping. Open shells, active tasks and keep-warm sessions are excluded.",
             ),
+          idle_timeout_minutes: deprecated("Replaced by session.isolation.idle_stop_minutes."),
           launcher: deprecated(
             "No longer read. Session VMs always start through the isolation library; remove this setting.",
           ),
-          checkout: section({
-            mode: deprecated("Replaced by session.defaults.workspace."),
-            visible_refs: gitVisibleRefsSchema.describe(
-              "Extra ref prefixes advertised to a clone session, such as refs/tags/. Its base and own branch are always advertised. Ref filtering is not a confidentiality boundary: clone sessions must be trusted to read repository history.",
-            ),
-            max_push_bytes: z
-              .number()
-              .int()
-              .min(1024 * 1024)
-              .max(64 * 1024 * 1024 * 1024)
-              .default(512 * 1024 * 1024),
-          }),
+          checkout: deprecated(
+            "Replaced by session.defaults.workspace (mode) and session.clone (visible_refs, max_push_bytes).",
+          ),
         }),
       }),
     ),
     providers: preprocess(
-      record,
+      (v) => v ?? {},
       z.strictObject({
         claude: section({
           tag: providerTag,
           model: text(d.providers.claude.model),
-          title_model: text(d.providers.claude.titleModel),
+          title_model: optionalText(),
           models: strings(d.providers.claude.models),
-          permission_default: preprocess(
-            (v) => (v === "manual" ? "default" : v),
-            z
-              .enum(["default", "plan", "acceptEdits", "bypassPermissions"])
-              .catch(d.providers.claude.permissionDefault),
-            z.enum(["manual", "default", "plan", "acceptEdits", "bypassPermissions"]).optional(),
-          ),
+          default_mode: sessionMode
+            .optional()
+            .describe(
+              "Permission mode of a new Claude session when none is chosen and none has been used yet; afterwards the last one used. Omitted: default (manual).",
+            ),
+          permission_default: deprecated("Replaced by providers.claude.default_mode."),
           setting_sources: strings(d.providers.claude.settingSources),
           disable_builtin: strings(d.providers.claude.disableBuiltin),
-          cli_path: text(d.providers.claude.cliPath),
-          worker_allowed_hosts: strings().optional(),
-          prompt_cache_ttl: z.enum(["5m", "1h", ""]).catch(d.providers.claude.promptCacheTtl),
+          cli_path: optionalText(),
+          network: section({
+            allowed_hosts: z
+              .array(z.string())
+              .optional()
+              .describe(
+                "Hosts (host or host:port) the Claude worker may reach besides its built-in list: api.anthropic.com, claude.ai, platform.claude.com, registry.npmjs.org, npmjs.com.",
+              ),
+          }),
+          worker_allowed_hosts: z
+            .array(z.string())
+            .optional()
+            .meta({ deprecated: true })
+            .describe(
+              "Replaced by network.allowed_hosts, which adds to the built-in hosts; this one replaces them.",
+            ),
+          prompt_cache_ttl: promptCacheTtl,
           profiles: preprocess(
-            record,
+            (v) => v ?? {},
             z.record(
               z.string(),
-              section({
-                config_dir: text().transform((v) => v.trim()),
-                tag: providerTag,
-                color: text().transform((v) => v.trim()),
-              }),
+              section({ config_dir: trimmedText(), tag: providerTag, color: trimmedText() }),
             ),
           ),
         }),
-        echo: z.strictObject({ enabled: z.boolean().default(true) }).optional(),
+        echo: z
+          .strictObject({ enabled: deprecated("Replaced by the presence of providers.echo.") })
+          .optional()
+          .describe("Present: show the local-only echo provider (no API calls or cost)."),
         codex: providerFamilySchema.optional(),
         google: providerFamilySchema.optional(),
         anthropic: providerFamilySchema.optional(),
@@ -492,43 +569,85 @@ export const createConfigSchema = (d: LoomConfig, events: readonly HookEvent[]) 
             );
           return v;
         },
-        z.enum(["none", "brave", "tavily"]).catch("none"),
+        z.enum(["none", "brave", "tavily"]).default("none"),
       ),
-      api_key_env: text(d.search.apiKeyEnv),
-      api_key: text(d.search.apiKey),
-      api_base: text(d.search.apiBase),
+      api_key_env: optionalText(),
+      api_key: optionalText(),
+      api_base: optionalText(),
       max_results: nonNegative(d.search.maxResults).transform((v) => Math.max(1, v)),
     }),
     agents: agentsSchema(d.agents.maxDepth),
   });
 };
 
-/** Report paths and expectations, never input values (which may be credentials). */
-export const parseSettings = <T extends z.ZodType>(schema: T, raw: unknown): z.output<T> => {
+/** Unknown keys in lenient sections are dropped and reported, at their dotted path. */
+const stripUnknownKeys = (
+  schema: z.ZodType,
+  raw: unknown,
+  known: readonly string[] = [],
+): {
+  readonly result: ReturnType<z.ZodType["safeParse"]>;
+  readonly unknownKeys: readonly string[];
+} => {
   const result = schema.safeParse(raw);
-  if (result.success) return result.data;
+  const unknown = (result.error?.issues ?? []).filter(
+    (issue) => issue.code === "custom" && issue.params?.[UNKNOWN_KEY] === true,
+  );
+  if (unknown.length === 0) return { result, unknownKeys: known };
+  const stripped = unknown.reduce((value, issue) => withoutKey(value, issue.path), raw);
+  return stripUnknownKeys(schema, stripped, [...known, ...unknown.map((i) => showPath(i.path))]);
+};
+
+/**
+ * Report paths and expectations, never input values (which may be credentials).
+ * Unknown keys of a lenient section are not errors; they come back to be reported.
+ */
+export const parseSettings = <T extends z.ZodType>(
+  schema: T,
+  raw: unknown,
+): { readonly value: z.output<T>; readonly unknownKeys: readonly string[] } => {
+  const { result, unknownKeys } = stripUnknownKeys(schema, raw);
+  // Sound: stripUnknownKeys parsed with `schema` itself.
+  if (result.success) return { value: result.data as z.output<T>, unknownKeys };
   throw new Error(
     result.error.issues
       .map((issue) => {
+        const path = showPath(issue.path) || "config";
         if (
           issue.code === "unrecognized_keys" &&
-          issue.path.join(".") === "session" &&
-          issue.keys.includes("environment")
-        )
-          return "session.environment.nix has been replaced by session.auto_nix (boolean, default false). Remove session.environment; named shells can use an explicit VM command_prefix.";
-        if (
-          issue.code === "unrecognized_keys" &&
-          issue.path.join(".") === "session.isolation.environment" &&
+          path === "session.environment" &&
           issue.keys.includes("nix")
         )
-          return "Remove session.isolation.environment.nix; Loom supplies the writable Nix store automatically. Use session.auto_nix to allow project shell activation.";
-        const path = issue.path.join(".") || "config";
-        return issue.code === "unrecognized_keys"
-          ? `Unknown setting ${path}.${issue.keys.join(", ")}`
-          : `${path}: ${issue.message}`;
+          return "session.environment.nix has been replaced by session.environment.auto_nix (boolean, default false).";
+        if (issue.code === "unrecognized_keys")
+          return `Unknown setting ${path}.${issue.keys.join(", ")}`;
+        // Zod's own wording starts with "Invalid input: expected …"; the path already says where.
+        return `${path}: ${issue.message.replace(/^Invalid (input|option): /, "")}`;
       })
       .join("; "),
   );
+};
+
+/** The keys `parseSettings` would report as unknown, whatever else is wrong with `raw`. */
+export const unknownSettingKeys = (schema: z.ZodType, raw: unknown): readonly string[] =>
+  stripUnknownKeys(schema, raw).unknownKeys;
+
+/** `hooks[2].name`, `session.auto_rebase` */
+const showPath = (path: readonly PropertyKey[]): string =>
+  path
+    .map((key, i) => (typeof key === "number" ? `[${key}]` : `${i > 0 ? "." : ""}${String(key)}`))
+    .join("");
+
+const withoutKey = (value: unknown, path: readonly PropertyKey[]): unknown => {
+  const [head, ...rest] = path;
+  if (head === undefined) return value;
+  if (Array.isArray(value) && typeof head === "number")
+    return rest.length === 0
+      ? value
+      : value.map((entry, i) => (i === head ? withoutKey(entry, rest) : entry));
+  if (!value || typeof value !== "object" || typeof head !== "string") return value;
+  const { [head]: child, ...others } = value as Record<string, unknown>;
+  return rest.length === 0 ? others : { ...others, [head]: withoutKey(child, rest) };
 };
 
 /** Generate editor input schemas from the same Zod definitions used at runtime. */

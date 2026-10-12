@@ -159,14 +159,14 @@ The command reads the old file and validates it as Loom would; it never writes
 to it, and Loom keeps using it. `--out` writes the new file and refuses any path
 that exists. The report lists every setting under one of:
 
-- **converted**: `session.auto_nix` → `environment.nix.auto`;
-  `session.isolation.environment` → `commandPrefix`, `timeoutSeconds`,
-  `resources`; `session.isolation.network.allowed_hosts`/`presets` →
+- **converted**: `session.environment.auto_nix` → `environment.nix.auto`;
+  `session.environment.command_prefix`, `timeout_seconds`, `cpus`, `memory_mib`
+  → `commandPrefix`, `timeoutSeconds`, `resources`; `session.isolation.network.allowed_hosts`/`presets` →
   `access.network.allowedHosts`/`presets`; `session.defaults.isolation` and
   `session.defaults.workspace` → `lifecycle.execution`/`workspace` (deprecated
-  names such as `session.isolation.enabled` convert as their replacements, with
-  a note);
-  `idle_timeout_minutes` → `lifecycle.idleTimeoutMinutes`; `workspace_prepare`
+  names such as `session.isolation.enabled` or `session.auto_nix` convert as
+  their replacements, with a note);
+  `session.isolation.idle_stop_minutes` → `lifecycle.idleTimeoutMinutes`; `workspace_prepare`
   and `workspace_start` hooks → `environment.prepare`/`start`.
 - **stays in Loom config**: providers, models and modes, TUI, daemon, tools and
   MCP servers, search, Git identity, worktree/branch/database settings,

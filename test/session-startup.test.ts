@@ -54,11 +54,11 @@ test("environment warnings cover enabled runtimes once across provider profiles"
   assert(providers.includes("codex"));
   assert(providers.includes("generic"));
   assert.equal(providers.filter((id) => config.providers.aisdk[id]?.sdk === "chatgpt").length, 1);
-  config.providerAccess.only = ["codex"];
+  config.providerAccess.allow = ["codex"];
   assert.deepEqual(environmentProviders(config), ["codex"]);
-  config.providerAccess.disabled = ["codex"];
+  config.providerAccess.deny = ["codex"];
   assert.deepEqual(environmentProviders(config), []);
-  config.providerAccess = { disabled: [] };
+  config.providerAccess = { deny: [] };
   config.isolation.codex = config.isolation.claude!;
   config.isolation.aisdk = config.isolation.claude!;
   assert.deepEqual(environmentProviders(config), [providers[0]]);
@@ -75,7 +75,7 @@ test("preparation uses available images with local defaults and no provider prof
         codex: shared,
         aisdk: custom,
       },
-      provider_access: { only: ["codex"], disabled: ["codex"] },
+      provider_access: { allow: ["codex"], disabled: ["codex"] },
     },
   });
   config.claudeProfiles = [];

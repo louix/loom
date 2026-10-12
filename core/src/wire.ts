@@ -530,8 +530,8 @@ export const providerInfoSchema = z.object({
   defaultEffort: z.string(),
   /**
    * Permission mode a new session gets when none is chosen: the last one a
-   * session was created with (remembered across restarts), else `default`
-   * (manual). Same value on every entry — it isn't per-provider.
+   * session was created with (remembered across restarts), else Claude's
+   * configured `default_mode` on Claude entries, else `default` (manual).
    */
   defaultMode: sessionModeSchema,
   /** The modes this provider offers, in cycle order, once known and when

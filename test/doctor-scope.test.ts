@@ -36,22 +36,22 @@ test("doctor respects provider only and disabled for models, credentials and Cla
       },
     },
   });
-  config.providerAccess = { only: ["mock"], disabled: [] };
+  config.providerAccess = { allow: ["mock"], deny: [] };
   assert.deepEqual(lintConfig(config, {}), []);
-  config.providerAccess = { only: ["mock", "sference"], disabled: ["sference"] };
+  config.providerAccess = { allow: ["mock", "sference"], deny: ["sference"] };
   assert.deepEqual(lintConfig(config, {}), []);
-  config.providerAccess = { only: ["sference"], disabled: [] };
+  config.providerAccess = { allow: ["sference"], deny: [] };
   const enabled = lintConfig(config, {}).join("\n");
   assert.match(enabled, /MISSING_KEY/);
   assert.match(enabled, /https:\/\/api.sference.com\/v1\/models/);
   assert.doesNotMatch(enabled, /llmbase|claude profile|v1\/\/models/);
-  config.providerAccess = { disabled: ["sference", "llmbase", "codex:personal"] };
+  config.providerAccess = { deny: ["sference", "llmbase", "codex:personal"] };
   assert.ok(lintConfig(config, {}).some((line) => line.startsWith("claude profile")));
 });
 
 test("Codex model warnings refer to its authenticated catalog", () => {
   const config = normalizeConfig({ providers: { codex: { profiles: { personal: {} } } } });
-  config.providerAccess = { only: ["codex:personal"], disabled: [] };
+  config.providerAccess = { allow: ["codex:personal"], deny: [] };
   const warnings = lintConfig(config, {}).join("\n");
   assert.match(warnings, /authenticated Codex catalog/);
   assert.doesNotMatch(warnings, /\/models/);

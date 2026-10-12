@@ -36,16 +36,16 @@ test("TUI editor event log defaults to false and accepts an opt-in", () => {
     cfg('{"tui":{"include_event_log_in_editor":false}}').tui.includeEventLogInEditor,
     false,
   );
-  assert.equal(
-    cfg('{"tui":{"include_event_log_in_editor":"yes"}}').tui.includeEventLogInEditor,
-    false,
+  assert.throws(
+    () => cfg('{"tui":{"include_event_log_in_editor":"yes"}}'),
+    /tui\.include_event_log_in_editor: expected boolean, received string/,
   );
 });
 
 test("TUI compat mode defaults to false and accepts an opt-in, per repo too", () => {
   assert.equal(cfg("").tui.compat, false);
   assert.equal(cfg('{"tui":{"compat":true}}').tui.compat, true);
-  assert.equal(cfg('{"tui":{"compat":"yes"}}').tui.compat, false);
+  assert.throws(() => cfg('{"tui":{"compat":"yes"}}'), /tui\.compat: expected boolean/);
   assert.equal(
     cfg('{"tui":{"compat":true,"include_event_log_in_editor":true}}').tui.includeEventLogInEditor,
     true,
@@ -223,10 +223,10 @@ test("include_usage defaults to true and can be turned off per provider", () => 
     }).providers.aisdk.p;
   assert.equal(profile()?.includeUsage, true);
   assert.equal(profile(false)?.includeUsage, false);
-  assert.equal(profile("no")?.includeUsage, true);
+  assert.throws(() => profile("no"), /include_usage: expected boolean/);
 });
 
-test("prompt_cache_ttl on an aisdk profile takes 5m / 1h / off, else unset", () => {
+test('prompt_cache_ttl on an aisdk profile takes default / 5m / 1h / off, absent or "" = default', () => {
   const ttl = (prompt_cache_ttl?: unknown) =>
     normalizeConfig({
       providers: {
@@ -240,14 +240,23 @@ test("prompt_cache_ttl on an aisdk profile takes 5m / 1h / off, else unset", () 
         },
       },
     }).providers.aisdk.p?.promptCacheTtl;
-  assert.equal(ttl(), "");
-  for (const value of ["5m", "1h", "off"]) assert.equal(ttl(value), value);
-  assert.equal(ttl("60m"), "");
-  assert.equal(ttl(true), "");
+  assert.equal(ttl(), "default");
+  assert.equal(ttl(""), "default");
+  for (const value of ["default", "5m", "1h", "off"]) assert.equal(ttl(value), value);
+  assert.throws(() => ttl("60m"), /prompt_cache_ttl: expected one of "default"\|"5m"\|"1h"\|"off"/);
+  assert.throws(() => ttl(true), /prompt_cache_ttl/);
 });
 
-test("[providers.claude] prompt_cache_ttl is unset by default — the CLI decides", () => {
-  assert.equal(cfg("").providers.claude.promptCacheTtl, "");
+test("[providers.claude] prompt_cache_ttl is default unless set — the CLI decides", () => {
+  assert.equal(cfg("").providers.claude.promptCacheTtl, "default");
+  assert.equal(
+    cfg('{"providers":{"claude":{"prompt_cache_ttl":""}}}').providers.claude.promptCacheTtl,
+    "default",
+  );
+  assert.equal(
+    cfg('{"providers":{"claude":{"prompt_cache_ttl":"off"}}}').providers.claude.promptCacheTtl,
+    "off",
+  );
   assert.equal(
     cfg(`{
   "providers": {
@@ -466,27 +475,34 @@ test("lintConfig flags unset env vars, auto-detect, keyless search", () => {
   assert.deepEqual(lintConfig({ ...cfg(""), claudeProfiles: [] }), []);
 });
 
-test("numeric config fields reject negatives / NaN; strArray keeps the valid entries", () => {
-  const c = cfg(`{
-  "daemon": {
-    "idle_shutdown_minutes": -5
-  },
-  "search": {
-    "max_results": -2
-  },
-  "providers": {
-    "claude": {
-      "disable_builtin": [
-        "Grep",
-        5,
-        "Glob"
-      ]
-    }
-  }
-}`);
-  assert.equal(c.daemon.idleShutdownMinutes, 30); // default
-  assert.equal(c.search.maxResults, 5); // default
-  assert.deepEqual(c.providers.claude.disableBuiltin, ["Grep", "Glob"]); // stray 5 dropped, not the whole list
+test("a value of the wrong type or range is an error naming its key", () => {
+  assert.equal(cfg("").daemon.idleStopMinutes, 30);
+  assert.equal(cfg("").search.maxResults, 5);
+  assert.throws(
+    () =>
+      cfg(`{
+  "daemon": { "idle_stop_minutes": -5 },
+  "search": { "max_results": -2 },
+  "providers": { "claude": { "disable_builtin": ["Grep", 5, "Glob"] } }
+}`),
+    (error: unknown) => {
+      assert(error instanceof Error);
+      assert.equal(
+        error.message,
+        "daemon.idle_stop_minutes: Too small: expected number to be >=0; " +
+          "providers.claude.disable_builtin[1]: expected string, received number; " +
+          "search.max_results: Too small: expected number to be >=0",
+      );
+      return true;
+    },
+  );
+  // Typos used to read as the default without a word.
+  assert.throws(
+    () => cfg('{"session": {"auto_resume": "no"}}'),
+    /^Error: session\.auto_resume: expected boolean, received string$/,
+  );
+  assert.throws(() => cfg('{"session": {"defaults": "vm"}}'), /session\.defaults: expected object/);
+  assert.throws(() => cfg('{"providers": {"claude": {"tag": 5}}}'), /providers\.claude\.tag/);
 });
 
 test("default_provider must be configured, else it falls back to claude", () => {
@@ -633,14 +649,14 @@ test("repo hooks append to global hooks without changing other array inheritance
       user,
       JSON.stringify({
         hooks,
-        session: { provider_access: { disabled: ["global-provider"] } },
+        session: { provider_access: { deny: ["global-provider"] } },
         repos: [{ path: dir, ...repo }],
       }),
     );
   try {
     write([globalHook], {
       hooks: [repoHook],
-      session: { provider_access: { disabled: ["repo-provider"] } },
+      session: { provider_access: { deny: ["repo-provider"] } },
     });
     const config = loadConfig(dir, user);
     assert.deepEqual(
@@ -655,7 +671,7 @@ test("repo hooks append to global hooks without changing other array inheritance
       loadConfig(join(dir, "other"), user).hooks.map((h) => h.run),
       ["true"],
     );
-    assert.deepEqual(config.providerAccess.disabled, ["repo-provider"]);
+    assert.deepEqual(config.providerAccess.deny, ["repo-provider"]);
 
     for (const repo of [{}, { hooks: [] }]) {
       write([globalHook], repo);
@@ -829,7 +845,7 @@ test("unknown provider families are rejected", () => {
 
 // --- [search] ---------------------------------------------------------------
 
-test("[search] parses a backend + key env + base; unknown backend → none", () => {
+test("[search] parses a backend + key env + base; an unknown backend is an error", () => {
   const c = cfg(`{
   "search": {
     "backend": "brave",
@@ -852,105 +868,38 @@ test("[search] parses a backend + key env + base; unknown backend → none", () 
 }`),
     /mcp_servers\.kagi.*session\.mcp_servers/,
   );
-  assert.equal(
-    cfg(`{
-  "search": {
-    "backend": "google"
-  }
-}`).search.backend,
-    "none",
+  assert.throws(
+    () => cfg('{"search": {"backend": "google"}}'),
+    /search\.backend: expected one of "none"\|"brave"\|"tavily"/,
   );
   assert.equal(cfg(``).search.backend, "none");
   assert.equal(cfg(``).search.maxResults, 5);
 });
 
-// --- [auto_rebase] --------------------------------------------------------
+// --- session.auto_rebase / auto_resume / commit_reminder -------------------
 
-test("[auto_rebase] defaults off/rebase; parses enabled + mode, unknown mode → rebase", () => {
-  assert.deepEqual(cfg("").autoRebase, { enabled: false, mode: "rebase" });
-
-  const c = cfg(`{
-  "session": {
-    "auto_rebase": {
-      "enabled": true,
-      "mode": "merge"
-    }
-  }
-}`);
-  assert.deepEqual(c.autoRebase, { enabled: true, mode: "merge" });
-
-  assert.equal(
-    cfg(`{
-  "session": {
-    "auto_rebase": {
-      "mode": "cherry-pick"
-    }
-  }
-}`).autoRebase.mode,
-    "rebase",
+test("session.auto_rebase defaults off and takes off / rebase / merge", () => {
+  assert.equal(cfg("").autoRebase, "off");
+  for (const mode of ["off", "rebase", "merge"] as const)
+    assert.equal(normalizeConfig({ session: { auto_rebase: mode } }).autoRebase, mode);
+  assert.throws(
+    () => normalizeConfig({ session: { auto_rebase: "cherry-pick" } }),
+    /session\.auto_rebase: expected one of "off"\|"rebase"\|"merge"/,
   );
-  assert.equal(
-    cfg(`{
-  "session": {
-    "auto_rebase": {
-      "enabled": "yes"
-    }
-  }
-}`).autoRebase.enabled,
-    false,
-  );
+  assert.throws(() => normalizeConfig({ session: { auto_rebase: true } }), /session\.auto_rebase/);
 });
 
-// --- [commit_reminder] --------------------------------------------------------
-
-test("[commit_reminder] defaults on; parses enabled, non-bool → default", () => {
-  assert.deepEqual(cfg("").commitReminder, { enabled: true });
-  assert.equal(
-    cfg(`{
-  "session": {
-    "commit_reminder": {
-      "enabled": false
-    }
-  }
-}`).commitReminder.enabled,
-    false,
-  );
-  assert.equal(
-    cfg(`{
-  "session": {
-    "commit_reminder": {
-      "enabled": "yes"
-    }
-  }
-}`).commitReminder.enabled,
-    true,
-  );
-});
-
-// --- [auto_resume] ----------------------------------------------------------
-
-test("[auto_resume] defaults on; parses enabled, non-bool → default", () => {
-  assert.deepEqual(cfg("").autoResume, { enabled: true });
-  assert.equal(
-    cfg(`{
-  "session": {
-    "auto_resume": {
-      "enabled": false
-    }
-  }
-}`).autoResume.enabled,
-    false,
-  );
-  assert.equal(
-    cfg(`{
-  "session": {
-    "auto_resume": {
-      "enabled": "yes"
-    }
-  }
-}`).autoResume.enabled,
-    true,
-  );
+test("session.commit_reminder and auto_resume default on and take a boolean", () => {
+  assert.equal(cfg("").commitReminder, true);
+  assert.equal(cfg("").autoResume, true);
+  const off = normalizeConfig({ session: { commit_reminder: false, auto_resume: false } });
+  assert.equal(off.commitReminder, false);
+  assert.equal(off.autoResume, false);
+  for (const key of ["commit_reminder", "auto_resume"])
+    assert.throws(
+      () => normalizeConfig({ session: { [key]: "yes" } }),
+      new RegExp(`session\\.${key}: expected boolean, received string`),
+    );
 });
 
 // --- claude profiles -----------------------------------------------------
@@ -1206,10 +1155,10 @@ test("project provider allow/deny lists and explicit VM disable override inherit
     `{
   "session": {
     "provider_access": {
-      "only": [
+      "allow": [
         "claude:work"
       ],
-      "disabled": []
+      "deny": []
     },
     "isolation": {
       "claude": {
@@ -1220,8 +1169,8 @@ test("project provider allow/deny lists and explicit VM disable override inherit
 }`,
   );
   assert.deepEqual(base.providerAccess, {
-    only: ["claude:work"],
-    disabled: [],
+    allow: ["claude:work"],
+    deny: [],
   });
   const raw = deepMerge(
     {
@@ -1245,10 +1194,10 @@ test("project provider allow/deny lists and explicit VM disable override inherit
     cfg(`{
   "session": {
     "provider_access": {
-      "only": []
+      "allow": []
     }
   }
-}`).providerAccess.only,
+}`).providerAccess.allow,
     [],
   );
   assert.throws(
@@ -1256,7 +1205,7 @@ test("project provider allow/deny lists and explicit VM disable override inherit
       cfg(`{
   "session": {
     "provider_access": {
-      "disabled": "claude"
+      "deny": "claude"
     }
   }
 }`),
@@ -1561,7 +1510,7 @@ test("repository overrides merge family and named profile settings before defaul
             profiles: { work: { config_dir: "/account", model: "one" } },
           },
         },
-        session: { auto_resume: { enabled: true } },
+        session: { auto_resume: true },
         repos: [
           {
             path: dir,
@@ -1571,7 +1520,7 @@ test("repository overrides merge family and named profile settings before defaul
                 profiles: { work: { model: "two" } },
               },
             },
-            session: { auto_resume: { enabled: false } },
+            session: { auto_resume: false },
           },
         ],
       }),
@@ -1581,7 +1530,7 @@ test("repository overrides merge family and named profile settings before defaul
     assert.equal(selected.providers.aisdk["codex:work"]?.configDir, "/account");
     assert.equal(selected.providers.aisdk["codex:work"]?.codexCliPath, "/bin/codex");
     assert.equal(selected.providers.aisdk["codex:work"]?.titleModel, "small");
-    assert.equal(selected.autoResume.enabled, false);
+    assert.equal(selected.autoResume, false);
     assert.equal(loadConfig(join(dir, "other"), file).providers.aisdk["codex:work"]?.model, "one");
   } finally {
     rmSync(dir, { recursive: true, force: true });

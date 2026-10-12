@@ -108,9 +108,9 @@ test("with a runtime build pending, a send waits out an idle shutdown and respec
     },
     config: JSON.stringify({
       session: {
-        auto_resume: { enabled: false },
-        auto_rebase: { enabled: false },
-        commit_reminder: { enabled: false },
+        auto_resume: false,
+        auto_rebase: "off",
+        commit_reminder: false,
         isolation: {
           enabled: true,
           claude: { artifact: builtRuntimePath(build) },
@@ -277,9 +277,9 @@ test("with a runtime build pending, a send during an environment refresh replies
     connectors,
     config: JSON.stringify({
       session: {
-        auto_resume: { enabled: false },
-        auto_rebase: { enabled: false },
-        commit_reminder: { enabled: false },
+        auto_resume: false,
+        auto_rebase: "off",
+        commit_reminder: false,
         isolation: { enabled: true, claude: { artifact } },
       },
     }),

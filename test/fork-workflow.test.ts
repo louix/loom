@@ -245,7 +245,7 @@ test("an unavailable source provider still forks, by handoff from Loom's stored 
     assert.equal(fork.provider, "fake");
     assert.equal(fork.forkKind, "handoff");
     assert.match(created.at(-1)!.prompt, /Remember the green gadget/);
-  }, `{ "default_provider": "fake", "session": { "provider_access": { "disabled": ["claude"] } } }`);
+  }, `{ "default_provider": "fake", "session": { "provider_access": { "deny": ["claude"] } } }`);
 });
 
 test("a destination that fails to start leaves no fork, worktree or branch behind", async () => {

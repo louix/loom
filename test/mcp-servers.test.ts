@@ -15,8 +15,7 @@ import { mcpCommand } from "../cli/src/mcp.ts";
 
 const tilth = {
   source: { kind: "runtime", ref: "tilth" },
-  execution: "vm",
-  grants: { workspace: "read-write", network: [] },
+  grants: { workspace: "read-write", network: { allowed_hosts: [] } },
   default_for: ["read", "edit"],
 };
 const kagi = {
@@ -55,7 +54,7 @@ test("Tilth and Kagi definitions resolve only when selected, with independent gr
     },
   ]);
   const minimal = normalizeConfig({
-    mcp_servers: { minimal: { source: tilth.source, execution: "vm" } },
+    mcp_servers: { minimal: { source: tilth.source } },
     session: { mcp_servers: ["minimal"] },
   });
   assert.deepEqual("runtime" in minimal.mcp[0]! && minimal.mcp[0].grants, {
@@ -64,12 +63,22 @@ test("Tilth and Kagi definitions resolve only when selected, with independent gr
   });
 });
 
+test("mcp_servers.*.execution is no longer read; a local source always runs in a VM", () => {
+  const cfg = normalizeConfig({
+    mcp_servers: { tilth: { ...tilth, execution: "vm" }, kagi: { ...kagi, execution: "vm" } },
+    session: { mcp_servers: ["tilth"] },
+  });
+  assert.equal(cfg.mcp[0]?.name, "tilth");
+  assert.deepEqual(
+    cfg.configKeyNotices?.map((n) => n.key),
+    ["mcp_servers.tilth.execution", "mcp_servers.kagi.execution"],
+  );
+});
+
 test("MCP catalogs reject permissions on remote servers and malformed local grants", () => {
   for (const definition of [
     { ...kagi, grants: {} },
-    { ...kagi, execution: "vm" },
     { ...tilth, auth: kagi.auth },
-    { source: tilth.source },
     { ...tilth, grants: { workspace: "all" } },
     { ...tilth, grants: { network: ["https://example.com"] } },
     // Only a whole leading `*.` label before a multi-label name is a pattern.

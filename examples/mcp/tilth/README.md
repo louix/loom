@@ -16,7 +16,6 @@ Copy this directory to a durable location, for example
         "executable": "tilth",
         "args": ["--mcp", "--edit"],
       },
-      "execution": "vm",
       "grants": { "workspace": "read-write", "network": { "allowed_hosts": [] } },
       "default_for": ["read", "write", "edit", "find", "grep"],
     },

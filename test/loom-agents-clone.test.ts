@@ -105,8 +105,8 @@ const withClones = async (fn: (env: Env) => Promise<void>): Promise<void> => {
     },
     config: JSON.stringify({
       session: {
-        auto_resume: { enabled: false },
-        auto_rebase: { enabled: true },
+        auto_resume: false,
+        auto_rebase: "rebase",
         isolation: {
           enabled: true,
           claude: { artifact: "/test-runtime" },

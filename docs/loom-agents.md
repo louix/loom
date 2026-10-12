@@ -50,7 +50,7 @@ and MCP servers:
       "model": "claude-sonnet-5-5",
       "effort": "medium",
       "mode": "auto",
-      "mcp": [],          // without "loom-agents" it cannot spawn
+      "mcp_servers": [],  // without "loom-agents" it cannot spawn
       "skills": [],
       "prompt": "You implement exactly the task you are given…"
     }
@@ -59,7 +59,8 @@ and MCP servers:
 ```
 
 Fields: `description` (what other agents read when choosing), provider/profile,
-model, effort, mode, enabled MCP servers and skills, tool allow/deny lists, and
+model, effort, mode, enabled MCP servers (`mcp_servers`, formerly `mcp`) and
+skills, tool allow/deny lists, and
 an inline `prompt` appended to the agent's own. A separate prompt file may come
 later. The new-session prompt lists the profiles under the providers (`⌥p`);
 no profile means today's settings.
@@ -181,8 +182,8 @@ children inside the supervisor's VM is a later shared-VM feature.
   attributed to the supervisor too, until the child's next turn starts. A
   user's stop is reported, including one that joins the supervisor's while
   it is under way; so are crashes and failures.
-- A child gets no automatic commit reminder (`[commit_reminder]`) or
-  auto-rebase nudge (`[auto_rebase]`): its turn end is simply its turn end, so
+- A child gets no automatic commit reminder (`session.commit_reminder`) or
+  auto-rebase nudge (`session.auto_rebase`): its turn end is simply its turn end, so
   a notification and `agent_wait` see it at once. A clean auto-rebase still
   moves its branch; a dirty or conflicted one leaves it alone, unannounced.
   Instead, the finished-turn notification says what the child's workspace

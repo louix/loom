@@ -2,11 +2,7 @@
 // Comments and trailing commas are supported. Repository-local files are not read.
 {
   "$schema": "./config.schema.json",
-  "base_branch": "main",
-  // Empty uses ~/.local/share/loom/worktrees/<repo>-<hash> (respects XDG_DATA_HOME).
-  // Override per repo with an absolute, ~/ or repo-relative directory.
-  "worktree_dir": "",
-  "daemon": { "idle_shutdown_minutes": 30 },
+  "daemon": { "idle_stop_minutes": 30 },
   // Session commits use your normal Git identity (Git config and GIT_AUTHOR_* /
   // GIT_COMMITTER_* / EMAIL). name/email override both roles; author/committer
   // override one. Literal {model}, {modelSlug} and {profile} are filled at launch.
@@ -18,7 +14,7 @@
     // Show the local-only Echo provider in the TUI (no API calls or cost).
     // "echo": {},
     "claude": {
-      "permission_default": "manual",
+      "default_mode": "manual", // until a session has been started with another mode
       // "cli_path": "/path/to/claude",
       // "title_model": "haiku",
       // Omit profiles to use ~/.claude. Named accounts appear as claude:work, etc.
@@ -51,13 +47,16 @@
   },
   "session": {
     // Allow project shell activation (devenv, flake.nix, shell.nix, default.nix).
-    "auto_nix": false, // opt in globally or for individual repos
+    "environment": { "auto_nix": false }, // opt in globally or for individual repos
     // What new sessions get unless they choose: isolation none or vm;
     // workspace in-place, worktree or clone (VM sessions only).
-    "defaults": { "isolation": "none", "workspace": "worktree" },
-    "auto_rebase": { "enabled": false, "mode": "rebase" }, // or merge
-    "auto_resume": { "enabled": true },
-    "commit_reminder": { "enabled": true },
+    "defaults": { "isolation": "none", "workspace": "worktree", "base_branch": "main" },
+    // Omitted: ~/.local/share/loom/worktrees/<repo>-<hash> (respects XDG_DATA_HOME).
+    // Override per repo with an absolute, ~/ or repo-relative directory.
+    // "worktree_dir": "/mnt/fast-drive/loom/worktrees",
+    "auto_rebase": "off", // or rebase, merge
+    "auto_resume": true,
+    "commit_reminder": true,
     "mcp_servers": [], // e.g. ["tilth", "kagi"] after configuring credentials
   },
   // Definitions are inert until selected in session.mcp_servers.
@@ -69,7 +68,6 @@
         "executable": "tilth",
         "args": ["--mcp", "--edit"],
       }, // copy examples/mcp/tilth and set its absolute path
-      "execution": "vm",
       "grants": { "workspace": "read-write", "network": { "allowed_hosts": [] } },
       "default_for": ["read", "write", "edit", "find", "grep"],
     },
@@ -90,7 +88,7 @@
       //   "model": "claude-sonnet-5-5",
       //   "effort": "medium",
       //   "mode": "auto",
-      //   "mcp": [], // without "loom-agents" it cannot start agents of its own
+      //   "mcp_servers": [], // without "loom-agents" it cannot start agents of its own
       //   "prompt": "You implement exactly the task you are given…",
       // },
     },
@@ -101,16 +99,16 @@
   "repos": [
     // {
     //   "path": "~/dev/my-project",
-    //   "worktree_dir": "/mnt/fast-drive/loom/my-project",
     //   "git": { "author": { "email": "me@work.example" } },
     //   "session": {
-    //     "auto_nix": true,
+    //     "worktree_dir": "/mnt/fast-drive/loom/my-project",
+    //     "environment": { "auto_nix": true },
     //     "defaults": { "isolation": "vm" },
     //     "isolation": { "network": { "presets": ["nix", "javascript"] } },
     //     "mcp_servers": ["tilth"],
-    //     "provider_access": { "only": ["claude:work"] },
+    //     "provider_access": { "allow": ["claude:work"] },
     //   },
-    //   "hooks": [{ "on": "workspace_start", "run": "deno install --frozen", "timeout": 600 }],
+    //   "hooks": [{ "on": "workspace_start", "run": "deno install --frozen", "timeout_seconds": 600 }],
     // },
   ],
 }

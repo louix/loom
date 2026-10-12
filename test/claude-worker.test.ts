@@ -9,6 +9,7 @@ import { makeLogger } from "../core/src/logger.ts";
 import {
   createClaudeWorkerProvider,
   claudeWorkerSpec,
+  CLAUDE_WORKER_HOSTS,
 } from "../backend/daemon/src/daemon/claude-worker.ts";
 import { launchLocalWorker } from "../backend/daemon/src/daemon/worker-launch.ts";
 import { RemoteWorkerSession } from "../backend/daemon/src/daemon/worker-provider.ts";
@@ -429,6 +430,14 @@ test(
         "title",
       );
       assert.deepEqual(spec.permissions.net, ["localhost:9876"]);
+      // network.allowed_hosts adds to the built-in hosts; the old key replaced them.
+      const extra = claudeWorkerSpec(
+        { ...f.ctx, config: { ...f.ctx.config, workerExtraHosts: ["localhost:9876"] } },
+        f.workspace,
+        "title",
+      );
+      assert.deepEqual(extra.permissions.net, [...CLAUDE_WORKER_HOSTS, "localhost:9876"]);
+      await Deno.remove(extra.cwd, { recursive: true });
       assert.equal(spec.env.KAGI_API_KEY, undefined);
       assert.equal(spec.permissions.read.includes(f.workspace), false);
       assert.equal(spec.permissions.write.includes(f.workspace), false);

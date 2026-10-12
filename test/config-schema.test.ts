@@ -61,7 +61,36 @@ test("editor schema validates user inputs, optional defaults, and repo overrides
     },
     { session: { isolation: { network: { presets: ["rust"] } } } },
     {
-      session: { auto_nix: true, isolation: { network: { presets: ["nix"], allowed_hosts: [] } } },
+      session: {
+        environment: { auto_nix: true, cpus: 2 },
+        isolation: { network: { presets: ["nix"], allowed_hosts: [] } },
+      },
+    },
+    {
+      session: {
+        auto_rebase: "merge",
+        auto_resume: false,
+        commit_reminder: false,
+        worktree_dir: "",
+        defaults: { base_branch: "main" },
+        provider_access: { allow: ["claude"], deny: [] },
+        clone: { visible_refs: ["refs/tags/"] },
+        isolation: { idle_stop_minutes: 0, runtimes: { claude: { artifact: "/runtime" } } },
+      },
+      daemon: { idle_stop_minutes: 5 },
+      default_provider: "",
+      providers: {
+        echo: {},
+        claude: {
+          default_mode: "auto",
+          prompt_cache_ttl: "off",
+          cli_path: "",
+          network: { allowed_hosts: ["localhost:9876"] },
+        },
+        anthropic: { prompt_cache_ttl: "default", api_key_env: "ANTHROPIC_API_KEY" },
+      },
+      hooks: [{ on: "turn_end", run: "check", timeout_seconds: 30 }],
+      agents: { profiles: { solo: { description: "Alone", mcp_servers: [] } } },
     },
     // Editors accept deprecated keys; Loom reads them under their new names and says so.
     {
@@ -70,7 +99,17 @@ test("editor schema validates user inputs, optional defaults, and repo overrides
         titles: { enabled: false },
         notify: { webhook: "" },
         isolation: { enabled: true, network_presets: ["nix"], checkout: { mode: "clone" } },
+        auto_nix: true,
+        provider_access: { only: ["claude"], disabled: [] },
       },
+      base_branch: "main",
+      worktree_dir: "",
+      daemon: { idle_shutdown_minutes: 30 },
+      providers: {
+        echo: { enabled: true },
+        claude: { permission_default: "bypassPermissions", worker_allowed_hosts: ["x.example"] },
+      },
+      agents: { profiles: { solo: { description: "Alone", mcp: [] } } },
     },
     {
       mcp_servers: {
@@ -109,9 +148,13 @@ test("editor schema validates user inputs, optional defaults, and repo overrides
     assert.ok(validate(value), JSON.stringify(validate.errors));
   }
   for (const value of [
-    { session: { auto_nix: "yes" } },
+    { session: { environment: { auto_nix: "yes" } } },
     { session: { environment: { nix: { auto_activate: true } } } },
-    { session: { isolation: { environment: { nix: true } } } },
+    { session: { auto_rebase: { enabled: true } } },
+    { session: { auto_resume: "no" } },
+    { providers: { claude: { prompt_cache_ttl: "60m" } } },
+    // Unknown keys only warn at runtime, but editors still flag them.
+    { tui: { compat: true, typo: 1 } },
     {
       session: {
         defaults: {
@@ -154,10 +197,8 @@ test("editor schema validates user inputs, optional defaults, and repo overrides
     },
     {
       session: {
-        isolation: {
-          environment: {
-            cpus: 0,
-          },
+        environment: {
+          cpus: 0,
         },
       },
     },
@@ -217,12 +258,13 @@ test("config validation errors identify fields without exposing credentials or h
   }
 });
 
-test("Zod retains the existing lenient defaults and null tool selections", () => {
+test("null reads as absent; a wrong type is an error naming the key", () => {
   const config = normalizeConfig({
     local_tools: null,
+    tui: null,
     providers: {
       claude: {
-        models: ["sonnet", 12, "haiku"],
+        models: ["sonnet", "haiku"],
       },
     },
     session: {
@@ -231,6 +273,10 @@ test("Zod retains the existing lenient defaults and null tool selections", () =>
   });
   assert.deepEqual(config.mcp, []);
   assert.deepEqual(config.providers.claude.models, ["sonnet", "haiku"]);
+  assert.throws(
+    () => normalizeConfig({ providers: { claude: { models: ["sonnet", 12] } } }),
+    /^Error: providers\.claude\.models\[1\]: expected string, received number$/,
+  );
   assert.deepEqual(
     normalizeConfig({
       session: null,
@@ -267,7 +313,7 @@ test("CLI launch creates config and refreshes schema without starting a daemon",
     const config = join(dir, "loom/config.jsonc");
     const offlineSchema = join(dir, "loom/config.schema.json");
     assert.equal(parseConfig(readFileSync(config, "utf8")).$schema, "./config.schema.json");
-    const custom = '{"session":{"auto_resume":{"enabled":false}}}\n';
+    const custom = '{"session":{"auto_resume":false}}\n';
     writeFileSync(config, custom);
     writeFileSync(offlineSchema, "{}");
     run(Deno.execPath(), args);

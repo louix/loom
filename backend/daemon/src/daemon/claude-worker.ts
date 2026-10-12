@@ -89,7 +89,9 @@ export const claudeWorkerSpec = (
     permissions: {
       read: [...new Set(read)],
       write: [...new Set(write)],
-      net: ctx.config.workerAllowedHosts ?? CLAUDE_WORKER_HOSTS,
+      net: ctx.config.workerAllowedHosts ?? [
+        ...new Set([...CLAUDE_WORKER_HOSTS, ...(ctx.config.workerExtraHosts ?? [])]),
+      ],
       // SDK internals enumerate process.env. It contains only the allowlist above.
       env: true,
       // CLI + existing Loom Git tools retain subprocess execution for this phase.

@@ -89,7 +89,7 @@ Loom writes nothing into your checkout. Per repository, keyed by its path:
 | Daemon socket and pidfile                | `$XDG_RUNTIME_DIR/loom/<repo>-<hash>/` (`/tmp/loom-<uid>/<repo>-<hash>/` without it, as on macOS) |
 | Database, logs, TUI theme, session hooks | `$XDG_STATE_HOME/loom/repos/<repo>-<hash>/` (`~/.local/state`)                                    |
 | VM package cache                         | `$XDG_CACHE_HOME/loom/<repo>-<hash>/package-cache/` (`~/.cache`)                                  |
-| Session worktrees                        | `$XDG_DATA_HOME/loom/worktrees/<repo>-<hash>/` (`~/.local/share`), or `worktree_dir`              |
+| Session worktrees                        | `$XDG_DATA_HOME/loom/worktrees/<repo>-<hash>/` (`~/.local/share`), or `session.worktree_dir`      |
 
 Older versions kept this in `<repo>/.loom/`. The first daemon of this version
 moves it there (keeping the database where it was if the copy cannot be

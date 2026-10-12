@@ -65,7 +65,7 @@ Deno.test("a network-denied host runs provider turns in a worker with host trans
   },
   "session": {
     "provider_access": {
-      "only": [
+      "allow": [
         "fixture"
       ]
     },
