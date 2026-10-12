@@ -1,15 +1,22 @@
 import { join, relative, sep } from "node:path";
 
+const COPY_CHUNK_BYTES = 64 * 1024;
+
 /** `skipped`: one line per symlink left out of the copy, for the caller to log. */
 export type ClaudeSkillsCopy =
   | { kind: "copied"; skipped: string[] }
   | { kind: "invalid"; message: string };
 
-/** One write of a skill's copy. */
-type SkillStep = { kind: "dir"; to: string } | { kind: "file"; from: string; to: string };
+/**
+ * One write of a skill's copy. A file names the inode it was checked as, so
+ * one swapped for another (a link to `~/.ssh`, say) after planning is refused.
+ */
+type SkillStep =
+  | { kind: "dir"; to: string }
+  | { kind: "file"; from: string; to: string; dev: number; ino: number | null };
 
 /** Skills' copy, decided in full before anything is written. */
-type SkillPlan =
+export type SkillPlan =
   | { kind: "planned"; steps: readonly SkillStep[]; skipped: readonly string[] }
   | { kind: "invalid"; message: string };
 
@@ -45,7 +52,7 @@ export const copyClaudeSkills = (
 };
 
 /** The copy of each named skill, into `<dest>/<name>` once `dest` is joined on. */
-const planClaudeSkills = (configDir: string, names: readonly string[]): SkillPlan => {
+export const planClaudeSkills = (configDir: string, names: readonly string[]): SkillPlan => {
   const bad = names.find((name) => !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(name));
   if (bad !== undefined)
     return { kind: "invalid", message: `skills: "${bad}" is not a skill directory name` };
@@ -69,23 +76,37 @@ const planClaudeSkills = (configDir: string, names: readonly string[]): SkillPla
   };
 };
 
-/** Write `plan` under `dest`, replacing each named skill there. */
-const writeClaudeSkills = (
+/**
+ * Write `plan` under `dest`, replacing each named skill there. A file that is
+ * no longer the one planned fails the copy and leaves none of the skills.
+ */
+export const writeClaudeSkills = (
   plan: Extract<SkillPlan, { kind: "planned" }>,
   names: readonly string[],
   dest: string,
 ): ClaudeSkillsCopy => {
   Deno.mkdirSync(dest, { recursive: true });
-  for (const name of names) {
-    try {
-      Deno.removeSync(join(dest, name), { recursive: true });
-    } catch (error) {
-      if (!(error instanceof Deno.errors.NotFound)) throw error;
+  const removeSkills = () => {
+    for (const name of names) {
+      try {
+        Deno.removeSync(join(dest, name), { recursive: true });
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) throw error;
+      }
+    }
+  };
+  removeSkills();
+  for (const step of plan.steps) {
+    if (step.kind === "dir") {
+      Deno.mkdirSync(join(dest, step.to), { recursive: true });
+      continue;
+    }
+    const failed = copyPlannedFile(step, join(dest, step.to));
+    if (failed !== null) {
+      removeSkills();
+      return { kind: "invalid", message: failed };
     }
   }
-  for (const step of plan.steps)
-    if (step.kind === "dir") Deno.mkdirSync(join(dest, step.to), { recursive: true });
-    else Deno.copyFileSync(step.from, join(dest, step.to));
   return { kind: "copied", skipped: [...plan.skipped] };
 };
 
@@ -169,6 +190,44 @@ const planEntry = (root: string, dir: PendingDir, entry: Deno.DirEntry): EntryPl
       dir: { from: real, to: target, ancestors: { dir: real, parent: dir.ancestors } },
     };
   return stat.isFile
-    ? { kind: "file", step: { kind: "file", from: real, to: target } }
+    ? { kind: "file", step: { kind: "file", from: real, to: target, dev: stat.dev, ino: stat.ino } }
     : { kind: "none" };
+};
+
+/**
+ * Copy the file `step` planned, from the handle checked to be it: a path
+ * checked and then copied could be swapped for a link in between.
+ */
+const copyPlannedFile = (step: Extract<SkillStep, { kind: "file" }>, to: string): string | null => {
+  const changed = `skills: ${step.from} changed while it was being copied; copy the skills again`;
+  // Checked before opening too: opening a FIFO swapped in would wait for a writer.
+  const named = lstatOrNull(step.from);
+  if (named === null || !named.isFile) return changed;
+  const source = Deno.openSync(step.from);
+  try {
+    const opened = source.statSync();
+    if (!opened.isFile || opened.dev !== step.dev || opened.ino !== step.ino) return changed;
+    const target = Deno.openSync(to, { write: true, createNew: true });
+    try {
+      const buffer = new Uint8Array(COPY_CHUNK_BYTES);
+      for (let read = source.readSync(buffer); read !== null; read = source.readSync(buffer)) {
+        let written = 0;
+        while (written < read) written += target.writeSync(buffer.subarray(written, read));
+      }
+    } finally {
+      target.close();
+    }
+    if (opened.mode !== null) Deno.chmodSync(to, opened.mode & 0o777);
+    return null;
+  } finally {
+    source.close();
+  }
+};
+
+const lstatOrNull = (path: string): Deno.FileInfo | null => {
+  try {
+    return Deno.lstatSync(path);
+  } catch {
+    return null;
+  }
 };

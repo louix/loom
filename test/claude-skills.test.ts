@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { copyClaudeSkills } from "@loom/core/claude-skills";
+import { copyClaudeSkills, planClaudeSkills, writeClaudeSkills } from "@loom/core/claude-skills";
 
 interface SkillFixture {
   root: string;
@@ -98,6 +98,47 @@ test("copyClaudeSkills refuses a SKILL.md that links out of the skill", () => {
     assert.equal(copy.kind, "invalid");
     assert.match(copy.kind === "invalid" ? copy.message : "", /SKILL\.md links outside/);
     assert.equal(existsSync(join(f.dest, "pdf")), false);
+  } finally {
+    Deno.removeSync(f.root, { recursive: true });
+  }
+});
+
+test("writeClaudeSkills refuses a file swapped for a link out of the skill after planning", () => {
+  // given: planned while ref/forms.md was a plain file, then swapped for a link to a key
+  const f = mkSkillFixture();
+  try {
+    Deno.writeTextFileSync(join(f.skill, "SKILL.md"), "pdf");
+    const plan = planClaudeSkills(f.profile, ["pdf"]);
+    assert.equal(plan.kind, "planned");
+    Deno.removeSync(join(f.skill, "ref", "forms.md"));
+    Deno.symlinkSync(join(f.secrets, "id_ed25519"), join(f.skill, "ref", "forms.md"));
+
+    // when
+    const copy = plan.kind === "planned" ? writeClaudeSkills(plan, ["pdf"], f.dest) : plan;
+
+    // then
+    assert.equal(copy.kind, "invalid");
+    assert.match(copy.kind === "invalid" ? copy.message : "", /forms\.md changed/);
+    assert.equal(existsSync(join(f.dest, "pdf")), false, "no part of the skill is left");
+  } finally {
+    Deno.removeSync(f.root, { recursive: true });
+  }
+});
+
+test("copyClaudeSkills keeps a script executable", () => {
+  // given
+  const f = mkSkillFixture();
+  try {
+    Deno.writeTextFileSync(join(f.skill, "SKILL.md"), "pdf");
+    Deno.writeTextFileSync(join(f.skill, "run.sh"), "#!/bin/sh\n");
+    Deno.chmodSync(join(f.skill, "run.sh"), 0o755);
+
+    // when
+    const copy = copyClaudeSkills(f.profile, ["pdf"], f.dest);
+
+    // then
+    assert.equal(copy.kind, "copied");
+    assert.equal((Deno.statSync(join(f.dest, "pdf", "run.sh")).mode ?? 0) & 0o777, 0o755);
   } finally {
     Deno.removeSync(f.root, { recursive: true });
   }
