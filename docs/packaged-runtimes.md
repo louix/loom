@@ -133,6 +133,7 @@ deno run -A scripts/test-real-git-vm.ts /path/to/aisdk-runtime /path/to/smolvm
 deno run -A scripts/test-guest-checkout-vm.ts /path/to/session-runtime /path/to/smolvm
 deno run -A scripts/test-large-frame-vm.ts /path/to/session-runtime /path/to/smolvm
 deno run -A scripts/test-mcp-network-grants-vm.ts /path/to/session-runtime /path/to/smolvm
+deno run -A scripts/test-host-command-relay-vm.ts /path/to/session-runtime /path/to/smolvm
 ```
 
 It uses only disposable files and checks tool discovery, read, hash edits, write
