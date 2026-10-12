@@ -130,6 +130,26 @@ test("a group is watched with kill(-pgid, 0) where /proc and ps are unavailable"
   assert.deepEqual(JSON.parse(new TextDecoder().decode(watch.stdout)), { code: 7, signal: null });
 });
 
+test("a worker watching its own group with ps does not count ps as a member", async () => {
+  // given: no /proc access, so the only way to watch the group is ps
+  const run = new Deno.Command(Deno.execPath(), {
+    args: ["run", "--allow-run", "--allow-env", fixture("own-group-exit.ts")],
+    env: { PATH: Deno.env.get("PATH") ?? "/usr/bin:/bin" },
+    clearEnv: true,
+    detached: true,
+    stdout: "piped",
+    stderr: "piped",
+  });
+  // when: spawned, as only spawn() honours detached
+  const exit = await run.spawn().output();
+  // then: counting itself, ps kept the group live through the grace, then the SIGKILL ended the run
+  assert.equal(exit.code, 0, new TextDecoder().decode(exit.stderr));
+  const { elapsed_ms } = JSON.parse(new TextDecoder().decode(exit.stdout)) as {
+    elapsed_ms: number;
+  };
+  assert.ok(elapsed_ms < 5_000, `waited ${elapsed_ms} ms for an empty group`);
+});
+
 test("settling waits for a fire-and-forget escalation to kill a TERM-proof group", async () => {
   const child = spawn("sh", ["-c", "trap '' TERM; sleep 30"], { detached: true, stdio: "ignore" });
   await delay(50);

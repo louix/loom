@@ -62,12 +62,14 @@ const ownGroupHasLivePeers = async (pgid: number): Promise<boolean | "unknown"> 
   }
   try {
     // `-g` means a process group on BSD but a session on procps; filter by hand.
-    const ps = await new Deno.Command("ps", {
+    const child = new Deno.Command("ps", {
       args: ["-A", "-o", "pid=,pgid=,stat="],
       stdout: "piped",
       stderr: "null",
-    }).output();
+    }).spawn();
+    const ps = await child.output();
     if (!ps.success) return "unknown";
+    // ps lists itself, a member of this group while it runs.
     return new TextDecoder()
       .decode(ps.stdout)
       .trim()
@@ -75,7 +77,10 @@ const ownGroupHasLivePeers = async (pgid: number): Promise<boolean | "unknown"> 
       .map((line) => line.trim().split(/\s+/))
       .some(
         ([pid, group, state]) =>
-          Number(group) === pgid && Number(pid) !== Deno.pid && !state?.startsWith("Z"),
+          Number(group) === pgid &&
+          Number(pid) !== Deno.pid &&
+          Number(pid) !== child.pid &&
+          !state?.startsWith("Z"),
       );
   } catch {
     return "unknown";
