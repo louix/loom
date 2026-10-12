@@ -369,11 +369,11 @@ test("a session's plan: loom-agents below the depth limit, and its profile's ser
   assert.deepEqual(user.skills, ["pdf"]);
   assert.deepEqual(user.allowTools, ["Read"]);
   assert.equal(user.agentPrompt, undefined);
-  const gone = planOf(row({ id: "g", agentProfile: "deleted" }), ctx);
-  assert.deepEqual(
-    gone,
-    { mcpServers: handles, agentTools: true },
-    "a removed profile adds nothing",
+  const gone = agentSessionPlan(row({ id: "g", agentProfile: "deleted" }), ctx);
+  assert.equal(gone.kind, "refused", "a removed profile's restrictions are not dropped");
+  assert.match(
+    gone.kind === "refused" ? gone.message : "",
+    /agent profile "deleted", which is no longer in the config/,
   );
   const one = planOf(row({ id: "lead" }), {
     ...ctx,

@@ -103,9 +103,10 @@ export interface AgentSessionPlan {
 }
 
 /**
- * `refused`: the session runs as a profile still configured but no longer
- * available here. Its tool, MCP and prompt restrictions cannot be applied, so
- * it does not run at all rather than run without them.
+ * `refused`: the session runs as a profile since removed from the config, or
+ * still configured but no longer available here. Its tool, MCP and prompt
+ * restrictions cannot be applied, so it does not run at all rather than run
+ * without them.
  */
 export type AgentSessionPlanned =
   | { readonly kind: "planned"; readonly plan: AgentSessionPlan }
@@ -115,8 +116,7 @@ export type AgentSessionPlanned =
  * What `row` runs with: `loom-agents` unless its profile leaves it out or it
  * sits at `agents.max_depth`; the profile's MCP servers, skills, tool lists
  * and prompt; and, for a child, a note on who supervises it. Recomputed for
- * every start and resume, so a config change reaches a resumed session. A
- * profile since removed from the config contributes nothing.
+ * every start and resume, so a config change reaches a resumed session.
  */
 export const agentSessionPlan = (
   row: Pick<SessionSnapshot, "id" | "supervisorId" | "agentProfile" | "provider">,
@@ -131,6 +131,11 @@ export const agentSessionPlan = (
   const name = row.agentProfile && row.agentProfile !== SELF_PROFILE ? row.agentProfile : null;
   const profile = name === null ? undefined : availableProfiles(ctx.config, row.provider)[name];
   const configured = name === null ? undefined : ctx.config.agents.profiles[name];
+  if (name !== null && !configured)
+    return {
+      kind: "refused",
+      message: `session ${short(row.id)} runs as agent profile "${name}", which is no longer in the config (agents.profiles). Configure that profile again to run it with its restrictions, or archive it.`,
+    };
   if (configured && !profile)
     return {
       kind: "refused",
