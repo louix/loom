@@ -1,3 +1,4 @@
+// test-run: own-process — retakes flocks right after releasing them; a subprocess another file's thread forks meanwhile holds the lock until its exec.
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { canonicalHostPath } from "../core/src/host-path.ts";

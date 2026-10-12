@@ -9,6 +9,12 @@
 // with an `OWN_PROCESS_MARKER` line and its reason, and gets a process of its
 // own instead; those run alongside the parallel pass. `test/test-run.test.ts`
 // fails a test file that mutates process state without the marker.
+//
+// Less visibly, they share a descriptor table: every subprocess a thread
+// spawns holds a copy of every open file until its exec, flock'd ones
+// included. A file that releases a `tryLock` and takes it straight back
+// fails a large share of those retakes next to other files' spawns, so it
+// needs a process of its own too.
 
 import { basename, join } from "node:path";
 import {
