@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import {
+  profileSkills,
   withVmSessions,
   type SessionVmLauncher,
 } from "../backend/daemon/src/daemon/vm-provider.ts";
@@ -237,3 +239,42 @@ for (const kind of ["claude", "codex", "aisdk"] as const) {
     }
   });
 }
+
+Deno.test("profileSkills copies only the named skills into the guest's profile, never through a guest symlink", async () => {
+  // given
+  const root = await Deno.makeTempDir();
+  const host = join(root, "host");
+  const outside = join(root, "outside");
+  const session = join(root, "session");
+  for (const name of ["pdf", "docx"]) {
+    await Deno.mkdir(join(host, "skills", name), { recursive: true });
+    await Deno.writeTextFile(join(host, "skills", name, "SKILL.md"), name);
+  }
+  await Deno.mkdir(outside);
+  await Deno.mkdir(join(session, "profile"), { recursive: true });
+  await Deno.symlink(outside, join(session, "profile", "skills"));
+  const input: CreateSessionOptions = {
+    sessionId: "s",
+    cwd: root,
+    prompt: "",
+    mode: "default",
+    mcpServers: [],
+  };
+  try {
+    // when
+    await profileSkills(session, host, { ...input, skills: ["pdf"] });
+    // then
+    assert.equal(await Deno.readTextFile(join(session, "profile/skills/pdf/SKILL.md")), "pdf");
+    assert.equal((await Deno.lstat(join(session, "profile/skills"))).isDirectory, true);
+    assert.deepEqual([...Deno.readDirSync(join(session, "profile/skills"))].length, 1);
+    assert.deepEqual([...Deno.readDirSync(outside)], []);
+    await assert.rejects(
+      profileSkills(session, host, { ...input, skills: ["coding-style"] }),
+      /"coding-style" not found/,
+    );
+    await profileSkills(session, host, input);
+    assert.equal(existsSync(join(session, "profile/skills")), false);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});

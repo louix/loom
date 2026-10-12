@@ -256,7 +256,7 @@ export const agentProfileSchema = z.strictObject({
     `The session MCP servers it gets, by name, plus ${LOOM_AGENTS_SERVER} to let it start agents of its own. Omitted: all of them.`,
   ),
   skills: names("skills").describe(
-    "Claude skills to enable, by name; omitted keeps the CLI's own.",
+    "Claude skills to load from the provider's <config_dir>/skills/<name>/SKILL.md, by name; omitted keeps the CLI's own.",
   ),
   tools: z
     .strictObject({

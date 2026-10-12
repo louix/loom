@@ -18,6 +18,7 @@ import type {
 import { CodexAuthOwner } from "./codex-auth.ts";
 import type { ConnectorConfig } from "@loom/core/connector";
 import { ClaudeAuthOwner } from "./claude-auth.ts";
+import { copyClaudeSkills } from "@loom/core/claude-skills";
 import {
   sessionVmGeneration,
   type SessionVmOptions,
@@ -41,6 +42,28 @@ const executable = async (name: string) => {
     }
   throw new Error(`Executable not found: ${name}`);
 };
+/**
+ * The guest's config dir is the session's `profile` directory, so its adapter
+ * finds the profile's skills there as it would on the host. The guest writes
+ * there too: what it left is replaced, never written through.
+ */
+export const profileSkills = async (
+  sessionDirectory: string,
+  claudeProfile: string,
+  input: CreateSessionOptions | SessionRef,
+): Promise<void> => {
+  const profile = join(sessionDirectory, "profile");
+  await Deno.mkdir(profile, { recursive: true, mode: 0o700 });
+  if ((await Deno.lstat(profile)).isSymlink)
+    throw new Error("Session profile must not be a symlink");
+  await Deno.remove(join(profile, "skills"), { recursive: true }).catch((error) => {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+  });
+  if (!input.skills?.length) return;
+  const copy = copyClaudeSkills(claudeProfile, input.skills, join(profile, "skills"));
+  if (copy.kind === "invalid") throw new Error(copy.message);
+};
+
 /** A provider's VM launches: one isolation coordinator, injected by tests. */
 export type SessionVmLauncher = {
   launch(options: IsolatedLaunchOptions): Promise<WorkerProcess & { binding: { state: string } }>;
@@ -61,6 +84,7 @@ export const withVmSessions = async <T extends AgentProvider>(
   let providerHosts: string[] | undefined;
   let config: ConnectorConfig;
   let connector: WorkerProfile["connector"];
+  let claudeProfile: string | undefined;
   if (kind === "aisdk") {
     const sdk = ctx.config.sdk;
     const defaultEndpoint = {
@@ -116,6 +140,7 @@ export const withVmSessions = async <T extends AgentProvider>(
   } else {
     const profile =
       ctx.config.configDir || Deno.env.get("CLAUDE_CONFIG_DIR") || join(homedir(), ".claude");
+    claudeProfile = profile;
     const apiKey = Deno.env.get("ANTHROPIC_API_KEY");
     const oauth = Deno.env.get("CLAUDE_CODE_OAUTH_TOKEN");
     owner =
@@ -143,6 +168,7 @@ export const withVmSessions = async <T extends AgentProvider>(
       });
       const sessionDirectory = sessionVmDirectory(vm.repoRoot, input.sessionId);
       await stoppedSessionVm(vm.repoRoot, input.sessionId);
+      if (claudeProfile !== undefined) await profileSkills(sessionDirectory, claudeProfile, input);
       if (resume && kind !== "aisdk") {
         const ref = (input as SessionRef).providerRef;
         if (!/^[0-9a-f-]{36}$/i.test(ref)) throw new Error(`Invalid ${kind} resume reference`);

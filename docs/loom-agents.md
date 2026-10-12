@@ -306,6 +306,13 @@ messages, interrupts and outcomes are ordinary session events.
   (`skills`, `tools`, `disallowedTools`) and aisdk (built-in tools), and are
   refused for providers that cannot honour them. A child's system prompt gets a
   note naming its supervisor before the profile's prompt.
+- A Claude profile's `skills` are loaded from the provider's config dir
+  (`<config_dir>/skills/<name>/SKILL.md`, default `~/.claude`) even when the
+  provider's `setting_sources` leave out `user`: the adapter copies just those
+  skills into a local plugin named `loom` for the session (`loom:<name>`; the
+  Skill tool also takes the bare name). A VM session gets the copies in its
+  profile directory first. A name with no `SKILL.md` fails the start, naming
+  the path it looked for.
 - A child's base is its supervisor's branch. When that branch is renamed
   (auto-titling), the child's stored base follows, and a running child is told
   the new name (`setBase`). A child in a private clone names it

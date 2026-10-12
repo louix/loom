@@ -36,6 +36,10 @@
  *   codex-turn-facts                    what Codex reports about a turn: its item times
  *                                       stamp Loom's calls and results, the account's plan
  *                                       is named, a user stop stays the user's
+ *   skills-claude                       a profile's `skills: ["coding-style"]` loads that
+ *                                       skill from the profile's config dir with user
+ *                                       settings off (Claude only; the profile must have
+ *                                       skills/coding-style/SKILL.md)
  */
 import assert from "node:assert/strict";
 import { join } from "node:path";
@@ -62,7 +66,7 @@ for (const name of [
   "OPENAI_API_KEY",
 ])
   Deno.env.delete(name);
-const claudeOnly = check === "tail-claude";
+const claudeOnly = check === "tail-claude" || check === "skills-claude";
 assert(
   claudeProfile && (claudeOnly || (codexProfile && codexCli)),
   "Set the LOOM_LIVE_* provider variables",
@@ -90,6 +94,7 @@ const writeConfig = async (opts: {
   idleMinutes?: number;
   codexCli?: string;
   claudeCli?: string;
+  profiles?: Record<string, unknown>;
 }) => {
   const runtime = artifact && smolvm ? { artifact, smolvm } : undefined;
   await Deno.mkdir(join(f.root, "config/loom"), { recursive: true });
@@ -108,6 +113,7 @@ const writeConfig = async (opts: {
             ? { codex: { config_dir: codexProfile, cli_path: opts.codexCli ?? codexCli } }
             : {}),
         },
+        ...(opts.profiles ? { agents: { profiles: opts.profiles } } : {}),
         session: {
           commit_reminder: { enabled: false },
           isolation: {
@@ -1289,6 +1295,34 @@ const codexTurnFacts = async () => {
   assert.equal(completion?.["status"], "interrupted");
 };
 
+const skills = async () => {
+  await writeConfig({
+    profiles: { styled: { description: "Writes in the user's style", skills: ["coding-style"] } },
+  });
+  await start();
+  await waitCatalogue(CLAUDE);
+  const model = await cheapModel(CLAUDE);
+  const s = await create(
+    CLAUDE,
+    "Use the Skill tool to load the skill coding-style. Then reply with only the first markdown heading in its text.",
+    { model, isolation: "local", profile: "styled" },
+  );
+  const mine = events.filter((e) => e.id === s.id);
+  const call = mine.find(
+    (e) => e.type === "tool_call" && (e.detail as { name?: string }).name === "Skill",
+  );
+  const result = mine.find(
+    (e) =>
+      e.type === "tool_result" &&
+      (e.detail as { id?: string }).id === (call?.detail as { id?: string } | undefined)?.id,
+  );
+  log("skill", { model, call: call?.detail, result: result?.detail, reply: texts.get(s.id) });
+  assert(call, "the Skill tool was called");
+  assert(result, "the Skill tool answered");
+  assert.doesNotMatch(String((result.detail as { output?: string }).output), /Unknown skill/);
+  assert.match(texts.get(s.id) ?? "", /Style/);
+};
+
 const settleFor = async <T>(cond: () => T | undefined, what: string, ms = 300_000) => {
   const deadline = Date.now() + ms;
   for (;;) {
@@ -1315,6 +1349,7 @@ const run = async () => {
     else if (check === "codex-tools") await codexTools(Deno.args[1]);
     else if (check === "tail-claude") await tail();
     else if (check === "codex-turn-facts") await codexTurnFacts();
+    else if (check === "skills-claude") await skills();
     else throw new Error("unknown check " + check);
     log("PASSED");
     passed = true;

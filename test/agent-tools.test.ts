@@ -4,7 +4,7 @@
  * and comes back, and how an agent profile's prompt and tool lists apply.
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -218,6 +218,17 @@ const fakeQuery = () => {
   });
 };
 
+/** A Claude config dir holding `pdf` (with a reference file) and `docx`. */
+const mkSkillsProfile = (): string => {
+  const dir = mkdtempSync(join(tmpdir(), "loom-skills-profile-"));
+  for (const name of ["pdf", "docx"]) {
+    mkdirSync(join(dir, "skills", name, "references"), { recursive: true });
+    writeFileSync(join(dir, "skills", name, "SKILL.md"), `---\nname: ${name}\n---\n`);
+    writeFileSync(join(dir, "skills", name, "references", "notes.md"), name);
+  }
+  return dir;
+};
+
 test("claude: loom-agents is an in-process MCP server, and the profile's settings reach the query", async () => {
   const captured: Array<Record<string, unknown>> = [];
   __setClaudeSdk({
@@ -226,7 +237,8 @@ test("claude: loom-agents is an in-process MCP server, and the profile's setting
       return fakeQuery() as never;
     },
   });
-  const provider = new ClaudeProvider();
+  const configDir = mkSkillsProfile();
+  const provider = new ClaudeProvider({ configDir });
   const profiled = {
     agentTools: true,
     agentPrompt: "You implement exactly the task you are given.",
@@ -267,6 +279,7 @@ test("claude: loom-agents is an in-process MCP server, and the profile's setting
     assert.deepEqual(Object.keys(plain!.mcpServers as object), ["loom"]);
     assert.equal(plain!.tools, undefined);
     assert.equal(plain!.skills, undefined);
+    assert.equal(plain!.plugins, undefined);
     for (const opts of [created!, resumed!]) {
       const servers = opts.mcpServers as Record<string, { type: string; name: string }>;
       assert.equal(servers["loom-agents"]?.type, "sdk");
@@ -277,11 +290,59 @@ test("claude: loom-agents is an in-process MCP server, and the profile's setting
         append: "steer\n\nYou implement exactly the task you are given.",
       });
       assert.deepEqual(opts.skills, ["pdf"]);
+      const [plugin] = opts.plugins as Array<{ type: string; path: string }>;
+      assert.equal(plugin!.type, "local");
+      assert.deepEqual(
+        JSON.parse(readFileSync(join(plugin!.path, ".claude-plugin/plugin.json"), "utf8")),
+        { name: "loom" },
+      );
+      assert.equal(
+        readFileSync(join(plugin!.path, "skills/pdf/references/notes.md"), "utf8"),
+        "pdf",
+      );
+      assert.equal(existsSync(join(plugin!.path, "skills/docx")), false);
       assert.deepEqual(opts.tools, ["Bash", "Read"]);
       assert.deepEqual(opts.disallowedTools, ["Agent", "Task", "WebFetch"]);
     }
   } finally {
     for (const s of sessions) await s.close();
+    rmSync(configDir, { recursive: true, force: true });
+  }
+  for (const opts of captured.slice(1))
+    assert.equal(existsSync((opts.plugins as Array<{ path: string }>)[0]!.path), false);
+});
+
+test("claude: a profile skill missing from the config dir fails the start, naming where it looked", async () => {
+  __setClaudeSdk({ query: () => fakeQuery() as never });
+  const configDir = mkSkillsProfile();
+  const provider = new ClaudeProvider({ configDir });
+  try {
+    await assert.rejects(
+      provider.createSession({
+        sessionId: "agent",
+        cwd: "/tmp",
+        prompt: "go",
+        mode: "default",
+        mcpServers: [],
+        skills: ["pdf", "coding-style"],
+      }),
+      (error: Error) =>
+        error.message.includes('"coding-style" not found') &&
+        error.message.includes(join(configDir, "skills/coding-style/SKILL.md")),
+    );
+    await assert.rejects(
+      provider.createSession({
+        sessionId: "agent",
+        cwd: "/tmp",
+        prompt: "go",
+        mode: "default",
+        mcpServers: [],
+        skills: ["../pdf"],
+      }),
+      /"\.\.\/pdf" is not a skill directory name/,
+    );
+  } finally {
+    rmSync(configDir, { recursive: true, force: true });
   }
 });
 

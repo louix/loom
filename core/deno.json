@@ -25,6 +25,7 @@
     "./paths": "./src/paths.ts",
     "./daemon-endpoint": "./src/daemon-endpoint.ts",
     "./user-dirs": "./src/user-dirs.ts",
+    "./claude-skills": "./src/claude-skills.ts",
     "./provider-id": "./src/provider-id.ts",
     "./version": "./src/version.ts",
     "./transcript": "./src/transcript.ts",

@@ -1475,7 +1475,7 @@
                 }
               },
               "skills": {
-                "description": "Claude skills to enable, by name; omitted keeps the CLI's own.",
+                "description": "Claude skills to load from the provider's <config_dir>/skills/<name>/SKILL.md, by name; omitted keeps the CLI's own.",
                 "type": "array",
                 "items": {
                   "type": "string"
@@ -2997,7 +2997,7 @@
                       }
                     },
                     "skills": {
-                      "description": "Claude skills to enable, by name; omitted keeps the CLI's own.",
+                      "description": "Claude skills to load from the provider's <config_dir>/skills/<name>/SKILL.md, by name; omitted keeps the CLI's own.",
                       "type": "array",
                       "items": {
                         "type": "string"

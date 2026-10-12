@@ -395,7 +395,7 @@ export interface AgentProfileConfig {
   mode?: SessionMode;
   /** Session MCP servers by name, plus `loom-agents`; absent keeps them all. */
   mcp?: string[];
-  /** Claude skills to enable; absent keeps the CLI's own. */
+  /** Claude skills to load from the provider's config dir; absent keeps the CLI's own. */
   skills?: string[];
   tools?: { allow?: string[]; deny?: string[] };
   /** Appended to the agent's own system prompt. */

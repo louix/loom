@@ -43,6 +43,7 @@
     "core/src/agents.ts",
     "core/src/cache.ts",
     "core/src/channel.ts",
+    "core/src/claude-skills.ts",
     "core/src/commit.ts",
     "core/src/connector.ts",
     "core/src/environment-diagnostic.ts",
