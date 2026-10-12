@@ -2163,6 +2163,8 @@ export class Daemon {
     taskId?: string;
     /** A title to keep, rather than one derived from the prompt. */
     title?: string;
+    /** The prompt is what a person wrote (`session.create`). */
+    promptByHuman?: true;
     /** The base as it stands when the row and its worktree are made, over `base`. */
     baseOf?: () => string | undefined;
   }): Promise<SessionSnapshot> {
@@ -2328,6 +2330,7 @@ export class Daemon {
           sessionId: id,
           cwd,
           prompt: o.prompt,
+          ...(o.promptByHuman ? { promptByHuman: true } : {}),
           mode: o.mode,
           ...agent,
           disableTools: this.config.providers.claude.disableBuiltin,
@@ -4557,6 +4560,7 @@ export class Daemon {
         ...(p.isolation ? { isolation: p.isolation } : {}),
         ...(p.base ? { base: p.base } : {}),
         ...(profile && p.profile ? { agentProfile: p.profile } : {}),
+        promptByHuman: true,
         by: params.by,
       });
     });

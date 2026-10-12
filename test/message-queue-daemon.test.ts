@@ -101,7 +101,11 @@ describe("message queue", { concurrency: 4 }, () => {
       frames.length = 0;
       const sent = await send(c, id, "m1");
       assert.equal(sent.state, "delivering", "handed over, not yet taken");
-      assert.deepEqual(fs.sendOptions.at(-1), { inputId: sent.entryId, midTurn: false });
+      assert.deepEqual(fs.sendOptions.at(-1), {
+        inputId: sent.entryId,
+        midTurn: false,
+        human: true,
+      });
       await delay(30);
       assert.deepEqual(userMessages(frames), []);
       // A second client sees the same queue, hint included.
@@ -292,14 +296,14 @@ describe("message queue", { concurrency: 4 }, () => {
     await waitFor(() => fs.sends.length === 2);
     assert.deepEqual(fs.sends, ["m2", "m1"], "sent now, it goes first");
     assert.deepEqual(fs.sendOptions.slice(-2), [
-      { inputId: m2.entryId, midTurn: true, now: true },
-      { inputId: m1.entryId, midTurn: true },
+      { inputId: m2.entryId, midTurn: true, now: true, human: true },
+      { inputId: m1.entryId, midTurn: true, human: true },
     ]);
     // Once gone, the mark is spent: the next fold is ordinary.
     const m3 = await send(c, id, "m3");
     await waitFor(() => fs.sends.length === 3);
-    assert.deepEqual(fs.sendOptions.at(-1), { inputId: m3.entryId, midTurn: true });
-    // A supervisor's message sent now is not passed off as typed by a person.
+    assert.deepEqual(fs.sendOptions.at(-1), { inputId: m3.entryId, midTurn: true, human: true });
+    // A supervisor's message, even sent now, is not passed off as typed by a person.
     env.h.daemon.sessions.enqueue(
       id,
       { entryId: "sup", text: "from above", author: "supervisor:x", delivery: "end_of_turn" },
@@ -529,7 +533,7 @@ nodeTest("text deltas never query the queue; a tool boundary and a turn's end st
         // A root tool opens the boundary window: the boundary message folds in.
         fs.emit({ type: "tool_call", id: "t1", name: "Bash", input: {} });
         await waitFor(() => fs.sends.length === 1);
-        assert.deepEqual(fs.sendOptions[0], { inputId: b1.entryId, midTurn: true });
+        assert.deepEqual(fs.sendOptions[0], { inputId: b1.entryId, midTurn: true, human: true });
         fs.emit({ type: "tool_result", id: "t1", ok: true, output: "" });
         await waitFor(() =>
           frames.some((f) => f.type === "event" && f.event.type === "tool_result"),
@@ -538,7 +542,11 @@ nodeTest("text deltas never query the queue; a tool boundary and a turn's end st
         // The turn ends: the end-of-turn message starts the next one.
         fs.finishTurn();
         await waitFor(() => fs.sends.length === 2);
-        assert.deepEqual(fs.sendOptions[1], { inputId: e1.entryId, midTurn: false });
+        assert.deepEqual(fs.sendOptions[1], {
+          inputId: e1.entryId,
+          midTurn: false,
+          human: true,
+        });
       },
     );
   }),

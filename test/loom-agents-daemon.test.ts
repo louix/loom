@@ -122,6 +122,7 @@ describe("loom agents", { concurrency: 4 }, () => {
     const lead = await idleSession(env);
     const creates = env.provider.creates;
     assert.equal(creates[0]?.agentTools, true, "a root session gets loom-agents");
+    assert.equal(creates[0]?.promptByHuman, true, "a user's opening prompt is a person's");
     const leadRow = await get(env.c, lead.id);
     // Committed work carries over; uncommitted work does not, and is warned of.
     writeFileSync(join(leadRow.worktree!, "done.txt"), "committed\n");
@@ -154,6 +155,7 @@ describe("loom agents", { concurrency: 4 }, () => {
     assert.match(opts.agentPrompt ?? "", /You are a Loom sub-agent/);
     assert.match(opts.agentPrompt ?? "", /IMPLEMENT exactly the task\./);
     assert.equal(opts.prompt, "add the widget");
+    assert.equal(opts.promptByHuman, undefined, "a task is the supervisor's, not a person's");
 
     // At the limit, a child cannot start agents of its own.
     const deeper = await child.fs.callAgentTool("agent_start", {

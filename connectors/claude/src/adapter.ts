@@ -396,17 +396,23 @@ const parseContextTag = (s: string): number => {
   return Math.round(parseFloat(m[1]!) * (m[2]!.toLowerCase() === "m" ? 1_000_000 : 1_000));
 };
 
-const userMessage = (text: string, uuid: string, now = false): SDKUserMessage => {
+const userMessage = (
+  text: string,
+  uuid: string,
+  sent: { now: boolean; human: boolean },
+): SDKUserMessage => {
   return {
     type: "user",
     // The interrupt receipt only lists UUID-stamped queued messages.
     uuid,
     message: { role: "user", content: text },
     parent_tool_use_id: null,
+    // The SDK asks hosts relaying keyboard input to say so: without an origin
+    // a message is unattributed, and fails the CLI's isHuman() trust gates.
+    ...(sent.human ? { origin: { kind: "human" } } : {}),
     // The CLI moves calls aside only for a message a person typed; one
-    // without an origin counts as unattributed and waits for the tool, then
-    // ends the turn to start its own.
-    ...(now ? { priority: "now", origin: { kind: "human" } } : {}),
+    // without an origin waits for the tool, then ends the turn to start its own.
+    ...(sent.now ? { priority: "now" } : {}),
   } as unknown as SDKUserMessage;
 };
 
@@ -630,7 +636,8 @@ class ClaudeSession implements AgentSession {
     this.#queued.clear();
     this.#settledInputs.clear();
     this.#receipts.clear();
-    if (opts.prompt) this.#enqueueInput(opts.prompt, "message");
+    if (opts.prompt)
+      this.#enqueueInput(opts.prompt, "message", opts.promptByHuman ? { human: true } : {});
 
     const canUseTool: CanUseTool = (toolName, input, ctx) => {
       // C6: a turn already sitting in the SDK's own command queue when the user
@@ -1098,7 +1105,7 @@ class ClaudeSession implements AgentSession {
       calls.length > 0 &&
       calls.every((name) => MOVABLE_TOOLS.has(name));
     if (opts.now) this.#log.info("send now", { inputId: uuid, running: calls, now });
-    this.#inbox.push(userMessage(text, uuid, now));
+    this.#inbox.push(userMessage(text, uuid, { now, human: now || opts.human === true }));
   }
 
   /** Follow the main loop's tool calls in flight — what a send-now would

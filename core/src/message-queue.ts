@@ -149,6 +149,8 @@ export const sendOptionsSchema = z.object({
    * as `midTurn` does.
    */
   now: z.boolean().optional(),
+  /** A person wrote it — not a Loom agent's, a supervisor's or Loom's own. */
+  human: z.boolean().optional(),
 });
 export type SendOptions = z.infer<typeof sendOptionsSchema>;
 

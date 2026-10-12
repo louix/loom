@@ -440,6 +440,11 @@ client saw; a stale one gets `conflict` and changes nothing.
   Without `origin` the CLI never moves anything: it lets the call finish,
   ends the turn and runs the message as a new one (CLI 2.1.287, observed).
   Other providers ignore `now`.
+  Every entry a person wrote (not a child's report, `agent:…`, nor a
+  supervisor's message, `supervisor:…`) carries `human`, as does a
+  `session.create` opening prompt (`promptByHuman`): Claude stamps those
+  `origin: {kind: "human"}`, as the SDK asks of hosts relaying keyboard input.
+  Loom's own messages (nudges, hook feedback) and a child's task go unattributed.
 - `session.queueRemove {id, entries: [{entryId, revision}]}` cancels queued and
   uncertain entries. A delivering, certain entry is refused ("already handed to
   the agent") until an adapter offers per-input cancel (Claude's

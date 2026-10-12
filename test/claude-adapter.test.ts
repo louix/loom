@@ -501,7 +501,7 @@ type Pulled = { uuid?: string; message: { content: unknown } };
  *  says so — which sends reached the CLI's queue and which still sit in the
  *  adapter's inbox is the test's choice — and whose interrupt receipt cancels
  *  whatever `cancelled` holds at the time. */
-const setupPulled = async (t: TestContext) => {
+const setupPulled = async (t: TestContext, create?: { promptByHuman: boolean }) => {
   let prompt!: AsyncIterator<Pulled>;
   const receipt = { cancelled: [] as string[] };
   let q!: ReturnType<typeof fakeLiveQuery>;
@@ -520,6 +520,7 @@ const setupPulled = async (t: TestContext) => {
     mode: "default",
     mcpServers: [],
     loomServer: false,
+    ...create,
   });
   const seen: HarnessEvent[] = [];
   const reader = (async () => {
@@ -1485,6 +1486,25 @@ test("readTaskOutput reads the CLI's task tail and says when a task has none", a
   } finally {
     await old.close();
   }
+});
+
+test("only what a person wrote reaches the CLI as human", async (t) => {
+  type Stamped = Pulled & { priority?: string; origin?: { kind: string } };
+  const { s, pull } = await setupPulled(t, { promptByHuman: true });
+  assert.deepEqual(((await pull()) as Stamped).origin, { kind: "human" }, "the opening prompt");
+  await s.send("typed", { inputId: crypto.randomUUID(), human: true });
+  const typed = (await pull()) as Stamped;
+  assert.deepEqual(typed.origin, { kind: "human" });
+  assert.equal(typed.priority, undefined);
+  await s.send("a child's notification", { inputId: crypto.randomUUID() });
+  assert.equal(((await pull()) as Stamped).origin, undefined);
+  await s.send("a Loom nudge");
+  assert.equal(((await pull()) as Stamped).origin, undefined);
+});
+
+test("a supervisor's task opens a session unattributed", async (t) => {
+  const { pull } = await setupPulled(t);
+  assert.equal(((await pull()) as Pulled & { origin?: unknown }).origin, undefined);
 });
 
 test("send now asks the CLI for priority now only while every root call in flight can move aside", async (t) => {

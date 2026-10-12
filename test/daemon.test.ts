@@ -1343,7 +1343,7 @@ test("session.send queues mid-turn until a tool boundary; the user_message lands
     await waitFor(() => umEvents().length === 1);
     assert.deepEqual(umEvents(), [{ text: "also handle Y", injected: true }]);
     assert.deepEqual(fs?.sends, ["also handle Y"]);
-    assert.deepEqual(fs?.sendOptions[0], { inputId: r1.entryId, midTurn: true });
+    assert.deepEqual(fs?.sendOptions[0], { inputId: r1.entryId, midTurn: true, human: true });
     fs?.emit({ type: "tool_result", id: "t1", ok: true, output: "" });
 
     fs?.finishTurn(); // → idle

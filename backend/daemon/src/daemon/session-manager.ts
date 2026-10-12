@@ -1020,6 +1020,7 @@ export class SessionManager {
         inputId: entry.id,
         midTurn: e.midTurn,
         ...(e.now ? { now: true } : {}),
+        ...(e.human ? { human: true } : {}),
       });
     } catch (err) {
       run.userTurn = armed;

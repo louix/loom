@@ -186,6 +186,8 @@ export const createSessionOptionsSchema = z.object({
   /** The session's worktree (or, until the worktree manager lands, the repo root). */
   cwd: z.string(),
   prompt: z.string(),
+  /** A person wrote `prompt` — not a supervisor's task or a Loom-made seed. */
+  promptByHuman: z.boolean().optional(),
   model: z.string().optional(),
   /** Thinking effort, for models that accept one ({@link DiscoveredModel.supportsEffort}). */
   effort: effortLevelSchema.optional(),
