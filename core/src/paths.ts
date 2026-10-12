@@ -146,23 +146,52 @@ export const repoStateDirectory = (
 export const repoCacheDirectory = (
   repoRoot: string,
   env: Record<string, string | undefined> = Deno.env.toObject(),
-): string => join(userDirectory("cache", env), "loom", repoKey(repoRoot));
+): string => keyedCacheDirectory(repoKey(repoRoot), env);
+
+const keyedCacheDirectory = (key: string, env: Record<string, string | undefined>): string =>
+  join(userDirectory("cache", env), "loom", key);
 
 /** Throws when the daemon socket would not fit in `sun_path`. */
 export const loomPaths = (
   repoRoot: string,
   configuredTrees = "",
   env: Record<string, string | undefined> = Deno.env.toObject(),
+): LoomPaths =>
+  keyedPaths(
+    repoRoot,
+    repoKey(repoRoot),
+    repoStateDirectory(repoRoot, env),
+    worktreeDirectory(repoRoot, configuredTrees, env),
+    env,
+  );
+
+/**
+ * The paths of an existing state directory, keyed by its name rather than by
+ * `repoRoot`: the key hashes the real path, which changes when a component of
+ * the old path is now a symlink (into the new checkout, say) or is gone.
+ */
+export const loomPathsOfState = (
+  repoRoot: string,
+  state: string,
+  env: Record<string, string | undefined> = Deno.env.toObject(),
+): LoomPaths =>
+  keyedPaths(repoRoot, basename(state), state, worktreeDirectory(repoRoot, "", env), env);
+
+const keyedPaths = (
+  repoRoot: string,
+  key: string,
+  state: string,
+  trees: string,
+  env: Record<string, string | undefined>,
 ): LoomPaths => {
   const legacy = join(repoRoot, ".loom");
-  const runtime = join(loomRuntimeDirectory(env), repoKey(repoRoot));
+  const runtime = join(loomRuntimeDirectory(env), key);
   const sock = join(runtime, "daemon.sock");
   const sockBytes = new TextEncoder().encode(sock).length;
   if (sockBytes > SOCKET_PATH_MAX_BYTES)
     throw new Error(
       `The daemon socket path ${sock} is ${sockBytes} bytes, over the ${SOCKET_PATH_MAX_BYTES}-byte Unix socket limit. Set XDG_RUNTIME_DIR to a shorter directory.`,
     );
-  const state = repoStateDirectory(repoRoot, env);
   return {
     repoRoot,
     runtime,
@@ -176,8 +205,8 @@ export const loomPaths = (
     tuiLog: join(state, "tui.log"),
     tuiState: join(state, "tui.json"),
     hooks: join(state, "hooks"),
-    packageCache: join(repoCacheDirectory(repoRoot, env), "package-cache"),
-    trees: worktreeDirectory(repoRoot, configuredTrees, env),
+    packageCache: join(keyedCacheDirectory(key, env), "package-cache"),
+    trees,
     legacy: { dir: legacy, sock: join(legacy, "daemon.sock"), pid: join(legacy, "daemon.pid") },
   };
 };

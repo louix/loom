@@ -13,6 +13,7 @@ import {
   realpathSync,
   renameSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
@@ -162,5 +163,51 @@ test("loom repo move refuses a path with no recorded state", async () => {
     );
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("loom repo move finds the old state when the old path now leads into the new checkout", async () => {
+  // given: a checkout's state, then its parent moved and a symlink left in its place
+  const root = mkRoot();
+  const from = join(root, "a", "repo");
+  const to = join(root, "b", "repo");
+  const old = loomPaths(from);
+  const cleanup = [root, old.state, old.runtime];
+  try {
+    execFileSync("git", ["init", "-q", "-b", "main", from]);
+    ensureLoomDirectories(old);
+    const db = openDb(old.db);
+    db.prepare(
+      "INSERT INTO sessions (id, provider, created_at, updated_at) VALUES ('s1', 'fake', 0, 0)",
+    ).run();
+    db.close();
+    renameSync(join(root, "a"), join(root, "b"));
+    symlinkSync(join(root, "b"), join(root, "a"));
+    const moved = loomPaths(to);
+    cleanup.push(moved.state, moved.runtime);
+    assert.notEqual(loomPaths(from).state, old.state, "the old path's key changed");
+
+    // when
+    const report = await moveRepository(from, to);
+
+    // then
+    assert.equal(report.from, from);
+    assert.ok(report.moved.includes(`${old.state} -> ${moved.state}`));
+    assert.equal(existsSync(old.state), false);
+    assert.equal(readRepoRecord(moved.record), to);
+    const rows = new DatabaseSync(moved.db, { readOnly: true });
+    try {
+      assert.deepEqual(
+        rows
+          .prepare("SELECT id FROM sessions")
+          .all()
+          .map((row) => row["id"]),
+        ["s1"],
+      );
+    } finally {
+      rows.close();
+    }
+  } finally {
+    for (const dir of cleanup) rmSync(dir, { recursive: true, force: true });
   }
 });

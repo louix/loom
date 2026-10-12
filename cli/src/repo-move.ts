@@ -17,6 +17,7 @@ import { dirname, join, resolve } from "node:path";
 import {
   findRepoRoot,
   loomPaths,
+  loomPathsOfState,
   readRepoRecord,
   repoStateDirectory,
   worktreeDirectory,
@@ -46,17 +47,21 @@ export interface RepoMoveReport {
   notes: string[];
 }
 
-/** The repository whose state `old` names: by its key, else by a `repo.json` that records it. */
-const recordedRepository = (old: string): string => {
-  const keyed = readRepoRecord(join(repoStateDirectory(old), "repo.json"));
-  if (keyed) return keyed;
+/**
+ * The repository whose state `old` names, and that state directory: by its
+ * key, else by a `repo.json` that records it.
+ */
+const recordedRepository = (old: string): { repo: string; state: string } => {
+  const keyedState = repoStateDirectory(old);
+  const keyed = readRepoRecord(join(keyedState, "repo.json"));
+  if (keyed) return { repo: keyed, state: keyedState };
   const repos = join(userDirectory("state"), "loom", "repos");
   const entries = existsSync(repos) ? readdirSync(repos) : [];
   for (const name of entries) {
     const recorded = readRepoRecord(join(repos, name, "repo.json"));
-    if (recorded === old) return recorded;
+    if (recorded === old) return { repo: recorded, state: join(repos, name) };
   }
-  if (existsSync(repoStateDirectory(old))) return old;
+  if (existsSync(keyedState)) return { repo: old, state: keyedState };
   throw new Error(`no Loom state is recorded for ${old}`);
 };
 
@@ -87,10 +92,14 @@ const rewritePrefix = (db: DatabaseSync, from: string, to: string): number =>
 
 export const moveRepository = async (oldArg: string, newArg: string): Promise<RepoMoveReport> => {
   const to = findRepoRoot(newArg);
-  const from = recordedRepository(resolve(oldArg));
+  const { repo: from, state } = recordedRepository(resolve(oldArg));
   if (from === to) throw new Error(`${to} already owns this state`);
-  const oldPaths = loomPaths(from);
+  // Not loomPaths(from): its key need no longer name the state recorded for it.
+  const oldPaths = loomPathsOfState(from, state);
   const newPaths = loomPaths(to);
+  if (oldPaths.state === newPaths.state)
+    throw new Error(`${from} and ${to} name the same Loom state directory, ${state}`);
+  if (!existsSync(oldPaths.state)) throw new Error(`${oldPaths.state} is gone; nothing was moved`);
 
   for (const paths of [oldPaths, newPaths]) {
     const pid = runningDaemonPid(paths);
