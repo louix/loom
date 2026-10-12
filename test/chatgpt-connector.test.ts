@@ -3038,3 +3038,58 @@ test("Codex error codes read as short reasons; unknown codes degrade to words", 
   });
   assert.deepEqual(turnErrorReason(null), {});
 });
+
+test("every Codex plan type reads as a plan name; unknown ones degrade to words or nothing", async () => {
+  const { codexPlanLabel } = await import("@loom/connector-chatgpt/account");
+  // `PlanType` in `codex app-server generate-json-schema` (Codex 0.160.0).
+  const schema = [
+    "free",
+    "go",
+    "plus",
+    "pro",
+    "prolite",
+    "promax",
+    "team",
+    "self_serve_business_prolite",
+    "self_serve_business_usage_based",
+    "business",
+    "ent26",
+    "enterprise_cbp_automation",
+    "enterprise_cbp_usage_based",
+    "enterprise",
+    "edu",
+    "edu_plus",
+    "edu_pro",
+  ];
+  const labels = schema.map(codexPlanLabel);
+  assert.ok(labels.every((l) => l?.startsWith("ChatGPT ")));
+  assert.equal(new Set(labels).size, schema.length, "each plan reads differently");
+  assert.equal(codexPlanLabel("promax"), "ChatGPT Pro Max");
+  assert.equal(codexPlanLabel("prolite"), "ChatGPT Pro Lite");
+  assert.equal(codexPlanLabel("unknown"), undefined);
+  assert.equal(codexPlanLabel("some_new_plan"), "ChatGPT Some New Plan");
+  for (const junk of [null, undefined, "", " ", 3, {}])
+    assert.equal(codexPlanLabel(junk), undefined);
+});
+
+test("Codex plan windows carry the account's plan when the snapshot names it", async () => {
+  const { rateLimitWindows } = await import("../connectors/chatgpt/src/rate-limits.ts");
+  const window = { usedPercent: 5, windowDurationMins: 300, resetsAt: 2_000_000_000 };
+  assert.deepEqual(
+    rateLimitWindows(
+      { rateLimits: { limitId: "codex", planType: "promax", primary: window } },
+      1,
+      "read",
+    ).map((w) => w.plan),
+    ["ChatGPT Pro Max"],
+  );
+  for (const planType of [null, "unknown"])
+    assert.equal(
+      rateLimitWindows(
+        { rateLimits: { limitId: "codex", planType, primary: window } },
+        1,
+        "update",
+      )[0]?.plan,
+      undefined,
+    );
+});

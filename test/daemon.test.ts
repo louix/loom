@@ -687,6 +687,51 @@ test("providers.list uses Claude profile tags without changing ids, colours or a
   }
 });
 
+test("providers.list names a Codex account's plan once a session's windows report it", async () => {
+  const codexHome = mkdtempSync(join(tmpdir(), "loom-codex-plan-"));
+  const fakeCodex = new URL("./fixtures/fake-codex-app-server.mjs", import.meta.url).pathname;
+  Deno.env.set(
+    "LOOM_TEST_LIMITS",
+    JSON.stringify({
+      rateLimits: {
+        limitId: "codex",
+        planType: "promax",
+        primary: { usedPercent: 10, windowDurationMins: 300, resetsAt: 2_000_000_000 },
+      },
+    }),
+  );
+  const hh = await makeHarness({
+    config: JSON.stringify({
+      providers: {
+        codex: { model: "fake-model", config_dir: codexHome, cli_path: fakeCodex },
+      },
+    }),
+    // In process, rather than the CLI's provider worker.
+    connectors: { "@loom/connector-chatgpt": () => import("@loom/connector-chatgpt") },
+  });
+  try {
+    const c = await LoomClient.connect({
+      repoRoot: hh.repoRoot,
+      sockPath: hh.sockPath,
+      autospawn: false,
+    });
+    type Row = { id: string; account?: { loginMethod: string; org: string } };
+    const account = async () =>
+      (await c.request<Row[]>("providers.list")).find((p) => p.id === "codex")?.account;
+    // Nothing has read the account yet: no plan to name.
+    assert.equal(await account(), undefined);
+    await c.request<SessionSnapshot>("session.create", { prompt: "hi", provider: "codex" });
+    const deadline = Date.now() + 10_000;
+    while (!(await account()) && Date.now() < deadline) await delay(50);
+    assert.deepEqual(await account(), { loginMethod: "ChatGPT Pro Max", org: "" });
+    await c.close();
+  } finally {
+    Deno.env.delete("LOOM_TEST_LIMITS");
+    await hh.cleanup();
+    rmSync(codexHome, { recursive: true, force: true });
+  }
+});
+
 test("the last model a provider ran becomes its default for new sessions", async () => {
   const hh = await makeHarness({
     config: `{

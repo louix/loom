@@ -8,6 +8,42 @@
  */
 import type { CodexRpcClient } from "./rpc.ts";
 
+/** Codex's `PlanType` values (app-server 0.160), in words. `unknown` says nothing. */
+const PLAN_LABELS: Record<string, string | null> = {
+  free: "ChatGPT Free",
+  go: "ChatGPT Go",
+  plus: "ChatGPT Plus",
+  pro: "ChatGPT Pro",
+  prolite: "ChatGPT Pro Lite",
+  promax: "ChatGPT Pro Max",
+  team: "ChatGPT Team",
+  self_serve_business_prolite: "ChatGPT Business Pro Lite",
+  self_serve_business_usage_based: "ChatGPT Business (usage-based)",
+  business: "ChatGPT Business",
+  ent26: "ChatGPT Enterprise (ent26)",
+  enterprise_cbp_automation: "ChatGPT Enterprise (automation)",
+  enterprise_cbp_usage_based: "ChatGPT Enterprise (usage-based)",
+  enterprise: "ChatGPT Enterprise",
+  edu: "ChatGPT Edu",
+  edu_plus: "ChatGPT Edu Plus",
+  edu_pro: "ChatGPT Edu Pro",
+  unknown: null,
+};
+
+/** A Codex account's plan in words. A plan newer than this table still reads
+ *  (`some_new_plan` → `ChatGPT Some New Plan`); `unknown` or garbage gives none. */
+export const codexPlanLabel = (planType: unknown): string | undefined => {
+  if (typeof planType !== "string" || !planType.trim()) return undefined;
+  const known = PLAN_LABELS[planType];
+  if (known !== undefined) return known ?? undefined;
+  const words = planType
+    .trim()
+    .split(/[_\s-]+/)
+    .filter(Boolean)
+    .map((w) => w[0]!.toUpperCase() + w.slice(1).toLowerCase());
+  return words.length ? `ChatGPT ${words.join(" ")}` : undefined;
+};
+
 interface AccountReadResult {
   account?: { type?: string; email?: string } | null;
   requiresOpenaiAuth?: boolean;

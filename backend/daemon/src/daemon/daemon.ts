@@ -332,6 +332,8 @@ export class Daemon {
   /** Providers whose start-up discovery has not begun yet — reported as
    *  loading, so a client that connects first shows a loader, not a stub list. */
   readonly #catalogueStartup = new Set<string>();
+  /** Account scope → the plan its windows last named (Codex: `ChatGPT Pro`). */
+  readonly #accountPlans = new Map<string, string>();
   /** Refreshes an account's plan windows when a snapshot would show them stale. */
   readonly #planUsage = new PlanUsageRefresher({
     refresh: (scope, provider, signal) =>
@@ -557,7 +559,11 @@ export class Daemon {
       emitEvent: (ev) => {
         if (ev.type === "rate_limit" && !this.#stopping) {
           const provider = this.#registry.get(ev.sessionId)?.provider;
-          if (provider) this.#registry.store.recordAccountUsage(this.#accountScope(provider), ev);
+          if (provider) {
+            const scope = this.#accountScope(provider);
+            this.#registry.store.recordAccountUsage(scope, ev);
+            if (this.#notePlan(scope, ev.plan)) this.#publishState();
+          }
         }
         if (ev.type === "compact" && !this.#stopping) {
           // A compaction rewrote the transcript; the absolute message offsets
@@ -1596,6 +1602,10 @@ export class Daemon {
         tag: p.tag,
         color: providerColor(id, p.color),
         isDefault: def === id,
+        // A ChatGPT account's plan, once its windows named it.
+        ...(p.sdk === "chatgpt" && this.#accountPlans.has(this.#accountScope(id))
+          ? { account: { loginMethod: this.#accountPlans.get(this.#accountScope(id))!, org: "" } }
+          : {}),
       });
     }
     if (this.config.providers.echo?.enabled) {
@@ -3397,6 +3407,13 @@ export class Daemon {
     return createHash("sha256").update(JSON.stringify(identity)).digest("hex");
   }
 
+  /** Remember the plan `scope`'s windows named; whether that changed it. */
+  #notePlan(scope: string, plan: string | undefined): boolean {
+    if (!plan || this.#accountPlans.get(scope) === plan) return false;
+    this.#accountPlans.set(scope, plan);
+    return true;
+  }
+
   /** Whether `provider` bills a subscription plan whose windows Loom shows:
    *  a Claude profile, or a Codex (ChatGPT) account. */
   #hasPlan(provider: string): boolean {
@@ -3451,7 +3468,10 @@ export class Daemon {
           }),
       record: (windows) => {
         if (this.#stopping) return;
-        for (const w of windows) this.#registry.store.recordAccountUsage(scope, w);
+        for (const w of windows) {
+          this.#registry.store.recordAccountUsage(scope, w);
+          this.#notePlan(scope, w.plan);
+        }
         this.#publishState();
       },
     };

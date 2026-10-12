@@ -555,9 +555,11 @@ export const providerInfoSchema = z.object({
   /** True for the provider new sessions use when none is named. */
   isDefault: z.boolean(),
   /**
-   * Claude only — the OAuth identity behind this profile's `~/.claude` dir, read
+   * Claude: the OAuth identity behind this profile's `~/.claude` dir, read
    * from `.claude.json` / `.credentials.json`. Omitted when neither field could
-   * be resolved; either string may still be "". Shown in the Detail pane to
+   * be resolved; either string may still be "". ChatGPT (Codex): the plan the
+   * account's windows last named, as `loginMethod` (`ChatGPT Pro`); omitted
+   * until a session or probe has read them. Shown in the Detail pane to
    * disambiguate a personal vs work profile.
    */
   account: z

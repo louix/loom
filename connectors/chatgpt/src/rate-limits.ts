@@ -1,4 +1,5 @@
 import type { HarnessEvent, PlanWindow } from "@loom/core/events";
+import { codexPlanLabel } from "./account.ts";
 
 const record = (value: unknown): Record<string, unknown> | undefined =>
   typeof value === "object" && value !== null && !Array.isArray(value)
@@ -32,6 +33,7 @@ export const rateLimitWindows = (
     const id = typeof snapshot["limitId"] === "string" ? snapshot["limitId"] : key;
     // The usage endpoint reports Spark under its internal bucket name.
     const label = id === "codex_bengalfox" ? "codex_5.3-spark" : id;
+    const plan = codexPlanLabel(snapshot["planType"]);
     for (const slot of ["primary", "secondary"] as const) {
       const window = record(snapshot[slot]);
       const used = window?.["usedPercent"];
@@ -56,6 +58,7 @@ export const rateLimitWindows = (
           ? { resetsAt: reset * 1000 }
           : {}),
         ...(source === "read" ? { polled: true as const } : {}),
+        ...(plan ? { plan } : {}),
       });
     }
   }

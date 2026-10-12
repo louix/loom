@@ -467,6 +467,9 @@ export const rateLimitEventSchema = harnessEventBaseSchema.extend({
    * a streamed change-notification.
    */
   polled: z.literal(true).optional(),
+  /** The account's plan as the provider reported it with this reading, in
+   *  words (`ChatGPT Pro`). Absent when the provider doesn't say. */
+  plan: z.string().optional(),
 });
 export type RateLimitEvent = z.infer<typeof rateLimitEventSchema>;
 
@@ -481,6 +484,7 @@ export const planWindowSchema = rateLimitEventSchema.pick({
   utilization: true,
   resetsAt: true,
   polled: true,
+  plan: true,
 });
 export type PlanWindow = z.infer<typeof planWindowSchema>;
 
