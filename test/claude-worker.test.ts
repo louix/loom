@@ -1,8 +1,9 @@
-// test-run: own-process — sets KAGI_API_KEY to prove worker specs don't forward it.
+// test-run: own-process — sets KAGI_API_KEY to prove worker specs don't forward it, and
+// TMPDIR to prove they don't build on it.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { HarnessEvent } from "../core/src/events.ts";
 import type { AgentSession } from "../core/src/types.ts";
@@ -456,3 +457,23 @@ test(
     }
   },
 );
+
+test("a Claude worker's TMPDIR stays short under a daemon's deep one", async () => {
+  // given — a daemon started in nested nix-shells
+  const f = await fixture();
+  const previous = Deno.env.get("TMPDIR");
+  const deep = join(f.root, "nix-shell-3938-566794123", "nix-shell.i1tRHX");
+  await Deno.mkdir(deep, { recursive: true });
+  Deno.env.set("TMPDIR", deep);
+  try {
+    // when
+    const spec = claudeWorkerSpec(f.ctx, f.workspace, "title");
+    await Deno.remove(spec.cwd, { recursive: true });
+    // then
+    assert.equal(dirname(spec.env.TMPDIR ?? ""), Deno.realPathSync("/tmp"));
+  } finally {
+    if (previous === undefined) Deno.env.delete("TMPDIR");
+    else Deno.env.set("TMPDIR", previous);
+    await f.cleanup();
+  }
+});

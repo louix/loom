@@ -132,6 +132,14 @@ export const launchLocalWorker: WorkerLauncher = (spec) => {
   };
 };
 
+/**
+ * A worker's own TMPDIR. Under /tmp, not the daemon's $TMPDIR: a daemon started
+ * in a nix-shell (or on macOS) has one deep enough that the agent's sockets
+ * below it run past sun_path.
+ */
+export const mkWorkerScratch = (prefix: string): string =>
+  Deno.realPathSync(Deno.makeTempDirSync({ dir: "/tmp", prefix }));
+
 /** SDK-free mock and echo workers need no native children, credentials, network or write grants. */
 export const mockLaunchSpec = (cwd: string): WorkerLaunchSpec => {
   const root = new URL("../../../../", import.meta.url);

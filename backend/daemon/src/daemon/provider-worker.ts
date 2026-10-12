@@ -4,7 +4,7 @@ import { join, delimiter, isAbsolute, resolve } from "node:path";
 import { connectorWireConfigSchema, type ConnectorContext } from "@loom/core/connector";
 import type { WorkerProfile, WorkerRole } from "@loom/core/worker";
 import { WorkerProvider } from "./worker-provider.ts";
-import { mockLaunchSpec } from "./worker-launch.ts";
+import { mkWorkerScratch, mockLaunchSpec } from "./worker-launch.ts";
 
 export const createProviderWorker = (
   connector: WorkerProfile["connector"],
@@ -26,7 +26,7 @@ export const createProviderWorker = (
     ctx.id,
     (cwd, role: WorkerRole = "session") => {
       const base = mockLaunchSpec(cwd);
-      const scratch = Deno.makeTempDirSync({ prefix: "loom-provider-worker-" });
+      const scratch = mkWorkerScratch("loom-provider-worker-");
       const env: Record<string, string> = {
         HOME: homedir(),
         TMPDIR: scratch,

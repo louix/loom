@@ -2,7 +2,7 @@ import { homedir } from "node:os";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 import type { ConnectorContext } from "../../../../core/src/connector.ts";
 import type { WorkerRole } from "../../../../core/src/worker.ts";
-import { mockLaunchSpec, type WorkerLaunchSpec } from "./worker-launch.ts";
+import { mkWorkerScratch, mockLaunchSpec, type WorkerLaunchSpec } from "./worker-launch.ts";
 import { withVmSessions } from "./vm-provider.ts";
 import { WorkerProvider } from "./worker-provider.ts";
 
@@ -44,7 +44,7 @@ export const claudeWorkerSpec = (
   role: WorkerRole,
 ): WorkerLaunchSpec => {
   const base = mockLaunchSpec(cwd);
-  const scratch = Deno.makeTempDirSync({ prefix: "loom-claude-worker-" });
+  const scratch = mkWorkerScratch("loom-claude-worker-");
   const env: Record<string, string> = {
     HOME: homedir(),
     NO_COLOR: "1",
