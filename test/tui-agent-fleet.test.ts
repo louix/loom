@@ -1,6 +1,7 @@
 /**
  * Loom agents in the FLEET (docs/loom-agents.md): the status a supervisor
- * shows while its agents work (`fleet-status.ts`), and the cursor's walk of
+ * shows while its agents work or wait on the person (`fleet-status.ts`), the
+ * mark and Detail line naming those that wait, and the cursor's walk of
  * the tree — ↑/↓ over the top-level rows, → into a session's tasks and
  * agents, ← back out — with archived agents out of the way until entered.
  */
@@ -11,9 +12,15 @@ import type { SessionStateKind } from "@loom/core/events";
 import type { SessionSnapshot } from "@loom/core/wire";
 import { STATUS_ORDER } from "@loom/core/session-order";
 import { describeCommands } from "@loom/tui/commands";
-import { shownStatus, shownStatusIn } from "@loom/tui/fleet-status";
+import { stripVTControlCharacters } from "node:util";
+import { createElement } from "react";
+import { renderToString } from "ink";
+import { shownStatus, shownStatusIn, waitingAgentsIn } from "@loom/tui/fleet-status";
+import { agentsWaitingLine, detailLayout, Fleet, showAgentsWaiting } from "@loom/tui/components";
+import { fleetPaneView } from "@loom/tui/views";
 import {
   fleetEntries,
+  fleetLayout,
   fleetSessions,
   initialState,
   reduce,
@@ -51,6 +58,16 @@ describe("shownStatus", () => {
     assert.equal(shownStatus("idle", "agents_busy"), "working_background");
     for (const kind of OWN_WINS) assert.equal(shownStatus(kind, "agents_busy"), kind, kind);
   });
+
+  test("an agent asking raises every live state into needs-input", () => {
+    for (const kind of ["running", "starting", "working_background", "idle"] as const)
+      assert.equal(shownStatus(kind, "agents_asking"), "awaiting_input", kind);
+  });
+
+  test("its own question, error or stop, or its archive, outranks an agent asking", () => {
+    for (const kind of ["awaiting_input", "error", "interrupted", "done"] as const)
+      assert.equal(shownStatus(kind, "agents_asking"), kind, kind);
+  });
 });
 
 describe("shownStatusIn", () => {
@@ -65,13 +82,45 @@ describe("shownStatusIn", () => {
     }
   });
 
-  test("an agent's question, error, stop or rest does not reach its supervisor", () => {
-    for (const kind of ["awaiting_input", "error", "interrupted", "idle", "done"] as const) {
+  test("an agent's error, stop or rest does not reach its supervisor", () => {
+    for (const kind of ["error", "interrupted", "idle", "done"] as const) {
       const list = [lead("idle"), agent("a", kind)];
       assert.equal(shownStatusIn(list)(list[0]!), "idle", kind);
     }
-    const failing = [lead("idle"), agent("a", "error"), agent("b", "awaiting_input")];
+    const failing = [lead("idle"), agent("a", "error"), agent("b", "interrupted")];
     assert.equal(shownStatusIn(failing)(failing[0]!), "idle");
+  });
+
+  test("an agent's question reaches its supervisor over another's work or failure", () => {
+    const mixed = [
+      lead("idle"),
+      agent("a", "error"),
+      agent("b", "running"),
+      agent("c", "awaiting_input"),
+    ];
+    assert.equal(shownStatusIn(mixed)(mixed[0]!), "awaiting_input");
+    const busy = [lead("running"), agent("a", "awaiting_input")];
+    assert.equal(shownStatusIn(busy)(busy[0]!), "awaiting_input", "even over its own turn");
+    for (const kind of ["error", "interrupted", "awaiting_input"] as const) {
+      const own = [lead(kind), agent("a", "awaiting_input")];
+      assert.equal(shownStatusIn(own)(own[0]!), kind, `its own ${kind} shows as itself`);
+    }
+  });
+
+  test("a question however deep reaches every supervisor above it, past their own work", () => {
+    const list = [
+      lead("idle"),
+      agent("mid", "running"),
+      agent("leaf", "awaiting_input", "mid"),
+      agent("side", "error"),
+    ];
+    const shown = shownStatusIn(list);
+    assert.deepEqual(
+      list.map((s) => shown(s)),
+      ["awaiting_input", "awaiting_input", "awaiting_input", "error"],
+    );
+    const failed = [lead("idle"), agent("mid", "error"), agent("leaf", "awaiting_input", "mid")];
+    assert.equal(shownStatusIn(failed)(failed[0]!), "awaiting_input", "past a failed agent too");
   });
 
   test("a supervisor's own question, error, turn or stop outranks its agents' work", () => {
@@ -96,6 +145,139 @@ describe("shownStatusIn", () => {
     const running = [agent("x", "idle", "y"), agent("y", "running", "x")];
     assert.equal(shownStatusIn(running)(running[0]!), "working_background");
     assert.equal(shownStatusIn([])(lead("idle")), "idle");
+  });
+});
+
+describe("waitingAgentsIn", () => {
+  const agent = (id: string, status: SessionStateKind, supervisorId = "lead") =>
+    snap({ id, status, supervisorId });
+
+  test("every agent below waiting on the person, by its own state, however deep", () => {
+    const list = [
+      snap({ id: "lead", status: "awaiting_input" }),
+      agent("a", "awaiting_input"),
+      agent("b", "running"),
+      agent("c", "awaiting_input", "b"),
+      agent("d", "awaiting_input", "c"),
+      agent("e", "error"),
+      snap({ id: "other", status: "awaiting_input" }),
+    ];
+    const waiting = waitingAgentsIn(list);
+    assert.deepEqual(
+      waiting(list[0]!).map((s) => s.id),
+      ["a", "c", "d"],
+      "not itself, not a stranger",
+    );
+    assert.deepEqual(
+      waiting(list[3]!).map((s) => s.id),
+      ["d"],
+      "an agent's own count starts below it",
+    );
+  });
+
+  test("a supervision loop ends", () => {
+    const list = [agent("x", "awaiting_input", "y"), agent("y", "awaiting_input", "x")];
+    assert.deepEqual(
+      waitingAgentsIn(list)(list[0]!).map((s) => s.id),
+      ["y"],
+    );
+  });
+});
+
+describe("showAgentsWaiting", () => {
+  test("no mark for none, ?N otherwise", () => {
+    assert.equal(showAgentsWaiting(0), "");
+    assert.equal(showAgentsWaiting(1), " ?1");
+    assert.equal(showAgentsWaiting(12), " ?12");
+  });
+});
+
+describe("agentsWaitingLine", () => {
+  const waiting = [
+    snap({ id: "aaaaaaaa1111", title: "Verify the widget", status: "awaiting_input" }),
+    snap({ id: "bbbbbbbb2222", title: "Port the parser", status: "awaiting_input" }),
+  ];
+
+  test("names each waiting agent and the way to it", () => {
+    assert.equal(
+      agentsWaitingLine(waiting, 100),
+      "? 2 agents waiting on you: aaaaaaaa Verify the widget, bbbbbbbb Port the parser  → opens",
+    );
+    assert.match(agentsWaitingLine(waiting.slice(0, 1), 100), /^\? 1 agent waiting on you: /);
+  });
+
+  test("a narrow pane cuts the names, never the hint", () => {
+    const line = agentsWaitingLine(waiting, 50);
+    assert.ok([...line].length <= 50, line);
+    assert.match(line, /^\? 2 agents waiting on you: aaaaa.*  → opens$/);
+  });
+});
+
+/**
+ *   lead     (idle)
+ *   ├ mid    (running)
+ *   │ └ ask  (awaiting_input)
+ *   └ also   (awaiting_input)
+ *   rest     (idle)
+ */
+const asking = (): SessionSnapshot[] => [
+  snap({ id: "lead", title: "Coordinate", status: "idle", createdAt: 1 }),
+  snap({ id: "mid", status: "running", supervisorId: "lead", createdAt: 2 }),
+  snap({ id: "ask", title: "Verify", status: "awaiting_input", supervisorId: "mid", createdAt: 3 }),
+  snap({ id: "also", title: "Port", status: "awaiting_input", supervisorId: "lead", createdAt: 4 }),
+  snap({ id: "rest", status: "idle", createdAt: 5 }),
+];
+
+describe("a supervisor whose agents wait on the person", () => {
+  test("joins needs-input with a ?N mark; its own state is left alone", () => {
+    const s = withFleet(asking());
+    const marks = fleetEntries(s).flatMap((e) =>
+      e.kind === "session" ? [[e.s.id, e.status, e.agents?.waiting ?? null] as const] : [],
+    );
+    assert.deepEqual(marks, [
+      ["lead", "awaiting_input", 2],
+      ["also", "awaiting_input", null],
+      ["mid", "awaiting_input", 1],
+      ["ask", "awaiting_input", null],
+      ["rest", "idle", null],
+    ]);
+    const groups = fleetEntries(s).flatMap((e) => (e.kind === "groupHeader" ? [e.group] : []));
+    assert.deepEqual(
+      groups.map((g) => [g.status, g.sessions.map((x) => x.id)]),
+      [
+        ["awaiting_input", ["lead"]],
+        ["idle", ["rest"]],
+      ],
+    );
+    const own = new Map(fleetSessions(s).map((x) => [x.id, x.status.kind]));
+    assert.equal(own.get("lead"), "idle");
+    assert.equal(own.get("mid"), "running");
+  });
+
+  test("its row draws the needs-input glyph and ?N; the asking agent's own row does not", () => {
+    const s = withFleet(asking());
+    const view = fleetPaneView(s.fleet, fleetLayout(s, 40), "rest", null, null);
+    const out = stripVTControlCharacters(
+      renderToString(createElement(Fleet, { view, find: null, tick: 0, width: 80, now: 0 }), {
+        columns: 80,
+      }),
+    );
+    const line = (id: string) => out.split("\n").find((l) => l.includes(` ${id} `))!;
+    assert.match(line("lead"), /◆ lead\s+Coordinate\s+\?2 Σ-- │$/);
+    assert.match(line("mid"), /\?1 Σ/);
+    assert.doesNotMatch(line("ask"), /\?\d/);
+  });
+
+  test("its Detail names who waits; a session with none waiting has no such line", () => {
+    const list = asking();
+    const lead = list[0]!;
+    const render = (waiting: readonly SessionSnapshot[]) =>
+      stripVTControlCharacters(
+        renderToString(detailLayout(lead, { width: 100, waiting }).render(0), { columns: 100 }),
+      );
+    const out = render(waitingAgentsIn(list)(lead));
+    assert.match(out, /\? 2 agents waiting on you: ask Verify, also Port {2}→ opens/);
+    assert.doesNotMatch(render([]), /waiting on you/);
   });
 });
 
@@ -160,13 +342,13 @@ const tree = (): SessionSnapshot[] => [
 
 describe("the cursor in a supervision tree", () => {
   test("↑/↓ walk the top-level rows only", () => {
-    let s = reduce(withFleet(tree()), { t: "select", id: "top" });
+    let s = reduce(withFleet(tree()), { t: "select", id: "lead" });
     s = reduce(s, { t: "move", delta: 1 });
-    assert.equal(s.selectedId, "lead");
-    s = reduce(s, { t: "move", delta: 1 });
-    assert.equal(s.selectedId, "bottom", "past lead's agents");
+    assert.equal(s.selectedId, "top", "past lead's agents");
     s = reduce(s, { t: "move", delta: -1 });
     assert.equal(s.selectedId, "lead");
+    s = reduce(s, { t: "move", delta: 2 });
+    assert.equal(s.selectedId, "bottom");
   });
 
   test("→ enters a session's tasks then its agents, ↑/↓ walk them, ← steps out", () => {
@@ -222,12 +404,13 @@ describe("the cursor in a supervision tree", () => {
     const top = reduce(withFleet(tree()), { t: "select", id: "lead" });
     assert.deepEqual(
       rows(top).map(([id]) => id),
-      ["top", "lead", "ask", "work", "bottom"],
+      ["lead", "ask", "work", "top", "bottom"],
+      "lead is in needs-input for ask",
     );
     const inside = reduce(top, { t: "childEnter" });
     assert.deepEqual(
       rows(inside).map(([id]) => id),
-      ["top", "lead", "ask", "work", "old", "bottom"],
+      ["lead", "ask", "work", "old", "top", "bottom"],
     );
     const onOld = steps(inside, { t: "childMove", delta: 9 });
     assert.deepEqual(cursor(onOld), ["old", null]);

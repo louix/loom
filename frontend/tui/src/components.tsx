@@ -383,8 +383,8 @@ const FleetRow = ({
   /** A Loom agent under its supervisor: indented behind a tree branch, like
    *  the work rows a session fans out, but a session row in full. */
   nest?: { depth: number; isLast: boolean };
-  /** A supervisor's open agents in words, and its spend with theirs. */
-  agents?: { cost: Pick<SessionSnapshot, "costUsd" | "costSource"> };
+  /** A supervisor's spend with its agents', and how many wait on the person. */
+  agents?: { cost: Pick<SessionSnapshot, "costUsd" | "costSource">; waiting: number };
   selected: boolean;
   /** The fleet is drilled into this row's children — its cursor goes dim and
    *  the bright one moves onto the focused child row. */
@@ -413,6 +413,7 @@ const FleetRow = ({
   const id = shortId(s.id);
   // A supervisor's figure is its spend with its agents'.
   const cost = agents ? `Σ${sessionCost(agents.cost)}` : sessionCost(s);
+  const asking = showAgentsWaiting(agents?.waiting ?? 0);
   const heat = cacheHeat(cacheStatus(s, now));
   // Always 2 cols so titles stay aligned whether or not a session has a warm cache.
   const cacheColor = heat ? C[cacheHeatTone(heat)] : null;
@@ -422,7 +423,7 @@ const FleetRow = ({
   const branch = nest ? `${"  ".repeat(nest.depth - 1)}${nest.isLast ? "└ " : "├ "}` : "";
   const width = Math.max(
     6,
-    iw - (2 + branch.length + 2 + idText.length + 3 + 2 + 2 + cost.length + 1),
+    iw - (2 + branch.length + 2 + idText.length + 3 + 2 + 2 + asking.length + cost.length + 1),
   );
   const room = width;
   const title = truncate(
@@ -448,10 +449,15 @@ const FleetRow = ({
       <Text color={hovered ? C.text : titleColor} bold={selected && !blocked} underline={hovered}>
         {title}
       </Text>
+      {asking ? <Text tone={statusTone("awaiting_input")}>{asking}</Text> : null}
       <Text tone="faint">{` ${cost}`}</Text>
     </Line>
   );
 };
+
+/** A supervisor row's mark for its agents (however deep) waiting on the
+ *  person — apart from its own glyph, which is its own question. */
+export const showAgentsWaiting = (waiting: number): string => (waiting > 0 ? ` ?${waiting}` : "");
 
 /** Glyph per background-task kind — a hint at what the child is. */
 const BG_KIND_GLYPH: Record<string, string> = {
@@ -518,6 +524,15 @@ const FleetChildRow = ({
 // detail (right column, top)
 // ---------------------------------------------------------------------------
 
+/** Detail's line for a supervisor's agents waiting on the person: who, and
+ *  that → walks into them. The hint survives truncation; the names do not. */
+export const agentsWaitingLine = (waiting: readonly SessionSnapshot[], width: number): string => {
+  const lede = `? ${waiting.length} agent${waiting.length === 1 ? "" : "s"} waiting on you: `;
+  const hint = "  → opens";
+  const names = waiting.map((a) => `${shortId(a.id)} ${titleLine(a.title)}`).join(", ");
+  return lede + truncate(names, Math.max(1, width - lede.length - hint.length)) + hint;
+};
+
 /** Left gutter (chars) for the label ∶ value rows in the Detail pane. */
 const DETAIL_GUTTER = 8;
 
@@ -530,6 +545,7 @@ export const detailLayout = (
     mode = null,
     compacting = s?.compacting ?? null,
     archiving = false,
+    waiting = [],
   }: {
     width?: number;
     account?: string;
@@ -537,6 +553,8 @@ export const detailLayout = (
     mode?: SessionMode | null;
     compacting?: { startedAt: number; before: number } | null;
     archiving?: boolean;
+    /** Its agents (however deep) waiting on the person — see `fleet-status.ts`. */
+    waiting?: readonly SessionSnapshot[];
   } = {},
 ) => {
   // `hovered`: the mouse pointer is over this row's click target.
@@ -613,6 +631,7 @@ export const detailLayout = (
         </Box>
       ),
     });
+    if (waiting.length) addLine(agentsWaitingLine(waiting, w), statusTone("awaiting_input"));
     const frac = s.contextLimit > 0 ? s.contextUsed / s.contextLimit : 0;
     add(
       <Field label="context">

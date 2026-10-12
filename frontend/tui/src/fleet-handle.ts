@@ -64,6 +64,7 @@ import {
   requestPanelRows,
 } from "./components.tsx";
 import { mkStore } from "./store.ts";
+import { waitingAgentsIn } from "./fleet-status.ts";
 import { AGE_MS, mkClock, mkDeadline, type Beat } from "./clock.ts";
 import { mkComposer, outboxOf, release, type SendReply } from "./composer.ts";
 import type { QueueDelivery } from "@loom/core/message-queue";
@@ -464,6 +465,7 @@ const deriveView = (
     account: account,
     compacting: sel?.compacting ?? null,
     archiving: state.archiving.includes(sel?.id ?? ""),
+    waiting: sel ? waitingAgentsIn(fleetSessions(state))(sel) : [],
   });
   // The `session` view gives Detail + events the whole terminal; the wide
   // `overview` split confines them to the right column.

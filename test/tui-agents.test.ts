@@ -161,7 +161,7 @@ test("agents sit under their supervisor, sorted like the fleet, the archived hid
   const state = withFleet([kids[1]!, other, kids[0]!, lead, kids[2]!]);
   assert.deepEqual(
     fleetSessions(state).map((s) => s.id),
-    ["other", "lead", "kid2", "kid1", "kid3"],
+    ["lead", "kid2", "kid1", "kid3", "other"],
     "status group first among agents too; the archived last",
   );
   assert.deepEqual(
@@ -170,10 +170,10 @@ test("agents sit under their supervisor, sorted like the fleet, the archived hid
       g.sessions.map((s) => s.id),
     ]),
     [
+      ["awaiting_input", ["lead"]],
       ["running", ["other"]],
-      ["working_background", ["lead"]],
     ],
-    "an idle supervisor with a running agent is grouped as background work",
+    "an idle supervisor with an agent waiting on the person is grouped as needing input",
   );
   const rows = fleetEntries(state).flatMap((e) =>
     e.kind === "session"
@@ -181,17 +181,17 @@ test("agents sit under their supervisor, sorted like the fleet, the archived hid
       : [],
   );
   assert.deepEqual(rows, [
-    ["other", "running", null, false],
-    ["lead", "working_background", null, true],
+    ["lead", "awaiting_input", null, true],
     ["kid2", "awaiting_input", false, false],
     ["kid1", "running", true, false],
+    ["other", "running", null, false],
   ]);
   assert.deepEqual(treeCost(lead, fleetSessions(state)), { costUsd: 2, costSource: "provider" });
-  // ↑ from the supervisor reaches the row above it, not an agent.
+  // ↓ from the supervisor reaches the row below it, not an agent.
   let s = reduce(state, { t: "select", id: "lead" });
-  s = reduce(s, { t: "move", delta: 1 });
-  assert.equal(s.selectedId, "lead", "nothing below it at the top level");
   s = reduce(s, { t: "move", delta: -1 });
+  assert.equal(s.selectedId, "lead", "nothing above it at the top level");
+  s = reduce(s, { t: "move", delta: 1 });
   assert.equal(s.selectedId, "other");
 });
 
@@ -216,7 +216,7 @@ test("the fleet draws agents on tree branches, and a supervisor's combined cost 
     }),
   );
   const line = (id: string) => out.split("\n").find((l) => l.includes(id.slice(0, 8)))!;
-  assert.match(line("lead"), /◐ .*Coordinate\s+Σ\$2\.00/);
+  assert.match(line("lead"), /◆ .*Coordinate\s+\?1 Σ\$2\.00/);
   assert.doesNotMatch(line("lead"), /needs input|working|done/);
   assert.match(line("kid2"), /├ .*kid2.*Verify/);
   assert.match(line("kid1"), /└ .*kid1.*Implement/);

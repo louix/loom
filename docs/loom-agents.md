@@ -170,8 +170,8 @@ children inside the supervisor's VM is a later shared-VM feature.
   still holds it. The user's send or release (`r`) revives a cold supervisor
   and delivers. A child waiting for input (a permission or a question) is not
   notified: both go to the user, so the supervisor could not act on it, and
-  the fleet already shows the child waiting. Waits stay unnotified until
-  supervisor question handling is designed.
+  the fleet already shows the child waiting, on its row and its supervisors'.
+  Waits stay unnotified until supervisor question handling is designed.
 
 - Nor is a stop the supervisor made itself (`agent_interrupt`, `agent_stop`)
   notified: the tool's answer already says so. Who asked for a stop travels
@@ -258,11 +258,26 @@ is entered, then follow the open ones, dimmed. The supervisor row's cost is
 stay per session.
 
 A supervisor whose own turn has ended shows as background work while any
-child is running or working in the background; a question, error, live turn
-or stop of its own still shows as itself, and a child's questions or failures
-show only on the child's row. This is the fleet's reading
-only: the supervisor's state stays idle, which is what lets the queue hand it
-its children's reports while others still run.
+child is running or working in the background. A child at any depth waiting
+on the user (a question or a permission prompt — these come to the user, not
+the supervisor) raises every supervisor above it into needs input, over its
+live turn or background work. A question, error or stop of the supervisor's
+own still shows as itself, and an archived one stays archived; the table is
+`SHOWN` in `frontend/tui/src/fleet-status.ts`. A child's failures show only
+on the child's row.
+
+The supervisor row marks children waiting on the user with `?N` (N counts
+every waiting descendant), apart from its own glyph, which is its own
+question:
+
+    ◆ 7021fd6c      Coordinate the review              ?2 Σ$1.40
+
+Its Detail names them, `? 2 agents waiting on you: <id> <title>, …  → opens`;
+the question is answered on the child's own row.
+
+All of this is the fleet's reading only: the supervisor's state stays idle,
+which is what lets the queue hand it its children's reports while others
+still run, and the desktop `waiting` hook still fires for the child alone.
 
 ## Data, not statistics UI
 

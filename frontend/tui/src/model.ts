@@ -47,7 +47,7 @@ import type { QNav } from "./interactions.ts";
 import { noDrafts, recalled, recorded, type Drafts } from "./composer.ts";
 import type { QueueEntryView } from "@loom/core/message-queue";
 import { queryOf, searchMatches, type Find } from "./fleet-search.ts";
-import { shownStatusIn } from "./fleet-status.ts";
+import { shownStatusIn, waitingAgentsIn } from "./fleet-status.ts";
 import {
   filterLog,
   noTranscript,
@@ -1454,9 +1454,10 @@ export type FleetEntry =
       /** A Loom agent drawn under its supervisor: how deep, and whether it is
        *  that supervisor's last. Absent for a row at the top of its group. */
       nest?: { depth: number; isLast: boolean };
-      /** For a supervisor: its spend with its agents' (display only). Absent
-       *  for a session that supervises none. */
-      agents?: { cost: Pick<SessionSnapshot, "costUsd" | "costSource"> };
+      /** For a supervisor: its spend with its agents', and how many of them
+       *  (however deep) wait on the person (display only). Absent for a
+       *  session that supervises none. */
+      agents?: { cost: Pick<SessionSnapshot, "costUsd" | "costSource">; waiting: number };
     }
   | { kind: "child"; s: SessionSnapshot; c: FleetChild; isLast: boolean }
   | { kind: "childMore"; s: SessionSnapshot; extra: number };
@@ -1470,6 +1471,7 @@ export const fleetEntries = (
   const active = state.find != null && queryOf(state.find) !== "";
   const all = fleetSessions(state);
   const status = shownStatusIn(all);
+  const waiting = waitingAgentsIn(all);
   const entered = enteredIds(state, active);
   const parent = cursorParentOf(state, active);
   const out: FleetEntry[] = [];
@@ -1484,7 +1486,9 @@ export const fleetEntries = (
       s,
       status: status(s),
       ...(nest ? { nest } : {}),
-      ...(mine.length > 0 ? { agents: { cost: treeCost(s, all) } } : {}),
+      ...(mine.length > 0
+        ? { agents: { cost: treeCost(s, all), waiting: waiting(s).length } }
+        : {}),
     });
     const kids = childrenOf(s);
     // Mirrors the FLEET row cap: 4 children shown, lifted while drilled in.
