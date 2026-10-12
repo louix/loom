@@ -104,13 +104,14 @@ Deno.test("failed VM command preserves exit and output, including exhaustion bey
     const failed = await vmCommand(binding, "ignored", 5000, new AbortController().signal);
     assert.equal(failed.code, 17);
     assert.equal(failed.output, "load library: Too many open files\n\n" + fileLimitDiagnostic);
-    await Deno.writeTextFile(executable, "#!/bin/sh\nprintf 'documentation: EMFILE'\n");
+    await writeExecutable(executable, "#!/bin/sh\nprintf 'documentation: EMFILE'\n", 0o700);
     const ok = await vmCommand(binding, "ignored", 5000, new AbortController().signal);
     assert.equal(ok.output, "documentation: EMFILE");
     assert.equal(ok.code, 0);
-    await Deno.writeTextFile(
+    await writeExecutable(
       executable,
       "#!/bin/sh\ni=0\nwhile [ \"$i\" -lt 7000 ]; do printf 0123456789; i=$((i+1)); done\nprintf 'Too many open files'\nexit 1\n",
+      0o700,
     );
     const clipped = await vmCommand(binding, "ignored", 5000, new AbortController().signal);
     assert.equal(clipped.code, 1);
