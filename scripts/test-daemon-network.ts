@@ -2,6 +2,10 @@ import { fileURLToPath } from "node:url";
 /** Local acceptance companion: a full daemon with Unix-only networking and worker-backed APIs. */
 import assert from "node:assert/strict";
 import { Daemon } from "../backend/daemon/src/daemon/daemon.ts";
+import {
+  WORKER_SCRATCH_ROOT,
+  workerScratches,
+} from "../backend/daemon/src/daemon/worker-scratch.ts";
 import { CONNECTORS } from "../cli/src/connectors.ts";
 import { LoomClient } from "../client/src/client.ts";
 
@@ -48,6 +52,12 @@ try {
   await client.close();
   await daemon.stop("test");
 }
+// The stop abandons the session's auto-title one-shot mid-reply; its worker
+// must still be closed, and its scratch removed, before the daemon exits.
+assert.deepEqual(
+  (await workerScratches(WORKER_SCRATCH_ROOT)).filter(({ claim }) => claim.owner === Deno.pid),
+  [],
+);
 console.log("network-denied daemon catalog and provider turn passed");
 // Like loomd, exit once stopped rather than when the event loop drains: an
 // `AbortSignal.any` over an `AbortSignal.timeout` keeps Deno alive until that

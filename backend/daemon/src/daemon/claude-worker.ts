@@ -2,7 +2,8 @@ import { homedir } from "node:os";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 import type { ConnectorContext } from "../../../../core/src/connector.ts";
 import type { WorkerRole } from "../../../../core/src/worker.ts";
-import { mkWorkerScratch, mockLaunchSpec, type WorkerLaunchSpec } from "./worker-launch.ts";
+import { mockLaunchSpec, type WorkerLaunchSpec } from "./worker-launch.ts";
+import { mkWorkerScratch } from "./worker-scratch.ts";
 import { withVmSessions } from "./vm-provider.ts";
 import { WorkerProvider } from "./worker-provider.ts";
 
@@ -86,6 +87,7 @@ export const claudeWorkerSpec = (
     env,
     processGroup: true,
     cleanupPaths: [scratch],
+    scratch,
     permissions: {
       read: [...new Set(read)],
       write: [...new Set(write)],

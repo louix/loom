@@ -1,6 +1,7 @@
 import type { ManagedProcess } from "../../../../runtime/src/process.ts";
 import { escalateProcessGroup } from "@loom/core/process-group";
 import { fileURLToPath } from "node:url";
+import { claimWorkerScratch } from "./worker-scratch.ts";
 
 export interface WorkerLaunchSpec {
   executable: string;
@@ -18,6 +19,8 @@ export interface WorkerLaunchSpec {
   };
   processGroup?: boolean;
   cleanupPaths?: string[];
+  /** The worker's own TMPDIR (worker-scratch.ts), claimed for its process group once launched. */
+  scratch?: string;
 }
 export type WorkerProcess = ManagedProcess;
 export type WorkerLauncher = (spec: WorkerLaunchSpec) => WorkerProcess;
@@ -57,6 +60,8 @@ export const launchLocalWorker: WorkerLauncher = (spec) => {
     // setsid: the worker leads a process group the daemon can signal as a whole.
     detached: spec.processGroup === true,
   }).spawn();
+  // Only a group can be probed for its descendants: a scratch without one is never swept.
+  if (spec.scratch && spec.processGroup) claimWorkerScratch(spec.scratch, child.pid);
   // Drain without exposing potentially sensitive vendor diagnostics or retaining
   // unbounded output. A redacted logging channel can be added with real connectors.
   const drained = child.stderr.pipeTo(new WritableStream({ write() {} })).catch(() => {});
@@ -131,14 +136,6 @@ export const launchLocalWorker: WorkerLauncher = (spec) => {
     },
   };
 };
-
-/**
- * A worker's own TMPDIR. Under /tmp, not the daemon's $TMPDIR: a daemon started
- * in a nix-shell (or on macOS) has one deep enough that the agent's sockets
- * below it run past sun_path.
- */
-export const mkWorkerScratch = (prefix: string): string =>
-  Deno.realPathSync(Deno.makeTempDirSync({ dir: "/tmp", prefix }));
 
 /** SDK-free mock and echo workers need no native children, credentials, network or write grants. */
 export const mockLaunchSpec = (cwd: string): WorkerLaunchSpec => {

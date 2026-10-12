@@ -130,7 +130,8 @@ import { type QueueDelivery, type QueueHoldCause } from "@loom/core/message-queu
 import type { Sender } from "./queue-machine.ts";
 import { SessionShells } from "./session-shell.ts";
 import { mkSessionQueue, type SessionQueue } from "./session-queue.ts";
-import { cheapModelFor, generateTitle } from "./titler.ts";
+import { cheapModelFor, startTitle } from "./titler.ts";
+import { sweepWorkerScratch, WORKER_SCRATCH_ROOT } from "./worker-scratch.ts";
 import { WorktreeManager, commitIdentity, type RebaseOutcome } from "./worktrees.ts";
 import { resolveGitIdentity } from "../config/git-identity.ts";
 import { ProviderRegistry } from "./provider-registry.ts";
@@ -392,8 +393,9 @@ export class Daemon {
   readonly #vmIdleSince = new Map<string, number>();
   /** Sessions with an auto-title one-shot in flight (fire-once guard). */
   #titling = new Set<string>();
-  /** In-flight auto-title jobs — awaited at shutdown so their one-shot titler
-   *  sessions (untracked by SessionManager) don't outlive the daemon. */
+  /** In-flight auto-title jobs, and the closes of one-shot titler sessions they
+   *  gave up on — awaited at shutdown so those sessions (untracked by
+   *  SessionManager) don't outlive the daemon, or leave their worker's scratch. */
   readonly #titleJobs = new Set<Promise<void>>();
   /** Aborted as shutdown begins: a titler mid-reply gives up rather than outlive the store. */
   readonly #titleStop = new AbortController();
@@ -886,6 +888,12 @@ export class Daemon {
     sweep();
     this.#vmIdleSweep = setInterval(sweep, 30_000);
     this.#vmIdleSweep.unref();
+    void sweepWorkerScratch(WORKER_SCRATCH_ROOT).then(
+      (removed) => {
+        if (removed.length > 0) this.#log.info("removed stale worker scratch", { removed });
+      },
+      (error) => this.#log.warn("worker scratch cleanup failed", { error: String(error) }),
+    );
 
     this.#log.info("daemon up", {
       pid: Deno.pid,
@@ -3154,7 +3162,7 @@ export class Daemon {
             ? this.config.providers.claude.titleModel
             : this.config.providers.aisdk[snap.provider]?.titleModel) ||
           cheapModelFor(snap.provider);
-        const title = await generateTitle({
+        const run = startTitle({
           provider,
           prompt: snap.title,
           cwd: snap.worktree ?? this.repoRoot,
@@ -3162,6 +3170,9 @@ export class Daemon {
           signal: this.#titleStop.signal,
           ...(model ? { model } : {}),
         });
+        this.#titleJobs.add(run.closed);
+        void run.closed.finally(() => this.#titleJobs.delete(run.closed));
+        const title = await run.title;
         // Checked before the read below: by now shutdown may have closed the store.
         if (this.#stopping) return;
         const current = this.#registry.get(id);

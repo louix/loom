@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { cheapModelFor, cleanTitle, generateTitle } from "@loom/daemon/daemon/titler";
+import { cheapModelFor, cleanTitle, generateTitle, startTitle } from "@loom/daemon/daemon/titler";
 import { FakeProvider } from "@loom/connector-mock";
 import { makeLogger, setLogLevel } from "@loom/core/logger";
 
@@ -111,6 +111,51 @@ test("generateTitle bounds an unresponsive stream and cleanup", async () => {
   );
   assert.equal(closed, 1);
   session.endStream();
+});
+
+test("startTitle settles closed once an abandoned session has finished closing", async () => {
+  // given — a session mid-reply whose close takes until released
+  const provider = new FakeProvider();
+  const { FakeSession } = await import("../connectors/mock/src/fake.ts");
+  const session = new FakeSession("closing", { mode: "auto" });
+  const release = Promise.withResolvers<void>();
+  session.close = () => release.promise;
+  provider.createSession = async () => session;
+  const stop = new AbortController();
+  const run = startTitle({ provider, prompt: "fix naming", cwd: "/tmp", log, signal: stop.signal });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  // when
+  stop.abort();
+  // then
+  assert.equal(await run.title, null);
+  const pending = Symbol("pending");
+  assert.equal(await Promise.race([run.closed, Promise.resolve(pending)]), pending);
+  release.resolve();
+  await run.closed;
+  session.endStream();
+});
+
+test("startTitle settles closed for a session that starts after it was abandoned", async () => {
+  // given
+  const provider = new FakeProvider();
+  const { FakeSession } = await import("../connectors/mock/src/fake.ts");
+  const session = new FakeSession("late", { mode: "auto" });
+  const started = Promise.withResolvers<void>();
+  let closed = 0;
+  session.close = async () => {
+    closed++;
+  };
+  provider.createSession = async () => {
+    await started.promise;
+    return session;
+  };
+  const run = startTitle({ provider, prompt: "fix naming", cwd: "/tmp", log, timeoutMs: 10 });
+  assert.equal(await run.title, null);
+  // when
+  started.resolve();
+  // then
+  await run.closed;
+  assert.equal(closed, 1);
 });
 
 test("generateTitle rejects partial text without a successful result", async () => {

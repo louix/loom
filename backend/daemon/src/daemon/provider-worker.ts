@@ -4,7 +4,8 @@ import { join, delimiter, isAbsolute, resolve } from "node:path";
 import { connectorWireConfigSchema, type ConnectorContext } from "@loom/core/connector";
 import type { WorkerProfile, WorkerRole } from "@loom/core/worker";
 import { WorkerProvider } from "./worker-provider.ts";
-import { mkWorkerScratch, mockLaunchSpec } from "./worker-launch.ts";
+import { mockLaunchSpec } from "./worker-launch.ts";
+import { mkWorkerScratch } from "./worker-scratch.ts";
 
 export const createProviderWorker = (
   connector: WorkerProfile["connector"],
@@ -64,6 +65,7 @@ export const createProviderWorker = (
         cwd: role === "session" ? cwd : scratch,
         env,
         cleanupPaths: [scratch],
+        scratch,
         processGroup: true,
         permissions: {
           read,

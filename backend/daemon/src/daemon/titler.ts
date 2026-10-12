@@ -85,13 +85,30 @@ export interface TitleRequest {
   signal?: AbortSignal;
 }
 
+export interface TitleRun {
+  /** A cleaned title, or `null` on any failure; bounded by the request's timeout and signal. */
+  title: Promise<string | null>;
+  /**
+   * Settles once the one-shot's session has closed, or never opened. Not
+   * bounded: `title` settles at the deadline while an abandoned session may
+   * still be closing (and removing its worker's scratch).
+   */
+  closed: Promise<void>;
+}
+
 /** Run the one-shot and return a cleaned title, or `null` on any failure. */
-export const generateTitle = async (req: TitleRequest): Promise<string | null> => {
+export const generateTitle = (req: TitleRequest): Promise<string | null> => startTitle(req).title;
+
+export const startTitle = (req: TitleRequest): TitleRun => {
   const { provider, prompt, cwd, model, log } = req;
-  if (!provider.capabilities.oneShot || req.signal?.aborted) return null;
   // A single word (a greeting, "hi", "help") has nothing to summarise and tends
   // to make the model converse — keep the clipped message as the title.
-  if (prompt.trim().split(/\s+/).filter(Boolean).length < 2) return null;
+  if (
+    !provider.capabilities.oneShot ||
+    req.signal?.aborted ||
+    prompt.trim().split(/\s+/).filter(Boolean).length < 2
+  )
+    return { title: Promise.resolve(null), closed: Promise.resolve() };
 
   let session: AgentSession | undefined;
   let closing: Promise<void> | undefined;
@@ -102,6 +119,7 @@ export const generateTitle = async (req: TitleRequest): Promise<string | null> =
       .then(() => session!.close())
       .catch(() => {}));
   };
+  const closed = Promise.withResolvers<void>();
   // Bound startup, streaming AND cleanup. Closing a broken provider need not
   // unblock its iterator; racing the whole job keeps naming/shutdown bounded.
   const deadline = Promise.withResolvers<null>();
@@ -148,12 +166,19 @@ export const generateTitle = async (req: TitleRequest): Promise<string | null> =
       return null;
     } finally {
       await close();
+      closed.resolve();
     }
   };
-  try {
-    return await Promise.race([run(), deadline.promise]);
-  } finally {
+  // An abandoned stream may never end, so its close is what finishes it. A
+  // startup still in flight closes in `run` once it lands.
+  void deadline.promise.then(async () => {
+    if (!session) return;
+    await close();
+    closed.resolve();
+  });
+  const title = Promise.race([run(), deadline.promise]).finally(() => {
     clearTimeout(timer);
     req.signal?.removeEventListener("abort", abandon);
-  }
+  });
+  return { title, closed: closed.promise };
 };
