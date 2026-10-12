@@ -27,12 +27,12 @@ const names = z.array(z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/)).max(64);
 
 const resources = z.strictObject({
   cpus: z.int().min(1).max(64).optional(),
-  memoryMiB: z.int().min(512).max(65536).optional(),
+  memory_mib: z.int().min(512).max(65536).optional(),
 });
 const hook = z.strictObject({
   name: text.optional(),
   run: text.describe("Shell command run in the guest workspace."),
-  timeoutSeconds: z.int().min(1).max(3600).default(900),
+  timeout_seconds: z.int().min(1).max(3600).default(900),
 });
 
 /** What an environment needs. The same shape at every layer; setup fields need a grant from a project. */
@@ -41,13 +41,13 @@ export const environmentIntentSchema = z.strictObject({
     .strictObject({ auto: z.boolean() })
     .optional()
     .describe("Activate the checkout's devenv, flake, shell.nix or default.nix."),
-  commandPrefix: z
+  command_prefix: z
     .array(text)
     .min(1)
     .max(64)
     .optional()
     .describe("Literal argv that wraps activation; an alternative to nix.auto."),
-  timeoutSeconds: z.int().min(1).max(2_073_600).optional().describe("Activation timeout."),
+  timeout_seconds: z.int().min(1).max(2_073_600).optional().describe("Activation timeout."),
   resources: resources.optional(),
   prepare: z
     .array(hook)
@@ -61,16 +61,10 @@ export const environmentIntentSchema = z.strictObject({
     .describe("Hooks run before each start becomes available. Replaces any earlier layer's list."),
 });
 
-/** Exact HTTPS destination names, written as presets and/or allowedHosts. */
+/** Exact HTTPS destination names, written as presets and/or allowed_hosts. */
 const network = z.strictObject({
   presets: networkPresetsSchema.unwrap().optional(),
-  allowedHosts: extraHostsSchema.unwrap().optional(),
-  // Still parses; resolution reads it when allowedHosts is unset, and reports it.
-  hosts: extraHostsSchema
-    .unwrap()
-    .optional()
-    .meta({ deprecated: true })
-    .describe("Replaced by allowedHosts."),
+  allowed_hosts: extraHostsSchema.unwrap().optional(),
 });
 export type EnvironmentNetwork = z.output<typeof network>;
 const hostAccess = z
@@ -104,7 +98,7 @@ const grants = z.strictObject({
   setup: z
     .boolean()
     .default(false)
-    .describe("Let the project request nix.auto, commandPrefix, prepare and start hooks."),
+    .describe("Let the project request nix.auto, command_prefix, prepare and start hooks."),
   network: network.optional().describe("Hosts the project may request."),
 });
 
@@ -114,12 +108,8 @@ const grants = z.strictObject({
  */
 const lifecycle = z.strictObject({
   workspace: z.enum(["in-place", "worktree", "clone"]).optional(),
-  execution: z
-    .enum(["vm", "none", "local"])
-    .transform((v) => (v === "local" ? "none" : v))
-    .optional()
-    .describe("vm, or none (on the host); local is the old spelling of none."),
-  idleTimeoutMinutes: z.int().min(0).max(1440).optional(),
+  execution: z.enum(["vm", "none"]).optional().describe("vm, or none (on the host)."),
+  idle_stop_minutes: z.int().min(0).max(1440).optional(),
 });
 
 export const profileNameSchema = z

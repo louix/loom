@@ -23,7 +23,7 @@
           "required": ["auto"],
           "additionalProperties": false
         },
-        "commandPrefix": {
+        "command_prefix": {
           "description": "Literal argv that wraps activation; an alternative to nix.auto.",
           "minItems": 1,
           "maxItems": 64,
@@ -34,7 +34,7 @@
             "maxLength": 65536
           }
         },
-        "timeoutSeconds": {
+        "timeout_seconds": {
           "description": "Activation timeout.",
           "type": "integer",
           "minimum": 1,
@@ -48,7 +48,7 @@
               "minimum": 1,
               "maximum": 64
             },
-            "memoryMiB": {
+            "memory_mib": {
               "type": "integer",
               "minimum": 512,
               "maximum": 65536
@@ -74,7 +74,7 @@
                 "maxLength": 65536,
                 "description": "Shell command run in the guest workspace."
               },
-              "timeoutSeconds": {
+              "timeout_seconds": {
                 "default": 900,
                 "type": "integer",
                 "minimum": 1,
@@ -103,7 +103,7 @@
                 "maxLength": 65536,
                 "description": "Shell command run in the guest workspace."
               },
-              "timeoutSeconds": {
+              "timeout_seconds": {
                 "default": 900,
                 "type": "integer",
                 "minimum": 1,
@@ -131,18 +131,7 @@
                 "enum": ["nix", "javascript", "python", "rust"]
               }
             },
-            "allowedHosts": {
-              "maxItems": 64,
-              "type": "array",
-              "items": {
-                "type": "string",
-                "maxLength": 253,
-                "pattern": "^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"
-              }
-            },
-            "hosts": {
-              "deprecated": true,
-              "description": "Replaced by allowedHosts.",
+            "allowed_hosts": {
               "maxItems": 64,
               "type": "array",
               "items": {

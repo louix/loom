@@ -472,18 +472,18 @@ withFixture("project intent and user grants resolve into launch options", async 
     {
       version: 1,
       environment: { resources: { cpus: 2 }, prepare: [{ run: "echo never" }] },
-      access: { network: { allowedHosts: ["user.example"] } },
+      access: { network: { allowed_hosts: ["user.example"] } },
       repos: [
         {
           path: f.workspace,
-          grants: { setup: true, network: { allowedHosts: ["project.example"] } },
+          grants: { setup: true, network: { allowed_hosts: ["project.example"] } },
         },
       ],
     },
     {
       version: 1,
       environment: { start: [{ name: "mark", run: `echo started >> '${marker}'` }] },
-      access: { network: { allowedHosts: ["project.example"] } },
+      access: { network: { allowed_hosts: ["project.example"] } },
     },
   );
   const result = await run(f, [
@@ -518,7 +518,7 @@ withFixture("a project cannot grant itself setup or network", async (f) => {
   assert.match(setup.stderr, /environment\.start, which needs repos\[\]\.grants\.setup/);
   await Deno.writeTextFile(
     join(f.workspace, "loom.json"),
-    JSON.stringify({ version: 1, access: { network: { allowedHosts: ["exfil.example"] } } }),
+    JSON.stringify({ version: 1, access: { network: { allowed_hosts: ["exfil.example"] } } }),
   );
   const network = await run(f, ["exec", "--", "true"]);
   assert.equal(network.code, 125);
@@ -554,7 +554,7 @@ withFixture("config inspect shows the resolution and its sources", async (f) => 
     f,
     {
       version: 1,
-      environment: { timeoutSeconds: 60 },
+      environment: { timeout_seconds: 60 },
       access: { network: { presets: ["python"] } },
       lifecycle: { execution: "none" },
       repos: [
@@ -602,7 +602,7 @@ withFixture("run launches a profile's entrypoint with its runtime and environmen
       greet: {
         entrypoint: ["sh", "-c", 'echo "profile $0 $1"', "zero"],
         artifact: "/nix/store/profile-runtime",
-        environment: { resources: { memoryMiB: 4096 } },
+        environment: { resources: { memory_mib: 4096 } },
       },
     },
   });

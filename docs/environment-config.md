@@ -10,12 +10,16 @@ changes how Loom sessions run.
 | `loom.json` at the checkout root                       | repository     | strict JSON         | what the project **requests**              |
 | `${XDG_CONFIG_HOME:-~/.config}/loom/environment.jsonc` | you (the host) | JSONC, `version: 1` | runtime, defaults, profiles and **grants** |
 
-Both files need `"version": 1` and reject unknown fields. The user file sits
+Both files need `"version": 1`, spell every key in snake_case like Loom's
+`config.jsonc`, and reject unknown fields. The user file sits
 beside Loom's `config.jsonc` under a different name on purpose: main-new used
 `config.jsonc` for this schema, which rejects every Loom setting. Neither file
 is ever read in place of the other; pointing `--user-config` at Loom's file
 fails with a pointer to [`loom config convert`](#converting-loom-config).
-`loom.json` keeps main-new's name and schema, so its project files still parse.
+`loom.json` keeps main-new's name; main-new's camelCase keys (`commandPrefix`,
+`timeoutSeconds`, `memoryMiB`, `allowedHosts`, `idleTimeoutMinutes`) are now
+`command_prefix`, `timeout_seconds`, `memory_mib`, `allowed_hosts` and
+`idle_stop_minutes`, and the old spellings are rejected as unknown.
 
 Editor schemas: [project](../environment-config/project.schema.json) and
 [user](../environment-config/user.schema.json); regenerate both with
@@ -28,19 +32,19 @@ Editor schemas: [project](../environment-config/project.schema.json) and
   "version": 1,
   "environment": {
     "nix": { "auto": true },
-    "resources": { "cpus": 2, "memoryMiB": 4096 },
-    "prepare": [{ "run": "npm ci", "timeoutSeconds": 600 }],
+    "resources": { "cpus": 2, "memory_mib": 4096 },
+    "prepare": [{ "run": "npm ci", "timeout_seconds": 600 }],
     "start": [{ "name": "services", "run": "just services" }]
   },
-  "access": { "network": { "presets": ["javascript"], "allowedHosts": ["api.example.com"] } }
+  "access": { "network": { "presets": ["javascript"], "allowed_hosts": ["api.example.com"] } }
 }
 ```
 
 `environment` fields: `nix.auto` (activate devenv, flake, shell.nix or
-default.nix), `commandPrefix` (literal argv wrapping activation; not with
-`nix.auto`), `timeoutSeconds` (activation, default 900), `resources` (default 1
+default.nix), `command_prefix` (literal argv wrapping activation; not with
+`nix.auto`), `timeout_seconds` (activation, default 900), `resources` (default 1
 CPU, 2048 MiB), and `prepare`/`start` hooks (`run`, optional `name`,
-`timeoutSeconds` 1–3600, default 900). `access.network` lists exact HTTPS names
+`timeout_seconds` 1–3600, default 900). `access.network` lists exact HTTPS names
 as `hosts` and/or `presets` (`nix`, `javascript`, `python`, `rust`).
 
 `access.mcp` and `skills` parse for main-new compatibility, but nothing attaches
@@ -55,21 +59,21 @@ lifecycle defaults, repositories or grants.
 {
   "version": 1,
   "backend": { "artifact": "/nix/store/…-session-runtime", "executable": "smolvm" },
-  "environment": { "timeoutSeconds": 1200 },
+  "environment": { "timeout_seconds": 1200 },
   "access": { "network": { "presets": ["nix"] } },
   "profiles": {
     "tests": { "entrypoint": ["just", "test"], "environment": { "resources": { "cpus": 4 } } },
   },
-  "limits": { "cpus": 8, "memoryMiB": 16384 },
+  "limits": { "cpus": 8, "memory_mib": 16384 },
   "lifecycle": { "workspace": "worktree", "execution": "none" },
   "repos": [
     {
       "path": "/home/me/src/project",
-      "environment": { "resources": { "memoryMiB": 8192 } },
-      "access": { "network": { "allowedHosts": ["internal.example.com"] } },
+      "environment": { "resources": { "memory_mib": 8192 } },
+      "access": { "network": { "allowed_hosts": ["internal.example.com"] } },
       "grants": {
         "setup": true,
-        "network": { "presets": ["javascript"], "allowedHosts": ["api.example.com"] },
+        "network": { "presets": ["javascript"], "allowed_hosts": ["api.example.com"] },
       },
     },
   ],
@@ -82,8 +86,7 @@ lifecycle defaults, repositories or grants.
 - `profiles`: [launch profiles](#launch-profiles).
 - `limits`: ceilings; a larger request fails rather than being clamped.
 - `lifecycle`: default workspace placement (`in-place`, `worktree`, `clone`),
-  execution (`vm`, or `none` for the host; the older `local` reads as `none`)
-  and `idleTimeoutMinutes` for applications that create workspaces. Absent
+  execution (`vm`, or `none` for the host) and `idle_stop_minutes` for applications that create workspaces. Absent
   fields keep each application's own default; Loom's is none + worktree, main-new's was worktree + VM. loom-isolate always runs in
   place in a VM and only displays these.
 - `repos[]`: per-repository host overrides (`environment`, `access`,
@@ -95,11 +98,11 @@ lifecycle defaults, repositories or grants.
 
 The project's requests are checked against the matching `repos[].grants`:
 
-| Project requests                                                        | Needs                                                                   |
-| ----------------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| `nix.auto: true`, `commandPrefix`, non-empty `prepare` or `start` hooks | `grants.setup: true`                                                    |
-| each network host (presets expand to hosts)                             | the host in `grants.network`, or already allowed by the host's `access` |
-| `resources`                                                             | nothing beyond `limits`                                                 |
+| Project requests                                                         | Needs                                                                   |
+| ------------------------------------------------------------------------ | ----------------------------------------------------------------------- |
+| `nix.auto: true`, `command_prefix`, non-empty `prepare` or `start` hooks | `grants.setup: true`                                                    |
+| each network host (presets expand to hosts)                              | the host in `grants.network`, or already allowed by the host's `access` |
+| `resources`                                                              | nothing beyond `limits`                                                 |
 
 The check applies to what the project asked for, even when a host layer later
 overrides that field. Without a matching `repos[]` entry nothing is granted.
@@ -115,13 +118,11 @@ Environment fields resolve in four layers, later winning:
 3. the project's `environment`
 4. the matching `repos[].environment` (final host overrides)
 
-Each field replaces the earlier value. `resources.cpus` and `resources.memoryMiB`
+Each field replaces the earlier value. `resources.cpus` and `resources.memory_mib`
 merge individually. **Hook arrays replace earlier arrays whole**, including an
-empty array; they never append. Host `access.network.allowedHosts` and
+empty array; they never append. Host `access.network.allowed_hosts` and
 `.presets` in `repos[]` each replace the user-level field; granted project
-hosts are then added. `hosts`, the old name of `allowedHosts`, still parses
-wherever `allowedHosts` does; `loom-isolate` reports it once per run, and
-`allowedHosts` wins when both are set. `loom-isolate config inspect` shows the layer behind each value.
+hosts are then added. `loom-isolate config inspect` shows the layer behind each value.
 
 This differs from Loom's `config.jsonc`, where a matching `repos[]` entry's
 `hooks` **append** to the global `hooks` and other arrays replace. That rule is
@@ -161,15 +162,15 @@ that exists. The report lists every setting under one of:
 
 - **converted**: `session.environment.auto_nix` → `environment.nix.auto`;
   `session.environment.command_prefix`, `timeout_seconds`, `cpus`, `memory_mib`
-  → `commandPrefix`, `timeoutSeconds`, `resources`; `session.isolation.network.allowed_hosts`/`presets` →
-  `access.network.allowedHosts`/`presets`; `session.defaults.isolation` and
+  → `command_prefix`, `timeout_seconds`, `resources`; `session.isolation.network.allowed_hosts`/`presets` →
+  `access.network.allowed_hosts`/`presets`; `session.defaults.isolation` and
   `session.defaults.workspace` → `lifecycle.execution`/`workspace` (deprecated
   names such as `session.isolation.enabled` or `session.auto_nix` convert as
   their replacements, with a note);
-  `session.isolation.idle_stop_minutes` → `lifecycle.idleTimeoutMinutes`; `workspace_prepare`
+  `session.isolation.idle_stop_minutes` → `lifecycle.idle_stop_minutes`; `workspace_prepare`
   and `workspace_start` hooks → `environment.prepare`/`start`.
 - **stays in Loom config**: providers, models and modes, TUI, daemon, tools and
-  MCP servers, search, Git identity, worktree/branch/database settings,
+  MCP servers, Git identity, worktree/branch/database settings,
   auto-resume and other session policy, clone publication
   policy, per-provider runtimes, and every non-workspace hook event.
 - **not converted**: settings the new format cannot express, such as `async`

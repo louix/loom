@@ -17,7 +17,7 @@ Deno.test("an empty config converts to Loom's explicit local, worktree default",
   const report = convert({});
   assert.deepEqual(report.user, {
     version: 1,
-    lifecycle: { workspace: "worktree", execution: "none", idleTimeoutMinutes: 10 },
+    lifecycle: { workspace: "worktree", execution: "none", idle_stop_minutes: 10 },
   });
   assert.deepEqual(report.converted, []);
   assert.deepEqual(report.unsupported, []);
@@ -58,25 +58,25 @@ Deno.test("environment settings convert into host layers; Loom settings stay", (
     version: 1,
     environment: {
       nix: { auto: true },
-      timeoutSeconds: 60,
-      resources: { cpus: 2, memoryMiB: 4096 },
-      prepare: [{ name: "npm", run: "npm ci", timeoutSeconds: 600 }],
-      start: [{ name: "make", run: "make dev", timeoutSeconds: 30 }],
+      timeout_seconds: 60,
+      resources: { cpus: 2, memory_mib: 4096 },
+      prepare: [{ name: "npm", run: "npm ci", timeout_seconds: 600 }],
+      start: [{ name: "make", run: "make dev", timeout_seconds: 30 }],
     },
-    access: { network: { presets: ["javascript"], allowedHosts: ["example.com"] } },
-    lifecycle: { workspace: "clone", execution: "vm", idleTimeoutMinutes: 10 },
+    access: { network: { presets: ["javascript"], allowed_hosts: ["example.com"] } },
+    lifecycle: { workspace: "clone", execution: "vm", idle_stop_minutes: 10 },
   });
   assert.deepEqual(
     report.converted.map((entry) => entry.from + " -> " + entry.to),
     [
-      "session.isolation.network.allowed_hosts -> access.network.allowedHosts",
+      "session.isolation.network.allowed_hosts -> access.network.allowed_hosts",
       "session.isolation.network.presets -> access.network.presets",
       "session.defaults.isolation -> lifecycle.execution",
       "session.defaults.workspace -> lifecycle.workspace",
       "session.environment.auto_nix -> environment.nix.auto",
-      "session.environment.timeout_seconds -> environment.timeoutSeconds",
+      "session.environment.timeout_seconds -> environment.timeout_seconds",
       "session.environment.cpus -> environment.resources.cpus",
-      "session.environment.memory_mib -> environment.resources.memoryMiB",
+      "session.environment.memory_mib -> environment.resources.memory_mib",
       "hooks[0] (workspace_prepare) -> environment.prepare",
       "hooks[1] (workspace_start) -> environment.start",
     ],
@@ -145,18 +145,18 @@ Deno.test("repo overrides become diffs; appended hooks are listed explicitly", (
     {
       path: "/work/a",
       environment: {
-        resources: { memoryMiB: 4096 },
+        resources: { memory_mib: 4096 },
         // Old repo hooks append to inherited ones; new arrays replace, so list both.
         start: [
-          { name: "global-start", run: "global-start", timeoutSeconds: 30 },
-          { name: "a-start", run: "a-start", timeoutSeconds: 30 },
+          { name: "global-start", run: "global-start", timeout_seconds: 30 },
+          { name: "a-start", run: "a-start", timeout_seconds: 30 },
         ],
       },
       // Old arrays replace inherited ones, as host network fields do.
-      access: { network: { allowedHosts: ["a.example"] } },
+      access: { network: { allowed_hosts: ["a.example"] } },
       lifecycle: { workspace: "in-place" },
     },
-    { path: "/work/c", environment: { commandPrefix: ["nix-shell"] } },
+    { path: "/work/c", environment: { command_prefix: ["nix-shell"] } },
   ]);
   assert.deepEqual(paths(report.staysInLoomConfig), ["repos[1].session.defaults.base_branch"]);
   assert.deepEqual(paths(report.unsupported), ["repos[2].session.environment.auto_nix"]);
@@ -196,8 +196,8 @@ Deno.test("current names convert without notes; an ignored old name is reported"
   });
   assert.deepEqual(report.user, {
     version: 1,
-    access: { network: { presets: ["rust"], allowedHosts: ["example.com"] } },
-    lifecycle: { workspace: "in-place", execution: "vm", idleTimeoutMinutes: 10 },
+    access: { network: { presets: ["rust"], allowed_hosts: ["example.com"] } },
+    lifecycle: { workspace: "in-place", execution: "vm", idle_stop_minutes: 10 },
   });
   assert(report.converted.every((entry) => entry.note === undefined));
   assert.deepEqual(report.unsupported, [

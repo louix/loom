@@ -46,7 +46,7 @@
           "required": ["auto"],
           "additionalProperties": false
         },
-        "commandPrefix": {
+        "command_prefix": {
           "description": "Literal argv that wraps activation; an alternative to nix.auto.",
           "minItems": 1,
           "maxItems": 64,
@@ -57,7 +57,7 @@
             "maxLength": 65536
           }
         },
-        "timeoutSeconds": {
+        "timeout_seconds": {
           "description": "Activation timeout.",
           "type": "integer",
           "minimum": 1,
@@ -71,7 +71,7 @@
               "minimum": 1,
               "maximum": 64
             },
-            "memoryMiB": {
+            "memory_mib": {
               "type": "integer",
               "minimum": 512,
               "maximum": 65536
@@ -97,7 +97,7 @@
                 "maxLength": 65536,
                 "description": "Shell command run in the guest workspace."
               },
-              "timeoutSeconds": {
+              "timeout_seconds": {
                 "default": 900,
                 "type": "integer",
                 "minimum": 1,
@@ -126,7 +126,7 @@
                 "maxLength": 65536,
                 "description": "Shell command run in the guest workspace."
               },
-              "timeoutSeconds": {
+              "timeout_seconds": {
                 "default": 900,
                 "type": "integer",
                 "minimum": 1,
@@ -154,18 +154,7 @@
                 "enum": ["nix", "javascript", "python", "rust"]
               }
             },
-            "allowedHosts": {
-              "maxItems": 64,
-              "type": "array",
-              "items": {
-                "type": "string",
-                "maxLength": 253,
-                "pattern": "^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"
-              }
-            },
-            "hosts": {
-              "deprecated": true,
-              "description": "Replaced by allowedHosts.",
+            "allowed_hosts": {
               "maxItems": 64,
               "type": "array",
               "items": {
@@ -221,7 +210,7 @@
                 "required": ["auto"],
                 "additionalProperties": false
               },
-              "commandPrefix": {
+              "command_prefix": {
                 "description": "Literal argv that wraps activation; an alternative to nix.auto.",
                 "minItems": 1,
                 "maxItems": 64,
@@ -232,7 +221,7 @@
                   "maxLength": 65536
                 }
               },
-              "timeoutSeconds": {
+              "timeout_seconds": {
                 "description": "Activation timeout.",
                 "type": "integer",
                 "minimum": 1,
@@ -246,7 +235,7 @@
                     "minimum": 1,
                     "maximum": 64
                   },
-                  "memoryMiB": {
+                  "memory_mib": {
                     "type": "integer",
                     "minimum": 512,
                     "maximum": 65536
@@ -272,7 +261,7 @@
                       "maxLength": 65536,
                       "description": "Shell command run in the guest workspace."
                     },
-                    "timeoutSeconds": {
+                    "timeout_seconds": {
                       "default": 900,
                       "type": "integer",
                       "minimum": 1,
@@ -301,7 +290,7 @@
                       "maxLength": 65536,
                       "description": "Shell command run in the guest workspace."
                     },
-                    "timeoutSeconds": {
+                    "timeout_seconds": {
                       "default": 900,
                       "type": "integer",
                       "minimum": 1,
@@ -329,7 +318,7 @@
           "minimum": 1,
           "maximum": 64
         },
-        "memoryMiB": {
+        "memory_mib": {
           "type": "integer",
           "minimum": 512,
           "maximum": 65536
@@ -345,11 +334,11 @@
           "enum": ["in-place", "worktree", "clone"]
         },
         "execution": {
-          "description": "vm, or none (on the host); local is the old spelling of none.",
+          "description": "vm, or none (on the host).",
           "type": "string",
-          "enum": ["vm", "none", "local"]
+          "enum": ["vm", "none"]
         },
-        "idleTimeoutMinutes": {
+        "idle_stop_minutes": {
           "type": "integer",
           "minimum": 0,
           "maximum": 1440
@@ -358,6 +347,7 @@
       "additionalProperties": false
     },
     "repos": {
+      "default": [],
       "maxItems": 1024,
       "type": "array",
       "items": {
@@ -383,7 +373,7 @@
                 "required": ["auto"],
                 "additionalProperties": false
               },
-              "commandPrefix": {
+              "command_prefix": {
                 "description": "Literal argv that wraps activation; an alternative to nix.auto.",
                 "minItems": 1,
                 "maxItems": 64,
@@ -394,7 +384,7 @@
                   "maxLength": 65536
                 }
               },
-              "timeoutSeconds": {
+              "timeout_seconds": {
                 "description": "Activation timeout.",
                 "type": "integer",
                 "minimum": 1,
@@ -408,7 +398,7 @@
                     "minimum": 1,
                     "maximum": 64
                   },
-                  "memoryMiB": {
+                  "memory_mib": {
                     "type": "integer",
                     "minimum": 512,
                     "maximum": 65536
@@ -434,7 +424,7 @@
                       "maxLength": 65536,
                       "description": "Shell command run in the guest workspace."
                     },
-                    "timeoutSeconds": {
+                    "timeout_seconds": {
                       "default": 900,
                       "type": "integer",
                       "minimum": 1,
@@ -463,7 +453,7 @@
                       "maxLength": 65536,
                       "description": "Shell command run in the guest workspace."
                     },
-                    "timeoutSeconds": {
+                    "timeout_seconds": {
                       "default": 900,
                       "type": "integer",
                       "minimum": 1,
@@ -491,18 +481,7 @@
                       "enum": ["nix", "javascript", "python", "rust"]
                     }
                   },
-                  "allowedHosts": {
-                    "maxItems": 64,
-                    "type": "array",
-                    "items": {
-                      "type": "string",
-                      "maxLength": 253,
-                      "pattern": "^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"
-                    }
-                  },
-                  "hosts": {
-                    "deprecated": true,
-                    "description": "Replaced by allowedHosts.",
+                  "allowed_hosts": {
                     "maxItems": 64,
                     "type": "array",
                     "items": {
@@ -526,11 +505,11 @@
                 "enum": ["in-place", "worktree", "clone"]
               },
               "execution": {
-                "description": "vm, or none (on the host); local is the old spelling of none.",
+                "description": "vm, or none (on the host).",
                 "type": "string",
-                "enum": ["vm", "none", "local"]
+                "enum": ["vm", "none"]
               },
-              "idleTimeoutMinutes": {
+              "idle_stop_minutes": {
                 "type": "integer",
                 "minimum": 0,
                 "maximum": 1440
@@ -544,7 +523,7 @@
             "properties": {
               "setup": {
                 "default": false,
-                "description": "Let the project request nix.auto, commandPrefix, prepare and start hooks.",
+                "description": "Let the project request nix.auto, command_prefix, prepare and start hooks.",
                 "type": "boolean"
               },
               "network": {
@@ -559,18 +538,7 @@
                       "enum": ["nix", "javascript", "python", "rust"]
                     }
                   },
-                  "allowedHosts": {
-                    "maxItems": 64,
-                    "type": "array",
-                    "items": {
-                      "type": "string",
-                      "maxLength": 253,
-                      "pattern": "^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"
-                    }
-                  },
-                  "hosts": {
-                    "deprecated": true,
-                    "description": "Replaced by allowedHosts.",
+                  "allowed_hosts": {
                     "maxItems": 64,
                     "type": "array",
                     "items": {

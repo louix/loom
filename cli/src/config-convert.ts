@@ -62,15 +62,15 @@ const STAYS: Record<string, string> = {
 };
 const CONVERTED: Record<string, string> = {
   "session.environment.auto_nix": "environment.nix.auto",
-  "session.environment.command_prefix": "environment.commandPrefix",
-  "session.environment.timeout_seconds": "environment.timeoutSeconds",
+  "session.environment.command_prefix": "environment.command_prefix",
+  "session.environment.timeout_seconds": "environment.timeout_seconds",
   "session.environment.cpus": "environment.resources.cpus",
-  "session.environment.memory_mib": "environment.resources.memoryMiB",
-  "session.isolation.network.allowed_hosts": "access.network.allowedHosts",
+  "session.environment.memory_mib": "environment.resources.memory_mib",
+  "session.isolation.network.allowed_hosts": "access.network.allowed_hosts",
   "session.isolation.network.presets": "access.network.presets",
   "session.defaults.isolation": "lifecycle.execution",
   "session.defaults.workspace": "lifecycle.workspace",
-  "session.isolation.idle_stop_minutes": "lifecycle.idleTimeoutMinutes",
+  "session.isolation.idle_stop_minutes": "lifecycle.idle_stop_minutes",
 };
 const SECTIONS = new Set([
   "session",
@@ -96,7 +96,7 @@ const effective = (settings: Settings) => {
         // Keep Loom's labels: an unnamed hook is named by its first word.
         name: hook.name || hook.run.split(/\s+/)[0]!,
         run: hook.run,
-        timeoutSeconds: Math.ceil(hook.timeout_seconds / 1000),
+        timeout_seconds: Math.ceil(hook.timeout_seconds / 1000),
       }));
   const { environment } = session;
   const prefix = environment.command_prefix;
@@ -104,21 +104,21 @@ const effective = (settings: Settings) => {
     environment: {
       // Loom ignores auto_nix while a command prefix is set; the new format rejects both.
       nix: environment.auto_nix && !prefix.length,
-      commandPrefix: prefix,
-      timeoutSeconds: environment.timeout_seconds,
+      command_prefix: prefix,
+      timeout_seconds: environment.timeout_seconds,
       cpus: environment.cpus,
-      memoryMiB: environment.memory_mib,
+      memory_mib: environment.memory_mib,
       prepare: hooks("workspace_prepare"),
       start: hooks("workspace_start"),
     },
     network: {
       presets: isolation.network.presets,
-      allowedHosts: normalizeExtraHosts(isolation.network.allowed_hosts),
+      allowed_hosts: normalizeExtraHosts(isolation.network.allowed_hosts),
     },
     lifecycle: {
       workspace: session.defaults.workspace,
       execution: session.defaults.isolation,
-      idleTimeoutMinutes: isolation.idle_stop_minutes,
+      idle_stop_minutes: isolation.idle_stop_minutes,
     },
     autoNixIgnored: environment.auto_nix && prefix.length > 0,
   };
@@ -126,10 +126,10 @@ const effective = (settings: Settings) => {
 type Effective = ReturnType<typeof effective>;
 const NEUTRAL: Effective["environment"] = {
   nix: false,
-  commandPrefix: [],
-  timeoutSeconds: 900,
+  command_prefix: [],
+  timeout_seconds: 900,
   cpus: 1,
-  memoryMiB: 2048,
+  memory_mib: 2048,
   prepare: [],
   start: [],
 };
@@ -142,14 +142,14 @@ const environmentLayer = (
 ) => {
   const out: Record<string, unknown> = {};
   if (!same(next.nix, base.nix)) out.nix = { auto: next.nix };
-  if (!same(next.commandPrefix, base.commandPrefix)) {
-    if (next.commandPrefix.length) out.commandPrefix = next.commandPrefix;
+  if (!same(next.command_prefix, base.command_prefix)) {
+    if (next.command_prefix.length) out.command_prefix = next.command_prefix;
     else unrepresentable("clearing an inherited command_prefix");
   }
-  if (next.timeoutSeconds !== base.timeoutSeconds) out.timeoutSeconds = next.timeoutSeconds;
+  if (next.timeout_seconds !== base.timeout_seconds) out.timeout_seconds = next.timeout_seconds;
   const resources: Record<string, number> = {};
   if (next.cpus !== base.cpus) resources.cpus = next.cpus;
-  if (next.memoryMiB !== base.memoryMiB) resources.memoryMiB = next.memoryMiB;
+  if (next.memory_mib !== base.memory_mib) resources.memory_mib = next.memory_mib;
   if (Object.keys(resources).length) out.resources = resources;
   for (const kind of ["prepare", "start"] as const)
     if (!same(next[kind], base[kind])) out[kind] = next[kind];
@@ -258,7 +258,7 @@ export const convertLoomConfig = (raw: Raw, source: string): ConversionReport =>
   if (environment) user.environment = environment;
   const network: Raw = {};
   if (global.network.presets.length) network.presets = global.network.presets;
-  if (global.network.allowedHosts.length) network.allowedHosts = global.network.allowedHosts;
+  if (global.network.allowed_hosts.length) network.allowed_hosts = global.network.allowed_hosts;
   if (Object.keys(network).length) user.access = { network };
   // Always explicit: other consumers default to worktree + VM, Loom to local.
   user.lifecycle = global.lifecycle;
@@ -285,7 +285,7 @@ export const convertLoomConfig = (raw: Raw, source: string): ConversionReport =>
     );
     if (environment) entry.environment = environment;
     const network: Raw = {};
-    for (const key of ["presets", "allowedHosts"] as const)
+    for (const key of ["presets", "allowed_hosts"] as const)
       if (!same(repo.network[key], global.network[key])) network[key] = repo.network[key];
     if (Object.keys(network).length) entry.access = { network };
     const lifecycle = Object.fromEntries(

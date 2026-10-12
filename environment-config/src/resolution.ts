@@ -67,44 +67,31 @@ export const parseEnvironmentUser = (text: string, source = "environment.jsonc")
 };
 
 export type ConfigLayer = "default" | "user" | `profile ${string}` | "project" | "repository";
+/** Field names as the files spell them. */
 export const ENVIRONMENT_FIELDS = [
   "nix",
-  "commandPrefix",
-  "timeoutSeconds",
+  "command_prefix",
+  "timeout_seconds",
   "cpus",
-  "memoryMiB",
+  "memory_mib",
   "prepare",
   "start",
 ] as const;
 export type EnvironmentField = (typeof ENVIRONMENT_FIELDS)[number];
 
 const field = (intent: EnvironmentIntent | undefined, name: EnvironmentField) =>
-  name === "cpus" || name === "memoryMiB" ? intent?.resources?.[name] : intent?.[name];
+  name === "cpus" || name === "memory_mib" ? intent?.resources?.[name] : intent?.[name];
 const hooks = (kind: string, entries: EnvironmentIntent["prepare"]): InitHook[] =>
   (entries ?? []).map((entry, index) => ({
     name: entry.name ?? kind + " " + (index + 1),
     run: entry.run,
-    timeoutMs: entry.timeoutSeconds * 1000,
+    timeoutMs: entry.timeout_seconds * 1000,
   }));
-/** A network's `allowedHosts`, else its deprecated `hosts`. */
-const allowedHosts = (network?: EnvironmentNetwork) => network?.allowedHosts ?? network?.hosts;
 const hosts = (network?: EnvironmentNetwork) =>
   normalizeExtraHosts([
-    ...(allowedHosts(network) ?? []),
+    ...(network?.allowed_hosts ?? []),
     ...expandNetworkPresets(network?.presets ?? []),
   ]);
-const legacyHosts = (
-  network: EnvironmentNetwork | undefined,
-  file: "user config" | "project config",
-  at: string,
-): string[] => {
-  if (network?.hosts === undefined) return [];
-  return [
-    network.allowedHosts === undefined
-      ? `${file}: ${at}.hosts is deprecated; write ${at}.allowedHosts instead`
-      : `${file}: ${at}.hosts is deprecated and ignored: ${at}.allowedHosts is also set and wins; remove ${at}.hosts`,
-  ];
-};
 
 export interface ResolvedEnvironmentConfig {
   version: 1;
@@ -121,8 +108,6 @@ export interface ResolvedEnvironmentConfig {
   lifecycle: NonNullable<EnvironmentUserConfig["lifecycle"]>;
   /** Project requests no consumer satisfies yet; ignoring them grants nothing. */
   unsupported: string[];
-  /** One line per renamed setting either file still uses; it is read under its new name. */
-  deprecated: string[];
   /** The layer that supplied each environment field. */
   sources: Record<EnvironmentField, ConfigLayer>;
 }
@@ -163,7 +148,7 @@ export const resolveEnvironmentConfig = (
       const value = field(values, name);
       if (value === undefined) continue;
       sources[name] = layer;
-      if (name === "cpus" || name === "memoryMiB")
+      if (name === "cpus" || name === "memory_mib")
         intent.resources = { ...intent.resources, [name]: value };
       else Object.assign(intent, { [name]: value });
     }
@@ -172,7 +157,7 @@ export const resolveEnvironmentConfig = (
   const requested = project.environment;
   const setup = [
     requested?.nix?.auto && "environment.nix.auto",
-    requested?.commandPrefix && "environment.commandPrefix",
+    requested?.command_prefix && "environment.command_prefix",
     requested?.prepare?.length && "environment.prepare",
     requested?.start?.length && "environment.start",
   ].filter((name): name is string => typeof name === "string");
@@ -183,19 +168,19 @@ export const resolveEnvironmentConfig = (
         ".",
     );
   const autoNix = intent.nix?.auto ?? false;
-  if (autoNix && intent.commandPrefix?.length)
+  if (autoNix && intent.command_prefix?.length)
     throw new Error(
-      `Choose environment.nix.auto (${sources.nix}) or environment.commandPrefix (${sources.commandPrefix}).`,
+      `Choose environment.nix.auto (${sources.nix}) or environment.command_prefix (${sources.command_prefix}).`,
     );
   const cpus = intent.resources?.cpus ?? 1;
-  const memoryMiB = intent.resources?.memoryMiB ?? 2048;
-  if (cpus > (user.limits?.cpus ?? 64) || memoryMiB > (user.limits?.memoryMiB ?? 65536))
+  const memoryMiB = intent.resources?.memory_mib ?? 2048;
+  if (cpus > (user.limits?.cpus ?? 64) || memoryMiB > (user.limits?.memory_mib ?? 65536))
     throw new Error("Requested environment.resources exceed user limits.");
 
   // Host fields replace the user-level field individually; the project adds requests.
   const network: Array<{ host: string; source: ConfigLayer }> = [];
   const fields = {
-    allowedHosts: (n?: EnvironmentNetwork) => allowedHosts(n),
+    allowed_hosts: (n?: EnvironmentNetwork) => n?.allowed_hosts,
     presets: (n?: EnvironmentNetwork) => n?.presets,
   };
   for (const [key, read] of Object.entries(fields)) {
@@ -236,8 +221,8 @@ export const resolveEnvironmentConfig = (
     backend: user.backend ?? null,
     environment: {
       autoNix,
-      commandPrefix: intent.commandPrefix ?? [],
-      timeoutMs: (intent.timeoutSeconds ?? 900) * 1000,
+      commandPrefix: intent.command_prefix ?? [],
+      timeoutMs: (intent.timeout_seconds ?? 900) * 1000,
       cpus,
       memoryMiB,
     },
@@ -247,14 +232,6 @@ export const resolveEnvironmentConfig = (
     network,
     lifecycle: { ...user.lifecycle, ...repo?.lifecycle },
     unsupported,
-    deprecated: [
-      ...legacyHosts(user.access?.network, "user config", "access.network"),
-      ...user.repos.flatMap((entry) => [
-        ...legacyHosts(entry.access?.network, "user config", `repos[${entry.path}].access.network`),
-        ...legacyHosts(entry.grants.network, "user config", `repos[${entry.path}].grants.network`),
-      ]),
-      ...legacyHosts(project.access?.network, "project config", "access.network"),
-    ],
     sources,
   };
 };

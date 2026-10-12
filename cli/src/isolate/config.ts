@@ -78,19 +78,16 @@ export const formatConfig = (config: IsolateConfig): string => {
       `lifecycle       ${lifecycle.length ? lifecycle.join(" ") : "not configured"} (not used by loom-isolate)`,
       "environment",
       `  nix.auto        ${environment.autoNix} (${sources.nix})`,
-      `  commandPrefix   ${environment.commandPrefix.length ? JSON.stringify(environment.commandPrefix) : "none"} (${sources.commandPrefix})`,
-      `  timeout         ${seconds(environment.timeoutMs)} (${sources.timeoutSeconds})`,
+      `  command_prefix  ${environment.commandPrefix.length ? JSON.stringify(environment.commandPrefix) : "none"} (${sources.command_prefix})`,
+      `  timeout         ${seconds(environment.timeoutMs)} (${sources.timeout_seconds})`,
       `  cpus            ${environment.cpus} (${sources.cpus})`,
-      `  memory          ${environment.memoryMiB} MiB (${sources.memoryMiB})`,
+      `  memory          ${environment.memoryMiB} MiB (${sources.memory_mib})`,
       config.network.length ? "network" : "network  denied",
       ...config.network.map((entry) => `  ${entry.host} (${entry.source})`),
       ...hooks("prepare"),
       ...hooks("start"),
       ...(config.unsupported.length
         ? ["unsupported (ignored)", ...config.unsupported.map((entry) => "  " + entry)]
-        : []),
-      ...(config.deprecated.length
-        ? ["deprecated", ...config.deprecated.map((entry) => "  " + entry)]
         : []),
     ].join("\n") + "\n"
   );
