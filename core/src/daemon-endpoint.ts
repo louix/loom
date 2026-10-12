@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { releaseFlock } from "./flock.ts";
 import type { LoomPaths } from "./paths.ts";
 
 /** What a daemon writes into the lock it holds: for display and `loom stop`, never liveness. */
@@ -62,7 +63,7 @@ export const daemonLock = (lock: string): DaemonLock => {
       ? { kind: "free" }
       : { kind: "held", record: readDaemonRecord(lock) };
   } finally {
-    file.close();
+    releaseFlock(file);
   }
 };
 

@@ -2,6 +2,7 @@
 import { createHash } from "node:crypto";
 import { basename, dirname, join, resolve } from "node:path";
 import { canonicalHostPath } from "../../../core/src/host-path.ts";
+import { heldFlock, type HeldFlock } from "../../../core/src/flock.ts";
 import { userDirectory } from "../../../core/src/user-dirs.ts";
 import type { VmBinding } from "../packaged/vm.ts";
 import {
@@ -71,7 +72,7 @@ const lock = async (home: string, exclusive: boolean) => {
   });
   try {
     await file.lock(exclusive);
-    return file;
+    return heldFlock(file);
   } catch (error) {
     file.close();
     throw error;
@@ -103,7 +104,7 @@ export const hasCompatibleRepoBase = async (
   try {
     return (await compatibleRepoBase(home, b)) !== undefined;
   } finally {
-    held.close();
+    held.release();
   }
 };
 
@@ -119,7 +120,7 @@ export const seedRepoWorkspace = async (home: string, directory: string, artifac
       prepared && (await exists(prepared)) ? prepared : undefined,
     );
   } finally {
-    held.close();
+    held.release();
   }
 };
 
@@ -140,7 +141,7 @@ export const seedRepoBase = async (
     await Deno.writeTextFile(join(b.state, "base-generation"), basename(base));
     return true;
   } finally {
-    held.close();
+    held.release();
   }
 };
 export const publishRepoBase = async (
@@ -180,7 +181,7 @@ export const publishRepoBase = async (
     )
       await Deno.remove(previous, { recursive: true }).catch(() => {});
   } finally {
-    held.close();
+    held.release();
   }
 };
 
@@ -249,7 +250,7 @@ export const pruneRepoBases = async (
           retain(entry.name, "referenced by a running or recoverable VM");
           continue;
         }
-        let owner: Deno.FsFile | undefined;
+        let owner: HeldFlock | undefined;
         try {
           owner = await lockSessionState(path);
           await assertNoActiveVm(path);
@@ -267,15 +268,15 @@ export const pruneRepoBases = async (
         } catch (error) {
           retain(entry.name, error instanceof Error ? error.message : String(error));
         } finally {
-          owner?.close();
+          owner?.release();
         }
       }
       retainedBases.sort((a, b) => a.directory.localeCompare(b.directory));
       return { removed, retained: retainedBases.length, retainedBases };
     } finally {
-      held.close();
+      held.release();
     }
   } finally {
-    preparing.close();
+    preparing.release();
   }
 };

@@ -11,6 +11,7 @@ import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { daemonEndpoint, daemonLock, runningDaemon } from "@loom/core/daemon-endpoint";
+import { releaseFlock } from "@loom/core/flock";
 import { ensureLoomDirectories, loomPaths } from "@loom/core/paths";
 import { DaemonAlreadyRunning, lockRepository } from "@loom/daemon/daemon/lifecycle";
 
@@ -34,6 +35,28 @@ test("lockRepository refuses while another daemon holds the lock, and takes it o
     assert.equal(second.record.epoch, "second");
     second.release();
   } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a released lock is free at once, while another thread spawns subprocesses", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "loom-lock-"));
+  const lock = join(dir, "daemon.lock");
+  // given: subprocesses forked alongside, as by the files a parallel test run puts on other threads
+  const spawner = new Worker(new URL("./fixtures/spawn-loop.ts", import.meta.url), {
+    type: "module",
+  });
+  try {
+    await new Promise((resolve) => (spawner.onmessage = resolve));
+    for (let i = 0; i < 500; i++) {
+      // when
+      const held = await lockRepository(lock, String(i));
+      held.release();
+      // then
+      assert.deepEqual(daemonLock(lock), { kind: "free" }, `retake ${i}`);
+    }
+  } finally {
+    spawner.terminate();
     rmSync(dir, { recursive: true, force: true });
   }
 });
@@ -86,7 +109,7 @@ test("a held lock is a running daemon before its holder records itself", async (
       assert.deepEqual(runningDaemon(paths), { pid: null });
       assert.equal(daemonEndpoint(paths).kind, "current");
     } finally {
-      holder.close();
+      releaseFlock(holder);
     }
     assert.equal(runningDaemon(paths), null);
   } finally {

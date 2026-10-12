@@ -160,7 +160,7 @@ export const prepareRuntime = async (
     if (generation) await Deno.remove(generation, { recursive: true }).catch(() => {});
     throw error;
   } finally {
-    preparing.close();
+    preparing.release();
   }
 };
 export const runtimeCommand = async (

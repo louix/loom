@@ -21,6 +21,6 @@ export const withStoppedVmState = async <T>(
     await discardSessionDisks(dir);
     return await action(recovered);
   } finally {
-    lock.close();
+    lock.release();
   }
 };

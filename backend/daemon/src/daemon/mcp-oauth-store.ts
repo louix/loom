@@ -1,4 +1,5 @@
 import { dirname, join, parse, resolve } from "node:path";
+import { releaseFlock } from "@loom/core/flock";
 import { userDirectory } from "@loom/core/user-dirs";
 import { setTimeout as sleep } from "node:timers/promises";
 import { oauthKeychain } from "./mcp-oauth-keychain-host.ts";
@@ -205,7 +206,7 @@ export const createMcpOAuthStore = (
       if (!create && e instanceof Deno.errors.NotFound) throw e;
       throw e instanceof McpOAuthError ? e : new McpOAuthError("storage_unavailable");
     } finally {
-      lock?.close();
+      if (lock) releaseFlock(lock);
     }
   };
   const transact: McpOAuthStore["transact"] = (update, signal) =>

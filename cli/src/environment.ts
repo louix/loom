@@ -298,7 +298,7 @@ export const prepareRuntimeEnvironment = async (
         await Deno.remove(candidate, { recursive: true });
       }
     } finally {
-      preparation.close();
+      preparation.release();
       Deno.removeSignalListener("SIGINT", stop);
       Deno.removeSignalListener("SIGTERM", stop);
     }

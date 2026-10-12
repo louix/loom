@@ -1,6 +1,7 @@
 /** Host-only VM inventory and per-instance control mailboxes. Never mounted in guests. */
 import { isAbsolute, join } from "node:path";
 import { canonicalHostPath } from "../../../core/src/host-path.ts";
+import { heldFlock, releaseFlock } from "../../../core/src/flock.ts";
 import { userDirectory } from "../../../core/src/user-dirs.ts";
 import { lockSessionState, writeRecoveryFile } from "./persistence.ts";
 import { readRecovery, recoverSessionVm } from "./recovery.ts";
@@ -108,7 +109,7 @@ const ownerActive = async (home: string, id: string): Promise<boolean> => {
   try {
     return !(await file.tryLock(true));
   } finally {
-    file.close();
+    releaseFlock(file);
   }
 };
 const takeLock = async (home: string, id: string, createNew = false) => {
@@ -128,7 +129,7 @@ const takeLock = async (home: string, id: string, createNew = false) => {
     file.close();
     throw new Error("VM is still owned by a live process");
   }
-  return file;
+  return heldFlock(file);
 };
 export const inspectVm = async (id: string, home = vmInventoryHome()): Promise<VmRecord> => {
   const r = await read(home, id);
@@ -205,7 +206,7 @@ export const registerVm = async (record: VmRecord, home = vmInventoryHome()): Pr
     await Deno.mkdir(dir, { mode: 0o700 });
     await writeRecoveryFile(dir, "record.json", record);
   } catch (error) {
-    guard.close();
+    guard.release();
     throw error;
   }
   let closed = false;
@@ -273,7 +274,7 @@ export const registerVm = async (record: VmRecord, home = vmInventoryHome()): Pr
           );
         } finally {
           closed = true;
-          guard.close();
+          guard.release();
         }
       })());
     },
@@ -310,7 +311,7 @@ export const stopVm = async (id: string, home = vmInventoryHome(), timeoutMs = 6
       else if (await exists(vm.paths.state))
         throw new Error("Missing recovery binding; retained VM state: " + vm.paths.state);
     } finally {
-      lock.close();
+      lock.release();
     }
     vm = {
       ...vm,
@@ -324,7 +325,7 @@ export const stopVm = async (id: string, home = vmInventoryHome(), timeoutMs = 6
     await writeRecoveryFile(recordPath(home, id), "record.json", vm);
     return vm;
   } finally {
-    guard.close();
+    guard.release();
   }
 };
 export const removeVm = async (id: string, home = vmInventoryHome()) => {
@@ -339,7 +340,7 @@ export const removeVm = async (id: string, home = vmInventoryHome()) => {
     // bases can share a sessionDirectory and must never be recursively removed here.
     await Deno.remove(recordPath(home, id), { recursive: true });
   } finally {
-    guard.close();
+    guard.release();
   }
 };
 

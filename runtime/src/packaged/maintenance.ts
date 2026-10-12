@@ -1,5 +1,6 @@
 /** Serialize cache collection against managed VM lifetimes, across repositories. */
 import { join } from "node:path";
+import { heldFlock } from "../../../core/src/flock.ts";
 
 export const vmMaintenanceLock = async (exclusive = false, temporary = "/tmp") => {
   const path = join(temporary, `loom-vm-maintenance-${Deno.uid()}.lock`);
@@ -14,7 +15,7 @@ export const vmMaintenanceLock = async (exclusive = false, temporary = "/tmp") =
         return undefined;
       }
     } else await file.lock(false);
-    return file;
+    return heldFlock(file);
   } catch (error) {
     file.close();
     throw error;

@@ -17,6 +17,7 @@ import {
   runtimeHome,
   type RuntimeBuild,
 } from "./artifact.ts";
+import { heldFlock, type HeldFlock } from "../../../core/src/flock.ts";
 import { retainedVmStates, vmMaintenanceLock } from "./maintenance.ts";
 
 export type BuildFailure = "network" | "space" | "builder";
@@ -364,7 +365,7 @@ export const removeBuiltRuntimes = async (
 
 const tryLock = async (path: string) => {
   const file = await Deno.open(path, { create: true, read: true, write: true, mode: 0o600 });
-  if (await file.tryLock(true)) return file;
+  if (await file.tryLock(true)) return heldFlock(file);
   file.close();
   return undefined;
 };
@@ -523,7 +524,7 @@ const settleEarlierBuild = async (
   try {
     await finishEarlierBuild(home, temporary, earlier, dependencies, onProgress);
   } finally {
-    idle.close();
+    idle.release();
   }
 };
 /** The builder lock once an earlier builder has exited, following its log meanwhile. */
@@ -551,7 +552,7 @@ const earlierBuilderExited = async (
     progressIntervalMs,
     earlier.kind === "known" ? earlier.record.since : undefined,
   );
-  let idle: Deno.FsFile | undefined;
+  let idle: HeldFlock | undefined;
   try {
     if (earlier.kind === "known") {
       const log = `${join(builtRuntimeHome(home), earlier.record.identity)}.log`;
@@ -565,7 +566,7 @@ const earlierBuilderExited = async (
     if (!idle) {
       polling.abort();
       void exited.then(
-        (lock) => lock.close(),
+        (lock) => lock.release(),
         () => {},
       );
     }
@@ -729,7 +730,7 @@ export const ensureBuiltRuntime = async (
         } catch {
           /* Cleanup is retried by loom runtime prune. */
         } finally {
-          maintenance.close();
+          maintenance.release();
         }
       return artifact;
     } finally {
@@ -743,11 +744,11 @@ export const ensureBuiltRuntime = async (
           await removeScratch(scratch);
           await Deno.remove(buildRecord(home)).catch(() => {});
         } finally {
-          idle.close();
+          idle.release();
         }
     }
   } finally {
-    lock.close();
+    lock.release();
   }
 };
 interface SharedBuild {

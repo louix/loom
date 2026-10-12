@@ -409,7 +409,7 @@ const launchSessionVmOwned = async (
               return;
             }
           } finally {
-            lock.close();
+            lock.release();
           }
         }
         // A killed supervisor cannot reap: stop its native CLI group before fallback.
@@ -560,12 +560,12 @@ export const launchSessionVm = async (options: SessionVmOptions) => {
   try {
     const worker = await launchSessionVmOwned(options);
     void worker.exited.then(
-      () => lease.close(),
-      () => lease.close(),
+      () => lease.release(),
+      () => lease.release(),
     );
     return worker;
   } catch (error) {
-    lease.close();
+    lease.release();
     throw error;
   }
 };

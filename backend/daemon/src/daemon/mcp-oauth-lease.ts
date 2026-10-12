@@ -1,3 +1,4 @@
+import { releaseFlock } from "../../../../core/src/flock.ts";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { McpOAuthError } from "./mcp-oauth-model.ts";
@@ -28,7 +29,7 @@ export const registerOAuthOwner = async (store: McpOAuthStore) => {
       if (closed) return;
       closed = true;
       // Relay shutdown must finish before releasing this lock.
-      lock.close();
+      releaseFlock(lock);
       for (const suffix of ["", ".ack", ".pending", ".pids", ".pids-pending"])
         await Deno.remove(path + suffix).catch((e) => {
           if (!(e instanceof Deno.errors.NotFound)) throw e;
@@ -92,7 +93,7 @@ export const waitOAuthInvalidation = async (
       } catch (e) {
         if (!(e instanceof Deno.errors.NotFound)) throw e;
       } finally {
-        lock?.close();
+        if (lock) releaseFlock(lock);
       }
     }
     if (!pending) return;

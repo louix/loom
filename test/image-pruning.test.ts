@@ -11,6 +11,7 @@ import {
 import { lockSessionState } from "../runtime/src/session-vm/persistence.ts";
 import { pruneRuntimeCache } from "../runtime/src/packaged/prune.ts";
 import { vmMaintenanceLock } from "../runtime/src/packaged/maintenance.ts";
+import type { HeldFlock } from "../core/src/flock.ts";
 import { loadAllRepoConfigs } from "../backend/daemon/src/config/config.ts";
 
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -94,7 +95,7 @@ test("pruning respects preparation locks, recovery markers, backing links and va
   try {
     const held = await lockSessionState(join(f.home, "preparation"));
     await assert.rejects(pruneRepoBases(f.home, [f.binding], f.root));
-    held.close();
+    held.release();
     assert(await exists(f.old));
     await Deno.writeTextFile(join(f.old, "active.json"), "{}");
     await pruneRepoBases(f.home, [f.binding], f.root);
@@ -166,14 +167,14 @@ test("runtime pruning defers for live leases and crash state, then removes only 
     const protect = ["/configured-artifact", backend];
     const lease = (await vmMaintenanceLock(false, root))!;
     assert((await pruneRuntimeCache(home, protect, root)).deferred);
-    lease.close();
+    lease.release();
     const state = join(root, "loom-vm-crashed");
     await Deno.mkdir(state);
     assert((await pruneRuntimeCache(home, protect, root)).deferred);
     await Deno.remove(state);
     const updating = await lockSessionState(source);
     assert((await pruneRuntimeCache(home, protect, root)).deferred);
-    updating.close();
+    updating.release();
     const preview = await pruneRuntimeCache(home, protect, root, true);
     assert(await exists(old));
     assert(await exists(sharedBackend));
@@ -221,7 +222,7 @@ test("global pruning sees explicit pins in other trusted repos", async () => {
 
 test("cache collection excludes new VM launches until its guard is released", async () => {
   const root = await Deno.realPath(await Deno.makeTempDir());
-  let reader: Deno.FsFile | undefined;
+  let reader: HeldFlock | undefined;
   try {
     const collector = (await vmMaintenanceLock(true, root))!;
     let acquired = false;
@@ -231,11 +232,11 @@ test("cache collection excludes new VM launches until its guard is released", as
     });
     await new Promise((resolve) => setTimeout(resolve, 10));
     assert.equal(acquired, false);
-    collector.close();
+    collector.release();
     reader = await launching;
     assert.equal(acquired, true);
   } finally {
-    reader?.close();
+    reader?.release();
     await Deno.remove(root, { recursive: true });
   }
 });
@@ -317,7 +318,7 @@ test("explicit pruning retires unconfigured images even before a replacement is 
 
 test("pruning reports recovery markers, held ownership locks and backing links", async () => {
   const f = await baseFixture();
-  let owner: Deno.FsFile | undefined;
+  let owner: HeldFlock | undefined;
   try {
     const busy = await f.base("base-busy", "/busy-runtime");
     const linked = await f.base("base-linked", "/linked-runtime");
@@ -332,7 +333,7 @@ test("pruning reports recovery markers, held ownership locks and backing links",
     assert.match(reasons.get("base-linked")!, /backing links/);
     assert.equal(reasons.get("base-current"), "current selection");
   } finally {
-    owner?.close();
+    owner?.release();
     await Deno.remove(f.root, { recursive: true });
   }
 });

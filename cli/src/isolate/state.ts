@@ -7,6 +7,7 @@ import { createHash } from "node:crypto";
 import { join } from "node:path";
 import type { EnvironmentStorage } from "@loom/isolation/storage";
 import { IsolationError } from "@loom/isolation/errors";
+import { heldFlock, releaseFlock, type HeldFlock } from "../../../core/src/flock.ts";
 import { canonicalHostPath } from "../../../core/src/host-path.ts";
 import { userDirectory } from "../../../core/src/user-dirs.ts";
 import { workspaceMounts } from "../../../runtime/src/packaged/workspace.ts";
@@ -158,7 +159,7 @@ const writeRecord = async (directory: string, record: EnvironmentRecord) => {
  * briefly so a concurrent inspect probe cannot fail an exec. The lock must still
  * be the directory's file once held: cleanup unlinks it before releasing.
  */
-const lockEnvironment = async (directory: string): Promise<Deno.FsFile> => {
+const lockEnvironment = async (directory: string): Promise<HeldFlock> => {
   const path = join(directory, lockName);
   const deadline = Date.now() + 500;
   for (;;) {
@@ -174,15 +175,15 @@ const lockEnvironment = async (directory: string): Promise<Deno.FsFile> => {
         if (opened.ino === current.ino && opened.dev === current.dev) {
           await file.truncate(0);
           await file.write(new TextEncoder().encode(String(Deno.pid) + "\n"));
-          return file;
+          return heldFlock(file);
         }
       }
     } catch (error) {
-      file.close();
+      releaseFlock(file);
       if (error instanceof Deno.errors.NotFound) continue;
       throw error;
     }
-    file.close();
+    releaseFlock(file);
     if (held) continue; // Unlinked by cleanup between open and lock; take the new one.
     if (Date.now() >= deadline)
       throw new IsolationError(
@@ -241,7 +242,7 @@ export const ownEnvironment = async (
               directory,
           );
       if (!create) {
-        lock.close();
+        lock.release();
         return undefined;
       }
       record = {
@@ -291,11 +292,11 @@ export const ownEnvironment = async (
       release() {
         if (released) return;
         released = true;
-        lock.close();
+        lock.release();
       },
     };
   } catch (error) {
-    lock.close();
+    lock.release();
     throw error;
   }
 };
@@ -336,7 +337,7 @@ export const environmentStatus = async (id: string): Promise<EnvironmentStatus> 
       try {
         status.inUse = !(await file.tryLock(false));
       } finally {
-        file.close();
+        releaseFlock(file);
       }
       const pid = (await ownerPid(lock)).match(/\d+/)?.[0];
       if (status.inUse && pid) status.ownerPid = Number(pid);

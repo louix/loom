@@ -4,6 +4,7 @@ import {
 } from "../../../core/src/session-environment.ts";
 /** Trusted host supervisor. Its stdin lifetime owns the VM and its relays. */
 import { type VmTermination, type VmStopReason } from "../../../core/src/vm-termination.ts";
+import type { HeldFlock } from "../../../core/src/flock.ts";
 import { join } from "node:path";
 import { attachDiskTemplates, retainDiskTemplates } from "../packaged/disk-templates.ts";
 import { writeSessionAuth, type SessionAuth } from "./auth.ts";
@@ -60,7 +61,7 @@ const {
 };
 let child: Deno.ChildProcess | undefined;
 if (binding.preparationOnly) Deno.env.set("LOOM_PREPARATION_ONLY", "1");
-let persistentLock: Deno.FsFile | undefined;
+let persistentLock: HeldFlock | undefined;
 let ownsPersistent = false;
 const relays: ReturnType<typeof startMcpRelay>[] = [];
 let egress: ReturnType<typeof startEgress> | undefined;
@@ -435,6 +436,6 @@ try {
     console.error(`Session VM cleanup incomplete; state: ${binding.state}`);
   }
   // stdin and the parent can still be alive when a guest or capability dies.
-  persistentLock?.close();
+  persistentLock?.release();
   Deno.exit(Deno.exitCode);
 }

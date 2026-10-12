@@ -64,7 +64,7 @@ try {
       const deadline = Date.now() + 10_000;
       for (;;) {
         try {
-          (await lockSessionState(dir)).close();
+          (await lockSessionState(dir)).release();
           break;
         } catch (error) {
           if (!(error instanceof SessionVmBusyError)) throw error;

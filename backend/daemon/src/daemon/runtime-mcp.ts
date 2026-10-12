@@ -232,12 +232,12 @@ export const startRuntimeMcp = async (...args: Parameters<typeof startRuntimeMcp
   try {
     const worker = await startRuntimeMcpOwned(...args);
     void worker.exited.then(
-      () => lease.close(),
-      () => lease.close(),
+      () => lease.release(),
+      () => lease.release(),
     );
     return worker;
   } catch (error) {
-    lease.close();
+    lease.release();
     throw error;
   }
 };

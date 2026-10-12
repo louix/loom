@@ -123,11 +123,11 @@ test("destructive actions retain their ownership lock until they finish", async 
   Deno.env.set("XDG_STATE_HOME", root);
   const dir = sessionVmDirectory(root, "locked");
   try {
-    (await lockSessionState(dir)).close();
+    (await lockSessionState(dir)).release();
     await withStoppedSessionVm(root, "locked", async () => {
       await assert.rejects(lockSessionState(dir), /still running/);
     });
-    (await lockSessionState(dir)).close();
+    (await lockSessionState(dir)).release();
   } finally {
     if (previous === undefined) Deno.env.delete("XDG_STATE_HOME");
     else Deno.env.set("XDG_STATE_HOME", previous);

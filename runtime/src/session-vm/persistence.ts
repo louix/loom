@@ -1,5 +1,6 @@
 /** Host-only ownership metadata; only profile/ is mounted into the guest. */
 import { join } from "node:path";
+import { heldFlock } from "../../../core/src/flock.ts";
 export class SessionVmBusyError extends Error {}
 export const lockSessionState = async (dir: string) => {
   await Deno.mkdir(dir, { recursive: true, mode: 0o700 });
@@ -13,7 +14,7 @@ export const lockSessionState = async (dir: string) => {
     lock.close();
     throw new SessionVmBusyError("Session VM is still running or being cleaned up");
   }
-  return lock;
+  return heldFlock(lock);
 };
 export const assertNoActiveVm = async (dir: string) => {
   try {

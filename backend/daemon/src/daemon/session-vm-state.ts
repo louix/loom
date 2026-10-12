@@ -1,5 +1,6 @@
 import { canonicalHostPath } from "../../../../core/src/host-path.ts";
 import { userDirectory } from "../../../../core/src/user-dirs.ts";
+import type { HeldFlock } from "../../../../core/src/flock.ts";
 import { existsSync } from "node:fs";
 import { discardSessionDisks } from "../../../../runtime/src/session-vm/disks.ts";
 import { withStoppedVmState } from "../../../../runtime/src/session-vm/stopped-state.ts";
@@ -106,7 +107,7 @@ export const pruneRepositorySessionDisks = async (repo: string, dryRun = false) 
     for await (const entry of Deno.readDir(root)) {
       if (!/^[A-Za-z0-9_-]{1,100}$/.test(entry.name)) continue;
       const dir = join(root, entry.name);
-      let owner: Deno.FsFile | undefined;
+      let owner: HeldFlock | undefined;
       try {
         if (!entry.isDirectory || entry.isSymlink || (await Deno.realPath(dir)) !== dir) {
           result.sessionDisksRetained++;
@@ -118,7 +119,7 @@ export const pruneRepositorySessionDisks = async (repo: string, dryRun = false) 
       } catch {
         result.sessionDisksRetained++;
       } finally {
-        owner?.close();
+        owner?.release();
       }
     }
   } catch (error) {

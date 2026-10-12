@@ -1,4 +1,5 @@
 /** Host credential lifecycle shared by native provider VM backends. */
+import { releaseFlock } from "../../../../core/src/flock.ts";
 import { join } from "node:path";
 export interface AccessCredential {
   accessToken: string;
@@ -132,7 +133,7 @@ export class CredentialOwner<T extends AccessCredential, S> {
         // Preserve a still-valid token during transient refresh failures.
         if (force || value.expiresAt <= Date.now() || this.#abort.signal.aborted) throw failure;
       } finally {
-        lock.close();
+        releaseFlock(lock);
       }
     }
     if (this.#abort.signal.aborted) throw new CredentialAuthError("closed");

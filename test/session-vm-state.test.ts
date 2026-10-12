@@ -15,6 +15,7 @@ import {
   recoverRepositoryVms,
 } from "../backend/daemon/src/daemon/session-vm-state.ts";
 import { startMcpRelay } from "../runtime/src/session-vm/mcp-relay.ts";
+import type { HeldFlock } from "../core/src/flock.ts";
 
 test("VM resume preflight blocks both isolation changes without touching history", async () => {
   const root = await Deno.makeTempDir();
@@ -42,7 +43,7 @@ test("persistent VM ownership blocks cleanup and preserves a newer owner's marke
   const previous = Deno.env.get("XDG_STATE_HOME");
   Deno.env.set("XDG_STATE_HOME", root);
   const dir = sessionVmDirectory(root, "session-1");
-  let lock: Deno.FsFile | undefined;
+  let lock: HeldFlock | undefined;
   try {
     assert.throws(() => sessionVmDirectory(root, "../escape"));
     lock = await lockSessionState(dir);
@@ -52,7 +53,7 @@ test("persistent VM ownership blocks cleanup and preserves a newer owner's marke
     await Deno.writeTextFile(join(dir, "disks/storage.raw"), "retained disk");
     await Deno.writeTextFile(join(dir, "active.json"), JSON.stringify({ token: "first" }));
     await assert.rejects(stoppedSessionVm(root, "session-1", true), /still running/);
-    lock.close();
+    lock.release();
     lock = undefined;
     await assert.rejects(stoppedSessionVm(root, "session-1", true), /manual recovery required/);
     await finishSessionState(dir, "other");
@@ -66,7 +67,7 @@ test("persistent VM ownership blocks cleanup and preserves a newer owner's marke
     await assert.rejects(Deno.stat(join(dir, "disks")), Deno.errors.NotFound);
     assert((await Deno.stat(join(dir, "owner.lock"))).isFile);
   } finally {
-    lock?.close();
+    lock?.release();
     if (previous === undefined) Deno.env.delete("XDG_STATE_HOME");
     else Deno.env.set("XDG_STATE_HOME", previous);
     await Deno.remove(root, { recursive: true });
@@ -106,7 +107,7 @@ test("session disk pruning preserves live VMs, recovery state, symlink targets a
   const root = await Deno.realPath(await Deno.makeTempDir());
   const previous = Deno.env.get("XDG_STATE_HOME");
   Deno.env.set("XDG_STATE_HOME", root);
-  let owner: Deno.FsFile | undefined;
+  let owner: HeldFlock | undefined;
   const makeSession = async (id: string) => {
     const dir = sessionVmDirectory(root, id);
     await Deno.mkdir(join(dir, "disks"), { recursive: true });
@@ -145,12 +146,12 @@ test("session disk pruning preserves live VMs, recovery state, symlink targets a
     assert.equal(await Deno.readTextFile(join(stopped, "unrelated")), "keep");
     assert((await Deno.stat(join(stopped, "owner.lock"))).isFile);
 
-    owner.close();
+    owner.release();
     owner = undefined;
     assert.equal((await pruneRepositorySessionDisks(root)).sessionDisksRemoved, 1);
     assert.equal((await pruneRepositorySessionDisks(root)).sessionDisksRemoved, 0);
   } finally {
-    owner?.close();
+    owner?.release();
     if (previous === undefined) Deno.env.delete("XDG_STATE_HOME");
     else Deno.env.set("XDG_STATE_HOME", previous);
     await Deno.remove(root, { recursive: true });
@@ -196,7 +197,7 @@ test("startup recovery reports a session VM it found still owned as unsettled", 
       assert.deepEqual([...recovered.sessions], [["running", "unsettled"]]);
       assert.equal(recovered.scan, "complete");
     } finally {
-      owner.close();
+      owner.release();
     }
   } finally {
     if (previous === undefined) Deno.env.delete("XDG_STATE_HOME");

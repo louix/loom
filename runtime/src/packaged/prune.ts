@@ -1,6 +1,7 @@
 /** Delete only Loom-owned cache generations. Nix itself collects released store paths. */
 import { createHash } from "node:crypto";
 import { basename, dirname, join } from "node:path";
+import type { HeldFlock } from "../../../core/src/flock.ts";
 import { lockSessionState } from "../session-vm/persistence.ts";
 import { vmMaintenanceLock, retainedVmStates } from "./maintenance.ts";
 import { removeBuiltRuntimes } from "./build.ts";
@@ -49,7 +50,7 @@ export const pruneRuntimeCache = async (
     for (const source of await entries(home)) {
       if (!/^[a-f0-9]{64}$/.test(source.name) || !source.isDirectory || source.isSymlink) continue;
       const parent = await Deno.realPath(join(home, source.name));
-      let updating: Deno.FsFile | undefined;
+      let updating: HeldFlock | undefined;
       try {
         updating = await lockSessionState(parent);
         const current = await Deno.realPath(join(parent, "current"));
@@ -105,7 +106,7 @@ export const pruneRuntimeCache = async (
       } catch {
         result.deferred = true;
       } finally {
-        updating?.close();
+        updating?.release();
       }
     }
     const cache = join(temporary, `loom-vm-templates-${Deno.uid()}`);
@@ -145,6 +146,6 @@ export const pruneRuntimeCache = async (
       }
     return result;
   } finally {
-    guard.close();
+    guard.release();
   }
 };

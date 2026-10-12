@@ -1,5 +1,6 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { legacyDaemonPid, readDaemonRecord, type DaemonRecord } from "@loom/core/daemon-endpoint";
+import { releaseFlock } from "@loom/core/flock";
 import type { LoomPaths } from "@loom/core/paths";
 
 /** How long a starting daemon retries the lock: a client's probe holds it shared for a moment. */
@@ -26,7 +27,7 @@ export class LegacyDaemonRunning extends Error {
 /** The repository's lock, held until `release`. */
 export interface RepositoryLock {
   record: DaemonRecord;
-  /** Never throws: why the record could not be cleared or the file closed, else null. */
+  /** Never throws: why the record could not be cleared or the lock released, else null. */
   release: () => string | null;
 }
 
@@ -56,7 +57,7 @@ export const lockRepository = async (lock: string, epoch: string): Promise<Repos
     record,
     release: () => {
       const cleared = attempt(() => file.truncateSync(0));
-      const closed = attempt(() => file.close());
+      const closed = attempt(() => releaseFlock(file));
       return cleared ?? closed;
     },
   };

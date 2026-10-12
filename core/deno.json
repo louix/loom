@@ -24,6 +24,7 @@
     "./tokens": "./src/tokens.ts",
     "./paths": "./src/paths.ts",
     "./daemon-endpoint": "./src/daemon-endpoint.ts",
+    "./flock": "./src/flock.ts",
     "./user-dirs": "./src/user-dirs.ts",
     "./claude-skills": "./src/claude-skills.ts",
     "./provider-id": "./src/provider-id.ts",
