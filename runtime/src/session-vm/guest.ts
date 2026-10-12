@@ -15,6 +15,11 @@ import { WorkerDiagnostic } from "../../../core/src/worker.ts";
 import { guestGitPort, guestGitSocket, prepareCheckout } from "./checkout.ts";
 import { readGuestCheckout } from "./guest-publish.ts";
 import { startGuestRelay } from "./guest-relay.ts";
+import {
+  EGRESS_CONNECTION_LIMIT,
+  GIT_GUEST_CONNECTION_LIMIT,
+  MCP_CONNECTION_LIMIT,
+} from "./relay-limits.ts";
 import { reportStartup, classifyStartupFailure } from "./progress.ts";
 import { serveEnvironment } from "./environment-protocol.ts";
 import {
@@ -94,20 +99,25 @@ await Deno.writeTextFile(
   JSON.stringify({ hasCompletedOnboarding: true }),
 );
 const listener = Deno.listen({ hostname: "127.0.0.1", port: 3128 });
-void startGuestRelay(listener, "/run/loom/egress.sock", 32, { kind: "egress" }).finished;
+void startGuestRelay(listener, "/run/loom/egress.sock", EGRESS_CONNECTION_LIMIT, {
+  kind: "egress",
+}).finished;
 const mcp: Array<{ guestPort: number }> = JSON.parse(
   await Deno.readTextFile("/run/loom/private/mcp.json"),
 );
 for (const [index, spec] of mcp.entries()) {
   const endpoint = Deno.listen({ hostname: "127.0.0.1", port: spec.guestPort });
-  void startGuestRelay(endpoint, `/run/loom/mcp-${index}.sock`, 32, { kind: "mcp", index })
-    .finished;
+  void startGuestRelay(endpoint, `/run/loom/mcp-${index}.sock`, MCP_CONNECTION_LIMIT, {
+    kind: "mcp",
+    index,
+  }).finished;
 }
 // Clone sessions reach the host repository only through this relay.
 const checkout = await readGuestCheckout();
 if (checkout) {
   const endpoint = Deno.listen({ hostname: "127.0.0.1", port: guestGitPort });
-  void startGuestRelay(endpoint, guestGitSocket, 32, { kind: "git" }).finished;
+  void startGuestRelay(endpoint, guestGitSocket, GIT_GUEST_CONNECTION_LIMIT, { kind: "git" })
+    .finished;
 }
 // Preparation warms the reusable disk; every session activates its current checkout.
 // The proxy remains available to activation, setup and init hooks.

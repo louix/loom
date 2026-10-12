@@ -1,6 +1,7 @@
 /** Fixed loopback MCP capability. No guest-selected host, port, or DNS input. */
 import { createConnection } from "node:net";
 import { Readable, Writable } from "node:stream";
+import { MCP_CONNECTION_LIMIT } from "./relay-limits.ts";
 export interface McpRelay {
   port: number;
   guestPort: number;
@@ -54,7 +55,7 @@ export const startMcpRelay = (path: string, port: number) => {
   const serving = (async () => {
     try {
       for await (const client of listener) {
-        if (active.size >= 32) {
+        if (active.size >= MCP_CONNECTION_LIMIT) {
           close(client);
           continue;
         }

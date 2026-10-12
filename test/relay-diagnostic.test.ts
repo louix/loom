@@ -17,6 +17,7 @@ Deno.test("relay diagnostics survive fragmented stderr without arbitrary error d
     elapsedMs: 24000,
     stopping: false,
     suppressed: 0,
+    refused: 0,
   };
   const wire =
     [

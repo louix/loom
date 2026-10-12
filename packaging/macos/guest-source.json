@@ -91,6 +91,7 @@
     "runtime/src/session-vm/guest-worker.ts",
     "runtime/src/session-vm/guest.ts",
     "runtime/src/session-vm/progress.ts",
+    "runtime/src/session-vm/relay-limits.ts",
     "runtime/src/session-vm/shell.ts",
     "runtime/src/worker/diagnostics.ts",
     "runtime/src/worker/main.ts",

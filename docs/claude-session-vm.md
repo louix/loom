@@ -89,6 +89,15 @@ hosts, ports and direct IP access.
 nix develop --command deno run -A scripts/test-claude-vm-egress.ts ~/dev/loom
 ```
 
+The connection limit has its own credential-free check: it fills the proxy with
+idle HTTPS tunnels, then checks that one more client is refused at once and
+reported, and that a released slot serves the next one
+([limit and fail-fast behaviour](session-environments.md#package-manager-networking)).
+
+```sh
+nix develop --command deno run -A scripts/test-egress-limit-vm.ts /path/to/session-runtime
+```
+
 ## Supervised lifecycle
 
 VM routing is opt-in. Without the configuration below, Claude uses the host

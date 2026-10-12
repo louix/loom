@@ -2,6 +2,7 @@
 import { normalizeExtraHosts } from "./network-policy.ts";
 import { createConnection } from "node:net";
 import { Readable, Writable } from "node:stream";
+import { EGRESS_CONNECTION_LIMIT } from "./relay-limits.ts";
 
 interface Tunnel {
   readable: ReadableStream<Uint8Array>;
@@ -29,6 +30,8 @@ export const startEgress = (
     providerHosts?: string[];
     timeoutMs?: number;
     maxConnections?: number;
+    /** Clients closed at the connection limit so far; called at power-of-two counts. */
+    refused?: (refused: number, active: number) => void;
     dial?: (signal: AbortSignal, host: string) => Promise<Tunnel>;
   } = {},
 ) => {
@@ -41,6 +44,7 @@ export const startEgress = (
   const listener = Deno.listen({ transport: "unix", path: socket });
   const active = new Map<Deno.Conn, AbortController>();
   const tasks = new Set<Promise<void>>();
+  let refused = 0;
   const close = (conn: Deno.Conn) => {
     try {
       conn.close();
@@ -125,8 +129,10 @@ export const startEgress = (
   const serving = (async () => {
     try {
       for await (const client of listener) {
-        if (active.size >= (options.maxConnections ?? 32)) {
+        if (active.size >= (options.maxConnections ?? EGRESS_CONNECTION_LIMIT)) {
           close(client);
+          refused++;
+          if ((refused & (refused - 1)) === 0) options.refused?.(refused, active.size);
           continue;
         }
         const controller = new AbortController();

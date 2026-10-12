@@ -145,3 +145,81 @@ Deno.test("extra hosts grant only exact HTTPS destinations and retain the provid
     }
   }
 });
+
+interface IdleEgressFixture {
+  maxConnections?: number;
+}
+
+/** Egress whose upstreams stay open and silent, as idle keep-alive tunnels do. */
+const mkIdleEgress = async ({ maxConnections }: IdleEgressFixture) => {
+  const state = await Deno.makeTempDir({ dir: "/tmp" });
+  const socket = join(state, "proxy.sock");
+  const refusals: Array<[number, number]> = [];
+  const proxy = startEgress(socket, () => {}, {
+    ...(maxConnections ? { maxConnections } : {}),
+    refused: (refused, active) => refusals.push([refused, active]),
+    dial: async () => ({
+      readable: new ReadableStream(),
+      writable: new WritableStream(),
+      close() {},
+    }),
+  });
+  const clients: Deno.Conn[] = [];
+  return {
+    refusals,
+    /** The proxy's first reply to a CONNECT, or "closed". */
+    tunnel: async () => {
+      const client = await Deno.connect({ transport: "unix", path: socket });
+      clients.push(client);
+      await client.write(
+        new TextEncoder().encode("CONNECT api.anthropic.com:443 HTTP/1.1\r\n\r\n"),
+      );
+      const bytes = new Uint8Array(1024);
+      try {
+        const size = await client.read(bytes);
+        return size === null ? "closed" : new TextDecoder().decode(bytes.subarray(0, size));
+      } catch (error) {
+        if (!(error instanceof Deno.errors.ConnectionReset)) throw error;
+        return "closed";
+      }
+    },
+    close: async () => {
+      for (const client of clients) client.close();
+      await proxy.close();
+      await Deno.remove(state, { recursive: true });
+    },
+  };
+};
+
+Deno.test("session egress keeps a tunnel beyond 32 idle ones open by default", async () => {
+  // given
+  const f = await mkIdleEgress({});
+  try {
+    for (let i = 0; i < 32; i++) assert.match(await f.tunnel(), /200 Connection Established/);
+    // when
+    const reply = await f.tunnel();
+    // then
+    assert.match(reply, /200 Connection Established/);
+    assert.deepEqual(f.refusals, []);
+  } finally {
+    await f.close();
+  }
+});
+
+Deno.test("session egress refuses a client over its limit at once and reports it", async () => {
+  // given
+  const f = await mkIdleEgress({ maxConnections: 2 });
+  try {
+    for (let i = 0; i < 2; i++) assert.match(await f.tunnel(), /200 Connection Established/);
+    // when
+    const replies = [await f.tunnel(), await f.tunnel(), await f.tunnel()];
+    // then
+    assert.deepEqual(replies, ["closed", "closed", "closed"]);
+    assert.deepEqual(f.refusals, [
+      [1, 2],
+      [2, 2],
+    ]);
+  } finally {
+    await f.close();
+  }
+});

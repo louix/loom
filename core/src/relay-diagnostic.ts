@@ -13,6 +13,7 @@ export const relayDiagnosticSchema = z.object({
     "closed",
     "accept_closed",
     "suppressed",
+    "refused",
   ]),
   at: z.int().nonnegative(),
   incident: z.int().nonnegative(),
@@ -24,8 +25,10 @@ export const relayDiagnosticSchema = z.object({
   stopping: z.boolean(),
   hostStopping: z.boolean().optional(),
   suppressed: z.int().nonnegative(),
+  /** Clients closed at the connection limit; 0 for records from before it was counted. */
+  refused: z.int().nonnegative().default(0),
 });
 export type RelayDiagnostic = z.infer<typeof relayDiagnosticSchema>;
 
 export const relayDiagnosticMessage = (info: RelayDiagnostic): string =>
-  `VM relay ${info.kind}[${info.index}] ${info.event}: ${info.error}; at=${info.at}, incident=${info.incident}, consecutive=${info.consecutive}, failures=${info.failures}, active=${info.active}, elapsed=${info.elapsedMs}ms, stopping=${info.stopping}, hostStopping=${info.hostStopping ?? "unknown"}, suppressed=${info.suppressed}`;
+  `VM relay ${info.kind}[${info.index}] ${info.event}: ${info.error}; at=${info.at}, incident=${info.incident}, consecutive=${info.consecutive}, failures=${info.failures}, active=${info.active}, elapsed=${info.elapsedMs}ms, stopping=${info.stopping}, hostStopping=${info.hostStopping ?? "unknown"}, suppressed=${info.suppressed}, refused=${info.refused}`;

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { startGuestRelay } from "../../runtime/src/session-vm/guest-relay.ts";
 import { startGitRelay } from "../../runtime/src/session-vm/git-relay.ts";
+import { GIT_GUEST_CONNECTION_LIMIT } from "../../runtime/src/session-vm/relay-limits.ts";
 
 export const text = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
 export const packet = (body: string) =>
@@ -67,7 +68,7 @@ export const gitRelayFixture = async (
   const socket = join(root, "git.sock");
   const relay = startGitRelay(socket, { gitDir: join(host, ".git"), policyFile, ...options });
   const listener = Deno.listen({ hostname: "127.0.0.1", port: 0 });
-  const bridge = startGuestRelay(listener, socket);
+  const bridge = startGuestRelay(listener, socket, GIT_GUEST_CONNECTION_LIMIT, { kind: "git" });
   const url = `git://127.0.0.1:${(listener.addr as Deno.NetAddr).port}/repo`;
   return {
     root,

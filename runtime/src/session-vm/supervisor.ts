@@ -28,6 +28,7 @@ import {
 } from "./persistence.ts";
 import type { RecoverableBinding } from "./recovery.ts";
 import { startMcpRelay } from "./mcp-relay.ts";
+import type { RelayDiagnostic } from "../../../core/src/relay-diagnostic.ts";
 import { startGitRelay } from "./git-relay.ts";
 import { readFrames } from "../framing.ts";
 import { readEnvironmentOutput, writeEnvironmentReady } from "./environment-protocol.ts";
@@ -209,6 +210,28 @@ try {
     {
       extraAllowedHosts: extraAllowedHosts ?? [],
       providerHosts: providerHosts ?? ["api.anthropic.com"],
+      // The guest relay refuses first; the host only does while a closed tunnel drains.
+      refused: (refused, active) =>
+        console.error(
+          JSON.stringify({
+            loomRelay: {
+              kind: "egress",
+              index: 0,
+              event: "refused",
+              at: Date.now(),
+              incident: 0,
+              error: "unknown",
+              consecutive: 0,
+              failures: 0,
+              active,
+              elapsedMs: 0,
+              stopping: false,
+              hostStopping: ended || cleaning,
+              suppressed: 0,
+              refused,
+            } satisfies RelayDiagnostic,
+          }),
+        ),
     },
   );
   await Deno.writeTextFile(

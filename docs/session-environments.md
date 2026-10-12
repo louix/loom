@@ -447,6 +447,19 @@ preparation and session activation. Node/Corepack need this opt-in to use the
 proxy (Node 24.5+ or 22.21+); older Node versions need their own proxy support.
 Direct guest DNS/network access is unavailable.
 
+The proxy serves at most 256 connections at once per VM
+(`EGRESS_CONNECTION_LIMIT` in `runtime/src/session-vm/relay-limits.ts`); the
+guest's loopback relay and the host proxy enforce the same limit. Idle keep-alive
+tunnels count against it: package managers keep many open while install scripts
+run, and pnpm 11.6 defaults to up to 96 concurrent requests. A connection over
+the limit is closed at once, so the client fails immediately rather than waiting
+for its connect timeout, and the session log reports
+`VM relay egress[0] refused: … active=256, refused=N` (at the 1st, 2nd, 4th, 8th…
+refusal). If it appears, lower the tool's concurrency, e.g. pnpm's
+`networkConcurrency`. Each tunnel holds two descriptors in the guest relay and
+two in the host supervisor; both raise their soft open-file limit to the hard
+one. MCP relays refuse the same way above 32 connections each.
+
 VM-backed Codex sessions permit network access within their filesystem sandbox
 so commands can reach the guest proxy. Loom's host proxy still enforces the
 selected network presets and exact extra hosts on HTTPS port 443. Host Codex

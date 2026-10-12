@@ -15,11 +15,14 @@ export const reportRelayDiagnostic = (info: RelayDiagnostic) => {
   console.error(JSON.stringify({ loomRelay: relayDiagnosticSchema.parse(info) }));
 };
 
-/** Bound connections before opening the guest-to-host socket bridge. */
+/**
+ * Bound connections before opening the guest-to-host socket bridge. A client over the
+ * limit is closed at once: left in the listen backlog it would only time out.
+ */
 export const startGuestRelay = (
   listener: Deno.Listener,
   socket: string,
-  maxConnections = 32,
+  maxConnections: number,
   options: GuestRelayOptions = {},
 ) => {
   if (!Number.isInteger(maxConnections) || maxConnections < 1)
@@ -40,6 +43,7 @@ export const startGuestRelay = (
   let errorName: RelayDiagnostic["error"] = "unknown";
   let emitted = 0;
   let suppressed = 0;
+  let refused = 0;
   const report = (event: RelayDiagnostic["event"], terminal = false) => {
     if (!terminal && emitted >= relayDiagnosticLimit) {
       suppressed++;
@@ -60,6 +64,7 @@ export const startGuestRelay = (
         elapsedMs: incident ? Math.max(0, Math.floor(performance.now() - since)) : 0,
         stopping: stopped,
         suppressed,
+        refused,
       });
     } catch {
       // Diagnostics must not change connection lifecycle.
@@ -123,8 +128,6 @@ export const startGuestRelay = (
   const serving = (async () => {
     try {
       while (!stopped) {
-        if (tasks.size >= maxConnections) await Promise.race(tasks);
-        if (stopped) break;
         let client: Deno.Conn;
         try {
           client = await listener.accept();
@@ -165,11 +168,18 @@ export const startGuestRelay = (
           close(client);
           break;
         }
-        clients.add(client);
         if (consecutive) {
           consecutive = 0;
           report("accepted");
         }
+        if (tasks.size >= maxConnections) {
+          close(client);
+          refused++;
+          // Power-of-two counts, as for accept errors, bound a refusal storm's records.
+          if ((refused & (refused - 1)) === 0) report("refused");
+          continue;
+        }
+        clients.add(client);
         const task = relay(client, incident);
         tasks.add(task);
         void task.finally(() => tasks.delete(task));
