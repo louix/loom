@@ -1,3 +1,4 @@
+// test-run: own-process — rebinds a port right after closing it; a subprocess another file's thread forks meanwhile holds the listener until its exec.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { request } from "node:http";

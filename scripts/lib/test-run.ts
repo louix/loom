@@ -11,10 +11,10 @@
 // fails a test file that mutates process state without the marker.
 //
 // Less visibly, they share a descriptor table: every subprocess a thread
-// spawns holds a copy of every open file until its exec, flock'd ones
-// included. A file that releases a `tryLock` and takes it straight back
-// fails a large share of those retakes next to other files' spawns, so it
-// needs a process of its own too.
+// spawns holds a copy of every open descriptor until its exec, flock'd files
+// and listening sockets included. A file that releases a `tryLock` or a port
+// and takes it straight back fails a large share of those retakes next to
+// other files' spawns, so it needs a process of its own too.
 
 import { basename, join } from "node:path";
 import {
