@@ -274,6 +274,37 @@ describe("loom agents", { concurrency: 4 }, () => {
     }
   });
 
+  test("a resume waiting for the session's lock is refused for a profile removed meanwhile", async (env) => {
+    // given: a cold "solo" session whose lock a parked mode change holds
+    const solo = await idleSession(env, { profile: "solo" });
+    const release = solo.fs.blockMode();
+    const setMode = solo.fs.setMode.bind(solo.fs);
+    let parked = false;
+    solo.fs.setMode = (mode) => {
+      parked = true;
+      return setMode(mode);
+    };
+    const moded = env.c.request("session.setMode", { id: solo.id, mode: "plan" });
+    await waitFor(() => parked);
+    solo.fs.endStream();
+    await waitFor(() => env.h.daemon.sessions.isEnded(solo.id));
+    const before = (await get(env.c, solo.id)).status.kind;
+    const resumed = env.c.request("session.resume", { id: solo.id });
+    await waitFor(async () => (await get(env.c, solo.id)).status.kind === "starting");
+    // when: the config drops "solo" before the resume takes the lock
+    writeFileSync(
+      env.h.configPath,
+      JSON.stringify({ agents: { profiles: { implementer: { description: "Implements" } } } }),
+    );
+    await waitFor(() => !("solo" in env.h.daemon.config.agents.profiles));
+    release();
+    // then
+    await assert.rejects(resumed, /agent profile "solo", which is no longer in the config/);
+    await moded;
+    assert.equal((await get(env.c, solo.id)).status.kind, before);
+    assert.ok(!env.provider.resumes.some((r) => r.sessionId === solo.id), "not resumed");
+  });
+
   test("messages reach a child through its queue, labelled; only its supervisor may send them", async (env) => {
     const lead = await idleSession(env);
     const child = await startChild(env, lead.fs);

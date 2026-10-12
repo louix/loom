@@ -2551,13 +2551,15 @@ export class Daemon {
       );
     const reason = this.#resumeBlockedReason(row);
     if (reason) return Promise.reject(new RpcError("resume_blocked", reason));
-    const planned = this.#agentPlanned(id);
-    if (planned.kind === "refused")
-      return Promise.reject(new RpcError("bad_request", planned.message));
+    // Refused outright, before anything changes. The plan it runs with is
+    // made again under the session's lock (`#doReviveSession`).
+    const refused = this.#agentPlanned(id);
+    if (refused.kind === "refused")
+      return Promise.reject(new RpcError("bad_request", refused.message));
     const operation = Promise.resolve()
       .then(async () => {
         await this.#preflightTools(row.provider, row.isolation);
-        return this.#doReviveSession(id, planned.plan);
+        return this.#doReviveSession(id, row.status);
       })
       .catch((error: unknown) => {
         if (this.#registry.get(id)?.status.kind === "starting")
@@ -2578,16 +2580,27 @@ export class Daemon {
     return operation;
   }
 
-  async #doReviveSession(id: string, agent: AgentSessionPlan): Promise<SessionSnapshot> {
+  /** `before` is the status the revival replaced with `starting`. */
+  async #doReviveSession(id: string, before: SessionState): Promise<SessionSnapshot> {
     // Held for the whole rebuild: the adapter is constructed from the row's
     // mode / model / effort, so a configuration command must not slip into the
     // window where the session still looks inactive — it would write the row
     // only, against an adapter already built from the pre-command values.
-    return this.#queue.run(id, () => this.#reviveLocked(id, agent));
+    return this.#queue.run(id, () => {
+      // Planned here, not when asked: the config may have changed meanwhile.
+      const planned = this.#agentPlanned(id);
+      if (planned.kind === "refused") {
+        // Refused before anything changes: the session keeps its status.
+        if (this.#registry.get(id)?.status.kind === "starting")
+          this.#registry.setStatus(id, before, "resume refused");
+        throw new RpcError("bad_request", planned.message);
+      }
+      return this.#reviveLocked(id, planned.plan);
+    });
   }
 
-  /** `agent` is planned by the caller, before anything changes: a refused
-   *  session keeps its row and its archive. */
+  /** `agent` is planned by the caller under the session's lock, just before
+   *  the rebuild: a refused session keeps its row and its archive. */
   async #reviveLocked(
     id: string,
     agent: AgentSessionPlan,
@@ -3888,7 +3901,8 @@ export class Daemon {
             this.#publishState(id);
             await stopped;
             if (this.#stopping) return this.#registry.mustGet(id);
-            const snap = await this.#reviveLocked(id, planned.plan, "refresh");
+            // Planned again: the config may have changed while it stopped.
+            const snap = await this.#reviveLocked(id, this.#agentPlan(id), "refresh");
             if (warm) this.#sessions.setKeepWarm(id, true);
             return snap;
           })
