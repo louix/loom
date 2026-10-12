@@ -21,6 +21,7 @@ import type { SessionSnapshot } from "@loom/core/wire";
 import type { QueueEntryView } from "@loom/core/message-queue";
 import type { KeyLike } from "./editor.ts";
 import { liveQNav, questionsOf } from "./interactions.ts";
+import { sheetEditing } from "./question-sheet.ts";
 import { nextThemeMode } from "./theme.ts";
 import { startingForkOf } from "./fork-flow.ts";
 import { cycleWorkspace, newBase, newWorkspace, toggleBase } from "./new-workspace.ts";
@@ -1153,12 +1154,27 @@ export const footerHints = (ctx: CommandContext): BarItem[] => {
       const { sessionId, requestId } = ctx.overlay;
       const nav = liveQNav(ctx.qnav, sessionId, requestId);
       const qs = questionsOf(fleetSessions(ctx), sessionId, requestId) ?? [];
-      if (nav?.editing)
+      const idx = nav?.idx ?? 0;
+      // A free-text question is its editor, then the review.
+      if (qs[0]?.freeText) {
+        if (idx >= qs.length)
+          return [
+            { keys: "enter", label: "submit answer" },
+            { keys: "esc", label: "edit" },
+          ];
+        return [
+          { keys: "enter", label: "review" },
+          { keys: "⌥enter", label: "new line" },
+          { keys: "PgUp/PgDn", label: "scroll" },
+          { keys: "esc", label: "back" },
+        ];
+      }
+      if (nav && sheetEditing(qs, nav))
         return [
           { keys: "enter", label: "done" },
           { keys: "esc", label: "stop editing" },
         ];
-      if ((nav?.idx ?? 0) >= qs.length)
+      if (idx >= qs.length)
         return [
           { keys: "enter", label: "submit answers" },
           { keys: "←", label: "questions" },

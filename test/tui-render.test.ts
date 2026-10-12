@@ -5347,6 +5347,71 @@ test("the wheel over the answer sheet scrolls the sheet, not the hidden transcri
   }
 });
 
+test("ask_user · the sheet takes a multi-line answer, keeps it across esc, and answers once", async () => {
+  const fake = mkFakeClient();
+  const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+  const stop = handle.effectStart();
+  const press = (input: string, key = {}) => handle.handleKey(input, key as Key);
+  const type = (text: string) => {
+    for (const ch of text) press(ch);
+  };
+  const footer = () =>
+    stripVTControlCharacters(
+      renderToString(createElement(FooterArea, { state: handle.getView().ui, width: 120 })),
+    );
+  try {
+    const request: SessionInteraction = {
+      kind: "question",
+      id: "u1",
+      question: "Which store should the cache use?",
+      at: 1,
+    };
+    fake.deliver(
+      fleetOf(
+        testSession({ id: "a", status: stateAwaitingInput("question"), requests: [request] }),
+      ),
+    );
+    press("a");
+    assert.deepEqual(handle.getView().ui.overlay, {
+      t: "questions",
+      sessionId: "a",
+      requestId: "u1",
+    });
+    assert.match(footer(), /enter review/);
+    assert.match(footer(), /⌥enter new line/);
+    assert.match(footer(), /esc back/);
+    type("SQLite");
+    press("", { return: true, meta: true });
+    press("\x1b[200~for now,\nRedis later\x1b[201~"); // a paste goes into the answer
+    assert.equal(handle.getView().ui.qnav?.drafts[0]?.text, "SQLite\nfor now,\nRedis later");
+
+    press("", { escape: true });
+    assert.equal(handle.getView().ui.overlay.t, "browse", "esc leaves the sheet");
+    assert.equal(fake.of("session.answer").length, 0, "nothing was sent");
+    press("a");
+    assert.equal(handle.getView().ui.overlay.t, "questions", "a resumes it");
+    assert.equal(handle.getView().ui.qnav?.drafts[0]?.text, "SQLite\nfor now,\nRedis later");
+
+    press("", { return: true });
+    assert.equal(handle.getView().ui.qnav?.idx, 1, "⏎ reviews");
+    assert.match(footer(), /enter submit answer/);
+    assert.equal(fake.of("session.answer").length, 0, "review does not submit");
+    press("", { return: true });
+    press("", { return: true });
+    const sent = fake.of("session.answer");
+    assert.equal(sent.length, 1, "answered exactly once");
+    assert.equal(sent[0]?.params["requestId"], "u1");
+    assert.equal(sent[0]?.params["text"], "SQLite\nfor now,\nRedis later");
+    assert.equal(handle.getView().ui.qnav?.busy, true, "the sheet waits for the daemon");
+    sent[0]?.resolve({ alreadyResolved: false });
+    await delay(0);
+    assert.equal(handle.getView().ui.overlay.t, "browse");
+    assert.equal(handle.getView().ui.notice?.text, "answered");
+  } finally {
+    stop();
+  }
+});
+
 test("with a child row focused, ⏎ and i do not reach the parent session", () => {
   const fake = mkFakeClient();
   fake.deliver(

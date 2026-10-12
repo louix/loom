@@ -145,8 +145,9 @@ import {
   questionsOf,
   questionState,
   requestsFor,
+  sheetDecision,
 } from "./interactions.ts";
-import { qnav, sheetKey, sheetLayout, type QNav } from "./question-sheet.ts";
+import { qnav, sheetEditing, sheetKey, sheetLayout, type QNav } from "./question-sheet.ts";
 import {
   escapeFork,
   forkConfirm,
@@ -910,6 +911,15 @@ export const mkFleetHandle = ({
     publish();
   };
 
+  /** The open answer sheet is taking keys into its answer editor. */
+  const sheetTyping = (): boolean => {
+    if (state.overlay.t !== "questions") return false;
+    const { sessionId, requestId } = state.overlay;
+    const qs = questionsOf(fleetSessions(state), sessionId, requestId);
+    const nav = liveQNav(state.qnav, sessionId, requestId);
+    return !!qs && !!nav && sheetEditing(qs, nav);
+  };
+
   /** Wheel over the answer sheet: scroll its body, as PgUp/PgDn do, clamped
    *  to what the sheet draws — not the transcript hidden behind it. */
   const scrollSheet = (by: number): void => {
@@ -1343,9 +1353,10 @@ export const mkFleetHandle = ({
       }
     });
   };
-  /** Send a validated answer sheet. The sheet stays up, taking no edits, until
-   *  the daemon has the answers; a failure puts the reason on the sheet with
-   *  every answer intact. */
+  /** Send a validated answer sheet — `session.answer` for a free-text question,
+   *  the tool call's answers for an `AskUserQuestion` (see `sheetDecision`).
+   *  The sheet stays up, taking no edits, until the daemon has the answers; a
+   *  failure puts the reason on the sheet with every answer intact. */
   const submitQuestions = (nav: QNav, answers: Record<string, string>): void => {
     const { sessionId, requestId } = nav;
     const request = requestsFor(fleetSessions(state), sessionId).find((r) => r.id === requestId);
@@ -1355,7 +1366,7 @@ export const mkFleetHandle = ({
       state.overlay.requestId === requestId;
     dispatch({ t: "qnavSet", nav: { ...nav, busy: true, notice: "" } });
     interactions
-      .respond(sessionId, requestId, { t: "answers", request, answers })
+      .respond(sessionId, requestId, sheetDecision(request, answers))
       .then((m) => {
         if (showing()) show(browse);
         if (m) note(m, "good");
@@ -1631,10 +1642,7 @@ export const mkFleetHandle = ({
       }
       case "answer": {
         const r = activeRequest(fleetSessions(state), s.id);
-        if (r?.kind === "question") {
-          return void show({ t: "prompt", prompt: requestPrompt("answer", s.id, r.id, "answer") });
-        }
-        if (r?.kind === "user_question") {
+        if (r?.kind === "question" || r?.kind === "user_question") {
           const q = questionState(fleetSessions(state), state.qnav, s.id);
           if (!q) return note("malformed AskUserQuestion input — ⌃o to inspect", "bad");
           // Resume the sheet where it was left; progress lives in `qnav`.
@@ -2100,12 +2108,14 @@ export const mkFleetHandle = ({
       k: RequestPromptKind,
       sessionId: string,
       requestId: string,
-    ): Promise<string> =>
-      interactions.respond(
-        sessionId,
-        requestId,
-        k === "answer" ? { t: "answer", text } : { t: "deny", message: text },
-      );
+    ): Promise<string> => {
+      switch (k) {
+        case "deny":
+          return interactions.respond(sessionId, requestId, { t: "deny", message: text });
+        default:
+          return absurd(k);
+      }
+    };
 
     const run = async (): Promise<string> => {
       switch (p.t) {
@@ -2540,7 +2550,7 @@ export const mkFleetHandle = ({
     const onInputLine =
       state.overlay.t === "prompt" ||
       state.overlay.t === "picker" ||
-      (state.overlay.t === "questions" && !!state.qnav?.editing) ||
+      sheetTyping() ||
       !!searches.get();
     if (
       onInputLine &&
@@ -2749,7 +2759,7 @@ export const mkFleetHandle = ({
       // Not editing, a multi-character chunk is a paste or a coalesced burst —
       // never a choice.
       const nav = liveQNav(state.qnav, sessionId, requestId) ?? qnav(sessionId, requestId);
-      if (!nav.editing && input.length > 1) return;
+      if (!sheetEditing(qs, nav) && input.length > 1) return;
       const { cols, bodyH } = store.get();
       const result = sheetKey(qs, nav, input, key, sheetLayout(qs, nav, cols, bodyH));
       switch (result.t) {

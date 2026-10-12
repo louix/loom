@@ -149,7 +149,7 @@ The same action is available as **verbosity** in the Space command palette.
 
 ## In the prompt
 
-Reply prompts — send, answer, deny, rename, discuss, compact — draw on the
+Reply prompts — send, deny, rename, discuss, compact — draw on the
 selected session's EVENTS pane (label, then the input under its transcript), so
 you can see the agent you're typing at; the footer keeps their hints row. The
 sessionless `new` prompt stays in the footer.
@@ -160,6 +160,12 @@ question allows several), `⇥` edits a custom answer and `⏎` continues. `←�
 move between questions. The last step reviews every answer; only `⏎` there
 submits, and an unanswered question is named rather than sent. `esc` steps back
 to the request panel with the answers kept, and `a` resumes where you left off.
+
+A free-text question (Loom's `ask_user`) opens the same sheet, with the
+question and its context above a multi-line answer editor: `⌥⏎` (or `⇧⏎`)
+starts a new line, `⏎` goes to the review and `⏎` there sends the answer.
+`esc` in the editor steps back to the request panel with the draft kept; `a`
+resumes it. `PgUp`/`PgDn` and the mouse wheel scroll a long question.
 
 `Ctrl` carries the readline motions and nothing else:
 

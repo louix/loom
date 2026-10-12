@@ -131,7 +131,6 @@ const PROMPT_PLACEHOLDER: Record<PromptKind, string> = {
   discuss: "what should change about the plan?",
   compact: "steer the summary (optional) — blank = best-effort summary of everything",
   send: "type a message…",
-  answer: "type a message…",
 };
 
 /** Context-meter colour by fill fraction. */
@@ -938,7 +937,6 @@ export const InputLine = ({
 
 const MODE_HINT: Record<Exclude<PromptKind, "new">, string> = {
   send: "send",
-  answer: "answer",
   deny: "deny",
   title: "rename",
   comment: "save",

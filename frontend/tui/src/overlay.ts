@@ -53,8 +53,9 @@ export interface NewSessionSettings {
 
 /** Prompts that act on a session as a whole. */
 export type SessionPromptKind = "send" | "title" | "comment" | "compact";
-/** Prompts that resolve one outstanding request, addressed by its id. */
-export type RequestPromptKind = "answer" | "deny";
+/** Prompts that resolve one outstanding request, addressed by its id. Questions
+ *  are answered on the answer sheet, not in a prompt. */
+export type RequestPromptKind = "deny";
 
 /** A queued message being edited from the queue view: the entry, at the
  *  revision the text was read at — a stale one is the daemon's `conflict`. */

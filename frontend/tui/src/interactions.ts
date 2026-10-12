@@ -1,7 +1,7 @@
 /**
  * The requests a session is parked on — a permission, a plan review, a
- * question, an `AskUserQuestion` sheet — and everything the TUI does about
- * them: which one the panel shows, how a multi-question answer progresses, what
+ * question, an `AskUserQuestion` — and everything the TUI does about them:
+ * which one the panel shows, what the answer sheet asks, what
  * a decision becomes on the wire, and the guard that stops one being answered
  * twice.
  *
@@ -53,6 +53,8 @@ export interface AskUserQuestionItem {
   options: Array<{ label: string; description?: string }>;
   /** Any number of options may be chosen, rather than exactly one answer. */
   multiSelect?: boolean;
+  /** Loom's own `ask_user`: no options, and the answer is the text typed. */
+  freeText?: true;
 }
 
 /** Parse an `AskUserQuestion` tool call's `input.questions` defensively — the
@@ -88,6 +90,22 @@ export const parseAskUserQuestions = (input: unknown): AskUserQuestionItem[] => 
   return out;
 };
 
+/** What the answer sheet asks for `r`: an `AskUserQuestion`'s parsed
+ *  questions, or a `question` as one free-text item with its context under
+ *  it. Null for anything the sheet does not answer, or a call with nothing
+ *  usable in it. */
+export const sheetQuestions = (
+  r: SessionInteraction | null | undefined,
+): AskUserQuestionItem[] | null => {
+  if (r?.kind === "question") {
+    const question = r.question + (r.context ? "\n\n" + r.context : "");
+    return [{ question, header: "", options: [], freeText: true }];
+  }
+  if (r?.kind !== "user_question") return null;
+  const qs = parseAskUserQuestions(r.input);
+  return qs.length > 0 ? qs : null;
+};
+
 /** `nav`, but only if it still describes the request `sid` / `rid` is parked
  *  on — a stale nav (resolved request, or a different session) reads as none. */
 export const liveQNav = (
@@ -97,9 +115,9 @@ export const liveQNav = (
 ): QNav | null =>
   nav && sid && rid && nav.sessionId === sid && nav.requestId === rid ? nav : null;
 
-/** The `AskUserQuestion` a session is parked on, if any — its request id and
- *  parsed questions, plus the live {@link QNav} for it (answers gathered so
- *  far, which question is in view). */
+/** The question a session is parked on, if any — its request id and what the
+ *  sheet asks (see {@link sheetQuestions}), plus the live {@link QNav} for it
+ *  (answers gathered so far, which question is in view). */
 export const questionState = (
   fleet: Fleet,
   qnav: QNav | null,
@@ -107,13 +125,12 @@ export const questionState = (
 ): { requestId: string; qs: AskUserQuestionItem[]; nav: QNav | null } | null => {
   if (!sessionId) return null;
   const r = activeRequest(fleet, sessionId);
-  if (r?.kind !== "user_question") return null;
-  const qs = parseAskUserQuestions(r.input);
-  if (qs.length === 0) return null;
+  const qs = sheetQuestions(r);
+  if (!r || !qs) return null;
   return { requestId: r.id, qs, nav: liveQNav(qnav, sessionId, r.id) };
 };
 
-/** The questions of one specific `AskUserQuestion`, looked up by id rather
+/** The questions of one specific request, looked up by id rather
  *  than by whichever request is active — an open answer sheet stays on the
  *  request it was opened for while others queue or resolve around it. Null once
  *  the daemon stops listing it. */
@@ -121,12 +138,8 @@ export const questionsOf = (
   fleet: Fleet,
   sessionId: string,
   requestId: string,
-): AskUserQuestionItem[] | null => {
-  const r = requestsFor(fleet, sessionId).find((x) => x.id === requestId);
-  if (r?.kind !== "user_question") return null;
-  const qs = parseAskUserQuestions(r.input);
-  return qs.length > 0 ? qs : null;
-};
+): AskUserQuestionItem[] | null =>
+  sheetQuestions(requestsFor(fleet, sessionId).find((x) => x.id === requestId));
 
 /** The whole `AskUserQuestion` call as a readable sheet for the `o` / `⌥o`
  *  editor view — each question numbered when there's more than one, its options
@@ -156,6 +169,16 @@ export type Decision =
   | { t: "deny"; message: string }
   | { t: "answer"; text: string }
   | { t: "answers"; request: SessionInteraction | undefined; answers: Record<string, string> };
+
+/** What a submitted answer sheet decides: a free-text `question` is answered
+ *  with its one answer, an `AskUserQuestion` allowed with all of them. */
+export const sheetDecision = (
+  request: SessionInteraction | undefined,
+  answers: Record<string, string>,
+): Decision =>
+  request?.kind === "question"
+    ? { t: "answer", text: Object.values(answers)[0] ?? "" }
+    : { t: "answers", request, answers };
 
 /** The RPC a decision becomes — pure, so the wire shape is checkable without a
  *  client and the handle below has only the guard left to get right. */

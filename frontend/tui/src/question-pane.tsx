@@ -1,5 +1,5 @@
 /**
- * The `AskUserQuestion` answer sheet on screen. Only presentation: the rows and
+ * The answer sheet on screen. Only presentation: the rows and
  * geometry come from {@link sheetLayout}, the same numbers the keymap scrolls
  * with, and the request it answers is the handle's to send.
  */
@@ -9,7 +9,7 @@ import { buffer } from "./editor.ts";
 import { InputLine } from "./components.tsx";
 import type { AskUserQuestionItem } from "./interactions.ts";
 import { plainText } from "./markdown.ts";
-import { sheetLayout, type QNav } from "./question-sheet.ts";
+import { sheetEditing, sheetLayout, type QNav } from "./question-sheet.ts";
 import { Line, Panel, StyledText } from "./ui.tsx";
 
 export const QuestionSheetPane = ({
@@ -33,6 +33,11 @@ export const QuestionSheetPane = ({
   const shown = sheet.lines.slice(start, start + sheet.room);
   const title = sheet.title + (queued > 1 ? ` (1 of ${queued})` : "");
   const notice = plainText(nav.notice).layout(room)[0]?.text ?? "";
+  const free = questions[nav.idx]?.freeText === true;
+  const captions = free
+    ? { compact: "⏎: review · ⌥⏎: new line", full: "Your answer · ⏎ reviews it · ⌥⏎ new line" }
+    : { compact: "⏎: choices", full: "Editing the custom answer · ⏎ returns to choices" };
+  const caption = sheet.compact ? captions.compact : captions.full;
   return (
     <Panel width={width} height={height} tone="await_" title={title} overflow="hidden">
       <Box height={sheet.room} flexDirection="column" overflow="hidden">
@@ -44,15 +49,14 @@ export const QuestionSheetPane = ({
           </Line>
         ))}
       </Box>
-      {nav.editing && (
+      {sheetEditing(questions, nav) && (
         <Box flexDirection="column" flexShrink={0}>
-          <Line tone="dim">
-            {sheet.compact ? "⏎: choices" : "Editing the custom answer · ⏎ returns to choices"}
-          </Line>
+          <Line tone="dim">{caption}</Line>
           <InputLine
             buf={nav.drafts[nav.idx] ?? buffer()}
             room={Math.max(1, room - 2)}
             maxRows={sheet.editorRows}
+            {...(free ? { placeholder: "type your answer…" } : {})}
           />
         </Box>
       )}

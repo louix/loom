@@ -5,12 +5,18 @@ import { createElement } from "react";
 import { renderToString } from "ink";
 import { stripVTControlCharacters as stripAnsi } from "node:util";
 import type { SessionInteraction } from "@loom/core/interaction";
-import { parseAskUserQuestions } from "@loom/tui/interactions";
+import {
+  decisionCall,
+  parseAskUserQuestions,
+  sheetDecision,
+  sheetQuestions,
+} from "@loom/tui/interactions";
 import { initialState, reduce } from "@loom/tui/model";
 import { QuestionSheetPane } from "@loom/tui/question-pane";
 import {
   qnav,
   sheetAnswers,
+  sheetEditing,
   sheetKey,
   sheetLayout,
   type QNav,
@@ -233,5 +239,157 @@ test("the open sheet stays on its request while others queue, and goes when it r
   s = reduce(s, fleet([blocked([other])]));
   assert.equal(s.overlay.t, "browse");
   assert.equal(s.qnav, null);
+  assert.match(s.notice?.text ?? "", /resolved elsewhere/);
+});
+
+// ---- a free-text question (Loom's own `ask_user`) -------------------------
+
+const ask: SessionInteraction = {
+  kind: "question",
+  id: "u1",
+  question: "Which **store** should the cache use?",
+  context: "Redis is already deployed; SQLite needs no service.",
+  at: 1,
+};
+const free = sheetQuestions(ask)!;
+const ALT_RET: SheetKey = { return: true, meta: true };
+
+const freePress = (nav: QNav, input: string, key: SheetKey = {}, size = { w: 80, h: 24 }) =>
+  sheetKey(free, nav, input, key, sheetLayout(free, nav, size.w, size.h));
+const freeDrive = (nav: QNav, ...keys: Array<string | SheetKey>): QNav =>
+  keys.reduce<QNav>((at, k) => {
+    const r = typeof k === "string" ? freePress(at, k) : freePress(at, "", k);
+    assert.equal(r.t, "nav", `expected the sheet to move on ${JSON.stringify(k)}`);
+    return (r as Extract<SheetResult, { t: "nav" }>).nav;
+  }, nav);
+const freeRender = (nav: QNav, width = 80, height = 24): string =>
+  stripAnsi(
+    renderToString(createElement(QuestionSheetPane, { questions: free, nav, width, height }), {
+      columns: width,
+    }),
+  );
+
+test("a free-text question opens straight into a multi-line answer editor", () => {
+  assert.deepEqual(free, [
+    {
+      question:
+        "Which **store** should the cache use?\n\nRedis is already deployed; SQLite needs no service.",
+      header: "",
+      options: [],
+      freeText: true,
+    },
+  ]);
+  const nav = qnav("s1", "u1");
+  assert.equal(sheetEditing(free, nav), true, "there are no choices to start on");
+  const out = freeRender(nav);
+  assert.match(out, /\? QUESTION/);
+  assert.match(out, /Which store should the cache use\?/);
+  assert.match(out, /Redis is already deployed/, "the context sits under the question");
+  assert.match(out, /Your answer · ⏎ reviews it · ⌥⏎ new line/);
+  assert.match(out, /type your answer…/);
+  assert.doesNotMatch(out, /Custom answer|1:/, "no choices, no custom row");
+  assert.equal(out.split("\n").length, 24);
+});
+
+test("free text: ⌥⏎ is a newline, ⏎ reviews, and only ⏎ on the review submits it", () => {
+  let nav = freeDrive(qnav("s1", "u1"), "SQLite", ALT_RET, "  then Redis");
+  assert.equal(nav.drafts[0]?.text, "SQLite\n  then Redis");
+  assert.equal(nav.idx, 0, "⌥⏎ stayed in the editor");
+  nav = freeDrive(nav, RET);
+  assert.equal(nav.idx, 1, "⏎ moved on to the review");
+  assert.equal(sheetEditing(free, nav), false);
+  const review = freeRender(nav);
+  assert.match(review, /\? REVIEW ANSWER\b/);
+  assert.match(review, /Review the answer before submitting\./);
+  assert.match(review, /→ SQLite/);
+  assert.match(review, /then Redis/);
+  // Typing on the review does nothing; esc and ← step back to the editor.
+  assert.equal(freePress(nav, "x").t, "ignore");
+  assert.equal(freeDrive(nav, ESC).idx, 0);
+  assert.equal(freeDrive(nav, LEFT).idx, 0);
+  const done = freePress(nav, "", RET);
+  assert.equal(done.t, "submit");
+  const { answers } = done as Extract<SheetResult, { t: "submit" }>;
+  const call = decisionCall("s1", "u1", sheetDecision(ask, answers), "me");
+  assert.deepEqual(call, {
+    method: "session.answer",
+    params: { id: "s1", requestId: "u1", by: "me", text: "SQLite\n  then Redis" },
+  });
+});
+
+test("free text: an empty answer is named rather than reviewed or sent", () => {
+  let nav = freeDrive(qnav("s1", "u1"), "   ", RET);
+  assert.equal(nav.idx, 0);
+  assert.match(nav.notice, /Write an answer before continuing/);
+  assert.match(freeRender(nav), /Write an answer before continuing/);
+  nav = freeDrive(nav, "x");
+  assert.equal(nav.notice, "", "typing clears the notice");
+  // Even reached some other way, the review will not submit nothing.
+  const empty = freePress({ ...qnav("s1", "u1"), idx: 1 }, "", RET);
+  assert.equal(empty.t, "nav");
+  assert.match((empty as Extract<SheetResult, { t: "nav" }>).nav.notice, /Write an answer/);
+});
+
+test("free text: esc in the editor leaves the sheet with the draft kept", () => {
+  const nav = freeDrive(qnav("s1", "u1"), "half", ALT_RET, "written");
+  const closed = freePress(nav, "", ESC);
+  assert.equal(closed.t, "close");
+  const kept = (closed as Extract<SheetResult, { t: "close" }>).nav;
+  assert.equal(kept.drafts[0]?.text, "half\nwritten");
+  // Resumed, it is still the editor, with the text.
+  assert.equal(sheetEditing(free, kept), true);
+  assert.equal(freeDrive(kept, "!").drafts[0]?.text, "half\nwritten!");
+  assert.match(freeRender(kept), /written/);
+});
+
+test("free text: a long question wraps and scrolls in a small terminal", () => {
+  const paragraphs = Array.from(
+    { length: 4 },
+    (_, i) => `Paragraph ${i + 1} explains one more consideration about the migration at length.`,
+  );
+  const long = sheetQuestions({ ...ask, question: paragraphs.join("\n\n"), context: "end" })!;
+  const size = { w: 40, h: 12 };
+  const layout = (nav: QNav) => sheetLayout(long, nav, size.w, size.h);
+  const draw = (nav: QNav) =>
+    stripAnsi(
+      renderToString(
+        createElement(QuestionSheetPane, { questions: long, nav, width: size.w, height: size.h }),
+        { columns: size.w },
+      ),
+    );
+  let nav = freeDrive(qnav("s1", "u1"), "ok");
+  assert.equal(layout(nav).compact, true);
+  assert.ok(layout(nav).lines.length > layout(nav).room, "the question needs scrolling");
+  for (const row of draw(nav).split("\n"))
+    assert.ok(row.length <= size.w, `no row runs past the pane: ${JSON.stringify(row)}`);
+  assert.equal(draw(nav).split("\n").length, size.h, "the pane fills exactly its rows");
+  assert.match(draw(nav), /Paragraph 1/);
+  assert.match(draw(nav), /⏎: review · ⌥⏎: new line/, "the editor stays on screen");
+  // ⇟ pages while the editor has the keys, and stops at the last row.
+  for (let i = 0; i < 10; i++) {
+    const r = sheetKey(long, nav, "", { pageDown: true }, layout(nav));
+    assert.equal(r.t, "nav");
+    nav = (r as Extract<SheetResult, { t: "nav" }>).nav;
+  }
+  assert.equal(nav.offset, layout(nav).lines.length - layout(nav).room);
+  assert.match(draw(nav), /end/, "the context at the bottom is reachable");
+  assert.doesNotMatch(draw(nav), /Paragraph 1/);
+  assert.equal(nav.drafts[0]?.text, "ok", "paging did not type");
+});
+
+test("an open free-text sheet goes when its question is resolved elsewhere", () => {
+  const blocked = (requests: SessionInteraction[]) =>
+    snap({ id: "a", status: "awaiting_input", awaitReason: "question", requests });
+  let s = reduce(initialState(), fleet([blocked([ask])]));
+  s = reduce(s, { t: "overlay", overlay: { t: "questions", sessionId: "a", requestId: "u1" } });
+  s = reduce(s, { t: "qnavSet", nav: freeDrive(qnav("a", "u1"), "draft") });
+  // A second question queues behind it; the sheet stays on its own.
+  const next: SessionInteraction = { ...ask, id: "u2", question: "And the TTL?" };
+  s = reduce(s, fleet([blocked([ask, next])]));
+  assert.deepEqual(s.overlay, { t: "questions", sessionId: "a", requestId: "u1" });
+  assert.equal(s.qnav?.drafts[0]?.text, "draft");
+  s = reduce(s, fleet([blocked([next])]));
+  assert.equal(s.overlay.t, "browse");
+  assert.equal(s.qnav, null, "the draft for the resolved question goes with it");
   assert.match(s.notice?.text ?? "", /resolved elsewhere/);
 });

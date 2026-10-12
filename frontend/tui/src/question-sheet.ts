@@ -1,6 +1,7 @@
 /**
- * The `AskUserQuestion` answer sheet — choosing, reviewing and validating
- * answers to a multi-question call before it goes back to the daemon.
+ * The answer sheet — choosing, reviewing and validating answers to an
+ * `AskUserQuestion` call, or writing one to Loom's own `ask_user` question,
+ * before it goes back to the daemon.
  *
  * Presentation and validation only. The request it answers is read straight off
  * the snapshot by id (see `interactions.ts`), the decision goes out through the
@@ -11,16 +12,18 @@
  *
  * Every question offers its options plus a custom answer (the SDK's "Other"):
  * single-select questions take exactly one of the two, multi-select ones any
- * mix of options and text. The last step reviews every answer and only an
+ * mix of options and text. A free-text question (`ask_user`) has no options:
+ * its only step is the answer editor, multi-line, and `Esc` there leaves the
+ * sheet rather than the editor. The last step reviews every answer and only an
  * explicit ⏎ there submits.
  */
-import { applyKey, buffer, type Buffer, type KeyLike } from "./editor.ts";
+import { applyKey, buffer, layoutWrapped, type Buffer, type KeyLike } from "./editor.ts";
 import type { AskUserQuestionItem } from "./interactions.ts";
 import { markdownText, plainText } from "./markdown.ts";
 import type { TextRow } from "./text-layout.ts";
 
 /**
- * In-progress answering of one `AskUserQuestion`. Lives in the TUI state rather
+ * In-progress answering of one question request. Lives in the TUI state rather
  * than the overlay so it survives the sheet closing: `Esc` drops back to the
  * request panel, where `←` / `→` still move between questions, and `a`
  * re-opens the sheet exactly where it was left.
@@ -36,7 +39,9 @@ export interface QNav {
   selected: Readonly<Record<number, readonly number[]>>;
   /** Custom ("Other") answer text, by question index. */
   drafts: Readonly<Record<number, Buffer>>;
-  /** Keys go to the custom answer's editor rather than the choices. */
+  /** Keys go to the custom answer's editor rather than the choices. A
+   *  free-text question has no choices, so {@link sheetEditing} says so for
+   *  it whatever this holds. */
   editing: boolean;
   /** First body row drawn. */
   offset: number;
@@ -58,6 +63,11 @@ export const qnav = (sessionId: string, requestId: string): QNav => ({
   notice: "",
   busy: false,
 });
+
+/** Keys go to the answer editor: a custom answer being edited, or a free-text
+ *  question, which has nothing else to take them. */
+export const sheetEditing = (qs: readonly AskUserQuestionItem[], nav: QNav): boolean =>
+  nav.editing || qs[nav.idx]?.freeText === true;
 
 // ---- answers ---------------------------------------------------------------
 
@@ -88,6 +98,7 @@ export const sheetAnswers = (
 export const sheetProblem = (qs: readonly AskUserQuestionItem[], nav: QNav): string | null => {
   for (const [qi, q] of qs.entries()) {
     const count = (nav.selected[qi] ?? []).length + Number(draftText(nav, qi).trim() !== "");
+    if (q.freeText && count === 0) return "Write an answer.";
     if (count === 0 || (!q.multiSelect && count !== 1))
       return qs.length > 1 ? `Choose an answer for question ${qi + 1}.` : "Choose an answer.";
   }
@@ -101,6 +112,9 @@ const COMPACT_COLS = 60;
 const COMPACT_ROWS = 16;
 /** The panel border and its title row. */
 const PANEL_CHROME = 3;
+/** Most rows a free-text answer's editor grows to, full size and compact. */
+const FREE_EDITOR_ROWS = 6;
+const FREE_EDITOR_ROWS_COMPACT = 2;
 
 export interface SheetLayout {
   /** Every body row; the pane draws `room` of them from `offset`. */
@@ -138,19 +152,35 @@ export const sheetLayout = (
   const compact = width < COMPACT_COLS || height < COMPACT_ROWS;
   // Inside the panel border and its padding.
   const w = Math.max(1, width - 4);
-  const editorRows = compact ? 1 : 2;
+  const q = qs[nav.idx];
+  // A free-text answer is the whole step, so its editor grows with the text —
+  // only as far as it needs, the question keeps the rest.
+  let editorRows = compact ? 1 : 2;
+  if (q?.freeText) {
+    const typed = layoutWrapped(nav.drafts[nav.idx] ?? buffer(), Math.max(1, w - 2)).rows.length;
+    const most = compact ? FREE_EDITOR_ROWS_COMPACT : FREE_EDITOR_ROWS;
+    editorRows = Math.max(1, Math.min(most, typed));
+  }
   const chrome =
     PANEL_CHROME +
-    (nav.editing ? 1 + editorRows : 0) +
+    (sheetEditing(qs, nav) ? 1 + editorRows : 0) +
     Number(!compact || nav.notice !== "") +
     Number(nav.busy);
   const room = Math.max(1, height - chrome);
   const lines: TextRow[] = [];
   const choiceRows: number[] = [];
-  const q = qs[nav.idx];
   const position = (n: number): string => (qs.length > 1 ? ` ${n + 1}/${qs.length}` : "");
   if (q) {
     lines.push(...markdownText(q.question).layout(w));
+    if (q.freeText)
+      return {
+        lines,
+        choiceRows,
+        room,
+        compact,
+        editorRows,
+        title: `? QUESTION${position(nav.idx)}`,
+      };
     const chosen = nav.selected[nav.idx] ?? [];
     const row = (index: number, label: string, mark: string): void => {
       choiceRows.push(lines.length);
@@ -185,6 +215,25 @@ export const sheetLayout = (
       editorRows,
       title: `? QUESTION${position(nav.idx)}${q.header ? ` · ${q.header}` : ""}`,
     };
+  }
+  if (qs.length === 1 && qs[0]?.freeText) {
+    // The answer is what is under review, so it comes first: a long question
+    // would otherwise push it below the fold. Its lines stay as typed.
+    lines.push(...plainText("Review the answer before submitting.").layout(w));
+    lines.push({ text: "", spans: [] });
+    const answer = answerFor(qs, nav, 0) || "(unanswered)";
+    answer.split("\n").forEach((line, i) => {
+      const lead = i === 0 ? "→ " : "  ";
+      for (const [j, r] of plainText(line || " ")
+        .layout(Math.max(1, w - 2))
+        .entries()) {
+        const pad = j === 0 ? lead : "  ";
+        lines.push({ text: pad + r.text, spans: [{ text: pad }, ...r.spans] });
+      }
+    });
+    lines.push({ text: "", spans: [] });
+    lines.push(...markdownText(qs[0].question).layout(w));
+    return { lines, choiceRows, room, compact, editorRows, title: "? REVIEW ANSWER" };
   }
   lines.push(...plainText("Review answers before submitting.").layout(w));
   for (const [qi, item] of qs.entries()) {
@@ -227,7 +276,8 @@ export const sheetKey = (
     go({ idx: clamp(idx, 0, qs.length), cursor: 0, offset: 0, editing: false, notice: "" });
 
   if (key.escape) {
-    if (nav.editing) return go({ editing: false });
+    // A free-text question's editor is all it has: esc leaves the sheet.
+    if (nav.editing && !q?.freeText) return go({ editing: false });
     if (!q && qs.length > 0) return step(qs.length - 1);
     return { t: "close", nav: { ...nav, editing: false, notice: "" } };
   }
@@ -236,14 +286,19 @@ export const sheetKey = (
   }
   if (nav.busy) return { t: "ignore" };
 
-  if (nav.editing && q) {
+  if (q && sheetEditing(qs, nav)) {
     const result = applyKey(nav.drafts[nav.idx] ?? buffer(), input, key);
-    if (result.kind === "submit") return go({ editing: false });
+    if (result.kind === "submit") {
+      if (!q.freeText) return go({ editing: false });
+      // ⏎ on a written answer moves on to the review; ⌥⏎ was the newline.
+      if (draftText(nav, nav.idx).trim()) return step(nav.idx + 1);
+      return go({ notice: "Write an answer before continuing." });
+    }
     if (result.kind !== "buffer") return { t: "ignore" };
     return go({
       drafts: { ...nav.drafts, [nav.idx]: result.buffer },
       // A single-select question takes a choice or a custom answer, not both.
-      ...(q.multiSelect ? {} : { selected: { ...nav.selected, [nav.idx]: [] } }),
+      ...(q.multiSelect || q.freeText ? {} : { selected: { ...nav.selected, [nav.idx]: [] } }),
       notice: "",
     });
   }
