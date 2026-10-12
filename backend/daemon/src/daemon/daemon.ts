@@ -115,7 +115,13 @@ import { SocketServer } from "./server.ts";
 import { runStartupHygiene, type HygieneReport } from "./hygiene.ts";
 import { HookRunner, hookSessionOf } from "./hooks.ts";
 import { SessionManager } from "./session-manager.ts";
-import { AgentSupervision, agentSessionPlan, profileInfos, type ChildStart } from "./agents.ts";
+import {
+  AgentSupervision,
+  agentSessionPlan,
+  profileInfos,
+  type AgentSessionPlan,
+  type ChildStart,
+} from "./agents.ts";
 import { agentAuthor, SELF_PROFILE, type ChildrenOnClose } from "@loom/core/agents";
 import { archiveReminder, showArchiveReminder } from "./archive-reminder.ts";
 import { type QueueDelivery, type QueueHoldCause } from "@loom/core/message-queue";
@@ -3191,16 +3197,19 @@ export class Daemon {
    * What `id` runs with as a Loom agent (`agents.ts#agentSessionPlan`): the
    * MCP servers its profile keeps, `loom-agents` unless its profile leaves it
    * out or it is at `agents.max_depth`, and its profile's prompt and tools.
-   * Read from its row, so every start and resume agrees.
+   * Read from its row, so every start and resume agrees. Refuses a session
+   * whose profile is no longer available rather than drop its restrictions.
    */
-  #agentPlan(id: string): ReturnType<typeof agentSessionPlan> {
+  #agentPlan(id: string): AgentSessionPlan {
     const row = this.#registry.mustGet(id);
-    return agentSessionPlan(row, {
+    const planned = agentSessionPlan(row, {
       config: this.config,
       lookup: (other) => this.#registry.get(other) ?? undefined,
       settledTitle: (other) => this.#settledTitle(other),
       handles: this.#mcpHandles(),
     });
+    if (planned.kind === "refused") throw new RpcError("bad_request", planned.message);
+    return planned.plan;
   }
 
   /** Start a child for `agent_start`: a worktree off its base, nested under its supervisor. */

@@ -103,12 +103,20 @@ export interface AgentSessionPlan {
 }
 
 /**
+ * `refused`: the session runs as a profile still configured but no longer
+ * available here. Its tool, MCP and prompt restrictions cannot be applied, so
+ * it does not run at all rather than run without them.
+ */
+export type AgentSessionPlanned =
+  | { readonly kind: "planned"; readonly plan: AgentSessionPlan }
+  | { readonly kind: "refused"; readonly message: string };
+
+/**
  * What `row` runs with: `loom-agents` unless its profile leaves it out or it
  * sits at `agents.max_depth`; the profile's MCP servers, skills, tool lists
  * and prompt; and, for a child, a note on who supervises it. Recomputed for
  * every start and resume, so a config change reaches a resumed session. A
- * profile since removed from the config, or no longer available in this
- * repository, contributes nothing.
+ * profile since removed from the config contributes nothing.
  */
 export const agentSessionPlan = (
   row: Pick<SessionSnapshot, "id" | "supervisorId" | "agentProfile" | "provider">,
@@ -119,11 +127,15 @@ export const agentSessionPlan = (
     settledTitle: (id: string) => string | null;
     handles: McpServerHandle[];
   },
-): AgentSessionPlan => {
-  const profile =
-    row.agentProfile && row.agentProfile !== SELF_PROFILE
-      ? availableProfiles(ctx.config, row.provider)[row.agentProfile]
-      : undefined;
+): AgentSessionPlanned => {
+  const name = row.agentProfile && row.agentProfile !== SELF_PROFILE ? row.agentProfile : null;
+  const profile = name === null ? undefined : availableProfiles(ctx.config, row.provider)[name];
+  const configured = name === null ? undefined : ctx.config.agents.profiles[name];
+  if (configured && !profile)
+    return {
+      kind: "refused",
+      message: `session ${short(row.id)} runs as agent profile "${name}", which is no longer available in this repository: session.provider_access does not allow its provider, ${configured.provider ?? row.provider}. Allow that provider again to run it with the profile's restrictions, or archive it.`,
+    };
   const depth = supervisionDepth(row.id, (id) => (id === row.id ? row : ctx.lookup(id)));
   const keeps = (name: string) =>
     profile?.mcpServers === undefined || profile.mcpServers.includes(name);
@@ -136,12 +148,15 @@ export const agentSessionPlan = (
     .filter(Boolean)
     .join("\n\n");
   return {
-    mcpServers: ctx.handles.filter((h) => keeps(h.name)),
-    ...(agentTools ? { agentTools: true } : {}),
-    ...(prompt ? { agentPrompt: prompt } : {}),
-    ...(profile?.skills ? { skills: profile.skills } : {}),
-    ...(profile?.tools?.allow ? { allowTools: profile.tools.allow } : {}),
-    ...(profile?.tools?.deny ? { denyTools: profile.tools.deny } : {}),
+    kind: "planned",
+    plan: {
+      mcpServers: ctx.handles.filter((h) => keeps(h.name)),
+      ...(agentTools ? { agentTools: true } : {}),
+      ...(prompt ? { agentPrompt: prompt } : {}),
+      ...(profile?.skills ? { skills: profile.skills } : {}),
+      ...(profile?.tools?.allow ? { allowTools: profile.tools.allow } : {}),
+      ...(profile?.tools?.deny ? { denyTools: profile.tools.deny } : {}),
+    },
   };
 };
 

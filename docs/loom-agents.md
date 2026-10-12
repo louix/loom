@@ -77,9 +77,11 @@ there allows its provider — its own, or the spawner's when it names none. A
 global profile on a provider a repository does not allow is simply absent
 there: `agents_profiles` does not list it, `agent_start` refuses it, the
 new-session `⌥p` list does not offer it, and it is not checked against that
-provider. A profile in a repository's own `repos[]` entry that names a
-provider the same repository disables contradicts itself and is a config
-error. `self` is always available.
+provider. A session that already runs as such a profile is not resumed or
+switched to another provider: Loom refuses with the reason rather than run it
+without the profile's tool, MCP and prompt restrictions. A profile in a
+repository's own `repos[]` entry that names a provider the same repository
+disables contradicts itself and is a config error. `self` is always available.
 
 ## Agent tools (MCP server `loom-agents`)
 

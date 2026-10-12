@@ -53,6 +53,13 @@ const AGENTS: LoomConfig["agents"] = {
 
 const CONFIG: AgentConfig = { agents: AGENTS, providerAccess: { deny: [] } };
 
+/** The plan, for a session whose profile is available. */
+const planOf = (...args: Parameters<typeof agentSessionPlan>) => {
+  const planned = agentSessionPlan(...args);
+  assert.equal(planned.kind, "planned");
+  return planned.kind === "planned" ? planned.plan : { mcpServers: [] };
+};
+
 const row = (over: Partial<SessionSnapshot> & { id: string }): SessionSnapshot =>
   ({
     parentId: null,
@@ -278,15 +285,18 @@ test("a profile on a provider the repository does not allow is neither listed no
     s.starts.map((c) => c.agentProfile),
     ["self"],
   );
-  // A resumed session's plan no longer takes an unavailable profile's settings.
-  const plan = agentSessionPlan(row({ id: "v", provider: "codex", agentProfile: "verifier" }), {
+  // A session already running as it is not run without its restrictions.
+  const planned = agentSessionPlan(row({ id: "v", provider: "claude", agentProfile: "verifier" }), {
     config,
     lookup: () => undefined,
     settledTitle: () => null,
     handles: [],
   });
-  assert.equal(plan.agentPrompt, undefined);
-  assert.equal(plan.denyTools, undefined);
+  assert.equal(planned.kind, "refused");
+  assert.match(
+    planned.kind === "refused" ? planned.message : "",
+    /agent profile "verifier", which is no longer available in this repository: session\.provider_access does not allow its provider, codex/,
+  );
 });
 
 test("agent_start refuses a clone supervisor, the depth limit and missing fields", async () => {
@@ -340,11 +350,11 @@ test("a session's plan: loom-agents below the depth limit, and its profile's ser
   ]);
   const lookup = (id: string) => rows.get(id);
   const ctx = { config: CONFIG, lookup, settledTitle: settledTitle(lookup), handles };
-  assert.deepEqual(agentSessionPlan(rows.get("lead")!, ctx), {
+  assert.deepEqual(planOf(rows.get("lead")!, ctx), {
     mcpServers: handles,
     agentTools: true,
   });
-  const kid = agentSessionPlan(rows.get("kid")!, ctx);
+  const kid = planOf(rows.get("kid")!, ctx);
   assert.deepEqual(
     kid.mcpServers.map((h) => h.name),
     ["tilth"],
@@ -354,18 +364,18 @@ test("a session's plan: loom-agents below the depth limit, and its profile's ser
   assert.match(kid.agentPrompt!, /final message[^.]*first line a single sentence summarizing/);
   assert.match(kid.agentPrompt!, /\n\nVerify\.$/);
   assert.deepEqual(kid.denyTools, ["WebFetch"]);
-  const user = agentSessionPlan(row({ id: "u", agentProfile: "claudeish" }), ctx);
+  const user = planOf(row({ id: "u", agentProfile: "claudeish" }), ctx);
   assert.equal(user.agentTools, true, "a profile without an mcp list keeps loom-agents");
   assert.deepEqual(user.skills, ["pdf"]);
   assert.deepEqual(user.allowTools, ["Read"]);
   assert.equal(user.agentPrompt, undefined);
-  const gone = agentSessionPlan(row({ id: "g", agentProfile: "deleted" }), ctx);
+  const gone = planOf(row({ id: "g", agentProfile: "deleted" }), ctx);
   assert.deepEqual(
     gone,
     { mcpServers: handles, agentTools: true },
     "a removed profile adds nothing",
   );
-  const one = agentSessionPlan(row({ id: "lead" }), {
+  const one = planOf(row({ id: "lead" }), {
     ...ctx,
     config: { ...CONFIG, agents: { ...AGENTS, maxDepth: 1 } },
   });
@@ -381,7 +391,7 @@ test("a supervisor's provisional title, the head of its first prompt, never reac
     ["kid", row({ id: "kid", supervisorId: "boss" })],
   ]);
   const lookup = (id: string) => rows.get(id);
-  const plan = agentSessionPlan(rows.get("kid")!, {
+  const plan = planOf(rows.get("kid")!, {
     config: CONFIG,
     lookup,
     settledTitle: settledTitle(lookup),
