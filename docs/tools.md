@@ -357,9 +357,6 @@ VM's network policy:
           "--no-usage-statistics",
           "--performance-crux=false",
         ],
-        // Not the session's worktree: the VM agent writes there, and npx
-        // resolves packages and .npmrc from its working directory.
-        "cwd": "~/",
       },
       "vm_sessions": "relay",
     },
@@ -379,10 +376,11 @@ VM's network policy:
   command's own SIGTERM handling.
 - **Environment.** The command inherits the daemon's environment, with `env` and
   `pass_env` applied as for a host session.
-- **Working directory.** `cwd` when set; otherwise the session's host worktree,
-  or your home directory when the session has none (a VM session with a private
-  clone). The worktree is writable by the VM agent, so set `cwd` for a command
-  that loads code or configuration from its working directory, as `npx` does.
+- **Working directory.** `cwd` when set; otherwise your home directory — not,
+  as for a host session, the session's worktree. Do not point `cwd` at a directory
+  the VM agent can write, such as a worktree: a command that loads code or
+  configuration from its working directory, as `npx` does, would run what the
+  agent planted there on the host.
 - **Limits.** Those of Loom's HTTP relay: a request times out after
   `timeout_seconds` (omitted: 60), a request is at most 1 MiB and a response
   8 MiB, and at most 32 requests are in flight. A larger message from the command ends the session's run.

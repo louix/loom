@@ -10,7 +10,6 @@ import type { McpServerHandle } from "@loom/core/types";
 import { FrameWriter, readFrames } from "../../../../runtime/src/worker/transport.ts";
 import { launchLocalWorker, mockLaunchSpec, type WorkerLauncher } from "./worker-launch.ts";
 import type { ManagedMcp } from "./mcp-worker.ts";
-import { sessionCloneRoot } from "./session-vm-state.ts";
 
 /** The worker's own bootstrap allowance, on top of the command's first response. */
 const STARTUP_MARGIN_ms = 10_000;
@@ -21,23 +20,12 @@ type StdioSpec = Extract<McpServerHandle["spec"], { transport: "stdio" }> &
   Pick<McpServerHandle, "requestTimeoutMs">;
 
 /**
- * Where a relayed command starts without a configured cwd: the session's host worktree, or
- * the user's home when there is none — a private clone is the guest's, not a host worktree.
+ * Starts in `spec.cwd`, else the user's home: never the session's worktree, which its VM
+ * agent can write — a command like npx would load code planted there.
  */
-export const hostCommandCwd = async (cwd: string, repo: string | undefined): Promise<string> => {
-  if (repo !== undefined && cwd.startsWith(sessionCloneRoot(repo) + "/")) return homedir();
-  try {
-    if ((await Deno.stat(cwd)).isDirectory) return cwd;
-  } catch {
-    // No host worktree.
-  }
-  return homedir();
-};
-
 export const startHostCommandMcp = async (
   name: string,
   spec: StdioSpec,
-  cwd: string,
   launch: WorkerLauncher = launchLocalWorker,
 ): Promise<ManagedMcp> => {
   const requestTimeoutMs = spec.requestTimeoutMs ?? MCP_REQUEST_TIMEOUT_DEFAULT_MS;
@@ -97,7 +85,7 @@ export const startHostCommandMcp = async (
           command: spec.command,
           args: spec.args ?? [],
           env: { ...Deno.env.toObject(), ...spec.env },
-          cwd,
+          cwd: spec.cwd ?? homedir(),
           token,
           requestTimeoutMs,
           maxServerFrameBytes: MAX_SERVER_FRAME_BYTES,

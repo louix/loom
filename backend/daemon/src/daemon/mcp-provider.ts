@@ -13,7 +13,7 @@ import { startMcpWorker, type ManagedMcp } from "./mcp-worker.ts";
 import { startOAuthMcp } from "./mcp-oauth-owner.ts";
 import type { LoomConfig } from "../config/config.ts";
 import { startRuntimeMcp } from "./runtime-mcp.ts";
-import { hostCommandCwd, startHostCommandMcp } from "./host-command-mcp.ts";
+import { startHostCommandMcp } from "./host-command-mcp.ts";
 
 export const withExternalMcp = async (
   create: CreateProvider,
@@ -62,14 +62,10 @@ export const withExternalMcp = async (
         if (handle.spec.transport === "stdio") {
           // A host session's connector runs it; a VM session gets it relayed (vetted above).
           if (!context.config.sessionVm) return handle;
-          const worker = await startHostCommand(
-            handle.name,
-            {
-              ...handle.spec,
-              ...(handle.requestTimeoutMs ? { requestTimeoutMs: handle.requestTimeoutMs } : {}),
-            },
-            handle.spec.cwd ?? (await hostCommandCwd(input.cwd, repo)),
-          );
+          const worker = await startHostCommand(handle.name, {
+            ...handle.spec,
+            ...(handle.requestTimeoutMs ? { requestTimeoutMs: handle.requestTimeoutMs } : {}),
+          });
           workers.push(worker);
           return { ...handle, spec: worker.handle.spec };
         }

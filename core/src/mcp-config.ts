@@ -55,7 +55,9 @@ const commandMcpSourceSchema = z.strictObject({
     .string()
     .refine((v) => v.startsWith("/") || v.startsWith("~/"), "must be absolute or start with ~/")
     .optional()
-    .describe("Working directory, absolute or ~/; omitted: the session's worktree."),
+    .describe(
+      "Working directory, absolute or ~/; omitted: the session's worktree, or your home directory when relayed to a VM session.",
+    ),
 });
 export const mcpSourceSchema = z.union([
   nixMcpSourceSchema,

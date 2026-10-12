@@ -132,7 +132,7 @@ export const mcpDefinitionSchema = z
       .enum(["refuse", "relay"])
       .optional()
       .describe(
-        "Command sources only: refuse (the default) fails a VM session that selects it; relay runs the command on the host, one process per session, and relays it into the VM. The command still runs unconfined and the VM agent drives it — for a browser, its file access and scripts in your real browser. Without cwd it starts in the session's host worktree, which the agent can write, or else your home directory.",
+        "Command sources only: refuse (the default) fails a VM session that selects it; relay runs the command on the host, one process per session, and relays it into the VM. The command still runs unconfined and the VM agent drives it — for a browser, its file access and scripts in your real browser. Without cwd it starts in your home directory, never the session's worktree; a cwd the VM agent can write is unsafe.",
       ),
     auth: z
       .strictObject({

@@ -1,14 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { homedir } from "node:os";
-import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  hostCommandCwd,
-  startHostCommandMcp,
-} from "../backend/daemon/src/daemon/host-command-mcp.ts";
+import { startHostCommandMcp } from "../backend/daemon/src/daemon/host-command-mcp.ts";
 import type { ManagedMcp } from "../backend/daemon/src/daemon/mcp-worker.ts";
-import { sessionCloneRoot } from "../backend/daemon/src/daemon/session-vm-state.ts";
 import { withExternalMcp } from "../backend/daemon/src/daemon/mcp-provider.ts";
 import { FakeProvider } from "../connectors/mock/src/fake.ts";
 import { makeLogger } from "@loom/core/logger";
@@ -71,39 +66,30 @@ const stillRunning = async (pids: number[], within_ms: number): Promise<number[]
   }
 };
 
-test("hostCommandCwd: a worktree on the host is where the command starts", async () => {
+test("startHostCommandMcp: without a cwd it starts in the home directory", async () => {
   // given
-  const worktree = await Deno.makeTempDir();
+  const worker = await startHostCommandMcp("fixture", mkFixtureSpec({}));
   try {
     // when
-    const cwd = await hostCommandCwd(worktree, "/repo");
+    const who = JSON.parse(await callTool(worker, "whoami")) as Whoami;
     // then
-    assert.equal(cwd, worktree);
+    assert.equal(who.cwd, await Deno.realPath(homedir()));
   } finally {
-    await Deno.remove(worktree);
-  }
-});
-test("hostCommandCwd: a private clone or a missing worktree falls back to home", async () => {
-  // given: a clone is matched by its path alone, so none is made
-  const repo = await Deno.makeTempDir();
-  const clone = join(sessionCloneRoot(repo), "session/workspace/checkout");
-  try {
-    // when / then
-    assert.equal(await hostCommandCwd(clone, repo), homedir());
-    assert.equal(await hostCommandCwd(join(repo, "gone"), repo), homedir());
-  } finally {
-    await Deno.remove(repo, { recursive: true });
+    await worker.close();
   }
 });
 
 test("startHostCommandMcp: one process per start, serving tools until close ends its group", async () => {
   // given
   const cwd = await Deno.makeTempDir();
-  const spec = mkFixtureSpec({ LOOM_TEST_MARKER: "relayed", LOOM_TEST_BIG_BYTES: "2097152" });
+  const spec = {
+    ...mkFixtureSpec({ LOOM_TEST_MARKER: "relayed", LOOM_TEST_BIG_BYTES: "2097152" }),
+    cwd,
+  };
   try {
     // when
-    const first = await startHostCommandMcp("fixture", spec, cwd);
-    const second = await startHostCommandMcp("fixture", spec, cwd);
+    const first = await startHostCommandMcp("fixture", spec);
+    const second = await startHostCommandMcp("fixture", spec);
     try {
       const a = JSON.parse(await callTool(first, "whoami")) as Whoami;
       const b = JSON.parse(await callTool(second, "whoami")) as Whoami;
@@ -127,11 +113,7 @@ test("startHostCommandMcp: one process per start, serving tools until close ends
 
 test("startHostCommandMcp: a command that ignores EOF and SIGTERM is killed after the grace", async () => {
   // given
-  const worker = await startHostCommandMcp(
-    "fixture",
-    mkFixtureSpec({ LOOM_TEST_STUBBORN: "1" }),
-    Deno.cwd(),
-  );
+  const worker = await startHostCommandMcp("fixture", mkFixtureSpec({ LOOM_TEST_STUBBORN: "1" }));
   const who = JSON.parse(await callTool(worker, "whoami")) as Whoami;
   // when
   await worker.close();
@@ -141,11 +123,10 @@ test("startHostCommandMcp: a command that ignores EOF and SIGTERM is killed afte
 
 test("startHostCommandMcp: a request outliving the server's timeout_seconds fails, others are served", async () => {
   // given: timeout_seconds as the handle carries it, shorter than the slow tool
-  const worker = await startHostCommandMcp(
-    "fixture",
-    { ...mkFixtureSpec({ LOOM_TEST_SLOW_MS: "5000" }), requestTimeoutMs: 500 },
-    Deno.cwd(),
-  );
+  const worker = await startHostCommandMcp("fixture", {
+    ...mkFixtureSpec({ LOOM_TEST_SLOW_MS: "5000" }),
+    requestTimeoutMs: 500,
+  });
   try {
     if (worker.handle.spec.transport !== "http") throw new Error("expected an HTTP endpoint");
     const started = Date.now();
@@ -179,15 +160,11 @@ test("startHostCommandMcp: a command that fails names itself and its stderr", as
   };
   // when / then
   await assert.rejects(
-    startHostCommandMcp("browser", spec, Deno.cwd()),
+    startHostCommandMcp("browser", spec),
     /MCP server browser: host command .* failed to start for the VM session: (.|\n)*no browser at \/nowhere/,
   );
   await assert.rejects(
-    startHostCommandMcp(
-      "missing",
-      { transport: "stdio", command: "loom-test-no-such-command" },
-      Deno.cwd(),
-    ),
+    startHostCommandMcp("missing", { transport: "stdio", command: "loom-test-no-such-command" }),
     /MCP server missing: host command loom-test-no-such-command failed to start/,
   );
 });
@@ -220,7 +197,7 @@ test("startHostCommandMcp: a daemon that dies leaves no orphan behind", async ()
   );
 });
 
-test("withExternalMcp: closing a VM session ends its host command", async () => {
+test("withExternalMcp: a VM session's host command starts at home and ends with the session", async () => {
   // given
   const seen: CreateSessionOptions[] = [];
   const workers: ManagedMcp[] = [];
@@ -280,7 +257,9 @@ test("withExternalMcp: closing a VM session ends its host command", async () => 
     }),
   });
   const { result } = (await response.json()) as { result: { content: [{ text: string }] } };
-  const { pid } = JSON.parse(result.content[0].text) as { pid: number };
+  const { pid, cwd } = JSON.parse(result.content[0].text) as Whoami;
+  // The session's worktree (here, this checkout) is not where it runs.
+  assert.equal(cwd, await Deno.realPath(homedir()));
   // when
   await session.close();
   // then

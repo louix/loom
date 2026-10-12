@@ -87,21 +87,17 @@ const server = Deno.serve({ hostname: "127.0.0.1", port: 0, onListen() {} }, asy
   }
 });
 
-const host = await startHostCommandMcp(
-  "fixture",
-  {
-    transport: "stdio",
-    command: Deno.execPath(),
-    args: [
-      "run",
-      "--quiet",
-      "-A",
-      fileURLToPath(new URL("../test/fixtures/host-command-mcp.ts", import.meta.url)),
-    ],
-    env: { LOOM_TEST_MARKER: MARKER },
-  },
-  f.workspace,
-);
+const host = await startHostCommandMcp("fixture", {
+  transport: "stdio",
+  command: Deno.execPath(),
+  args: [
+    "run",
+    "--quiet",
+    "-A",
+    fileURLToPath(new URL("../test/fixtures/host-command-mcp.ts", import.meta.url)),
+  ],
+  env: { LOOM_TEST_MARKER: MARKER },
+});
 assert(host.handle.spec.transport === "http");
 const hostUrl = new URL(host.handle.spec.url);
 const guestUrl = new URL(hostUrl);

@@ -89,7 +89,7 @@
                     }
                   },
                   "cwd": {
-                    "description": "Working directory, absolute or ~/; omitted: the session's worktree.",
+                    "description": "Working directory, absolute or ~/; omitted: the session's worktree, or your home directory when relayed to a VM session.",
                     "type": "string"
                   }
                 },
@@ -193,7 +193,7 @@
             "maximum": 3600
           },
           "vm_sessions": {
-            "description": "Command sources only: refuse (the default) fails a VM session that selects it; relay runs the command on the host, one process per session, and relays it into the VM. The command still runs unconfined and the VM agent drives it — for a browser, its file access and scripts in your real browser. Without cwd it starts in the session's host worktree, which the agent can write, or else your home directory.",
+            "description": "Command sources only: refuse (the default) fails a VM session that selects it; relay runs the command on the host, one process per session, and relays it into the VM. The command still runs unconfined and the VM agent drives it — for a browser, its file access and scripts in your real browser. Without cwd it starts in your home directory, never the session's worktree; a cwd the VM agent can write is unsafe.",
             "type": "string",
             "enum": ["refuse", "relay"]
           },
@@ -1626,7 +1626,7 @@
                           }
                         },
                         "cwd": {
-                          "description": "Working directory, absolute or ~/; omitted: the session's worktree.",
+                          "description": "Working directory, absolute or ~/; omitted: the session's worktree, or your home directory when relayed to a VM session.",
                           "type": "string"
                         }
                       },
@@ -1730,7 +1730,7 @@
                   "maximum": 3600
                 },
                 "vm_sessions": {
-                  "description": "Command sources only: refuse (the default) fails a VM session that selects it; relay runs the command on the host, one process per session, and relays it into the VM. The command still runs unconfined and the VM agent drives it — for a browser, its file access and scripts in your real browser. Without cwd it starts in the session's host worktree, which the agent can write, or else your home directory.",
+                  "description": "Command sources only: refuse (the default) fails a VM session that selects it; relay runs the command on the host, one process per session, and relays it into the VM. The command still runs unconfined and the VM agent drives it — for a browser, its file access and scripts in your real browser. Without cwd it starts in your home directory, never the session's worktree; a cwd the VM agent can write is unsafe.",
                   "type": "string",
                   "enum": ["refuse", "relay"]
                 },

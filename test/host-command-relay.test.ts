@@ -150,7 +150,11 @@ test("a VM agent may select a relayed host command, which preflight still checks
 test("withExternalMcp: a VM session gets its own relayed endpoint, and refuses an unrelayed command", async () => {
   // given
   const seen: CreateSessionOptions[] = [];
-  const started: Array<{ name: string; cwd: string; requestTimeoutMs: number | undefined }> = [];
+  const started: Array<{
+    name: string;
+    cwd: string | undefined;
+    requestTimeoutMs: number | undefined;
+  }> = [];
   const closed: string[] = [];
   const provider = await withExternalMcp(
     async () => mkRecordingProvider(seen),
@@ -159,15 +163,21 @@ test("withExternalMcp: a VM session gets its own relayed endpoint, and refuses a
     undefined,
     "/repo",
     [],
-    async (name, spec, cwd) => {
-      started.push({ name, cwd, requestTimeoutMs: spec.requestTimeoutMs });
+    async (name, spec) => {
+      started.push({ name, cwd: spec.cwd, requestTimeoutMs: spec.requestTimeoutMs });
       return mkFakeRelay(4100 + started.length, closed);
     },
   );
   // when
   const first = await provider.createSession(mkSession("first", [browser]));
   const second = await provider.createSession(
-    mkSession("second", [{ ...browser, requestTimeoutMs: 120_000 }]),
+    mkSession("second", [
+      {
+        name: "browser",
+        requestTimeoutMs: 120_000,
+        spec: { transport: "stdio", command: "npx", cwd: "/srv/tools", vmSessions: "relay" },
+      },
+    ]),
   );
   // then: the agent sees the loopback endpoint the VM relays, one per session
   assert.deepEqual(
@@ -189,12 +199,14 @@ test("withExternalMcp: a VM session gets its own relayed endpoint, and refuses a
       ],
     ],
   );
-  // No host worktree at /nowhere: the command starts in the home directory.
+  // The session's worktree never reaches the command; a configured cwd does.
   assert.deepEqual(
-    started.map((s) => s.name),
-    ["browser", "browser"],
+    started.map((s) => [s.name, s.cwd]),
+    [
+      ["browser", undefined],
+      ["browser", "/srv/tools"],
+    ],
   );
-  assert.ok(started.every((s) => s.cwd !== "/nowhere/worktree"));
   // timeout_seconds reaches the session's bridge; unset, the bridge keeps its default.
   assert.deepEqual(
     started.map((s) => s.requestTimeoutMs),
