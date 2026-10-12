@@ -20,8 +20,10 @@ import {
   agentAuthor,
   LOOM_AGENTS_SERVER,
   SELF_PROFILE,
+  showAgentReportHead,
   supervisionDepth,
   type AgentProfileInfo,
+  type AgentReportEvent,
 } from "@loom/core/agents";
 import { isAgentTool, type AgentToolName } from "@loom/runtime/agent-tools";
 import {
@@ -850,7 +852,7 @@ export class AgentSupervision {
   async #report(
     child: SessionSnapshot,
     supervisorId: string,
-    event: string,
+    event: ReportedEvent,
     turn: number,
     read: (() => Promise<GitFacts | null>) | undefined,
   ): Promise<void> {
@@ -872,7 +874,11 @@ export class AgentSupervision {
       ? `Its workspace: ${gitSummary(git)}${git.dirty ? "" : ", nothing uncommitted"}.`
       : null;
     const body = [
-      `[from your sub-agent ${short(child.id)} "${child.title ?? ""}" (profile ${child.agentProfile ?? SELF_PROFILE})] It ${event}.`,
+      showAgentReportHead(
+        { id: child.id, title: child.title ?? null, profile: child.agentProfile ?? SELF_PROFILE },
+        event.kind,
+        event.cause,
+      ),
       ...(workspace ? [workspace] : []),
       ...(firstLine ? [`Summary${summary.cut ? " (truncated)" : ""}: ${summary.text}`] : []),
       `For full details: run \`agent_read\` with id \`${child.id}\``,
@@ -891,14 +897,19 @@ export class AgentSupervision {
   }
 }
 
+interface ReportedEvent {
+  readonly kind: AgentReportEvent;
+  readonly cause: string;
+}
+
 /** The first line of a report: what the settled state says happened. */
-const reportedEvent = (state: SessionState): string => {
+const reportedEvent = (state: SessionState): ReportedEvent => {
   switch (state.kind) {
     case "error":
-      return `failed: ${state.message}`;
+      return { kind: "failed", cause: `: ${state.message}` };
     case "interrupted":
-      return `was interrupted (${state.reason ?? state.by})`;
+      return { kind: "interrupted", cause: ` (${state.reason ?? state.by})` };
     default:
-      return "finished a turn";
+      return { kind: "finished", cause: "" };
   }
 };

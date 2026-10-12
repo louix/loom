@@ -123,7 +123,12 @@ import {
   type AgentSessionPlanned,
   type ChildStart,
 } from "./agents.ts";
-import { agentAuthor, SELF_PROFILE, type ChildrenOnClose } from "@loom/core/agents";
+import {
+  agentAuthor,
+  ARCHIVE_REMINDER_AUTHOR,
+  SELF_PROFILE,
+  type ChildrenOnClose,
+} from "@loom/core/agents";
 import { archiveReminder, showArchiveReminder } from "./archive-reminder.ts";
 import { type QueueDelivery, type QueueHoldCause } from "@loom/core/message-queue";
 import type { Sender } from "./queue-machine.ts";
@@ -3109,6 +3114,7 @@ export class Daemon {
         ts: Date.now(),
         text,
         injected: false,
+        author: ARCHIVE_REMINDER_AUTHOR,
       });
       await this.#sessions.send(id, text, { automated: true }).catch((err: unknown) => {
         // Not delivered: named again at a later turn end.

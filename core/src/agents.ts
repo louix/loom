@@ -22,6 +22,55 @@ export const agentAuthor = (childId: string): string => `agent:${childId}`;
 export const isAgentAuthor = (author: string | undefined): boolean =>
   author?.startsWith("agent:") ?? false;
 
+/** What a child's report says happened to it. */
+export type AgentReportEvent = "finished" | "failed" | "interrupted";
+
+/** How a report words each event, after "It "; failed and interrupted add their cause. */
+export const AGENT_REPORT_WORDING: Record<AgentReportEvent, string> = {
+  finished: "finished a turn",
+  failed: "failed",
+  interrupted: "was interrupted",
+};
+
+/** A report's first line; `cause` is what follows the event's wording. */
+export const showAgentReportHead = (
+  child: { id: string; title: string | null; profile: string },
+  event: AgentReportEvent,
+  cause: string,
+): string =>
+  `[from your sub-agent ${child.id.slice(0, 8)} "${child.title ?? ""}" (profile ${child.profile})] It ${AGENT_REPORT_WORDING[event]}${cause}.`;
+
+const AGENT_REPORT_HEAD = new RegExp(
+  `^\\[from your sub-agent (\\S+) "(.*)" \\(profile [^)\\n]*\\)\\] It (${Object.values(AGENT_REPORT_WORDING).join("|")})`,
+);
+
+/** A report's child (short id, title) and event, read back from its first line; null for any other text. */
+export const parseAgentReportHead = (
+  text: string,
+): { id: string; title: string; event: AgentReportEvent } | null => {
+  const m = AGENT_REPORT_HEAD.exec(text);
+  const [, id, title, wording] = m ?? [];
+  const event = (Object.keys(AGENT_REPORT_WORDING) as AgentReportEvent[]).find(
+    (e) => AGENT_REPORT_WORDING[e] === wording,
+  );
+  return id === undefined || title === undefined || event === undefined
+    ? null
+    : { id, title, event };
+};
+
+/** The author of the archive reminder, Loom's message to a supervisor about its finished children. */
+export const ARCHIVE_REMINDER_AUTHOR = "loom:archive-reminder";
+
+/** The reminder's opening words, up to the colon that introduces the children. */
+export const showArchiveReminderLead = (count: number): string =>
+  `[loom] You have ${count} ${count === 1 ? "sub-agent that has" : "sub-agents that have"} finished and ${count === 1 ? "is" : "are"} not archived`;
+
+/** How many children a reminder names, read back from its lead; null for any other text. */
+export const parseArchiveReminderCount = (text: string): number | null => {
+  const m = /^\[loom\] You have (\d+) sub-agents? that ha(?:s|ve) finished and /.exec(text);
+  return m?.[1] === undefined ? null : Number(m[1]);
+};
+
 /** A profile as clients see it — what choosing one sets, never its prompt. */
 export const agentProfileInfoSchema = z.object({
   name: z.string(),

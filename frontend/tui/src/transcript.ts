@@ -14,7 +14,12 @@ import type { TaskTailView } from "./task-tail.ts";
 import { markdownText, plainText } from "./markdown.ts";
 import type { TextDocument, TextSpan } from "./text-layout.ts";
 import { absurd } from "@loom/core/absurd";
-import { isAgentAuthor } from "@loom/core/agents";
+import {
+  ARCHIVE_REMINDER_AUTHOR,
+  isAgentAuthor,
+  parseAgentReportHead,
+  parseArchiveReminderCount,
+} from "@loom/core/agents";
 import type { BackgroundTaskEndedEvent, HarnessEvent } from "@loom/core/events";
 import type { QueueDelivery, QueueEntryView } from "@loom/core/message-queue";
 import { sessionStateLabel } from "@loom/core/session-state";
@@ -1006,6 +1011,38 @@ export const olderFailed = (tr: Transcript, sessionId: string, error: string): T
 };
 
 /**
+ * A notification from a child, or Loom's archive reminder, as the one-line
+ * marker `chat` shows in its place; any other line as it is.
+ */
+export const agentMarker = (line: LogLine): LogLine => {
+  if (line.kind !== "user_message") return line;
+  // `text` is cut to one line; the head of a report with a long title is not whole in it.
+  const body = line.full ?? line.text;
+  const marker = (text: string, tone: Tone): LogLine => ({
+    id: line.id,
+    sessionId: line.sessionId,
+    kind: line.kind,
+    glyph: "⤴",
+    text,
+    tone,
+    ts: line.ts,
+  });
+  if (line.author === ARCHIVE_REMINDER_AUTHOR) {
+    const n = parseArchiveReminderCount(body);
+    return n === null
+      ? marker("finished sub-agents not archived", "dim")
+      : marker(`${n} finished sub-agent${n === 1 ? "" : "s"} not archived`, "dim");
+  }
+  if (!isAgentAuthor(line.author)) return line;
+  const report = parseAgentReportHead(body);
+  if (report === null) return marker("sub-agent reported", "dim");
+  return marker(
+    `sub-agent ${report.event} · ${oneLine(report.title === "" ? report.id : report.title, 80)}`,
+    report.event === "failed" ? "bad" : "dim",
+  );
+};
+
+/**
  * What the event pane shows, per {@link LogFilter}. A focused child (fleet
  * drill-down) narrows the session's log to the events that child produced —
  * the `agentId` tag the adapter stamps on sub-agent frames — and the
@@ -1014,9 +1051,10 @@ export const olderFailed = (tr: Transcript, sessionId: string, error: string): T
  * child-tagged frames are hidden: they live in the child's subtree, and the
  * main stream keeps only the ⤷/⤴ markers that announce a sub-agent.
  *
- * `chat` also hides the notifications a Loom agent's children send it
- * (queued or taken up): they are for the agent, and the fleet already shows
- * how each child is doing.
+ * `chat` also shrinks the notifications a Loom agent's children send it,
+ * and Loom's archive reminder, to one dim marker line each (`agentMarker`);
+ * while they are still queued it hides them, since the marker comes when
+ * they are taken up. The fleet already shows how each child is doing.
  */
 export const filterLog = (
   lines: readonly LogLine[],
@@ -1028,7 +1066,9 @@ export const filterLog = (
     : lines.filter((l) => !l.agentId);
   switch (filter) {
     case "chat":
-      return condenseLog(base.filter((l) => !isAgentAuthor(l.author)));
+      return condenseLog(
+        base.flatMap((l) => (isAgentAuthor(l.author) && l.kind === "echo" ? [] : [agentMarker(l)])),
+      );
     case "chat_and_tools":
       return condenseToolResults(base);
     case "everything":

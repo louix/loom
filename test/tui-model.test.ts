@@ -1041,7 +1041,7 @@ test("chat view collapses tool traffic and thinking; chat_and_tools keeps calls 
   assert.equal(visibleLog(s).length, 8);
 });
 
-test("chat view hides a child's notifications, taken up or queued; the other filters show them", () => {
+test("chat view shrinks a child's notification to a marker once taken up and hides it while queued; the other filters show it in full", () => {
   // The queue's markers count by wait: the boundary one counts only the
   // child's notification, so chat hides it; the other counts the user's.
   const note = '[from your sub-agent kid12345 "Kid" (profile self)] It finished a turn.';
@@ -1070,6 +1070,7 @@ test("chat view hides a child's notifications, taken up or queued; the other fil
     visibleLog(s).map((l) => l.text),
     [
       "start the kids",
+      "sub-agent finished · Kid",
       "kid 1 is done",
       "1 message queued for when the agent finishes. press q to view/manage.",
     ],

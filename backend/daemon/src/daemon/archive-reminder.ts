@@ -4,6 +4,7 @@
  * children that have finished and are not archived, each child at most once.
  * The decision is pure; the daemon reads the facts and sends the message.
  */
+import { showArchiveReminderLead } from "@loom/core/agents";
 import type { SessionState } from "@loom/core/session-state";
 import type { GitFacts } from "@loom/core/wire";
 
@@ -94,9 +95,8 @@ export const showArchiveReminder = (
     const about = [c.finished, ...(facts ? [showWorkspace(facts)] : [])].join(", ");
     return `${c.id.slice(0, 8)} "${c.title ?? ""}" (${about})`;
   });
-  const agents = children.length === 1 ? "sub-agent that has" : "sub-agents that have";
   return (
-    `[loom] You have ${children.length} ${agents} finished and ${children.length === 1 ? "is" : "are"} not archived: ` +
+    `${showArchiveReminderLead(children.length)}: ` +
     `${named.join("; ")}. Archive each with agent_stop once its work is merged or no longer ` +
     "needed, or keep it if you will message it again. You won't be reminded about these again."
   );
