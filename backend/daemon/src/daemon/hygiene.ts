@@ -1,14 +1,12 @@
 import { spawnSync } from "node:child_process";
-import { readdirSync, rmSync, statSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import type { Logger } from "@loom/core/logger";
 import type { LoomPaths } from "@loom/core/paths";
 import { pidAlive } from "@loom/core/daemon-endpoint";
+import { clearStaleIndexLock, showIndexLockCheck } from "@loom/core/git-lock";
 import type { ChildStore, MidRunSession } from "../store/sessions.ts";
 import type { Registry } from "./registry.ts";
-
-/** A git `index.lock` younger than this may still belong to a live operation. */
-const LOCK_STALE_MS = 30_000;
 
 export interface HygieneInput {
   paths: LoomPaths;
@@ -35,7 +33,9 @@ export interface HygieneReport {
  *     re-drives the actively-working ones (blocked ones stay parked)
  *   - child processes (Claude CLI, MCP servers) from a prior daemon epoch are
  *     signalled to exit and their bookkeeping rows dropped
- *   - stale git index locks in current and legacy tree directories are removed
+ *   - each worktree's `index.lock`, in its own gitdir, is removed when old and
+ *     unused (core/src/git-lock.ts), in the worktree directory and the legacy
+ *     `.loom/trees`; then `git worktree prune` drops vanished worktrees
  */
 export const runStartupHygiene = (input: HygieneInput): HygieneReport => {
   const { paths, registry, children, epoch, log } = input;
@@ -93,51 +93,38 @@ const reapChildren = (children: ChildStore, epoch: string, log: Logger): number 
   return reaped;
 };
 
+/** Paths of the stale `index.lock`s removed from the session worktrees. */
+const clearWorktreeLocks = (paths: LoomPaths, log: Logger): string[] => {
+  const clearedLocks: string[] = [];
+  for (const trees of new Set([paths.trees, join(paths.legacy.dir, "trees")])) {
+    let entries: string[];
+    try {
+      entries = readdirSync(trees);
+    } catch {
+      continue;
+    }
+    for (const name of entries) {
+      const treeDir = join(trees, name);
+      // Without its own `.git`, git would walk up to the repository holding a
+      // legacy `.loom/trees` and judge the main checkout's lock instead.
+      if (!existsSync(join(treeDir, ".git"))) continue;
+      const check = clearStaleIndexLock(treeDir);
+      if (check.kind === "removed") {
+        clearedLocks.push(check.path);
+        log.warn("cleared stale git lock", { lock: check.path });
+      } else if (check.kind !== "absent") {
+        log.warn("left a git lock in place", { treeDir, detail: showIndexLockCheck(check) });
+      }
+    }
+  }
+  return clearedLocks;
+};
+
 const tidyWorktrees = (
   paths: LoomPaths,
   log: Logger,
 ): { clearedLocks: string[]; worktreePruned: boolean } => {
-  const clearedLocks: string[] = [];
-  const trees = paths.trees;
-  let entries: string[] = [];
-  try {
-    entries = readdirSync(trees);
-  } catch {
-    entries = [];
-  }
-  for (const name of entries) {
-    const treeDir = join(trees, name);
-    try {
-      if (!statSync(treeDir).isDirectory()) continue;
-    } catch {
-      continue;
-    }
-    // A worktree's .git is a file pointing at the real gitdir; the index.lock
-    // that a killed git process leaves behind lives in that gitdir. Check the
-    // common in-tree location too. Only clear a lock that's been sitting for a
-    // while — a fresh one may belong to a git command an operator is running
-    // in the worktree right now, and yanking it mid-operation corrupts the index.
-    for (const lock of [join(treeDir, ".git", "index.lock"), join(treeDir, "index.lock")]) {
-      let ageMs = Infinity;
-      try {
-        ageMs = Date.now() - statSync(lock).mtimeMs;
-      } catch {
-        continue; // not there
-      }
-      if (ageMs < LOCK_STALE_MS) {
-        log.debug("leaving a recent git lock alone", { lock, ageMs });
-        continue;
-      }
-      try {
-        rmSync(lock);
-        clearedLocks.push(lock);
-        log.warn("cleared stale git lock", { lock });
-      } catch {
-        /* leave it; git will complain later, loudly */
-      }
-    }
-  }
-
+  const clearedLocks = clearWorktreeLocks(paths, log);
   let worktreePruned = false;
   const res = spawnSync("git", ["-C", paths.repoRoot, "worktree", "prune"], {
     encoding: "utf8",
