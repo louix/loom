@@ -640,16 +640,18 @@ const transition = (m: QueueMachine, ev: QueueEvent, world: World): Draft => {
       const attached: QueueMachine = { ...m, delivery: { kind: "ready" }, stop: { kind: "none" } };
       if (m.delivery.kind !== "handing_over") return done(attached);
       // The previous adapter's trip is cut off, and what it reports later is
-      // ignored: the entry on the wire may have reached that adapter, the
-      // rest never went.
-      const { ids, at } = m.delivery;
+      // ignored: the entry on the wire may have reached that adapter, and so
+      // may any handed over that it had not reported taken (with receipts);
+      // the rest never went.
+      const unsent = m.delivery.ids.slice(m.delivery.at + 1);
+      const handed = deliveringIds(slots, true).filter((id) => !unsent.includes(id));
       const held = writeHold(attached, loomOn(m.hold, "rejected"), {
         reasserted: false,
         keepForced: false,
       });
       return done(held.machine, [
-        { kind: "mark_uncertain", ids: ids.slice(at, at + 1) },
-        { kind: "requeue", ids: ids.slice(at + 1) },
+        { kind: "mark_uncertain", ids: handed },
+        { kind: "requeue", ids: unsent },
         ...held.effects,
         {
           kind: "warn",

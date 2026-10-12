@@ -615,6 +615,33 @@ describe("hand-over", () => {
     assert.equal(has(late.all, "consume"), false);
   });
 
+  test("a new adapter attached mid-trip leaves every handed-over entry not yet taken uncertain", () => {
+    // given: with receipts, "a" went and was not reported taken; "b" is on the wire; "c" not yet sent
+    const three = mkWorld([mkSlot("a"), mkSlot("b"), mkSlot("c")]);
+    const s = run(mkMachine(), [{ kind: "touched" }], three);
+    const o = s.machine.ops;
+    const handed = mkWorld([
+      mkSlot("a", { state: "delivering" }),
+      mkSlot("b", { state: "delivering" }),
+      mkSlot("c", { state: "delivering" }),
+    ]);
+    const gate = run(s.machine, [{ kind: "gate_reached", op: o }], three);
+    const trip = run(
+      gate.machine,
+      [{ kind: "sent", op: o, entryId: "a", outcome: { kind: "ok" } }],
+      handed,
+    );
+    assert.equal(has(trip.all, "consume"), false);
+    assert.equal(trip.machine.delivery.kind === "handing_over" && trip.machine.delivery.at, 1);
+    // when
+    const { effects } = run(trip.machine, [{ kind: "attached" }], handed);
+    // then
+    assert.deepEqual(effects.slice(0, 2), [
+      { kind: "mark_uncertain", ids: ["a", "b"] },
+      { kind: "requeue", ids: ["c"] },
+    ]);
+  });
+
   test("an adapter attached with no trip under way changes no entry", () => {
     const { machine, effects } = run(scheduled.machine, [{ kind: "attached" }], world);
     assert.deepEqual(effects, []);
