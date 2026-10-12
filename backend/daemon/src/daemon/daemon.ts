@@ -2552,7 +2552,7 @@ export class Daemon {
     const operation = Promise.resolve()
       .then(async () => {
         await this.#preflightTools(row.provider, row.isolation);
-        return this.#doReviveSession(id);
+        return this.#doReviveSession(id, planned.plan);
       })
       .catch((error: unknown) => {
         if (this.#registry.get(id)?.status.kind === "starting")
@@ -2573,19 +2573,23 @@ export class Daemon {
     return operation;
   }
 
-  async #doReviveSession(id: string): Promise<SessionSnapshot> {
+  async #doReviveSession(id: string, agent: AgentSessionPlan): Promise<SessionSnapshot> {
     // Held for the whole rebuild: the adapter is constructed from the row's
     // mode / model / effort, so a configuration command must not slip into the
     // window where the session still looks inactive — it would write the row
     // only, against an adapter already built from the pre-command values.
-    return this.#queue.run(id, () => this.#reviveLocked(id));
+    return this.#queue.run(id, () => this.#reviveLocked(id, agent));
   }
 
-  async #reviveLocked(id: string, startReason = "resume"): Promise<SessionSnapshot> {
+  /** `agent` is planned by the caller, before anything changes: a refused
+   *  session keeps its row and its archive. */
+  async #reviveLocked(
+    id: string,
+    agent: AgentSessionPlan,
+    startReason = "resume",
+  ): Promise<SessionSnapshot> {
     const row = this.#registry.get(id);
     if (!row) throw new RpcError("not_found", `no such session: ${id}`);
-    // Before anything changes: a refused session keeps its row and its archive.
-    const agent = this.#agentPlan(id);
     if (this.#sessions.isEnded(id)) await this.#sessions.close(id);
     // An archived (`done`) session had its worktree reclaimed but its branch and
     // transcript kept — check the branch back out into a fresh tree and resume
@@ -3853,10 +3857,11 @@ export class Daemon {
               this.#stopping ||
               this.#shells.has(id) ||
               !this.#sessions.canRefresh(id) ||
-              this.#hooks.isRunning(id) ||
-              this.#agentPlanned(id).kind === "refused"
+              this.#hooks.isRunning(id)
             )
               return this.#registry.mustGet(id);
+            const planned = this.#agentPlanned(id);
+            if (planned.kind === "refused") return this.#registry.mustGet(id);
             const warm = this.#sessions.keepWarm(id);
             const stopped = this.#sessions.suspendIdle(id);
             this.#registry.setStatus(id, stateStarting, "updating environment");
@@ -3869,7 +3874,7 @@ export class Daemon {
             this.#publishState(id);
             await stopped;
             if (this.#stopping) return this.#registry.mustGet(id);
-            const snap = await this.#reviveLocked(id, "refresh");
+            const snap = await this.#reviveLocked(id, planned.plan, "refresh");
             if (warm) this.#sessions.setKeepWarm(id, true);
             return snap;
           })
