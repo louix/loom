@@ -295,7 +295,7 @@ describe("tui-render", { concurrency: 4 }, () => {
 }`;
 
   test("⇧⇥ cycles the mode and ⌥m opens the model picker on the selected session", async () => {
-    const { connect, cleanup } = await harness({ config: OAI_CFG });
+    const { h, connect, cleanup } = await harness({ config: OAI_CFG });
     const client = await connect();
     const snap = await client.request<SessionSnapshot>("session.createStub", {
       prompt: "a task",
@@ -304,17 +304,17 @@ describe("tui-render", { concurrency: 4 }, () => {
     });
     const { stdout, stdin, app } = mount(client);
     try {
-      await delay(180);
+      await waitFor(stdout, /\[manual\]/);
       assert.match(stdout.last, /\[manual\]/, "Detail shows the mode as a bracketed chip");
 
       stdin.feed("\x1b[Z"); // ⇧⇥ — cycle the permission mode
-      await delay(560); // clear the 500ms setMode debounce
+      await waitFor(stdout, () => h.daemon.registry.get(snap.id)?.mode === "plan"); // past the 500ms setMode debounce
       const after = await client.request<SessionSnapshot[]>("session.list");
       assert.equal(after.find((x) => x.id === snap.id)?.mode, "plan", "⇧⇥ cycled manual → plan");
       assert.match(stdout.last, /\[plan\]/, "the Detail chip follows the change");
 
       stdin.feed("\x1bm"); // ⌥m — the model switcher (M is retired)
-      await delay(140);
+      await waitFor(stdout, /model · oai/i);
       assert.match(stdout.last, /model · oai/i, "⌥m opened the model picker");
       assert.match(stdout.last, /m1/);
     } finally {
@@ -337,7 +337,7 @@ describe("tui-render", { concurrency: 4 }, () => {
     try {
       await delay(180);
       stdin.feed("\x1bt"); // ⌥t — no "oai" model advertises thinking-effort support
-      await delay(140);
+      await waitFor(stdout, /oai\/m1 has no thinking-effort control/i);
       assert.match(stdout.last, /oai\/m1 has no thinking-effort control/i);
     } finally {
       app.unmount();
@@ -352,7 +352,7 @@ describe("tui-render", { concurrency: 4 }, () => {
       s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").replace(/\x1b\][^\x07]*\x07/g, "");
     /* oxlint-enable no-control-regex */
 
-    const { connect, cleanup } = await harness();
+    const { h, connect, cleanup } = await harness();
     const client = await connect();
     await client.request<SessionSnapshot>("session.createStub", {
       prompt: "the other task",
@@ -390,7 +390,7 @@ describe("tui-render", { concurrency: 4 }, () => {
       await waitFor(stdout, /\[manual\]/);
       click(at("[manual]"));
       await waitFor(stdout, /\[plan\]/);
-      await delay(560); // clear the 500ms setMode debounce
+      await waitFor(stdout, () => h.daemon.registry.get(target.id)?.mode === "plan"); // past the 500ms setMode debounce
       const after = await client.request<SessionSnapshot[]>("session.list");
       assert.equal(
         after.find((x) => x.id === target.id)?.mode,
@@ -411,7 +411,7 @@ describe("tui-render", { concurrency: 4 }, () => {
   });
 
   test("⇧⇥ / ⌥m re-mode and re-model the target session from inside the send prompt", async () => {
-    const { connect, cleanup } = await harness({ config: OAI_CFG });
+    const { h, connect, cleanup } = await harness({ config: OAI_CFG });
     const client = await connect();
     const snap = await client.request<SessionSnapshot>("session.createStub", {
       prompt: "a task",
@@ -424,13 +424,13 @@ describe("tui-render", { concurrency: 4 }, () => {
       stdin.feed("\r"); // Enter opens the send prompt
       await delay(100);
       stdin.feed("switch to plan first");
-      await delay(80);
+      await waitFor(stdout, /\[manual\]/);
       assert.match(stdout.last, /\[manual\]/, "the send prompt shows the session's current mode");
 
       stdin.feed("\x1b[Z"); // ⇧⇥ — cycle the live session's mode, message untouched
-      await delay(60); // still well inside the 500ms debounce
+      await waitFor(stdout, /\[plan\]/); // still well inside the 500ms debounce
       assert.match(stdout.last, /\[plan\]/, "the chip shows the selected mode immediately");
-      await delay(560); // clear the 500ms setMode debounce
+      await waitFor(stdout, () => h.daemon.registry.get(snap.id)?.mode === "plan"); // past the 500ms setMode debounce
       const after = await client.request<SessionSnapshot[]>("session.list");
       assert.equal(
         after.find((x) => x.id === snap.id)?.mode,
@@ -441,7 +441,7 @@ describe("tui-render", { concurrency: 4 }, () => {
       assert.match(stdout.last, /switch to plan first/, "the half-typed message survived");
 
       stdin.feed("\x1bm"); // ⌥m — model picker for the target
-      await delay(140);
+      await waitFor(stdout, /model · oai/i);
       assert.match(stdout.last, /model · oai/i, "⌥m opened the model picker for the target");
 
       stdin.feed("\r"); // pick m1 → back to the send prompt with the draft
@@ -472,13 +472,13 @@ describe("tui-render", { concurrency: 4 }, () => {
       stdin.feed("\r"); // open the send prompt
       await delay(100);
       stdin.feed("alpha beta gamma delta");
-      await delay(80);
+      await waitFor(stdout, /alpha beta gamma delta/);
       assert.match(stdout.last, /alpha beta gamma delta/);
       // Three ⌃w arriving as one coalesced chunk — how Ink hands over a key held
       // through a render lag. Without the replay, parseKeypress drops the whole
       // "\x17\x17\x17" run and nothing happens after the first word.
       stdin.feed("\x17\x17\x17");
-      await delay(80);
+      await waitFor(stdout, /▍ alpha$/m);
       assert.match(stdout.last, /▍ alpha$/m, "all three ⌃w landed — only the first word is left");
       assert.doesNotMatch(stdout.last, /beta|gamma|delta/);
     } finally {
@@ -507,7 +507,7 @@ describe("tui-render", { concurrency: 4 }, () => {
   });
 
   test("X deletes the selected session behind a confirm", async () => {
-    const { connect, cleanup } = await harness();
+    const { h, connect, cleanup } = await harness();
     const client = await connect();
     const s = await client.request<SessionSnapshot>("session.createStub", {
       prompt: "throwaway",
@@ -521,7 +521,7 @@ describe("tui-render", { concurrency: 4 }, () => {
       assert.doesNotMatch(stdout.last, /delete/);
 
       stdin.feed("X");
-      await delay(100);
+      await waitFor(stdout, /Delete session/);
       assert.match(stdout.last, /Delete session/);
 
       stdin.feed(ESC);
@@ -534,7 +534,7 @@ describe("tui-render", { concurrency: 4 }, () => {
       assert.doesNotMatch(stdout.last, /(?:keep|delete) branch/i);
 
       stdin.feed("\r"); // confirm
-      await delay(150);
+      await waitFor(stdout, () => !h.daemon.registry.get(s.id));
       const list = await client.request<SessionSnapshot[]>("session.list");
       assert.ok(!list.some((x) => x.id === s.id), "the row is gone");
     } finally {
@@ -557,7 +557,7 @@ describe("tui-render", { concurrency: 4 }, () => {
     try {
       await delay(200);
       stdin.feed("X");
-      await delay(100);
+      await waitFor(stdout, /Delete session/);
       assert.match(stdout.last, /Delete session/);
       assert.match(stdout.last, /Worktree will be removed\./);
       assert.match(stdout.last, /Session history will be permanently deleted\./);
@@ -565,13 +565,13 @@ describe("tui-render", { concurrency: 4 }, () => {
       assert.match(stdout.last, /b\s+toggle branch/i);
 
       stdin.feed("b"); // keep the branch
-      await delay(80);
+      await waitFor(stdout, /\[ \] Also delete branch/);
       assert.match(stdout.last, /\[ \] Also delete branch/);
       assert.match(stdout.last, /b\s+toggle branch/i);
       assert.match(stdout.last, /Session history will be permanently deleted\./);
 
       stdin.feed("\r"); // confirm
-      await delay(200);
+      await waitFor(stdout, () => !h.daemon.registry.get(s.id));
       const list = await client.request<SessionSnapshot[]>("session.list");
       assert.ok(!list.some((x) => x.id === s.id));
       const branches = execFileSync("git", ["-C", h.repoRoot, "branch", "--list", branch], {
@@ -586,7 +586,7 @@ describe("tui-render", { concurrency: 4 }, () => {
   });
 
   test("Space opens the command palette; a filtered pick runs the action", async () => {
-    const { connect, cleanup } = await harness();
+    const { h, connect, cleanup } = await harness();
     const client = await connect();
     const s = await client.request<SessionSnapshot>("session.createStub", {
       prompt: "rename me via the palette",
@@ -597,7 +597,7 @@ describe("tui-render", { concurrency: 4 }, () => {
     try {
       await delay(160);
       stdin.feed(" "); // leader
-      await delay(100);
+      await waitFor(stdout, /COMMANDS/);
       assert.match(stdout.last, /COMMANDS/);
       assert.match(stdout.last, /rename/);
       assert.ok(stdout.last.includes("─".repeat(stdout.columns - 6)), "menu fills terminal width");
@@ -605,7 +605,7 @@ describe("tui-render", { concurrency: 4 }, () => {
       stdin.feed("rename");
       await delay(80);
       stdin.feed("\r"); // run it
-      await delay(120);
+      await waitFor(stdout, (text) => /rename/.test(text) && !/COMMANDS/.test(text));
       assert.match(stdout.last, /rename/); // the rename prompt is now open
       assert.doesNotMatch(stdout.last, /COMMANDS/);
 
@@ -614,7 +614,7 @@ describe("tui-render", { concurrency: 4 }, () => {
       stdin.feed("palette win");
       await delay(80);
       stdin.feed("\r");
-      await delay(200);
+      await waitFor(stdout, () => h.daemon.registry.get(s.id)?.title === "palette win");
       const after = await client.request<SessionSnapshot>("session.get", { id: s.id });
       assert.equal(after.title, "palette win");
     } finally {
@@ -987,7 +987,7 @@ describe("tui-render", { concurrency: 4 }, () => {
       stdin.feed("and another");
       await delay(80);
       stdin.feed("\x1bq"); // ⌥q — queue for turn end
-      await delay(120);
+      await waitFor(stdout, /▸ 1 queued/);
       assert.match(stdout.last, /▸ 1 queued/, "the Detail pane shows the queue");
 
       fs?.finishTurn(); // -> idle: the queued message goes
@@ -1019,7 +1019,7 @@ describe("tui-render", { concurrency: 4 }, () => {
       stdin.feed("later note");
       await delay(80);
       stdin.feed("\x1bq"); // ⌥q — queue for turn end
-      await delay(150);
+      await waitFor(stdout, /▸ 1 queued/);
       assert.match(stdout.last, /▸ 1 queued/);
 
       fs?.fail("upstream exploded"); // -> error, never goes idle
@@ -1034,7 +1034,7 @@ describe("tui-render", { concurrency: 4 }, () => {
   });
 
   test("`e` renames the selected session via session.setTitle", async () => {
-    const { connect, cleanup } = await harness();
+    const { h, connect, cleanup } = await harness();
     const client = await connect();
     const s = await client.request<SessionSnapshot>("session.createStub", {
       prompt: "old name",
@@ -1045,14 +1045,14 @@ describe("tui-render", { concurrency: 4 }, () => {
     try {
       await delay(160);
       stdin.feed("e");
-      await delay(100);
+      await waitFor(stdout, /rename/);
       assert.match(stdout.last, /rename/);
       stdin.feed("\x15"); // ⌃u clears the prefilled title in one keystroke
       await delay(40);
       stdin.feed("shiny new name");
       await delay(120);
       stdin.feed("\r");
-      await delay(200);
+      await waitFor(stdout, () => h.daemon.registry.get(s.id)?.title === "shiny new name");
       const after = await client.request<SessionSnapshot>("session.get", { id: s.id });
       assert.equal(after.title, "shiny new name");
     } finally {
@@ -1080,7 +1080,7 @@ describe("tui-render", { concurrency: 4 }, () => {
         tool: "Bash",
         input: { command: "npm publish" },
       });
-      await delay(200);
+      await waitFor(stdout, /PERMISSION — Bash/);
       assert.match(stdout.last, /PERMISSION — Bash/);
       assert.match(stdout.last, /npm publish/);
     } finally {
@@ -1108,7 +1108,7 @@ describe("tui-render", { concurrency: 4 }, () => {
     try {
       await delay(150);
       fs?.emit({ type: "plan_review", id: "pr-old", plan: "1. long-approved step" });
-      await delay(150);
+      await waitFor(stdout, /PLAN REVIEW/);
       await client.request("session.respondPlan", {
         id: s.id,
         requestId: "pr-old",
@@ -1120,7 +1120,7 @@ describe("tui-render", { concurrency: 4 }, () => {
         tool: "Bash",
         input: { command: "npm publish" },
       });
-      await delay(250);
+      await waitFor(stdout, /PERMISSION — Bash/);
       assert.match(stdout.last, /PERMISSION — Bash/);
       assert.match(stdout.last, /npm publish/);
       assert.doesNotMatch(stdout.last, /PLAN REVIEW/);
@@ -1150,12 +1150,12 @@ describe("tui-render", { concurrency: 4 }, () => {
         id: "pr1",
         plan: "1. carve the seam\n2. wire the RPC\n3. paint the overlay",
       });
-      await delay(200);
+      await waitFor(stdout, /PLAN REVIEW/);
       // the request panel flags it
       assert.match(stdout.last, /PLAN REVIEW/);
 
       stdin.feed("a"); // open the overlay
-      await delay(150);
+      await waitFor(stdout, /wire the RPC/);
       assert.match(stdout.last, /wire the RPC/);
       assert.match(stdout.last, /implement fresh/);
       assert.match(stdout.last, /42% context/, "the session's context meter");
@@ -1163,13 +1163,13 @@ describe("tui-render", { concurrency: 4 }, () => {
 
       // ⇧⇥ cycles the mode the implementation will run in.
       stdin.feed("\x1b[Z");
-      await delay(120);
+      await waitFor(stdout, /implementation mode \[auto\]/);
       assert.match(stdout.last, /implementation mode \[auto\]/);
 
       // `d` opens the discuss sub-prompt; esc backs out to the plan overlay,
       // NOT to browse (the daemon is still blocked on the decision).
       stdin.feed("d");
-      await delay(120);
+      await waitFor(stdout, /discuss/i);
       assert.match(stdout.last, /discuss/i);
       stdin.feed("\x1b"); // esc
       await delay(120);
@@ -1177,7 +1177,7 @@ describe("tui-render", { concurrency: 4 }, () => {
       assert.equal(fs?.planResponses.length, 0, "nothing was sent");
 
       stdin.feed("i"); // implement — in the mode `m` left selected
-      await delay(200);
+      await waitFor(stdout, () => fs?.planResponses.length === 1);
       assert.equal(fs?.planResponses.length, 1);
       assert.deepEqual(fs?.planResponses[0]?.decision, { action: "implement", mode: "auto" });
     } finally {
@@ -1201,12 +1201,12 @@ describe("tui-render", { concurrency: 4 }, () => {
       fs?.finishTurn({ contextUsed: 10_000 });
       // Codex offers the execution choice its native Plan kept.
       fs?.emit({ type: "plan_review", id: "pr1", plan: "1. go", implementMode: "auto" });
-      await delay(200);
+      await waitFor(stdout, /PLAN REVIEW/);
       stdin.feed("a");
-      await delay(150);
+      await waitFor(stdout, /implementation mode \[auto\]/);
       assert.match(stdout.last, /implementation mode \[auto\]/);
       stdin.feed("i");
-      await delay(200);
+      await waitFor(stdout, () => fs?.planResponses.length === 1);
       assert.deepEqual(fs?.planResponses[0]?.decision, { action: "implement", mode: "auto" });
     } finally {
       app.unmount();
@@ -1228,22 +1228,22 @@ describe("tui-render", { concurrency: 4 }, () => {
       await delay(150);
       fs?.finishTurn({ contextUsed: 10_000 });
       fs?.emit({ type: "plan_review", id: "pr1", plan: "the approved plan body" });
-      await delay(200);
+      await waitFor(stdout, /PLAN REVIEW/);
       stdin.feed("a"); // open the overlay
-      await delay(150);
+      await waitFor(stdout, /implement fresh →/);
       assert.match(stdout.last, /implement fresh →/);
       assert.match(stdout.last, /⌥p retarget/);
 
       stdin.feed("\x1bp"); // ⌥p — the retarget wizard
-      await delay(120);
+      await waitFor(stdout, /retarget · provider/i);
       assert.match(stdout.last, /retarget · provider/i);
       stdin.feed("oai");
       await delay(100);
       stdin.feed("\r"); // pick oai → model step
-      await delay(120);
+      await waitFor(stdout, /retarget · model · oai/i);
       assert.match(stdout.last, /retarget · model · oai/i);
       stdin.feed("\r"); // pick m1 → stage (oai advertises no effort levels)
-      await delay(150);
+      await waitFor(stdout, /implement fresh → oai \/ m1/);
 
       // back on the overlay: the target and the fork hint
       assert.match(stdout.last, /implement fresh → oai \/ m1/);
@@ -1251,7 +1251,12 @@ describe("tui-render", { concurrency: 4 }, () => {
 
       const before = (await client.request<SessionSnapshot[]>("session.list")).length;
       stdin.feed("f"); // implement fresh → forks a fresh oai session
-      await delay(250);
+      await waitFor(
+        stdout,
+        (text) =>
+          fs?.planResponses.at(-1)?.decision.action === "handoff" &&
+          text.includes(`${before + 1} sessions`),
+      );
       assert.deepEqual(fs?.planResponses.at(-1)?.decision, { action: "handoff" });
       const after = await client.request<SessionSnapshot[]>("session.list");
       assert.equal(after.length, before + 1);
@@ -1280,10 +1285,10 @@ describe("tui-render", { concurrency: 4 }, () => {
         "\n",
       );
       fs?.emit({ type: "plan_review", id: "pr1", plan });
-      await delay(200);
+      await waitFor(stdout, /PLAN REVIEW/);
 
       stdin.feed("a"); // open the overlay
-      await delay(150);
+      await waitFor(stdout, /implement — the agent proceeds/);
       assert.match(stdout.last, /implement — the agent proceeds/, "the overlay is open");
       assert.match(stdout.last, /1\. step 1 of the plan/, "top of the plan is visible");
       assert.doesNotMatch(stdout.last, /25\. step 25 of the plan/, "the tail is below the fold");
@@ -1294,18 +1299,18 @@ describe("tui-render", { concurrency: 4 }, () => {
       );
 
       stdin.feed("\x1b[<65;10;10M"); // wheel down, same three-row step as Chat
-      await delay(120);
+      await waitFor(stdout, /↕ lines 4–/);
       assert.match(stdout.last, /↕ lines 4–/);
       stdin.feed("\x1b[<64;10;10M"); // wheel up
-      await delay(120);
+      await waitFor(stdout, /↕ lines 1–/);
       assert.match(stdout.last, /↕ lines 1–/);
       stdin.feed("\x1b[6~"); // PgDn
-      await delay(120);
+      await waitFor(stdout, /25\. step 25 of the plan/);
       assert.match(stdout.last, /25\. step 25 of the plan/, "PgDn reveals the tail");
       assert.doesNotMatch(stdout.last, /1\. step 1 of the plan/);
 
       stdin.feed("\x1b[5~"); // PgUp — back to the top
-      await delay(120);
+      await waitFor(stdout, /1\. step 1 of the plan/);
       assert.match(stdout.last, /1\. step 1 of the plan/);
       assert.doesNotMatch(stdout.last, /25\. step 25 of the plan/);
 
@@ -1318,7 +1323,7 @@ describe("tui-render", { concurrency: 4 }, () => {
       assert.equal(fs?.planResponses.length, 0, "nothing was sent to the daemon");
 
       stdin.feed("a"); // re-open
-      await delay(150);
+      await waitFor(stdout, /implement — the agent proceeds/);
       assert.match(stdout.last, /implement — the agent proceeds/, "the overlay is back");
     } finally {
       app.unmount();
@@ -1341,7 +1346,7 @@ describe("tui-render", { concurrency: 4 }, () => {
       fs?.emit({ type: "subagent_started", subagentId: "t1", name: "reviewer" });
       fs?.emit({ type: "subagent_started", subagentId: "t2", name: "tester" });
       fs?.emit({ type: "assistant_text", text: "checking imports", agentId: "t1" });
-      await delay(220);
+      await waitFor(stdout, /2\/2 sub-agents · reviewer, tester/);
       assert.match(stdout.last, /2\/2 sub-agents · reviewer, tester/);
       assert.doesNotMatch(
         stdout.last,
@@ -1350,7 +1355,7 @@ describe("tui-render", { concurrency: 4 }, () => {
       );
 
       fs?.emit({ type: "subagent_stopped", subagentId: "t1" });
-      await delay(180);
+      await waitFor(stdout, /reviewer ✓, tester/);
       assert.match(stdout.last, /reviewer ✓, tester/);
     } finally {
       app.unmount();
@@ -1381,7 +1386,7 @@ describe("tui-render", { concurrency: 4 }, () => {
       );
 
       stdin.feed("\x1b[C"); // → — drill into the child rows
-      await delay(220);
+      await waitFor(stdout, /FLEET · \S+ ▸ ⑂ reviewer/);
       // Breadcrumb + events header name the focused child; the pane narrows to
       // just that sub-agent's stream.
       assert.match(stdout.last, /FLEET · \S+ ▸ ⑂ reviewer/);
@@ -1390,7 +1395,7 @@ describe("tui-render", { concurrency: 4 }, () => {
       assert.doesNotMatch(stdout.last, /mainline chatter/);
 
       stdin.feed("\x1b"); // esc — back out to the fleet
-      await delay(220);
+      await waitFor(stdout, /mainline chatter/);
       assert.match(stdout.last, /mainline chatter/, "the full session stream returns");
       assert.doesNotMatch(stdout.last, /Chat · ⑂/, "the events header is back to plain");
     } finally {
@@ -1542,25 +1547,25 @@ describe("tui-render", { concurrency: 4 }, () => {
     try {
       await delay(220);
       stdin.feed("n");
-      await delay(120);
+      await waitFor(stdout, /new session/i);
       // the prompt names the provider it will use and its default model
       assert.match(stdout.last, /new session/i);
       assert.match(stdout.last, /claude/);
       assert.match(stdout.last, /claude-sonnet-5/);
 
       stdin.feed("\x1bp"); // ⌥p → provider chooser
-      await delay(120);
+      await waitFor(stdout, /PROVIDER/);
       assert.match(stdout.last, /PROVIDER/);
       assert.match(stdout.last, /openai/);
 
       stdin.feed("\r"); // pick the highlighted provider (claude — first row)
-      await delay(120);
+      await waitFor(stdout, /claude uses its configured model/);
       // claude's catalog wasn't probed here (standalone daemon) — the model step
       // shows its empty state and enter continues with the configured model
       assert.match(stdout.last, /MODEL/);
       assert.match(stdout.last, /claude uses its configured model/);
       stdin.feed("\r"); // pick the highlighted model, back to the prompt
-      await delay(120);
+      await waitFor(stdout, /new session/i);
       assert.match(stdout.last, /new session/i);
 
       stdin.feed("\x1bp"); // ⌥p again
@@ -1568,14 +1573,14 @@ describe("tui-render", { concurrency: 4 }, () => {
       stdin.feed("openai");
       await delay(100);
       stdin.feed("\r"); // pick openai
-      await delay(120);
+      await waitFor(stdout, /MODEL/);
       assert.match(stdout.last, /MODEL/);
       assert.match(stdout.last, /gpt-5-mini/);
 
       stdin.feed("mini");
       await delay(100);
       stdin.feed("\r");
-      await delay(120);
+      await waitFor(stdout, /new session/i);
       assert.match(stdout.last, /new session/i);
       assert.match(stdout.last, /gpt-5-mini/);
     } finally {
@@ -1615,12 +1620,12 @@ describe("tui-render", { concurrency: 4 }, () => {
       stdin.feed("oai");
       await delay(100);
       stdin.feed("\r"); // pick oai
-      await delay(140);
+      await waitFor(stdout, /MODEL/);
       assert.match(stdout.last, /MODEL/);
       // A failed discovery says why and how to retry, rather than a generic "none".
       assert.match(stdout.last, /catalog request failed.*⌥r to retry/i);
       stdin.feed("\r"); // enter continues anyway
-      await delay(120);
+      await waitFor(stdout, /new/i);
       assert.match(stdout.last, /new/i);
     } finally {
       app.unmount();
@@ -1668,7 +1673,7 @@ describe("tui-render", { concurrency: 4 }, () => {
       stdin.feed("\r"); // pick openai
       await delay(120);
       stdin.feed("\r"); // pick the first model
-      await delay(120);
+      await waitFor(stdout, /new session/i);
       assert.match(stdout.last, /new session/i);
       assert.match(stdout.last, /fix the parser bug/);
     } finally {
@@ -1862,7 +1867,7 @@ describe("tui-render", { concurrency: 4 }, () => {
     try {
       await delay(200);
       stdin.feed("u"); // undo is second-tier (palette / help), but the key still works
-      await delay(150);
+      await waitFor(stdout, /UNDO/);
       assert.match(stdout.last, /UNDO/);
       assert.match(stdout.last, /turn 1 · the original task/);
       assert.match(stdout.last, /turn 2 · a follow-up/);
@@ -1870,7 +1875,7 @@ describe("tui-render", { concurrency: 4 }, () => {
       assert.match(stdout.last, /turn 3 · one more/);
 
       stdin.feed(ESC);
-      await delay(80);
+      await waitFor(stdout, /▍ loom/);
       assert.match(stdout.last, /▍ loom/);
     } finally {
       app.unmount();
@@ -1923,7 +1928,7 @@ describe("tui-render", { concurrency: 4 }, () => {
       stdin.feed("u");
       await waitFor(stdout, /UNDO/);
       stdin.feed("redo"); // fuzzy-match narrows to the turn-2 row (matches its message)
-      await delay(80);
+      await waitFor(stdout, (text) => !/turn 1 · turn one prompt/.test(text));
       assert.match(stdout.last, /turn 2 · the second prompt/);
       assert.doesNotMatch(stdout.last, /turn 1 · turn one prompt/);
       stdin.feed("\r"); // enter → undo turn 2
@@ -4988,7 +4993,7 @@ test("startup repository menu selects and cancels without a daemon", async () =>
       await app.waitUntilRenderFlush();
     };
     try {
-      await delay(40);
+      await waitFor(stdout, /SWITCH REPOSITORY/);
       assert.match(stdout.last, /SWITCH REPOSITORY/);
       if (repositories.length) {
         await feed("\x1b[B");
