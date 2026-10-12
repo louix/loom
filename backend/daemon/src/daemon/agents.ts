@@ -347,9 +347,9 @@ export interface AgentHost {
   /** Interrupt a child for its supervisor: the turn's end is attributed to
    *  the supervisor (`interrupted` by `supervisor`). */
   interrupt(id: string): Promise<void>;
-  /** Archive a child for its supervisor, likewise attributed; refuses
-   *  uncommitted changes unless `force`. */
-  archive(id: string, force: boolean): Promise<void>;
+  /** Archive a child for its supervisor, likewise attributed; `dirty`, left
+   *  as it was, when it has uncommitted changes and not `force`. */
+  archive(id: string, force: boolean): Promise<"archived" | "dirty">;
   /** Transcript entries: after a cursor, oldest first; or the newest `limit`. */
   events(id: string, opts: { after?: number; limit: number }): TranscriptEntry[];
   /** Answer a parked `agent_call`. */
@@ -709,17 +709,10 @@ export class AgentSupervision {
   async #stop(caller: string, input: Record<string, unknown>): Promise<string> {
     const child = this.#child(caller, input);
     if (child.status.kind === "done") return `${short(child.id)} is already archived.`;
-    const discard = input["discard"] === true;
-    if (
-      !discard &&
-      child.worktree &&
-      child.checkout !== "clone" &&
-      this.#host.dirty(child.worktree)
-    )
+    if ((await this.#host.archive(child.id, input["discard"] === true)) === "dirty")
       refuse(
         `${short(child.id)} has uncommitted changes: message it to commit them, or call agent_stop with discard: true to lose them.`,
       );
-    await this.#host.archive(child.id, discard);
     return `Stopped and archived ${short(child.id)}; its branch${child.branch ? ` ${child.branch}` : ""} and transcript are kept.`;
   }
 

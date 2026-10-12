@@ -699,9 +699,14 @@ export class Daemon {
       interrupt: async (id) => {
         await this.#interruptSession(id, "supervisor");
       },
-      archive: async (id, force) => {
-        await this.#archive(id, force, "detach", "supervisor");
-      },
+      archive: (id, force) =>
+        this.#archive(id, force, "detach", "supervisor").then(
+          () => "archived" as const,
+          (err: unknown) => {
+            if (err instanceof RpcError && err.code === "dirty") return "dirty" as const;
+            throw err;
+          },
+        ),
       events: (id, { after, limit }) =>
         after === undefined
           ? [...this.#sessionEvents.page(id, { limit }).items]
@@ -4156,7 +4161,6 @@ export class Daemon {
     by: StopCause = "user",
   ): Promise<SessionSnapshot> {
     const kids = this.#openChildren(id, children);
-    this.#agents.cancel(id);
     const archived = await this.#queue.run(id, async () => {
       this.#shells.assertClosed(id);
       const row = this.#registry.get(id);
@@ -4167,10 +4171,11 @@ export class Daemon {
       if (!borrowed) this.#assertNoBorrowers(id, "cannot archive");
       if (!force && !clone && !borrowed && row.worktree && this.#worktrees.isDirty(row.worktree)) {
         throw new RpcError(
-          "bad_request",
+          "dirty",
           "the worktree has uncommitted changes — commit them, or archive with force to discard",
         );
       }
+      this.#agents.cancel(id);
       this.#hooks.forget(id);
       // Archiving is `by`'s stop: what the closing turn ends in is theirs, and
       // the queue holds for it before the close awaits (a cold session's too)

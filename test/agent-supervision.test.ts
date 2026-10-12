@@ -176,7 +176,7 @@ const stub = (
       return { entryId: "e", state: waited ? "queued" : "delivering", hold, waited };
     },
     interrupt: async () => {},
-    archive: async () => {},
+    archive: async () => "archived" as const,
     events,
     respond: async (_id, _call, result) => {
       answers.push(result);
