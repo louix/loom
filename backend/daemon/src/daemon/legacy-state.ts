@@ -21,6 +21,7 @@ import { dirname, join } from "node:path";
 import type { Logger } from "@loom/core/logger";
 import type { LoomPaths } from "@loom/core/paths";
 import { legacyDaemonPid } from "@loom/core/daemon-endpoint";
+import { sessionCount } from "../store/db.ts";
 import type { WorktreeManager } from "./worktrees.ts";
 
 /** Why a leftover in `.loom` stays, for the ones Loom knows. */
@@ -63,15 +64,6 @@ export const adoptLegacyLog = (paths: LoomPaths): void => {
   } catch {
     // The rest of the migration logs whatever is still in the way.
   }
-};
-
-/** Session rows, or 0 for a database no daemon has migrated yet. */
-const sessionCount = (db: DatabaseSync): number => {
-  const table = db
-    .prepare("SELECT count(*) AS n FROM sqlite_master WHERE type = 'table' AND name = 'sessions'")
-    .get() as { n: number };
-  if (table.n === 0) return 0;
-  return (db.prepare("SELECT count(*) AS n FROM sessions").get() as { n: number }).n;
 };
 
 const removeDatabaseFiles = (path: string): void => {

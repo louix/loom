@@ -211,3 +211,28 @@ test("loom repo move finds the old state when the old path now leads into the ne
     for (const dir of cleanup) rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("loom repo move refuses a new path that already has sessions", async () => {
+  const root = mkRoot();
+  const from = join(root, "old");
+  const to = join(root, "new");
+  const [source, target] = [loomPaths(from), loomPaths(to)];
+  try {
+    for (const repo of [from, to]) execFileSync("git", ["init", "-q", repo]);
+    ensureLoomDirectories(source);
+    ensureLoomDirectories(target);
+    const db = openDb(target.db);
+    db.prepare(
+      "INSERT INTO sessions (id, provider, created_at, updated_at) VALUES ('s1', 'fake', 0, 0)",
+    ).run();
+    db.close();
+    await assert.rejects(moveRepository(from, to), /already has Loom sessions/);
+    assert.ok(existsSync(source.state));
+  } finally {
+    for (const paths of [source, target]) {
+      rmSync(paths.runtime, { recursive: true, force: true });
+      rmSync(paths.state, { recursive: true, force: true });
+    }
+    rmSync(root, { recursive: true, force: true });
+  }
+});

@@ -108,6 +108,15 @@ export const migrate = (db: Db): void => {
   }
 };
 
+/** Session rows, or 0 for a database no daemon has migrated yet. */
+export const sessionCount = (db: Db): number => {
+  const table = db
+    .prepare("SELECT count(*) AS n FROM sqlite_master WHERE type = 'table' AND name = 'sessions'")
+    .get() as { n: number };
+  if (table.n === 0) return 0;
+  return (db.prepare("SELECT count(*) AS n FROM sessions").get() as { n: number }).n;
+};
+
 /** Flush the WAL back into the main db file. Called on clean shutdown. */
 export const checkpoint = (db: Db): void => {
   try {

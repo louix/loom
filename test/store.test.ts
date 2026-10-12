@@ -4,7 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkpoint, migrate, openDb, withTransaction } from "@loom/daemon/store/db";
+import { checkpoint, migrate, openDb, sessionCount, withTransaction } from "@loom/daemon/store/db";
 import { MIGRATIONS } from "@loom/daemon/store/migrations";
 import {
   stateAwaitingInput,
@@ -50,6 +50,23 @@ test("migrations bring an empty db to head and are idempotent", () => {
     for (const t of ["sessions", "status_history", "usage", "runtime_children"]) {
       assert.ok(tables.includes(t), `missing table ${t}`);
     }
+    db.close();
+  } finally {
+    cleanup();
+  }
+});
+
+test("sessionCount is 0 for an unmigrated database and counts rows once migrated", () => {
+  const { path, cleanup } = tmpDb();
+  try {
+    const raw = new DatabaseSync(path);
+    assert.equal(sessionCount(raw), 0);
+    raw.close();
+    const db = openDb(path);
+    db.prepare(
+      "INSERT INTO sessions (id, provider, created_at, updated_at) VALUES ('s1', 'fake', 0, 0)",
+    ).run();
+    assert.equal(sessionCount(db), 1);
     db.close();
   } finally {
     cleanup();

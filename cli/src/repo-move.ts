@@ -30,6 +30,7 @@ import { listVms } from "../../runtime/src/session-vm/inventory.ts";
 import { repoBaseDirectory } from "../../runtime/src/session-vm/repo-base.ts";
 import { sessionCloneRoot } from "../../backend/daemon/src/daemon/session-vm-state.ts";
 import { WorktreeManager } from "../../backend/daemon/src/daemon/worktrees.ts";
+import { sessionCount } from "../../backend/daemon/src/store/db.ts";
 import { loadConfig } from "../../backend/daemon/src/config/config.ts";
 import { userConfigPath } from "../../backend/daemon/src/config-path.ts";
 import { rememberRepository } from "./recent-repositories.ts";
@@ -65,15 +66,10 @@ const recordedRepository = (old: string): { repo: string; state: string } => {
   throw new Error(`no Loom state is recorded for ${old}`);
 };
 
-const sessionCount = (db: string): number => {
+const sessionsIn = (db: string): number => {
   const handle = new DatabaseSync(db, { readOnly: true });
   try {
-    const table = handle
-      .prepare("SELECT count(*) AS n FROM sqlite_master WHERE type = 'table' AND name = 'sessions'")
-      .get() as { n: number };
-    return table.n === 0
-      ? 0
-      : (handle.prepare("SELECT count(*) AS n FROM sessions").get() as { n: number }).n;
+    return sessionCount(handle);
   } finally {
     handle.close();
   }
@@ -113,7 +109,7 @@ export const moveRepository = async (oldArg: string, newArg: string): Promise<Re
     throw new Error(
       `${vms.length} session VM(s) of ${from} are still registered; stop them first (\`loom vm list\`, \`loom vm stop <id>\`)`,
     );
-  if (existsSync(newPaths.db) && sessionCount(newPaths.db) > 0)
+  if (existsSync(newPaths.db) && sessionsIn(newPaths.db) > 0)
     throw new Error(
       `${to} already has Loom sessions in ${newPaths.state}; move or remove that directory first`,
     );
