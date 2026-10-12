@@ -65,7 +65,6 @@ test("every RPC that starts a VM session replies before an on-demand runtime bui
     connectors,
     config: JSON.stringify({
       session: {
-        titles: { enabled: false },
         auto_resume: { enabled: false },
         isolation: { enabled: true, claude: { artifact: builtRuntimePath(build) } },
       },

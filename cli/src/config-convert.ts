@@ -19,8 +19,8 @@ import {
   mergeRepoOverride,
   normalizeConfig,
   parseConfig,
-  removedConfigKeys,
 } from "@loom/daemon/config/config";
+import { migrateConfigLayer } from "../../backend/daemon/src/config/legacy-keys.ts";
 import { createConfigSchema, parseSettings } from "../../backend/daemon/src/config/schema.ts";
 import { userConfigPath } from "../../backend/daemon/src/config-path.ts";
 import { environmentUserConfigPath } from "@loom/environment-config/paths";
@@ -50,7 +50,6 @@ const STAYS: Record<string, string> = {
   daemon: "daemon lifetime",
   base_branch: "session workspace policy",
   worktree_dir: "session workspace policy",
-  db: "Loom's session database",
   git: "Git identity of Loom sessions",
   search: "agent web search",
   mcp_servers: tools,
@@ -64,8 +63,6 @@ const STAYS: Record<string, string> = {
   "session.auto_rebase": "session policy",
   "session.auto_resume": "session policy (auto-resume)",
   "session.commit_reminder": "session policy",
-  "session.titles": "session titles",
-  "session.notify": "session notifications",
   "session.provider_access": "agent provider access",
   "session.isolation.claude": "an agent provider's runtime; launch profiles run plain entrypoints",
   "session.isolation.aisdk": "an agent provider's runtime; launch profiles run plain entrypoints",
@@ -76,14 +73,19 @@ const STAYS: Record<string, string> = {
 const CONVERTED: Record<string, string> = {
   "session.auto_nix": "environment.nix.auto",
   "session.isolation.environment": "environment.commandPrefix/timeoutSeconds/resources",
-  "session.isolation.extra_allowed_hosts": "access.network.hosts",
-  "session.isolation.network_presets": "access.network.presets",
-  "session.isolation.enabled": "lifecycle.execution",
-  "session.worktree": "lifecycle.workspace",
-  "session.isolation.checkout.mode": "lifecycle.workspace",
+  "session.isolation.network.allowed_hosts": "access.network.allowedHosts",
+  "session.isolation.network.presets": "access.network.presets",
+  "session.defaults.isolation": "lifecycle.execution",
+  "session.defaults.workspace": "lifecycle.workspace",
   "session.isolation.idle_timeout_minutes": "lifecycle.idleTimeoutMinutes",
 };
-const SECTIONS = new Set(["session", "session.isolation", "session.isolation.checkout"]);
+const SECTIONS = new Set([
+  "session",
+  "session.defaults",
+  "session.isolation",
+  "session.isolation.network",
+  "session.isolation.checkout",
+]);
 const WORKSPACE_EVENTS = { workspace_prepare: "prepare", workspace_start: "start" } as const;
 
 const record = (value: unknown): Raw =>
@@ -104,9 +106,6 @@ const effective = (settings: Settings) => {
         timeoutSeconds: Math.ceil(hook.timeout / 1000),
       }));
   const prefix = isolation.environment.command_prefix;
-  let workspace: "in-place" | "worktree" | "clone" = "worktree";
-  if (!session.worktree.enabled) workspace = "in-place";
-  else if (isolation.checkout.mode === "clone") workspace = "clone";
   return {
     environment: {
       // Loom ignores auto_nix while a command prefix is set; the new format rejects both.
@@ -119,12 +118,12 @@ const effective = (settings: Settings) => {
       start: hooks("workspace_start"),
     },
     network: {
-      presets: isolation.network_presets,
-      hosts: normalizeExtraHosts(isolation.extra_allowed_hosts),
+      presets: isolation.network.presets,
+      allowedHosts: normalizeExtraHosts(isolation.network.allowed_hosts),
     },
     lifecycle: {
-      workspace,
-      execution: isolation.enabled ? ("vm" as const) : ("local" as const),
+      workspace: session.defaults.workspace,
+      execution: session.defaults.isolation === "vm" ? ("vm" as const) : ("local" as const),
       idleTimeoutMinutes: isolation.idle_timeout_minutes,
     },
     autoNixIgnored: session.auto_nix && prefix.length > 0,
@@ -174,21 +173,31 @@ export const convertLoomConfig = (raw: Raw, source: string): ConversionReport =>
   const { repos = [], ...defaults } = raw;
   if (!Array.isArray(repos)) throw new Error("repos must be an array of objects");
 
-  /** Classify every setting present in one layer of the old file. */
-  const classify = (layer: Raw, prefix: string, target: string) => {
+  /** Classify every setting present in one layer of the old file, under current names. */
+  const classify = (raw: Raw, prefix: string, target: string) => {
+    const { layer, deprecated } = migrateConfigLayer(raw, prefix);
+    const renamedFrom = (at: string) =>
+      deprecated.filter((d) => d.kind === "renamed" && d.replacement === at).map((d) => d.key);
+    for (const d of deprecated) {
+      if (d.kind === "removed")
+        report.unsupported.push({ path: d.key, reason: "no longer read: " + d.reason });
+      if (d.kind === "superseded")
+        report.unsupported.push({ path: d.key, reason: `ignored: ${d.replacement} is also set` });
+    }
     const walk = (value: Raw, path: string) => {
       for (const [key, child] of Object.entries(value)) {
         const name = path ? path + "." + key : key;
         const at = prefix + name;
         if (name === "$schema" || (prefix && name === "path")) continue;
         if (name === "hooks") continue;
-        if (CONVERTED[name]) report.converted.push({ from: at, to: target + CONVERTED[name] });
-        else if (STAYS[name]) report.staysInLoomConfig.push({ path: at, reason: STAYS[name] });
-        else if (removedConfigKeys[name])
-          report.unsupported.push({
-            path: at,
-            reason: "no longer read: " + removedConfigKeys[name],
+        const old = renamedFrom(at);
+        if (CONVERTED[name])
+          report.converted.push({
+            from: at,
+            to: target + CONVERTED[name],
+            ...(old.length ? { note: `written as deprecated ${old.join(" and ")}` } : {}),
           });
+        else if (STAYS[name]) report.staysInLoomConfig.push({ path: at, reason: STAYS[name] });
         else if (SECTIONS.has(name)) walk(record(child), name);
         else report.unsupported.push({ path: at, reason: "not a Loom setting; Loom ignores it" });
       }
@@ -241,7 +250,9 @@ export const convertLoomConfig = (raw: Raw, source: string): ConversionReport =>
     normalizeConfig(layer); // Loom's own validation: never convert a file Loom rejects
     return effective(parseSettings(settingsSchema, layer));
   };
-  const global = parse(defaults);
+  // Each layer in current names before merging, as Loom reads them.
+  const current = (layer: Raw) => migrateConfigLayer(layer).layer;
+  const global = parse(current(defaults));
   classify(defaults, "", "");
   if (global.autoNixIgnored)
     report.unsupported.push({
@@ -253,7 +264,7 @@ export const convertLoomConfig = (raw: Raw, source: string): ConversionReport =>
   if (environment) user.environment = environment;
   const network: Raw = {};
   if (global.network.presets.length) network.presets = global.network.presets;
-  if (global.network.hosts.length) network.hosts = global.network.hosts;
+  if (global.network.allowedHosts.length) network.allowedHosts = global.network.allowedHosts;
   if (Object.keys(network).length) user.access = { network };
   // Always explicit: other consumers default to worktree + VM, Loom to local.
   user.lifecycle = global.lifecycle;
@@ -267,7 +278,7 @@ export const convertLoomConfig = (raw: Raw, source: string): ConversionReport =>
     const absolute = expandTilde(path.trim());
     if (!isAbsolute(absolute))
       throw new Error("repo.path must be an absolute path or start with ~/");
-    const repo = parse(mergeRepoOverride(defaults, overrides));
+    const repo = parse(mergeRepoOverride(current(defaults), current(overrides)));
     classify(overrides, prefix, "repos[].");
     if (repo.autoNixIgnored && !global.autoNixIgnored)
       report.unsupported.push({
@@ -280,7 +291,7 @@ export const convertLoomConfig = (raw: Raw, source: string): ConversionReport =>
     );
     if (environment) entry.environment = environment;
     const network: Raw = {};
-    for (const key of ["presets", "hosts"] as const)
+    for (const key of ["presets", "allowedHosts"] as const)
       if (!same(repo.network[key], global.network[key])) network[key] = repo.network[key];
     if (Object.keys(network).length) entry.access = { network };
     const lifecycle = Object.fromEntries(

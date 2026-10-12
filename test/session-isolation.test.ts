@@ -62,9 +62,6 @@ test("VM and local sessions share a provider, keep modes across restart, and for
   const config = (enabled: boolean) =>
     `{
   "session": {
-    "titles": {
-      "enabled": false
-    },
     "auto_resume": {
       "enabled": false
     },
@@ -192,15 +189,7 @@ test("VM and local sessions share a provider, keep modes across restart, and for
 });
 
 test("VM selection without a runtime fails before allocating a session", async () => {
-  const h = await makeHarness({
-    config: `{
-  "session": {
-    "titles": {
-      "enabled": false
-    }
-  }
-}`,
-  });
+  const h = await makeHarness();
   const c = await LoomClient.connect({
     repoRoot: h.repoRoot,
     sockPath: h.sockPath,
@@ -244,7 +233,6 @@ test("Claude, Codex and AI SDK providers select independent runtimes and cache c
     },
     session: {
       isolation: {
-        enabled: false,
         claude: {
           artifact: "/claude",
           smolvm: Deno.execPath(),
@@ -260,7 +248,7 @@ test("Claude, Codex and AI SDK providers select independent runtimes and cache c
       },
     },
   });
-  const vmConfig = { ...config, isolation: { ...config.isolation, enabled: true } };
+  const vmConfig = { ...config, defaults: { ...config.defaults, isolation: "vm" as const } };
   const seen: Array<{ id: string; artifact: string | undefined }> = [];
   const load: ConnectorManifest[string] = async () => ({
     createProvider: (ctx) => {
@@ -286,7 +274,7 @@ test("Claude, Codex and AI SDK providers select independent runtimes and cache c
   for (const id of ["claude", "codex", "generic"])
     assert.equal(vmRegistry.defaultIsolation(id), "vm");
   const missing = new ProviderRegistry(
-    { ...vmConfig, isolation: { enabled: true, extraAllowedHosts: [] } },
+    { ...vmConfig, isolation: { extraAllowedHosts: [] } },
     new ProviderMessageStore(db),
     { "@loom/connector-claude": load },
   );

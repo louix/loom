@@ -1,6 +1,6 @@
 # Session isolation
 
-Local execution is the default. Set `session.isolation.enabled: true` in
+Local execution is the default. Set `session.defaults.isolation: "vm"` in
 `~/.config/loom/config.jsonc` to default to VMs, or override it under
 `repos[].session`. This setting chooses the default; it does not prohibit an
 explicit VM choice. Use `loom run --isolation vm` or the new-session prompt's
@@ -19,10 +19,11 @@ forks start a fresh provider session with saved conversation context.
 - Agent VM direct networking is disabled. A host HTTPS proxy checks exact allowed
   destinations; trusted user configuration can add dependency registries.
   Repository files cannot grant themselves network access.
-- The default `checkout.mode: "mount"` exposes the repository, selected worktree
+- The default `session.defaults.workspace: "worktree"` mounts the worktree and
+  exposes the repository, selected worktree
   and shared Git metadata. Agent-written Git hooks/config can affect later host
   Git commands. Worktrees nested in the repository are also exposed.
-- Opt-in `checkout.mode: "clone"` mounts a private workspace instead. A host Git
+- Opt-in `session.defaults.workspace: "clone"` mounts a private workspace instead. A host Git
   relay accepts pushes only to the session branch; host Git never executes the
   clone's hooks/config. Repository history is still considered readable.
   See [repository access](repository-mounts.md) for limitations.

@@ -541,8 +541,8 @@ export const providerInfoSchema = z.object({
   vmUnavailableReason: z.string().optional(),
   /**
    * Workspace a new session gets when none is chosen, by isolation: in place
-   * with `session.worktree` off, a private clone on a VM with
-   * `session.isolation.checkout.mode = "clone"`, else a worktree. Same value
+   * with `session.defaults.workspace = "in-place"`, a private clone on a VM
+   * with `"clone"`, else a worktree. Same value
    * on every entry. Absent from daemons that cannot take a chosen workspace.
    */
   defaultWorkspace: z.object({ local: workspaceModeSchema, vm: workspaceModeSchema }).optional(),

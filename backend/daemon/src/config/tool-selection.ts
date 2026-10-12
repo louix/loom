@@ -1,11 +1,25 @@
 /** Trusted tool catalogs are independent of the tools selected for a session. */
-import { nixMcpRuntime, mcpGrantsSchema } from "../../../../core/src/mcp-config.ts";
+import { nixMcpRuntime, mcpGrantsSchema, type McpGrants } from "../../../../core/src/mcp-config.ts";
+import { expandNetworkPresets } from "../../../../runtime/src/session-vm/network-policy.ts";
 import { isClaudeId } from "@loom/core/provider-id";
 import { MCP_CAPABILITIES } from "@loom/core/types";
-import type { ToolSettings } from "./schema.ts";
+import type { z } from "zod";
+import type { mcpGrantsConfigSchema, ToolSettings } from "./schema.ts";
 import type { LoomConfig } from "./config.ts";
 
 const groups = ["local_tools", "vm_tools", "remote_tools"] as const;
+
+/** Configured grants, presets expanded; none configured grants nothing. */
+export const resolveMcpGrants = (
+  grants: z.output<typeof mcpGrantsConfigSchema> | undefined,
+): McpGrants =>
+  mcpGrantsSchema.parse({
+    workspace: grants?.workspace ?? "none",
+    network: [
+      ...(grants?.network.allowed_hosts ?? []),
+      ...expandNetworkPresets(grants?.network.presets ?? []),
+    ],
+  });
 /** Resolve only explicitly selected definitions into connector-neutral transports. */
 export const resolveToolSelection = (raw: ToolSettings): Pick<LoomConfig, "mcp" | "httpMcp"> => {
   const session = raw.session;
@@ -59,7 +73,7 @@ export const resolveToolSelection = (raw: ToolSettings): Pick<LoomConfig, "mcp" 
         ...common,
         runtime: entry.source.kind === "nix" ? nixMcpRuntime(entry.source) : entry.source.ref,
         isolation: "vm",
-        grants: mcpGrantsSchema.parse(entry.grants ?? {}),
+        grants: resolveMcpGrants(entry.grants),
       });
     }
   }
@@ -82,7 +96,7 @@ export const toolExecutionError = (config: LoomConfig, provider: string): string
   if (isClaudeId(provider)) vm = config.isolation.claude;
   else if (config.providers.aisdk[provider]?.sdk === "chatgpt") vm = config.isolation.codex;
   const host = config.mcp.filter((m) => "command" in m);
-  if ((config.isolation.enabled || vm) && host.length)
+  if ((config.defaults.isolation === "vm" || vm) && host.length)
     return (
       `Provider ${provider} runs in a VM but host tools are selected: ${host.map((m) => m.name).join(", ")}. ` +
       "Set session.local_tools = [] and select vm_tools or remote_tools instead."

@@ -61,17 +61,12 @@ test("bare repo and linked launches share sessions, base HEAD, config, and CLI r
       "path": ${JSON.stringify(linked)},
       "base_branch": "missing-falls-back-to-head",
       "session": {
-        "worktree": {
-          "enabled": false
+        "defaults": {
+          "workspace": "in-place"
         }
       }
     }
-  ],
-  "session": {
-    "titles": {
-      "enabled": false
-    }
-  }
+  ]
 }`,
     );
     const paths = loomPaths(bare);
@@ -86,7 +81,7 @@ test("bare repo and linked launches share sessions, base HEAD, config, and CLI r
     daemon = await start(nested);
     assert.equal(daemon.repoRoot, bare);
     assert.deepEqual(daemon.paths, paths);
-    assert.equal(daemon.config.worktree.enabled, false);
+    assert.equal(daemon.config.defaults.workspace, "in-place");
     client = await LoomClient.connect({ repoRoot: bare, sockPath: paths.sock, autospawn: false });
     for (const worktree of [undefined, false]) {
       await assert.rejects(
@@ -146,7 +141,7 @@ test("bare repo and linked launches share sessions, base HEAD, config, and CLI r
       (await client.request<SessionSnapshot>("session.get", { id: session.id })).id,
       session.id,
     );
-    assert.equal(daemon.config.worktree.enabled, false);
+    assert.equal(daemon.config.defaults.workspace, "in-place");
   } finally {
     await client?.close();
     await daemon?.stop("test-cleanup");

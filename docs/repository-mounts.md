@@ -1,6 +1,6 @@
 # Repository mounts and Git
 
-This section describes legacy `checkout.mode: "mount"` sessions. For private
+This section describes `session.defaults.workspace: "worktree"` VM sessions. For private
 clone sessions and prepared workspaces, see [Session environments](session-environments.md).
 
 Each agent session retains its own VM and worktree. Loom mounts the full host
@@ -41,7 +41,7 @@ Validate with test/workspace-mounts.test.ts and scripts/test-real-git-vm.ts.
 
 ## Clone mode
 
-Everything above describes `session.isolation.checkout.mode = "mount"`, the
+Everything above describes `session.defaults.workspace = "worktree"`, the
 default. With `"clone"`, a new VM session mounts none of this. It works in a
 private clone whose only remote is a host relay that advertises its base
 branch and its own branch and accepts pushes to its own branch only, so hooks and config the
@@ -51,7 +51,7 @@ with ordinary Git. Publication failures are reported in the conversation.
 Repository history must be considered readable regardless of advertised refs.
 
 ```jsonc
-{ "session": { "isolation": { "checkout": { "mode": "clone" } } } }
+{ "session": { "defaults": { "workspace": "clone" } } }
 ```
 
 Existing sessions keep the mode they were created with. Auto-rebase, the `r`

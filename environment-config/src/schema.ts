@@ -61,15 +61,20 @@ export const environmentIntentSchema = z.strictObject({
     .describe("Hooks run before each start becomes available. Replaces any earlier layer's list."),
 });
 
-/** Exact HTTPS destination names, written as presets and/or hosts. */
-const network = z.strictObject({ presets: networkPresetsSchema, hosts: extraHostsSchema });
-/** Host-side network fields replace the user-level field individually. */
-const hostNetwork = z.strictObject({
+/** Exact HTTPS destination names, written as presets and/or allowedHosts. */
+const network = z.strictObject({
   presets: networkPresetsSchema.unwrap().optional(),
-  hosts: extraHostsSchema.unwrap().optional(),
+  allowedHosts: extraHostsSchema.unwrap().optional(),
+  // Still parses; resolution reads it when allowedHosts is unset, and reports it.
+  hosts: extraHostsSchema
+    .unwrap()
+    .optional()
+    .meta({ deprecated: true })
+    .describe("Replaced by allowedHosts."),
 });
+export type EnvironmentNetwork = z.output<typeof network>;
 const hostAccess = z
-  .strictObject({ network: hostNetwork.optional() })
+  .strictObject({ network: network.optional() })
   .describe("Network the host applies directly, without a project request.");
 
 export const projectEnvironmentSchema = z.strictObject({

@@ -12,13 +12,15 @@ const hostPattern = z
   .regex(
     /^(?:\*\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/i,
   );
+export const mcpHostPatternsSchema = z
+  .array(hostPattern)
+  .max(64)
+  .default([])
+  .transform((hosts) => [...new Set(hosts.map((h) => h.toLowerCase()))]);
+/** Resolved grants, as launches carry them: `network` is every allowed host pattern. */
 export const mcpGrantsSchema = z.strictObject({
   workspace: z.enum(["none", "read-only", "read-write"]).default("none"),
-  network: z
-    .array(hostPattern)
-    .max(64)
-    .default([])
-    .transform((hosts) => [...new Set(hosts.map((h) => h.toLowerCase()))]),
+  network: mcpHostPatternsSchema,
 });
 export type McpGrants = z.output<typeof mcpGrantsSchema>;
 export const nixMcpSourceSchema = z.strictObject({

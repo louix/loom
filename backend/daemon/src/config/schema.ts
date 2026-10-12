@@ -1,6 +1,10 @@
 /** Config syntax and defaults. Filesystem and provider resolution belong in config.ts. */
 import { z } from "zod";
-import { mcpSourceSchema, mcpGrantsSchema } from "../../../../core/src/mcp-config.ts";
+import {
+  mcpSourceSchema,
+  mcpGrantsSchema,
+  mcpHostPatternsSchema,
+} from "../../../../core/src/mcp-config.ts";
 import { MCP_CAPABILITIES } from "@loom/core/types";
 import { LOOM_AGENTS_SERVER, SELF_PROFILE } from "@loom/core/agents";
 import { mcpOAuthConfigSchema } from "../daemon/mcp-oauth-model.ts";
@@ -36,6 +40,10 @@ const strings = (fallback: string[] = []) =>
     z.array(z.string()).catch(fallback),
   );
 const nonNegative = (fallback: number) => z.number().nonnegative().catch(fallback);
+// Removed and renamed keys never reach the schema (legacy-keys.ts drops or moves
+// them first); listing them keeps editors from flagging an older config as invalid.
+const deprecated = (description: string) =>
+  z.unknown().optional().meta({ deprecated: true }).describe(description);
 const ids = z
   .array(
     z
@@ -68,12 +76,35 @@ const selections = preprocess(
   (v) => v ?? [],
   z.array(z.string()).refine((v) => new Set(v).size === v.length, "duplicate tool selections"),
 );
+const mcpNetworkSchema = z
+  .strictObject({
+    allowed_hosts: mcpHostPatternsSchema.describe(
+      "DNS names the tool VM may reach, on any port; *.example.com covers every subdomain, not the name itself.",
+    ),
+    presets: networkPresetsSchema.describe("Named host sets: nix, javascript, python, rust."),
+  })
+  .prefault({});
+/** `mcp_servers.*.grants` as written; tool-selection.ts resolves it into McpGrants. */
+export const mcpGrantsConfigSchema = z.strictObject({
+  workspace: mcpGrantsSchema.shape.workspace,
+  // A host list is the old form; legacy-keys.ts moves it to allowed_hosts first.
+  network: preprocess(
+    (v) => v,
+    mcpNetworkSchema,
+    z.union([
+      mcpNetworkSchema,
+      mcpHostPatternsSchema
+        .meta({ deprecated: true })
+        .describe("Replaced by { allowed_hosts: [...] }."),
+    ]),
+  ),
+});
 export const mcpDefinitionSchema = z
   .strictObject({
     ...toolDefaults,
     source: mcpSourceSchema,
     execution: z.literal("vm").optional(),
-    grants: mcpGrantsSchema.optional(),
+    grants: mcpGrantsConfigSchema.optional(),
     auth: z
       .strictObject({
         bearer_token_env: requiredText.optional(),
@@ -316,14 +347,9 @@ export const createConfigSchema = (d: LoomConfig, events: readonly HookEvent[]) 
     worktree_dir: text(d.worktreeDir).describe(
       "Exact worktree directory (absolute, ~/ or relative to the repository). Empty uses $XDG_DATA_HOME/loom/worktrees/<repo>-<hash>, defaulting to ~/.local/share. Existing sessions keep their paths. Restart to apply.",
     ),
-    // Removed: older configs keep parsing, and Loom reports the key once.
-    db: z
-      .unknown()
-      .optional()
-      .meta({ deprecated: true })
-      .describe(
-        "No longer read. The database lives in $XDG_STATE_HOME/loom/repos/<repo>/loom.db; remove this setting.",
-      ),
+    db: deprecated(
+      "No longer read. The database lives in $XDG_STATE_HOME/loom/repos/<repo>/loom.db; remove this setting.",
+    ),
     git: gitIdentitySchema.optional(),
     default_provider: text(d.defaultProvider),
     daemon: section({ idle_shutdown_minutes: nonNegative(d.daemon.idleShutdownMinutes) }),
@@ -348,28 +374,47 @@ export const createConfigSchema = (d: LoomConfig, events: readonly HookEvent[]) 
         vm_tools: selections,
         remote_tools: selections,
         mcp_servers: selections,
-        worktree: section({ enabled: flag(d.worktree.enabled) }),
+        defaults: section({
+          isolation: z
+            .enum(["none", "vm"])
+            .default(d.defaults.isolation)
+            .describe(
+              "Where new sessions run: none (on the host) or vm. Each new session can still choose the other when a VM runtime is available. Existing sessions keep theirs.",
+            ),
+          workspace: z
+            .enum(["in-place", "worktree", "clone"])
+            .default(d.defaults.workspace)
+            .describe(
+              "What new sessions work in: in-place (the repository's own checkout, no branch), worktree (a git worktree on its own branch), or clone (VM sessions only: a private clone whose only remote is a host relay limited to the session's branch; host sessions get a worktree). Each new session can override it. Existing sessions keep theirs.",
+            ),
+        }),
+        worktree: deprecated("Replaced by session.defaults.workspace."),
         auto_rebase: section({
           enabled: flag(d.autoRebase.enabled),
           mode: z.enum(["rebase", "merge"]).catch("rebase"),
         }),
         auto_resume: section({ enabled: flag(d.autoResume.enabled) }),
         commit_reminder: section({ enabled: flag(d.commitReminder.enabled) }),
-        titles: section({ enabled: flag(d.titles.enabled) }),
-        notify: section({ webhook: text(d.notify.webhook) }),
+        titles: deprecated("No longer read; session titles are always generated."),
+        notify: deprecated(
+          "No longer read; use a hooks entry (on: waiting) instead of the webhook.",
+        ),
         provider_access: section({ only: ids.optional(), disabled: ids.default([]) }),
         isolation: section({
-          enabled: z
-            .boolean()
-            .default(false)
-            .describe(
-              "Default new sessions to VM (true) or Local (false). This does not disable VM execution: each new session can override the default when a runtime is available. Existing sessions keep their mode.",
-            ),
+          enabled: deprecated("Replaced by session.defaults.isolation."),
           claude: runtime,
           aisdk: runtime,
           codex: runtime,
-          extra_allowed_hosts: extraHostsSchema,
-          network_presets: networkPresetsSchema,
+          network: section({
+            allowed_hosts: extraHostsSchema.describe(
+              "Exact DNS names VM sessions may reach over HTTPS (port 443); no URLs, IPs or wildcards.",
+            ),
+            presets: networkPresetsSchema.describe(
+              "Named host sets: nix, javascript, python, rust.",
+            ),
+          }),
+          extra_allowed_hosts: deprecated("Replaced by session.isolation.network.allowed_hosts."),
+          network_presets: deprecated("Replaced by session.isolation.network.presets."),
           environment: sessionEnvironmentSchema,
           idle_timeout_minutes: z
             .number()
@@ -380,21 +425,11 @@ export const createConfigSchema = (d: LoomConfig, events: readonly HookEvent[]) 
             .describe(
               "Stop idle session VMs after this many minutes; preserve their workspace and history. Zero disables idle shutdown. Open shells, active tasks and keep-warm sessions are excluded.",
             ),
-          // Removed: older configs keep parsing, and Loom reports the key once.
-          launcher: z
-            .unknown()
-            .optional()
-            .meta({ deprecated: true })
-            .describe(
-              "No longer read. Session VMs always start through the isolation library; remove this setting.",
-            ),
+          launcher: deprecated(
+            "No longer read. Session VMs always start through the isolation library; remove this setting.",
+          ),
           checkout: section({
-            mode: z
-              .enum(["mount", "clone"])
-              .default("mount")
-              .describe(
-                "How new VM sessions reach the repository. mount shares the worktree and the repository's Git directory with the guest. clone gives the guest a private clone whose only remote is a host relay limited to the session's own branch. Existing sessions keep their mode.",
-              ),
+            mode: deprecated("Replaced by session.defaults.workspace."),
             visible_refs: gitVisibleRefsSchema.describe(
               "Extra ref prefixes advertised to a clone session, such as refs/tags/. Its base and own branch are always advertised. Ref filtering is not a confidentiality boundary: clone sessions must be trusted to read repository history.",
             ),

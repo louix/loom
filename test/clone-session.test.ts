@@ -59,13 +59,11 @@ test("clone sessions live on host refs and the daemon never runs Git in the clon
     connectors,
     config: `{
   "session": {
-    "titles": { "enabled": false },
     "auto_resume": { "enabled": false },
     "auto_rebase": { "enabled": true },
+    "defaults": { "isolation": "vm", "workspace": "clone" },
     "isolation": {
-      "enabled": true,
-      "claude": { "artifact": "/test-runtime" },
-      "checkout": { "mode": "clone" }
+      "claude": { "artifact": "/test-runtime" }
     }
   }
 }`,
@@ -100,6 +98,15 @@ test("clone sessions live on host refs and the daemon never runs Git in the clon
     }
     throw new Error("session did not become idle");
   };
+  /** The first turn titles the session, and renames its branch after the title. */
+  const renamedBranch = async (id: string) => {
+    for (let i = 0; i < 200; i++) {
+      const s = await c.request<SessionSnapshot>("session.get", { id });
+      if (s.branch && s.branch !== `loom/${id.slice(0, 8)}`) return s.branch;
+      await delay(5);
+    }
+    throw new Error("the session branch was not renamed");
+  };
   try {
     const created = await c.request<SessionSnapshot>("session.create", {
       prompt: "work in a clone",
@@ -128,12 +135,13 @@ test("clone sessions live on host refs and the daemon never runs Git in the clon
     git("commit", "-q", "--allow-empty", "-m", "base moved");
     const tip = publish(created.branch!, "published by the guest");
     const idle = await endTurn(created.id);
+    const branch = await renamedBranch(created.id);
     assert.equal(
       idle.git,
       null,
       "without a running guest, dirtiness is unknown rather than falsely clean",
     );
-    assert.equal(git("rev-parse", created.branch!), tip, "the host never moves a clone's branch");
+    assert.equal(git("rev-parse", branch), tip, "the host never moves a clone's branch");
     const checkpoints = await c.request<Array<{ turn: number; headSha?: string }>>(
       "session.checkpoints",
       { id: created.id },
@@ -191,7 +199,7 @@ test("clone sessions live on host refs and the daemon never runs Git in the clon
     );
     await c.request("session.remove", { id: created.id, force: true });
     assert.ok(!existsSync(clonePath), "removing the session removes its clone");
-    assert.equal(git("rev-parse", created.branch!), tip, "the branch outlives the session");
+    assert.equal(git("rev-parse", branch), tip, "the branch outlives the session");
     assert.ok(!existsSync(marker), "the clone's Git config ran on the host");
   } finally {
     c.close();

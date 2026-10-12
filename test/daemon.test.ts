@@ -2088,32 +2088,36 @@ test("config reload survives atomic saves, deletion, and invalid edits", async (
       replacement,
       `{
   "session": {
-    "worktree": {
-      "enabled": false
+    "defaults": {
+      "workspace": "in-place"
     }
   }
 }`,
     );
     renameSync(replacement, hh.configPath);
-    await waitFor(() => hh.daemon.config.worktree.enabled === false);
+    await waitFor(() => hh.daemon.config.defaults.workspace === "in-place");
 
     writeFileSync(hh.configPath, "[invalid");
     await waitFor(() => notices.some((t) => /config reload failed/.test(t)));
-    assert.equal(hh.daemon.config.worktree.enabled, false, "invalid edits keep the running config");
+    assert.equal(
+      hh.daemon.config.defaults.workspace,
+      "in-place",
+      "invalid edits keep the running config",
+    );
 
     rmSync(hh.configPath);
-    await waitFor(() => hh.daemon.config.worktree.enabled === true);
+    await waitFor(() => hh.daemon.config.defaults.workspace === "worktree");
     writeFileSync(
       hh.configPath,
       `{
   "session": {
-    "worktree": {
-      "enabled": false
+    "defaults": {
+      "workspace": "in-place"
     }
   }
 }`,
     );
-    await waitFor(() => hh.daemon.config.worktree.enabled === false);
+    await waitFor(() => hh.daemon.config.defaults.workspace === "in-place");
   } finally {
     await c.close();
     await hh.cleanup();

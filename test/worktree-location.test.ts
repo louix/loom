@@ -8,7 +8,7 @@ import type { SessionSnapshot } from "@loom/core/wire";
 
 test("changing worktree_dir preserves existing sessions and uses the new directory after restart", async () => {
   const h = await makeHarness({
-    config: '{"worktree_dir":".loom/trees","session":{"titles":{"enabled":false}}}',
+    config: '{"worktree_dir":".loom/trees"}',
   });
   let client = await LoomClient.connect({
     repoRoot: h.repoRoot,
@@ -23,7 +23,7 @@ test("changing worktree_dir preserves existing sessions and uses the new directo
     assert.ok(old.worktree?.startsWith(join(h.repoRoot, ".loom", "trees") + "/"));
     writeFileSync(join(old.worktree!, "unfinished.txt"), "keep this work");
     await client.close();
-    writeFileSync(h.configPath, '{"session":{"titles":{"enabled":false}}}');
+    writeFileSync(h.configPath, "{}");
     await h.restart();
     client = await LoomClient.connect({
       repoRoot: h.repoRoot,

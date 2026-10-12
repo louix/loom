@@ -1469,19 +1469,16 @@ export class Daemon {
   }
 
   /**
-   * The workspace a new session on `isolation` gets unless it names one: in
-   * place when worktrees are off (`session.worktree`, or a caller's
-   * `worktree: false`), a private clone on a VM under
-   * `session.isolation.checkout.mode = "clone"`, else a worktree.
+   * The workspace a new session on `isolation` gets unless it names one:
+   * `session.defaults.workspace`, where a clone is for VMs only and a host
+   * session gets a worktree. A caller's legacy `worktree` flag picks in
+   * place (false) or not (true) over it.
    */
-  #defaultWorkspace(
-    isolation: "vm" | "local",
-    worktree = this.config.worktree.enabled,
-  ): WorkspaceMode {
-    if (!worktree) return "in-place";
-    return isolation === "vm" && this.config.isolation.checkout?.mode === "clone"
-      ? "clone"
-      : "worktree";
+  #defaultWorkspace(isolation: "vm" | "local", worktree?: boolean): WorkspaceMode {
+    if (worktree === false) return "in-place";
+    const configured = this.config.defaults.workspace;
+    if (configured === "clone") return isolation === "vm" ? "clone" : "worktree";
+    return worktree === true ? "worktree" : configured;
   }
 
   #bare: boolean | undefined;
@@ -1824,7 +1821,7 @@ export class Daemon {
       isolation === "vm" &&
       (parent.isolation === "vm" && !parent.inPlace
         ? parentClone
-        : this.#defaultWorkspace("vm", true) === "clone");
+        : this.config.defaults.workspace === "clone");
     let wt: { path: string; branch: string | null; baseRef: string | null };
     if (share) {
       wt = { path: parent.worktree!, branch: parent.branch, baseRef: parent.baseBranch };
@@ -2154,7 +2151,7 @@ export class Daemon {
     parentId: string | null;
     /** The caller's choice; absent takes {@link #defaultWorkspace}. */
     workspace?: WorkspaceMode;
-    /** A legacy per-session `worktree` flag, over `session.worktree`. */
+    /** A legacy per-session `worktree` flag, over `session.defaults.workspace`. */
     worktree?: boolean;
     isolation?: "vm" | "local";
     /** What it branches from; absent takes {@link #defaultBase}. */
@@ -3082,7 +3079,7 @@ export class Daemon {
 
   /** Retry unfinished naming on successful turns, independently of turn count. */
   async #maybeAutoTitle(id: string): Promise<void> {
-    if (this.#stopping || !this.config.titles.enabled || this.#titling.has(id)) return;
+    if (this.#stopping || this.#titling.has(id)) return;
     const snap = this.#registry.get(id);
     if (!snap?.title || snap.status.kind === "done") return;
     const store = this.#registry.store;
@@ -3897,13 +3894,13 @@ export class Daemon {
     if (JSON.stringify(next) === JSON.stringify(before)) return;
 
     // Hot-apply: these are read afresh when a session starts, or drive a timer.
-    this.config.worktree = next.worktree;
+    // The isolation default waits for a restart, like the VM runtimes it enables.
+    this.config.defaults = { ...this.config.defaults, workspace: next.defaults.workspace };
+    this.config.deprecatedKeys = next.deprecatedKeys ?? [];
     this.config.autoNix = next.autoNix;
     if (this.config.isolation.environment) this.config.isolation.environment.autoNix = next.autoNix;
     this.config.autoRebase = next.autoRebase;
     this.config.commitReminder = next.commitReminder;
-    this.config.notify = next.notify;
-    this.config.titles = next.titles;
     // Read per start and resume; clients list the profiles off the snapshot.
     if (JSON.stringify(next.agents) !== JSON.stringify(before.agents)) {
       this.config.agents = next.agents;
@@ -3933,6 +3930,7 @@ export class Daemon {
       JSON.stringify(next.claudeProfiles) !== JSON.stringify(before.claudeProfiles) ||
       JSON.stringify(next.providerAccess) !== JSON.stringify(before.providerAccess) ||
       JSON.stringify(next.isolation) !== JSON.stringify(this.config.isolation) ||
+      next.defaults.isolation !== before.defaults.isolation ||
       next.baseBranch !== before.baseBranch ||
       next.worktreeDir !== before.worktreeDir ||
       JSON.stringify(next.mcp) !== JSON.stringify(before.mcp) ||
@@ -5244,7 +5242,7 @@ export class Daemon {
       if (!this.#registry.get(id)) throw new RpcError("not_found", `no such session: ${id}`);
       // A manual rename pins the title — the auto-titler won't touch it again.
       const snap = this.#registry.setFields(id, { title, titleLocked: true });
-      if (this.config.titles.enabled) await this.#maybeNameBranch(id);
+      await this.#maybeNameBranch(id);
       this.#publishState(snap.id);
       return this.#enrich(this.#registry.mustGet(id));
     });

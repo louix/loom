@@ -32,11 +32,14 @@ Deno.test("schemas are versioned and strict, and projects cannot carry host auth
     { limits: { cpus: 64 } },
     { lifecycle: { execution: "local" } },
     { repos: [] },
-    { access: { network: { hosts: ["example.com"] }, grants: {} } },
+    { access: { network: { allowedHosts: ["example.com"] }, grants: {} } },
   ])
     assert.throws(() => project(authority), /Unrecognized/, JSON.stringify(authority));
   assert.throws(() => project({ environment: { resources: { cpus: 0 } } }), /cpus/);
-  assert.throws(() => project({ access: { network: { hosts: ["*.example.com"] } } }), /hosts/);
+  assert.throws(
+    () => project({ access: { network: { allowedHosts: ["*.example.com"] } } }),
+    /allowedHosts/,
+  );
   assert.throws(() => project({ skills: ["../private"] }), /relative/);
   assert.throws(() => user({ profiles: { shell: {} } }), /entrypoint/);
   assert.throws(() => user({ profiles: { shell: { entrypoint: ["-x"] } } }), /entrypoint/);
@@ -91,14 +94,14 @@ Deno.test("a project cannot grant itself setup, hosts or resources", () => {
   assert.deepEqual(granted.start, [{ name: "start 1", run: "make dev", timeoutMs: 900_000 }]);
 
   const network = project({
-    access: { network: { presets: ["javascript"], hosts: ["a.example"] } },
+    access: { network: { presets: ["javascript"], allowedHosts: ["a.example"] } },
   });
   assert.throws(() => resolve(network), /not granted: a\.example/);
   assert.throws(
     () =>
       resolve(
         network,
-        user({ repos: [{ path: repo, grants: { network: { hosts: ["a.example"] } } }] }),
+        user({ repos: [{ path: repo, grants: { network: { allowedHosts: ["a.example"] } } }] }),
       ),
     /not granted: registry\.npmjs\.org/,
   );
@@ -106,7 +109,10 @@ Deno.test("a project cannot grant itself setup, hosts or resources", () => {
     network,
     user({
       repos: [
-        { path: repo, grants: { network: { presets: ["javascript"], hosts: ["a.example"] } } },
+        {
+          path: repo,
+          grants: { network: { presets: ["javascript"], allowedHosts: ["a.example"] } },
+        },
       ],
     }),
   );
@@ -123,10 +129,10 @@ Deno.test("a project cannot grant itself setup, hosts or resources", () => {
 
 Deno.test("host layers apply setup and network themselves, without grants", () => {
   const resolved = resolve(
-    project({ access: { network: { hosts: ["cache.nixos.org"] } } }),
+    project({ access: { network: { allowedHosts: ["cache.nixos.org"] } } }),
     user({
       environment: { nix: { auto: true }, start: [{ name: "up", run: "services up" }] },
-      access: { network: { presets: ["nix"], hosts: ["user.example"] } },
+      access: { network: { presets: ["nix"], allowedHosts: ["user.example"] } },
     }),
   );
   assert.equal(resolved.repository, null);
@@ -143,14 +149,39 @@ Deno.test("host layers apply setup and network themselves, without grants", () =
   const replaced = resolve(
     project(),
     user({
-      access: { network: { presets: ["nix"], hosts: ["user.example"] } },
-      repos: [{ path: repo, access: { network: { hosts: ["repo.example"] } } }],
+      access: { network: { presets: ["nix"], allowedHosts: ["user.example"] } },
+      repos: [{ path: repo, access: { network: { allowedHosts: ["repo.example"] } } }],
     }),
   );
   const source = (host: string) => replaced.network.find((entry) => entry.host === host)?.source;
   assert.equal(source("repo.example"), "repository");
   assert.equal(source("user.example"), undefined);
   assert.equal(source("cache.nixos.org"), "user", "presets still inherited");
+});
+
+Deno.test("network hosts written under the deprecated name still apply and are reported", () => {
+  const legacy = resolveEnvironmentConfig(
+    project({ access: { network: { hosts: ["project.example"] } } }),
+    user({
+      access: { network: { hosts: ["user.example"] } },
+      repos: [
+        {
+          path: repo,
+          grants: { network: { hosts: ["project.example"] } },
+          access: { network: { allowedHosts: ["repo.example"], hosts: ["ignored.example"] } },
+        },
+      ],
+    }),
+    [repo],
+  );
+  assert.deepEqual(legacy.extraAllowedHosts, ["repo.example", "project.example"]);
+  assert.deepEqual(legacy.deprecated, [
+    "user config: access.network.hosts is deprecated; write access.network.allowedHosts instead",
+    `user config: repos[${repo}].access.network.hosts is deprecated and ignored: repos[${repo}].access.network.allowedHosts is also set and wins; remove repos[${repo}].access.network.hosts`,
+    `user config: repos[${repo}].grants.network.hosts is deprecated; write repos[${repo}].grants.network.allowedHosts instead`,
+    "project config: access.network.hosts is deprecated; write access.network.allowedHosts instead",
+  ]);
+  assert.deepEqual(resolve().deprecated, []);
 });
 
 Deno.test("precedence: user, profile, project, then repository; hooks replace", () => {
@@ -294,7 +325,7 @@ Deno.test("loading works for ordinary directories", async () => {
     const userFile = join(root, "environment.jsonc");
     await Deno.writeTextFile(
       join(root, "loom.json"),
-      JSON.stringify({ version: 1, access: { network: { hosts: ["pypi.org"] } } }),
+      JSON.stringify({ version: 1, access: { network: { allowedHosts: ["pypi.org"] } } }),
     );
     await Deno.writeTextFile(
       userFile,

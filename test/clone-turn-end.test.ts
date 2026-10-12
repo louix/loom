@@ -72,7 +72,6 @@ const setup = async () => {
     },
     config: JSON.stringify({
       session: {
-        titles: { enabled: false },
         auto_resume: { enabled: false },
         auto_rebase: { enabled: false },
         isolation: {

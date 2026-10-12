@@ -9,7 +9,7 @@ Enable automatic project shell activation in the trusted user config:
       "path": "~/dev/my-project",
       "session": {
         "auto_nix": true,
-        "isolation": { "network_presets": ["nix"] },
+        "isolation": { "network": { "presets": ["nix"] } },
       },
     },
   ],
@@ -259,7 +259,7 @@ Host worktrees, conversation profiles and package-manager caches are preserved.
 
 ## Private prepared workspaces
 
-With `session.isolation.checkout.mode: "clone"`, preparation builds a clean
+With `session.defaults.workspace: "clone"`, preparation builds a clean
 independent clone and a sibling cache directory. A new session gets a private
 copy of both, mounted together at `/workspace`. Its working directory is
 `/workspace/checkout`; `LOOM_WORKSPACE`, `LOOM_CHECKOUT`, and `LOOM_CACHE`
@@ -271,9 +271,9 @@ Configure installation using generic commands in your trusted repo settings:
 
 ```jsonc
 "session": {
+  "defaults": { "workspace": "clone" },
   "isolation": {
-    "checkout": { "mode": "clone" },
-    "network_presets": ["javascript"],
+    "network": { "presets": ["javascript"] },
     "idle_timeout_minutes": 10,
   },
 },
@@ -381,7 +381,7 @@ use, as described in the packaging documentation.
 
 ## Network presets
 
-Presets compose with `extra_allowed_hosts`, using the same exact-name HTTPS:443
+Presets compose with `allowed_hosts` (both under `session.isolation.network`), using the same exact-name HTTPS:443
 policy. They grant access to the whole session VM, not just setup commands.
 
 - `nix`: `cache.nixos.org`, `devenv.cachix.org`, `channels.nixos.org`,
@@ -399,12 +399,12 @@ policy. They grant access to the whole session VM, not just setup commands.
   toolchains).
 
 For a repo using all four, set
-`network_presets = ["nix", "javascript", "python", "rust"]` under
-`repos[].session.isolation`.
+`presets = ["nix", "javascript", "python", "rust"]` under
+`repos[].session.isolation.network`.
 
 Nix builds that fetch Rust crates also need `rust`; the `nix` preset alone does
 not grant crate downloads. If preparation fails with a proxy `403 Forbidden` for
-`static.crates.io`, add `rust` to the repo's existing `network_presets` in the
+`static.crates.io`, add `rust` to the repo's existing `network.presets` in the
 trusted user config and rerun `loom vm prepare`.
 
 Custom registries, source downloads and redirects may need additional exact

@@ -146,7 +146,10 @@ export class ProviderRegistry {
 
   /** Configured default for new sessions; existing sessions keep their recorded mode. */
   defaultIsolation(id: string): "vm" | "local" {
-    return this.#config.isolation.enabled && id !== "fake" && id !== "mock" && id !== "echo"
+    return this.#config.defaults.isolation === "vm" &&
+      id !== "fake" &&
+      id !== "mock" &&
+      id !== "echo"
       ? "vm"
       : "local";
   }
@@ -184,9 +187,10 @@ export class ProviderRegistry {
     const { claude: _c, aisdk: _a, codex: _x, ...shared } = this.#config.isolation;
     return {
       ...this.#config,
+      // This provider's own sessions: the default is the isolation it was built for.
+      defaults: { ...this.#config.defaults, isolation: isolation === "vm" ? "vm" : "none" },
       isolation: {
         ...shared,
-        enabled: isolation === "vm",
         ...(isolation === "vm" ? { [this.#vmKind(id)]: this.vmPolicy(id) } : {}),
       },
     };

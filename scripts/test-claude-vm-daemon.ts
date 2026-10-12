@@ -70,9 +70,6 @@ await Deno.writeTextFile(
       "smolvm": ${JSON.stringify(smolvm)}
     }
   },
-  "titles": {
-    "enabled": false
-  },
   "search": {
     "backend": "none"
   },

@@ -41,7 +41,7 @@ commands:
   tail                   stream the live event feed (Ctrl-C to stop)
 
   run <prompt...>        start a session   [--provider P] [--model M] [--mode manual|plan|acceptEdits|auto]
-                         [--in-place | --worktree]  override session.worktree.enabled for this session
+                         [--in-place | --worktree]  override session.defaults.workspace for this session
   send <id> <text...>    queue a follow-up for the next tool boundary   [--end-of-turn]
   queue <id>             show a session's queued messages and when each goes   [--release] [--json]
   compact <id> [text...] compact the context window (optional steer for the summary)
@@ -114,7 +114,7 @@ loom mcp logout <name> [--json]
   --model M                    model id; default from the provider
   --mode manual|plan|acceptEdits|auto
   --isolation vm|local          override the configured session isolation default
-  --in-place                   work in the repo, no worktree (overrides session.worktree.enabled)
+  --in-place                   work in the repo, no worktree (overrides session.defaults.workspace)
   --worktree                   force an isolated worktree + branch
   --repo <path>                act on the daemon for another repo`,
   providers: `loom providers  — list configured providers

@@ -89,6 +89,9 @@ export const formatConfig = (config: IsolateConfig): string => {
       ...(config.unsupported.length
         ? ["unsupported (ignored)", ...config.unsupported.map((entry) => "  " + entry)]
         : []),
+      ...(config.deprecated.length
+        ? ["deprecated", ...config.deprecated.map((entry) => "  " + entry)]
+        : []),
     ].join("\n") + "\n"
   );
 };

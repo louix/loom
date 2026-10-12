@@ -91,14 +91,48 @@
                 "enum": ["none", "read-only", "read-write"]
               },
               "network": {
-                "default": [],
-                "maxItems": 64,
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "maxLength": 253,
-                  "pattern": "^(?:\\*\\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"
-                }
+                "anyOf": [
+                  {
+                    "default": {},
+                    "type": "object",
+                    "properties": {
+                      "allowed_hosts": {
+                        "description": "DNS names the tool VM may reach, on any port; *.example.com covers every subdomain, not the name itself.",
+                        "default": [],
+                        "maxItems": 64,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "maxLength": 253,
+                          "pattern": "^(?:\\*\\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+                        }
+                      },
+                      "presets": {
+                        "default": [],
+                        "description": "Named host sets: nix, javascript, python, rust.",
+                        "maxItems": 16,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "enum": ["nix", "javascript", "python", "rust"]
+                        }
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  {
+                    "deprecated": true,
+                    "description": "Replaced by { allowed_hosts: [...] }.",
+                    "default": [],
+                    "maxItems": 64,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "maxLength": 253,
+                      "pattern": "^(?:\\*\\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+                    }
+                  }
+                ]
               }
             },
             "additionalProperties": false
@@ -191,15 +225,27 @@
             "type": "string"
           }
         },
-        "worktree": {
+        "defaults": {
           "type": "object",
           "properties": {
-            "enabled": {
-              "default": true,
-              "type": "boolean"
+            "isolation": {
+              "default": "none",
+              "description": "Where new sessions run: none (on the host) or vm. Each new session can still choose the other when a VM runtime is available. Existing sessions keep theirs.",
+              "type": "string",
+              "enum": ["none", "vm"]
+            },
+            "workspace": {
+              "default": "worktree",
+              "description": "What new sessions work in: in-place (the repository's own checkout, no branch), worktree (a git worktree on its own branch), or clone (VM sessions only: a private clone whose only remote is a host relay limited to the session's branch; host sessions get a worktree). Each new session can override it. Existing sessions keep theirs.",
+              "type": "string",
+              "enum": ["in-place", "worktree", "clone"]
             }
           },
           "additionalProperties": false
+        },
+        "worktree": {
+          "deprecated": true,
+          "description": "Replaced by session.defaults.workspace."
         },
         "auto_rebase": {
           "type": "object",
@@ -237,24 +283,12 @@
           "additionalProperties": false
         },
         "titles": {
-          "type": "object",
-          "properties": {
-            "enabled": {
-              "default": true,
-              "type": "boolean"
-            }
-          },
-          "additionalProperties": false
+          "deprecated": true,
+          "description": "No longer read; session titles are always generated."
         },
         "notify": {
-          "type": "object",
-          "properties": {
-            "webhook": {
-              "default": "",
-              "type": "string"
-            }
-          },
-          "additionalProperties": false
+          "deprecated": true,
+          "description": "No longer read; use a hooks entry (on: waiting) instead of the webhook."
         },
         "provider_access": {
           "type": "object",
@@ -280,9 +314,8 @@
           "type": "object",
           "properties": {
             "enabled": {
-              "default": false,
-              "description": "Default new sessions to VM (true) or Local (false). This does not disable VM execution: each new session can override the default when a runtime is available. Existing sessions keep their mode.",
-              "type": "boolean"
+              "deprecated": true,
+              "description": "Replaced by session.defaults.isolation."
             },
             "claude": {
               "type": "object",
@@ -320,24 +353,40 @@
               },
               "additionalProperties": false
             },
+            "network": {
+              "type": "object",
+              "properties": {
+                "allowed_hosts": {
+                  "default": [],
+                  "description": "Exact DNS names VM sessions may reach over HTTPS (port 443); no URLs, IPs or wildcards.",
+                  "maxItems": 64,
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "maxLength": 253,
+                    "pattern": "^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+                  }
+                },
+                "presets": {
+                  "default": [],
+                  "description": "Named host sets: nix, javascript, python, rust.",
+                  "maxItems": 16,
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": ["nix", "javascript", "python", "rust"]
+                  }
+                }
+              },
+              "additionalProperties": false
+            },
             "extra_allowed_hosts": {
-              "default": [],
-              "maxItems": 64,
-              "type": "array",
-              "items": {
-                "type": "string",
-                "maxLength": 253,
-                "pattern": "^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"
-              }
+              "deprecated": true,
+              "description": "Replaced by session.isolation.network.allowed_hosts."
             },
             "network_presets": {
-              "default": [],
-              "maxItems": 16,
-              "type": "array",
-              "items": {
-                "type": "string",
-                "enum": ["nix", "javascript", "python", "rust"]
-              }
+              "deprecated": true,
+              "description": "Replaced by session.isolation.network.presets."
             },
             "environment": {
               "default": {},
@@ -413,10 +462,8 @@
               "type": "object",
               "properties": {
                 "mode": {
-                  "default": "mount",
-                  "description": "How new VM sessions reach the repository. mount shares the worktree and the repository's Git directory with the guest. clone gives the guest a private clone whose only remote is a host relay limited to the session's own branch. Existing sessions keep their mode.",
-                  "type": "string",
-                  "enum": ["mount", "clone"]
+                  "deprecated": true,
+                  "description": "Replaced by session.defaults.workspace."
                 },
                 "visible_refs": {
                   "default": [],
@@ -1566,14 +1613,48 @@
                       "enum": ["none", "read-only", "read-write"]
                     },
                     "network": {
-                      "default": [],
-                      "maxItems": 64,
-                      "type": "array",
-                      "items": {
-                        "type": "string",
-                        "maxLength": 253,
-                        "pattern": "^(?:\\*\\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"
-                      }
+                      "anyOf": [
+                        {
+                          "default": {},
+                          "type": "object",
+                          "properties": {
+                            "allowed_hosts": {
+                              "description": "DNS names the tool VM may reach, on any port; *.example.com covers every subdomain, not the name itself.",
+                              "default": [],
+                              "maxItems": 64,
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "maxLength": 253,
+                                "pattern": "^(?:\\*\\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+                              }
+                            },
+                            "presets": {
+                              "default": [],
+                              "description": "Named host sets: nix, javascript, python, rust.",
+                              "maxItems": 16,
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "enum": ["nix", "javascript", "python", "rust"]
+                              }
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        {
+                          "deprecated": true,
+                          "description": "Replaced by { allowed_hosts: [...] }.",
+                          "default": [],
+                          "maxItems": 64,
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "maxLength": 253,
+                            "pattern": "^(?:\\*\\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+                          }
+                        }
+                      ]
                     }
                   },
                   "additionalProperties": false
@@ -1666,15 +1747,27 @@
                   "type": "string"
                 }
               },
-              "worktree": {
+              "defaults": {
                 "type": "object",
                 "properties": {
-                  "enabled": {
-                    "default": true,
-                    "type": "boolean"
+                  "isolation": {
+                    "default": "none",
+                    "description": "Where new sessions run: none (on the host) or vm. Each new session can still choose the other when a VM runtime is available. Existing sessions keep theirs.",
+                    "type": "string",
+                    "enum": ["none", "vm"]
+                  },
+                  "workspace": {
+                    "default": "worktree",
+                    "description": "What new sessions work in: in-place (the repository's own checkout, no branch), worktree (a git worktree on its own branch), or clone (VM sessions only: a private clone whose only remote is a host relay limited to the session's branch; host sessions get a worktree). Each new session can override it. Existing sessions keep theirs.",
+                    "type": "string",
+                    "enum": ["in-place", "worktree", "clone"]
                   }
                 },
                 "additionalProperties": false
+              },
+              "worktree": {
+                "deprecated": true,
+                "description": "Replaced by session.defaults.workspace."
               },
               "auto_rebase": {
                 "type": "object",
@@ -1712,24 +1805,12 @@
                 "additionalProperties": false
               },
               "titles": {
-                "type": "object",
-                "properties": {
-                  "enabled": {
-                    "default": true,
-                    "type": "boolean"
-                  }
-                },
-                "additionalProperties": false
+                "deprecated": true,
+                "description": "No longer read; session titles are always generated."
               },
               "notify": {
-                "type": "object",
-                "properties": {
-                  "webhook": {
-                    "default": "",
-                    "type": "string"
-                  }
-                },
-                "additionalProperties": false
+                "deprecated": true,
+                "description": "No longer read; use a hooks entry (on: waiting) instead of the webhook."
               },
               "provider_access": {
                 "type": "object",
@@ -1755,9 +1836,8 @@
                 "type": "object",
                 "properties": {
                   "enabled": {
-                    "default": false,
-                    "description": "Default new sessions to VM (true) or Local (false). This does not disable VM execution: each new session can override the default when a runtime is available. Existing sessions keep their mode.",
-                    "type": "boolean"
+                    "deprecated": true,
+                    "description": "Replaced by session.defaults.isolation."
                   },
                   "claude": {
                     "type": "object",
@@ -1795,24 +1875,40 @@
                     },
                     "additionalProperties": false
                   },
+                  "network": {
+                    "type": "object",
+                    "properties": {
+                      "allowed_hosts": {
+                        "default": [],
+                        "description": "Exact DNS names VM sessions may reach over HTTPS (port 443); no URLs, IPs or wildcards.",
+                        "maxItems": 64,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "maxLength": 253,
+                          "pattern": "^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+                        }
+                      },
+                      "presets": {
+                        "default": [],
+                        "description": "Named host sets: nix, javascript, python, rust.",
+                        "maxItems": 16,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "enum": ["nix", "javascript", "python", "rust"]
+                        }
+                      }
+                    },
+                    "additionalProperties": false
+                  },
                   "extra_allowed_hosts": {
-                    "default": [],
-                    "maxItems": 64,
-                    "type": "array",
-                    "items": {
-                      "type": "string",
-                      "maxLength": 253,
-                      "pattern": "^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"
-                    }
+                    "deprecated": true,
+                    "description": "Replaced by session.isolation.network.allowed_hosts."
                   },
                   "network_presets": {
-                    "default": [],
-                    "maxItems": 16,
-                    "type": "array",
-                    "items": {
-                      "type": "string",
-                      "enum": ["nix", "javascript", "python", "rust"]
-                    }
+                    "deprecated": true,
+                    "description": "Replaced by session.isolation.network.presets."
                   },
                   "environment": {
                     "default": {},
@@ -1888,10 +1984,8 @@
                     "type": "object",
                     "properties": {
                       "mode": {
-                        "default": "mount",
-                        "description": "How new VM sessions reach the repository. mount shares the worktree and the repository's Git directory with the guest. clone gives the guest a private clone whose only remote is a host relay limited to the session's own branch. Existing sessions keep their mode.",
-                        "type": "string",
-                        "enum": ["mount", "clone"]
+                        "deprecated": true,
+                        "description": "Replaced by session.defaults.workspace."
                       },
                       "visible_refs": {
                         "default": [],

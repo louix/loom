@@ -16,7 +16,6 @@ import { sessionVmDirectory } from "../backend/daemon/src/daemon/session-vm-stat
 const config = (o: { clone: boolean; worktree: boolean }) =>
   JSON.stringify({
     session: {
-      titles: { enabled: false },
       auto_resume: { enabled: false },
       worktree: { enabled: o.worktree },
       isolation: {

@@ -62,7 +62,7 @@ inside the same VM; it is not a grant limited to the Claude process.
       "path": "~/dev/loom",
       "session": {
         "isolation": {
-          "extra_allowed_hosts": ["registry.npmjs.org"],
+          "network": { "allowed_hosts": ["registry.npmjs.org"] },
         },
       },
     },
@@ -196,8 +196,8 @@ The Linux Nix package bundles the runtime. Opt in for all providers in this proj
 ```jsonc
 {
   "session": {
-    "isolation": {
-      "enabled": true,
+    "defaults": {
+      "isolation": "vm",
     },
   },
 }

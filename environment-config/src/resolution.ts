@@ -23,6 +23,7 @@ import {
   environmentUserSchema,
   projectEnvironmentSchema,
   type EnvironmentIntent,
+  type EnvironmentNetwork,
   type EnvironmentUserConfig,
   type ProjectEnvironmentConfig,
 } from "./schema.ts";
@@ -85,8 +86,25 @@ const hooks = (kind: string, entries: EnvironmentIntent["prepare"]): InitHook[] 
     run: entry.run,
     timeoutMs: entry.timeoutSeconds * 1000,
   }));
-const hosts = (network?: { presets?: string[]; hosts?: string[] }) =>
-  normalizeExtraHosts([...(network?.hosts ?? []), ...expandNetworkPresets(network?.presets ?? [])]);
+/** A network's `allowedHosts`, else its deprecated `hosts`. */
+const allowedHosts = (network?: EnvironmentNetwork) => network?.allowedHosts ?? network?.hosts;
+const hosts = (network?: EnvironmentNetwork) =>
+  normalizeExtraHosts([
+    ...(allowedHosts(network) ?? []),
+    ...expandNetworkPresets(network?.presets ?? []),
+  ]);
+const legacyHosts = (
+  network: EnvironmentNetwork | undefined,
+  file: "user config" | "project config",
+  at: string,
+): string[] => {
+  if (network?.hosts === undefined) return [];
+  return [
+    network.allowedHosts === undefined
+      ? `${file}: ${at}.hosts is deprecated; write ${at}.allowedHosts instead`
+      : `${file}: ${at}.hosts is deprecated and ignored: ${at}.allowedHosts is also set and wins; remove ${at}.hosts`,
+  ];
+};
 
 export interface ResolvedEnvironmentConfig {
   version: 1;
@@ -103,6 +121,8 @@ export interface ResolvedEnvironmentConfig {
   lifecycle: NonNullable<EnvironmentUserConfig["lifecycle"]>;
   /** Project requests no consumer satisfies yet; ignoring them grants nothing. */
   unsupported: string[];
+  /** One line per renamed setting either file still uses; it is read under its new name. */
+  deprecated: string[];
   /** The layer that supplied each environment field. */
   sources: Record<EnvironmentField, ConfigLayer>;
 }
@@ -174,11 +194,15 @@ export const resolveEnvironmentConfig = (
 
   // Host fields replace the user-level field individually; the project adds requests.
   const network: Array<{ host: string; source: ConfigLayer }> = [];
-  for (const key of ["hosts", "presets"] as const) {
+  const fields = {
+    allowedHosts: (n?: EnvironmentNetwork) => allowedHosts(n),
+    presets: (n?: EnvironmentNetwork) => n?.presets,
+  };
+  for (const [key, read] of Object.entries(fields)) {
     const [source, value] =
-      repo?.access?.network?.[key] !== undefined
-        ? (["repository", repo.access.network[key]] as const)
-        : (["user", user.access?.network?.[key]] as const);
+      read(repo?.access?.network) !== undefined
+        ? (["repository", read(repo?.access?.network)] as const)
+        : (["user", read(user.access?.network)] as const);
     for (const host of hosts({ [key]: value }))
       if (!network.some((entry) => entry.host === host)) network.push({ host, source });
   }
@@ -223,6 +247,14 @@ export const resolveEnvironmentConfig = (
     network,
     lifecycle: { ...user.lifecycle, ...repo?.lifecycle },
     unsupported,
+    deprecated: [
+      ...legacyHosts(user.access?.network, "user config", "access.network"),
+      ...user.repos.flatMap((entry) => [
+        ...legacyHosts(entry.access?.network, "user config", `repos[${entry.path}].access.network`),
+        ...legacyHosts(entry.grants.network, "user config", `repos[${entry.path}].grants.network`),
+      ]),
+      ...legacyHosts(project.access?.network, "project config", "access.network"),
+    ],
     sources,
   };
 };

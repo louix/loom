@@ -47,7 +47,7 @@ export const extraHostsSchema = z
 export const expandNetworkPresets = (value: unknown): string[] => {
   const result = networkPresetsSchema.safeParse(value);
   if (!result.success)
-    throw new Error(`network_presets must contain only: ${Object.keys(networkPresets).join(", ")}`);
+    throw new Error(`network presets must contain only: ${Object.keys(networkPresets).join(", ")}`);
   return [...new Set(result.data.flatMap((v) => [...networkPresets[v]]))];
 };
 
@@ -55,7 +55,7 @@ export const normalizeExtraHosts = (value: unknown): string[] => {
   const result = extraHostsSchema.safeParse(value);
   if (!result.success)
     throw new Error(
-      "extra_allowed_hosts must contain exact DNS names (HTTPS port 443 only; no URLs, IPs or wildcards)",
+      "allowed hosts must contain exact DNS names (HTTPS port 443 only; no URLs, IPs or wildcards)",
     );
   return [...new Set(result.data.map((host) => host.toLowerCase()))];
 };

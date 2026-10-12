@@ -47,7 +47,7 @@ const mkFixture = (): Fixture => {
   const paths = loomPaths(repo);
   mkdirSync(paths.legacy.dir);
   const config = join(repo, ".git", "loom-test-config.jsonc");
-  writeFileSync(config, '{"session":{"titles":{"enabled":false}}}');
+  writeFileSync(config, "{}");
   return {
     repo,
     paths,

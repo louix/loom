@@ -12,17 +12,7 @@ import { makeHarness, type Harness } from "@loom/harness";
 let h: Harness;
 
 before(async () => {
-  // Disable the auto-titler: it renames `loom/<id>` branches out from under the
-  // worktree, which several assertions here (and the archive/revive test) key on.
-  h = await makeHarness({
-    config: `{
-  "session": {
-    "titles": {
-      "enabled": false
-    }
-  }
-}`,
-  });
+  h = await makeHarness();
 });
 after(async () => {
   await h.cleanup();
@@ -190,11 +180,17 @@ test("messaging an archived session re-checks out its branch and resumes on it",
   await waitFor(
     async () => (await c.request<SessionSnapshot>("session.get", { id: s.id })).turns === 1,
   );
+  // The first turn titles the session, and renames its branch after the title.
+  let branch: string | null = null;
+  await waitFor(async () => {
+    branch = (await c.request<SessionSnapshot>("session.get", { id: s.id })).branch;
+    return branch !== `loom/${s.id.slice(0, 8)}`;
+  });
 
   const doneSnap = await c.request<SessionSnapshot>("session.markDone", { id: s.id });
   assert.equal(doneSnap.status.kind, "done");
   assert.equal(doneSnap.worktree, null);
-  assert.equal(doneSnap.branch, `loom/${s.id.slice(0, 8)}`);
+  assert.equal(doneSnap.branch, branch);
   assert.ok(!existsSync(wt0), "archived: worktree gone");
 
   await c.request("session.send", { id: s.id, text: "keep going" });
@@ -202,7 +198,7 @@ test("messaging an archived session re-checks out its branch and resumes on it",
   assert.notEqual(revived.status.kind, "done", "no longer archived");
   assert.ok(revived.worktree, "resumed with a worktree");
   assert.ok(existsSync(revived.worktree as string), "the worktree is back on disk");
-  assert.equal(revived.branch, `loom/${s.id.slice(0, 8)}`, "same branch");
+  assert.equal(revived.branch, branch, "same branch");
   assert.equal(
     execFileSync("git", ["-C", revived.worktree as string, "rev-parse", "HEAD"], {
       encoding: "utf8",

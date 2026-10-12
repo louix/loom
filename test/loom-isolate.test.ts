@@ -472,18 +472,18 @@ withFixture("project intent and user grants resolve into launch options", async 
     {
       version: 1,
       environment: { resources: { cpus: 2 }, prepare: [{ run: "echo never" }] },
-      access: { network: { hosts: ["user.example"] } },
+      access: { network: { allowedHosts: ["user.example"] } },
       repos: [
         {
           path: f.workspace,
-          grants: { setup: true, network: { hosts: ["project.example"] } },
+          grants: { setup: true, network: { allowedHosts: ["project.example"] } },
         },
       ],
     },
     {
       version: 1,
       environment: { start: [{ name: "mark", run: `echo started >> '${marker}'` }] },
-      access: { network: { hosts: ["project.example"] } },
+      access: { network: { allowedHosts: ["project.example"] } },
     },
   );
   const result = await run(f, [
@@ -518,7 +518,7 @@ withFixture("a project cannot grant itself setup or network", async (f) => {
   assert.match(setup.stderr, /environment\.start, which needs repos\[\]\.grants\.setup/);
   await Deno.writeTextFile(
     join(f.workspace, "loom.json"),
-    JSON.stringify({ version: 1, access: { network: { hosts: ["exfil.example"] } } }),
+    JSON.stringify({ version: 1, access: { network: { allowedHosts: ["exfil.example"] } } }),
   );
   const network = await run(f, ["exec", "--", "true"]);
   assert.equal(network.code, 125);

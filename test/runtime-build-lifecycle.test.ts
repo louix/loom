@@ -108,7 +108,6 @@ test("with a runtime build pending, a send waits out an idle shutdown and respec
     },
     config: JSON.stringify({
       session: {
-        titles: { enabled: false },
         auto_resume: { enabled: false },
         auto_rebase: { enabled: false },
         commit_reminder: { enabled: false },
@@ -142,6 +141,9 @@ test("with a runtime build pending, a send waits out an idle shutdown and respec
       prompt: "go",
     });
     await until(() => fake.session(s.id) !== undefined, "session started");
+    // Named now, while nothing else runs: an auto-title after the turn would
+    // rename the branch, a workspace operation, in the middle of what follows.
+    await c.request("session.setTitle", { id: s.id, title: "runtime build" });
     const first = fake.session(s.id)!;
     first.finishTurn();
     await until(() => status(s.id) === "idle", "idle");
@@ -275,7 +277,6 @@ test("with a runtime build pending, a send during an environment refresh replies
     connectors,
     config: JSON.stringify({
       session: {
-        titles: { enabled: false },
         auto_resume: { enabled: false },
         auto_rebase: { enabled: false },
         commit_reminder: { enabled: false },
@@ -319,6 +320,9 @@ test("with a runtime build pending, a send during an environment refresh replies
       prompt: "go",
     });
     await until(() => fake.session(s.id) !== undefined, "session started");
+    // Named now, while nothing else runs: an auto-title after the turn would
+    // rename the branch, a workspace operation, in the middle of what follows.
+    await c.request("session.setTitle", { id: s.id, title: "runtime build" });
     const first = fake.session(s.id)!;
     first.finishTurn();
     await until(() => status(s.id) === "idle", "idle");

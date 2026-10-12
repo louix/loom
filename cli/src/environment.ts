@@ -209,9 +209,7 @@ export const prepareRuntimeEnvironment = async (
     );
     candidate = await Deno.makeTempDir({ dir: home, prefix: "base-" });
     const privateWorkspace =
-      config.isolation.checkout?.mode === "clone"
-        ? await initializeWorkspace(candidate)
-        : undefined;
+      config.defaults.workspace === "clone" ? await initializeWorkspace(candidate) : undefined;
     const workspace = privateWorkspace
       ? join(privateWorkspace, "checkout")
       : join(temporary, "worktree");

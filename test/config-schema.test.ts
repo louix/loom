@@ -59,8 +59,28 @@ test("editor schema validates user inputs, optional defaults, and repo overrides
         },
       },
     },
-    { session: { isolation: { network_presets: ["rust"] } } },
-    { session: { auto_nix: true, isolation: { network_presets: ["nix"] } } },
+    { session: { isolation: { network: { presets: ["rust"] } } } },
+    {
+      session: { auto_nix: true, isolation: { network: { presets: ["nix"], allowed_hosts: [] } } },
+    },
+    // Editors accept deprecated keys; Loom reads them under their new names and says so.
+    {
+      session: {
+        worktree: { enabled: false },
+        titles: { enabled: false },
+        notify: { webhook: "" },
+        isolation: { enabled: true, network_presets: ["nix"], checkout: { mode: "clone" } },
+      },
+    },
+    {
+      mcp_servers: {
+        docs: {
+          source: { kind: "runtime", ref: "docs" },
+          execution: "vm",
+          grants: { network: ["api.example.com"] },
+        },
+      },
+    },
     { hooks: [{ on: "turn_end", run: "check", timeout: 30 }] },
     {
       hooks: [
@@ -77,9 +97,9 @@ test("editor schema validates user inputs, optional defaults, and repo overrides
           path: "~/dev/project",
           session: {
             vm_tools: [],
+            defaults: { isolation: "vm" },
             isolation: {
-              enabled: true,
-              network_presets: ["nix", "rust"],
+              network: { presets: ["nix", "rust"] },
             },
           },
         },
@@ -94,11 +114,12 @@ test("editor schema validates user inputs, optional defaults, and repo overrides
     { session: { isolation: { environment: { nix: true } } } },
     {
       session: {
-        isolation: {
-          enabled: "yes",
+        defaults: {
+          isolation: "yes",
         },
       },
     },
+    { session: { isolation: { network: { hosts: ["example.com"] } } } },
     {
       repos: [{}],
     },
@@ -157,13 +178,13 @@ test("scaffolding refreshes the offline schema without overwriting user settings
     );
     writeFileSync(
       userConfigPath(),
-      '{\n  "session": {\n    "worktree": {\n      "enabled": false\n    }\n  }\n}',
+      '{\n  "session": {\n    "defaults": {\n      "workspace": "in-place"\n    }\n  }\n}',
     );
     writeFileSync(userSchemaPath(), "{}");
     assert.equal(scaffoldUserConfig(), null);
     assert.equal(
-      normalizeConfig(parseConfig(readFileSync(userConfigPath(), "utf8"))).worktree.enabled,
-      false,
+      normalizeConfig(parseConfig(readFileSync(userConfigPath(), "utf8"))).defaults.workspace,
+      "in-place",
     );
     assert.deepEqual(JSON.parse(readFileSync(userSchemaPath(), "utf8")), schema);
   } finally {
@@ -206,14 +227,8 @@ test("Zod retains the existing lenient defaults and null tool selections", () =>
     },
     session: {
       local_tools: null,
-      worktree: "ignored",
-      titles: {
-        enabled: "ignored",
-      },
     },
   });
-  assert.equal(config.worktree.enabled, true);
-  assert.equal(config.titles.enabled, true);
   assert.deepEqual(config.mcp, []);
   assert.deepEqual(config.providers.claude.models, ["sonnet", "haiku"]);
   assert.deepEqual(

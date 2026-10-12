@@ -103,7 +103,7 @@ test("a daemon refuses to start beside an older one, and releases its pidfile", 
   const f = mkFixture();
   const old = mkFakeLoomd();
   const config = join(f.repo, "config.jsonc");
-  writeFileSync(config, '{"session":{"titles":{"enabled":false}}}');
+  writeFileSync(config, "{}");
   try {
     writeLegacyDaemon(f.paths, old.pid);
     await assert.rejects(

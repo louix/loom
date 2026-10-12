@@ -56,7 +56,7 @@ test("network presets compose with exact hosts and reject unknown grants", () =>
     assert(!expandNetworkPresets(["nix"]).includes(host));
   }
   for (const invalid of ["nix", ["cargo"], ["__proto__"], ["*"], [1]])
-    assert.throws(() => expandNetworkPresets(invalid), /network_presets/);
+    assert.throws(() => expandNetworkPresets(invalid), /network presets/);
   // The egress proxy matches exactly: presets name each host, and nothing is a pattern.
   const presetHosts = Object.values(networkPresets).flat();
   assert.deepEqual(normalizeExtraHosts(presetHosts), [...new Set(presetHosts)]);

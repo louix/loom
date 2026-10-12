@@ -109,7 +109,6 @@ const writeConfig = async (opts: {
             : {}),
         },
         session: {
-          titles: { enabled: false },
           commit_reminder: { enabled: false },
           isolation: {
             enabled: opts.vm ?? false,

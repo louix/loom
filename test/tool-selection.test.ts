@@ -224,7 +224,11 @@ test("host selection fails before runtime lookup for every VM engine, but works 
       }),
       /host tools are selected/,
     );
-  const host = { ...config, isolation: { extraAllowedHosts: [] } };
+  const host = {
+    ...config,
+    defaults: { ...config.defaults, isolation: "none" as const },
+    isolation: { extraAllowedHosts: [] },
+  };
   assert.equal(toolExecutionError(host, "claude"), undefined);
   await assert.rejects(
     preflightTools(host, "claude", {

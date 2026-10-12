@@ -24,6 +24,7 @@ Deno.test("an empty config converts to Loom's explicit local, worktree default",
 });
 
 Deno.test("environment settings convert into host layers; Loom settings stay", () => {
+  // Written with the deprecated names: they convert as the keys they now are.
   const report = convert({
     $schema: "./config.schema.json",
     default_provider: "claude",
@@ -62,21 +63,29 @@ Deno.test("environment settings convert into host layers; Loom settings stay", (
       prepare: [{ name: "npm", run: "npm ci", timeoutSeconds: 600 }],
       start: [{ name: "make", run: "make dev", timeoutSeconds: 30 }],
     },
-    access: { network: { presets: ["javascript"], hosts: ["example.com"] } },
+    access: { network: { presets: ["javascript"], allowedHosts: ["example.com"] } },
     lifecycle: { workspace: "clone", execution: "vm", idleTimeoutMinutes: 10 },
   });
   assert.deepEqual(
     report.converted.map((entry) => entry.from + " -> " + entry.to),
     [
       "session.auto_nix -> environment.nix.auto",
-      "session.worktree -> lifecycle.workspace",
-      "session.isolation.enabled -> lifecycle.execution",
-      "session.isolation.network_presets -> access.network.presets",
-      "session.isolation.extra_allowed_hosts -> access.network.hosts",
       "session.isolation.environment -> environment.commandPrefix/timeoutSeconds/resources",
-      "session.isolation.checkout.mode -> lifecycle.workspace",
+      "session.isolation.network.allowed_hosts -> access.network.allowedHosts",
+      "session.isolation.network.presets -> access.network.presets",
+      "session.defaults.isolation -> lifecycle.execution",
+      "session.defaults.workspace -> lifecycle.workspace",
       "hooks[0] (workspace_prepare) -> environment.prepare",
       "hooks[1] (workspace_start) -> environment.start",
+    ],
+  );
+  assert.deepEqual(
+    report.converted.slice(2, 6).map((entry) => entry.note),
+    [
+      "written as deprecated session.isolation.extra_allowed_hosts",
+      "written as deprecated session.isolation.network_presets",
+      "written as deprecated session.isolation.enabled",
+      "written as deprecated session.worktree.enabled and session.isolation.checkout.mode",
     ],
   );
   assert.match(report.converted.at(-1)!.note!, /fails startup/);
@@ -138,7 +147,7 @@ Deno.test("repo overrides become diffs; appended hooks are listed explicitly", (
         ],
       },
       // Old arrays replace inherited ones, as host network fields do.
-      access: { network: { hosts: ["a.example"] } },
+      access: { network: { allowedHosts: ["a.example"] } },
       lifecycle: { workspace: "in-place" },
     },
     { path: "/work/c", environment: { commandPrefix: ["nix-shell"] } },
@@ -168,8 +177,37 @@ Deno.test("repo overrides become diffs; appended hooks are listed explicitly", (
   );
 });
 
+Deno.test("current names convert without notes; an ignored old name is reported", () => {
+  const report = convert({
+    session: {
+      defaults: { isolation: "vm", workspace: "in-place" },
+      isolation: {
+        enabled: false,
+        network: { allowed_hosts: ["example.com"], presets: ["rust"] },
+      },
+      titles: { enabled: false },
+    },
+  });
+  assert.deepEqual(report.user, {
+    version: 1,
+    access: { network: { presets: ["rust"], allowedHosts: ["example.com"] } },
+    lifecycle: { workspace: "in-place", execution: "vm", idleTimeoutMinutes: 10 },
+  });
+  assert(report.converted.every((entry) => entry.note === undefined));
+  assert.deepEqual(report.unsupported, [
+    { path: "session.titles", reason: "no longer read: session titles are always generated" },
+    {
+      path: "session.isolation.enabled",
+      reason: "ignored: session.defaults.isolation is also set",
+    },
+  ]);
+});
+
 Deno.test("a file Loom rejects is not converted", () => {
-  assert.throws(() => convert({ session: { isolation: { checkout: { mode: "other" } } } }), /mode/);
+  assert.throws(
+    () => convert({ session: { isolation: { checkout: { mode: "other" } } } }),
+    /session\.defaults\.workspace/,
+  );
   assert.throws(() => convert({ session: { environment: {} } }), /auto_nix/);
   assert.throws(() => convert({ repos: [{ path: "relative" }] }), /absolute/);
 });
@@ -196,7 +234,7 @@ Deno.test("loom config convert reads only; --out never overwrites", async () => 
     assert.equal(await Deno.readTextFile(source), text);
     assert.equal((await Deno.stat(source)).mtime?.getTime(), before.mtime?.getTime());
     // Loom resolves the old file exactly as before, with the new file beside it.
-    assert.equal(loadConfig(root, source).isolation.enabled, true);
+    assert.equal(loadConfig(root, source).defaults.isolation, "vm");
   } finally {
     await Deno.remove(root, { recursive: true });
   }
@@ -210,7 +248,7 @@ Deno.test("Loom's daemon config ignores environment.jsonc and loom.json", async 
     await Deno.mkdir(repo);
     const old = join(root, "loom/config.jsonc");
     const before = loadConfig(repo, old);
-    assert.equal(before.isolation.enabled, false, "new sessions stay local by default");
+    assert.equal(before.defaults.isolation, "none", "new sessions stay local by default");
     await Deno.writeTextFile(
       join(root, "loom/environment.jsonc"),
       JSON.stringify({

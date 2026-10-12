@@ -69,7 +69,6 @@ test("clone daemon routes auto/manual rebase, dirty reminders and checks through
     },
     config: JSON.stringify({
       session: {
-        titles: { enabled: false },
         auto_resume: { enabled: false },
         auto_rebase: { enabled: true },
         isolation: {
@@ -120,9 +119,16 @@ test("clone daemon routes auto/manual rebase, dirty reminders and checks through
       ),
     );
     const session = fake.session(s.id)!;
+    // Name it now, not by an auto-title racing the rebase below.
+    const named = await c.request<SessionSnapshot>("session.setTitle", {
+      id: s.id,
+      title: "clone features",
+    });
+    // A real guest re-reads its branch at turn end; this stand-in follows the rename now.
+    git(cwd, "branch", "-m", named.branch!);
     git(repo, "commit", "--allow-empty", "-m", "advanced base");
     session.finishTurn();
-    await until(() => git(repo, "rev-parse", branch) === git(repo, "rev-parse", "main"));
+    await until(() => git(repo, "rev-parse", named.branch!) === git(repo, "rev-parse", "main"));
     await until(
       async () => !(await c.request<SessionSnapshot>("session.get", { id: s.id })).git?.dirty,
     );

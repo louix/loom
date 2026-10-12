@@ -4,7 +4,7 @@
  */
 export const environmentDiagnostics = {
   sessionNixFailed:
-    "Nix activation failed. Check the project shell and session.isolation.network_presets, or disable session.auto_nix. Run loom vm prepare for build output.",
+    "Nix activation failed. Check the project shell and session.isolation.network.presets, or disable session.auto_nix. Run loom vm prepare for build output.",
   sessionNixTimeout:
     "Nix activation timed out. Run loom vm prepare to warm the cache and inspect build output, or increase session.isolation.environment.timeout_seconds.",
   sessionEnvironmentFailed:

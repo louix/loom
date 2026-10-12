@@ -256,6 +256,7 @@ const withEnvironment = async (
   };
   for (const request of config.unsupported)
     progress("Ignoring a project request loom-isolate does not support: " + request);
+  for (const warning of config.deprecated) progress(warning);
   let received: HostSignal | undefined;
   const cancelled = new AbortController();
   let onSignal = (signal: HostSignal) => {

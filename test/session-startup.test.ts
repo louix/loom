@@ -85,12 +85,12 @@ test("preparation uses available images with local defaults and no provider prof
 
   // Enabling isolation must not prepare shared images again via the active policies.
   Object.assign(config.isolation, config.isolation.runtimes);
-  config.isolation.enabled = true;
+  config.defaults.isolation = "vm";
   assert.deepEqual(environmentPreparationRuntimes(config), [shared, custom]);
 });
 
 test("preparation has no images when no runtime is available", () => {
-  const config = normalizeConfig({ session: { isolation: { enabled: false } } });
+  const config = normalizeConfig({ session: { defaults: { isolation: "none" } } });
   config.isolation.runtimes = {};
   assert.deepEqual(environmentPreparationRuntimes(config), []);
 });

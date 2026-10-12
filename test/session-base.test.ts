@@ -14,7 +14,7 @@ import { sessionVmDirectory } from "../backend/daemon/src/daemon/session-vm-stat
 import { statusInWorktree } from "../core/src/status.ts";
 import { prepareCheckout } from "../runtime/src/session-vm/checkout.ts";
 
-const quiet = { session: { titles: { enabled: false }, auto_resume: { enabled: false } } };
+const quiet = { session: { auto_resume: { enabled: false } } };
 
 const gitIn =
   (cwd: string) =>

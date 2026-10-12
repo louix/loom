@@ -44,7 +44,6 @@ await Deno.writeTextFile(
   join(f.root, "config/loom/config.jsonc"),
   JSON.stringify({
     session: {
-      titles: { enabled: false },
       auto_resume: { enabled: false },
       isolation: { enabled: true, aisdk: { artifact, smolvm } },
     },

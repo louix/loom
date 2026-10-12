@@ -5,7 +5,8 @@ import {
 } from "../../backend/daemon/src/daemon/mcp-oauth-status.ts";
 import { logoutMcpOAuth } from "../../backend/daemon/src/daemon/mcp-oauth-logout.ts";
 import { loadConfig } from "../../backend/daemon/src/config/config.ts";
-import { nixMcpRuntime, mcpGrantsSchema } from "../../core/src/mcp-config.ts";
+import { nixMcpRuntime } from "../../core/src/mcp-config.ts";
+import { resolveMcpGrants } from "../../backend/daemon/src/config/tool-selection.ts";
 import { resolveRuntime } from "../../runtime/src/packaged/artifact.ts";
 import { prepareRuntime } from "./runtime.ts";
 
@@ -114,7 +115,7 @@ export const mcpCommand = async (
         status: "ready",
         artifact: prepared.lock.artifact,
         system: prepared.manifest.system,
-        grants: mcpGrantsSchema.parse(entry.grants ?? {}),
+        grants: resolveMcpGrants(entry.grants),
       });
     } catch (error) {
       rows.push({

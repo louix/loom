@@ -154,7 +154,18 @@
                 "enum": ["nix", "javascript", "python", "rust"]
               }
             },
+            "allowedHosts": {
+              "maxItems": 64,
+              "type": "array",
+              "items": {
+                "type": "string",
+                "maxLength": 253,
+                "pattern": "^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+              }
+            },
             "hosts": {
+              "deprecated": true,
+              "description": "Replaced by allowedHosts.",
               "maxItems": 64,
               "type": "array",
               "items": {
@@ -480,7 +491,18 @@
                       "enum": ["nix", "javascript", "python", "rust"]
                     }
                   },
+                  "allowedHosts": {
+                    "maxItems": 64,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "maxLength": 253,
+                      "pattern": "^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+                    }
+                  },
                   "hosts": {
+                    "deprecated": true,
+                    "description": "Replaced by allowedHosts.",
                     "maxItems": 64,
                     "type": "array",
                     "items": {
@@ -529,7 +551,6 @@
                 "type": "object",
                 "properties": {
                   "presets": {
-                    "default": [],
                     "maxItems": 16,
                     "type": "array",
                     "items": {
@@ -537,8 +558,18 @@
                       "enum": ["nix", "javascript", "python", "rust"]
                     }
                   },
+                  "allowedHosts": {
+                    "maxItems": 64,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "maxLength": 253,
+                      "pattern": "^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+                    }
+                  },
                   "hosts": {
-                    "default": [],
+                    "deprecated": true,
+                    "description": "Replaced by allowedHosts.",
                     "maxItems": 64,
                     "type": "array",
                     "items": {

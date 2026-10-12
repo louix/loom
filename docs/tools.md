@@ -16,7 +16,7 @@ of the agent's execution mode.
         "args": ["--mcp", "--edit"],
       },
       "execution": "vm",
-      "grants": { "workspace": "read-write", "network": [] },
+      "grants": { "workspace": "read-write", "network": { "allowed_hosts": [] } },
       "default_for": ["read", "write", "edit", "find", "grep"],
     },
     "kagi": {
@@ -88,12 +88,12 @@ supported. Named provider compatibility has not yet been verified. See the
 ## Permissions
 
 Local definitions require `execution: "vm"`. Omitted grants mean
-`{ "workspace": "none", "network": [] }`.
+`{ "workspace": "none", "network": { "allowed_hosts": [], "presets": [] } }`.
 
 - `workspace`: `none`, `read-only`, or `read-write`. The VM mount enforces
   read-only access. No workspace grant means no repository mount and a disposable
   guest working directory.
-- `network`: exact DNS names, e.g. `["api.example.com"]`. Empty means offline.
+- `network.allowed_hosts`: exact DNS names, e.g. `["api.example.com"]`. Empty means offline.
   A name grants only itself, not its subdomains; grant those explicitly with a
   leading `*.`, e.g. `"*.example.com"`, which matches every subdomain but not
   `example.com` itself. This uses smolvm's `--allow-host-pattern`: the guest can
@@ -102,6 +102,10 @@ Local definitions require `execution: "vm"`. Omitted grants mean
   not an HTTPS hostname/path filter; other services sharing an allowed IP are
   reachable.
   There is no automatic inheritance from agent or build-time network access.
+- `network.presets`: named host sets (`nix`, `javascript`, `python`, `rust`), the
+  same as for session VMs, added to `allowed_hosts`.
+- A plain host list, `"network": ["api.example.com"]`, is the old form: it still
+  reads as `allowed_hosts`, and Loom reports it once.
 
 Workspace access follows the session's existing checkout layout. Mounted Git
 worktrees can require the main repository and shared Git metadata; their grants
@@ -129,7 +133,7 @@ Use a Nix package for a new local MCP; Loom builds its runtime wrapper:
         "args": ["--stdio"],
       },
       "execution": "vm",
-      "grants": { "workspace": "read-only", "network": ["api.example.com"] },
+      "grants": { "workspace": "read-only", "network": { "allowed_hosts": ["api.example.com"] } },
     },
   },
 }
@@ -243,8 +247,8 @@ are syntax-validated but do not require installation or credentials.
 ## Common configurations
 
 Add these settings to the matching `repos` array in your user config. Each example
-assumes the definitions above. Host/VM agent execution still uses the existing
-`isolation` settings; `session` contains tool selections only.
+assumes the definitions above. Host/VM agent execution and the workspace come
+from `session.defaults`; the other `session` keys select tools.
 
 ### Host agent and host tools, in the current checkout
 
@@ -257,11 +261,9 @@ assumes the definitions above. Host/VM agent execution still uses the existing
         "local_tools": ["tilth", "fff"],
         "vm_tools": [],
         "remote_tools": [],
-        "worktree": {
-          "enabled": false,
-        },
-        "isolation": {
-          "enabled": false,
+        "defaults": {
+          "isolation": "none",
+          "workspace": "in-place",
         },
       },
     },
@@ -269,7 +271,7 @@ assumes the definitions above. Host/VM agent execution still uses the existing
 }
 ```
 
-Set `repos[].session.worktree.enabled = true` for separate branches and worktrees while
+Set `repos[].session.defaults.workspace = "worktree"` for separate branches and worktrees while
 keeping agent and tool execution on the host.
 
 ### Host agent and a separate Tilth VM
@@ -304,11 +306,9 @@ Only Tilth is confined in a VM. The agent still runs on the host.
         "local_tools": [],
         "vm_tools": ["tilth"],
         "remote_tools": ["docs"],
-        "worktree": {
-          "enabled": true,
-        },
-        "isolation": {
-          "enabled": true,
+        "defaults": {
+          "isolation": "vm",
+          "workspace": "worktree",
         },
       },
     },

@@ -11,17 +11,17 @@ nix build .#session-runtime --out-link /tmp/loom-aisdk-runtime
 ```jsonc
 {
   "session": {
-    "isolation": {
-      "enabled": true,
+    "defaults": {
+      "isolation": "vm",
     },
   },
 }
 ```
 
-`enabled = false` disables an inherited policy. Restart the daemon after changing
+`"isolation": "none"` disables an inherited policy. Restart the daemon after changing
 it. Each session gets a separate VM with its worktree and only its resolved API
 credential. Its HTTPS endpoint hostname is allowed on port 443; additional
-worktree destinations use `session.isolation.extra_allowed_hosts`. HTTP/custom-port model
+worktree destinations use `session.isolation.network.allowed_hosts`. HTTP/custom-port model
 endpoints are rejected. Legacy built-in search credentials require migration to
 HTTP MCP mounts. No fallback to host session execution occurs after a VM error.
 

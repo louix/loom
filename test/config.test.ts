@@ -11,7 +11,6 @@ import {
   loadConfig,
   normalizeConfig,
   parseConfig,
-  removedConfigWarnings,
   resolveApiKey,
   slugifyProfile,
 } from "@loom/daemon/config/config";
@@ -67,29 +66,21 @@ test("TUI compat mode defaults to false and accepts an opt-in, per repo too", ()
   }
 });
 
-test("[worktree] enabled defaults to true and parses a false override", () => {
-  assert.equal(cfg("").worktree.enabled, true);
-  assert.equal(
+test("session.defaults is none and worktree unless set, and rejects other values", () => {
+  assert.deepEqual(cfg("").defaults, { isolation: "none", workspace: "worktree" });
+  assert.deepEqual(
     cfg(`{
   "session": {
-    "worktree": {
-      "enabled": false
+    "defaults": {
+      "isolation": "vm",
+      "workspace": "in-place"
     }
   }
-}`).worktree.enabled,
-    false,
+}`).defaults,
+    { isolation: "vm", workspace: "in-place" },
   );
-  // a non-boolean is ignored, not coerced
-  assert.equal(
-    cfg(`{
-  "session": {
-    "worktree": {
-      "enabled": "no"
-    }
-  }
-}`).worktree.enabled,
-    true,
-  );
+  assert.throws(() => cfg(`{"session": {"defaults": {"workspace": "mount"}}}`), /workspace/);
+  assert.throws(() => cfg(`{"session": {"defaults": {"isolation": true}}}`), /isolation/);
 });
 
 test("a named provider defaults to an OpenAI-compatible endpoint", () => {
@@ -1107,8 +1098,10 @@ test("Claude VM routing is opt-in and requires explicit runtime paths", () => {
   assert.deepEqual(
     cfg(`{
   "session": {
+    "defaults": {
+      "isolation": "vm"
+    },
     "isolation": {
-      "enabled": true,
       "claude": {
         "artifact": "/runtime"
       }
@@ -1161,10 +1154,12 @@ test("extra worktree VM hosts are scoped by repo and cannot grant wildcard or al
       "path": ${JSON.stringify(dir)},
       "session": {
         "isolation": {
-          "extra_allowed_hosts": [
-            "Registry.Npmjs.Org",
-            "registry.npmjs.org"
-          ]
+          "network": {
+            "allowed_hosts": [
+              "Registry.Npmjs.Org",
+              "registry.npmjs.org"
+            ]
+          }
         }
       }
     }
@@ -1194,11 +1189,11 @@ test("extra worktree VM hosts are scoped by repo and cannot grant wildcard or al
           normalizeConfig({
             session: {
               isolation: {
-                extra_allowed_hosts: hosts,
+                network: { allowed_hosts: hosts },
               },
             },
           }),
-        /extra_allowed_hosts/,
+        /allowed_hosts/,
       );
     }
   } finally {
@@ -1231,8 +1226,8 @@ test("project provider allow/deny lists and explicit VM disable override inherit
   const raw = deepMerge(
     {
       session: {
+        defaults: { isolation: "vm" },
         isolation: {
-          enabled: true,
           claude: {
             artifact: "/tmp/runtime",
           },
@@ -1241,9 +1236,7 @@ test("project provider allow/deny lists and explicit VM disable override inherit
     },
     {
       session: {
-        isolation: {
-          enabled: false,
-        },
+        defaults: { isolation: "none" },
       },
     },
   );
@@ -1273,20 +1266,20 @@ test("project provider allow/deny lists and explicit VM disable override inherit
     () =>
       cfg(`{
   "session": {
-    "isolation": {
-      "enabled": "no"
+    "defaults": {
+      "isolation": "no"
     }
   }
 }`),
-    /boolean/,
+    /isolation/,
   );
 });
 
 test("one project toggle controls all configured VM runtimes", () => {
   const raw = {
     session: {
+      defaults: { isolation: "vm" },
       isolation: {
-        enabled: true,
         claude: {
           artifact: "/claude",
         },
@@ -1303,9 +1296,7 @@ test("one project toggle controls all configured VM runtimes", () => {
   const disabled = normalizeConfig(
     deepMerge(raw, {
       session: {
-        isolation: {
-          enabled: false,
-        },
+        defaults: { isolation: "none" },
       },
     }),
   );
@@ -1314,7 +1305,7 @@ test("one project toggle controls all configured VM runtimes", () => {
     assert.equal(disabled.isolation[name], undefined);
     assert.equal(disabled.isolation.runtimes?.[name]?.artifact, `/${name}`);
   }
-  assert.equal(cfg("").isolation.enabled, false);
+  assert.equal(cfg("").defaults.isolation, "none");
   assert.throws(
     () =>
       cfg(`{
@@ -1341,15 +1332,17 @@ test("project VM overrides inherit runtimes and leave other projects unchanged",
     {
       "path": ${JSON.stringify(dir)},
       "session": {
-        "isolation": {
-          "enabled": false
+        "defaults": {
+          "isolation": "none"
         }
       }
     }
   ],
   "session": {
+    "defaults": {
+      "isolation": "vm"
+    },
     "isolation": {
-      "enabled": true,
       "claude": {
         "artifact": "/claude"
       },
@@ -1365,8 +1358,8 @@ test("project VM overrides inherit runtimes and leave other projects unchanged",
     );
     const local = loadConfig(dir, file);
     const vm = loadConfig(join(dir, "other"), file);
-    assert.equal(local.isolation.enabled, false);
-    assert.equal(vm.isolation.enabled, true);
+    assert.equal(local.defaults.isolation, "none");
+    assert.equal(vm.defaults.isolation, "vm");
     for (const name of ["claude", "aisdk", "codex"] as const) {
       assert.equal(local.isolation[name], undefined);
       assert.equal(vm.isolation[name]?.artifact, `/${name}`);
@@ -1404,8 +1397,8 @@ test("enabled session VMs resolve package bundles while explicit paths and disab
       assert.deepEqual(
         cfg(`{
   "session": {
-    "isolation": {
-      "enabled": true
+    "defaults": {
+      "isolation": "vm"
     }
   }
 }`).isolation[name],
@@ -1417,8 +1410,8 @@ test("enabled session VMs resolve package bundles while explicit paths and disab
       assert.equal(
         cfg(`{
   "session": {
-    "isolation": {
-      "enabled": false
+    "defaults": {
+      "isolation": "none"
     }
   }
 }`).isolation[name],
@@ -1426,7 +1419,7 @@ test("enabled session VMs resolve package bundles while explicit paths and disab
       );
       assert.deepEqual(
         cfg(
-          `{"session": {"isolation": {"enabled": true, "${name}": {"artifact": "/custom", "smolvm": "/custom/smolvm"}}}}`,
+          `{"session": {"defaults": {"isolation": "vm"}, "isolation": {"${name}": {"artifact": "/custom", "smolvm": "/custom/smolvm"}}}}`,
         ).isolation[name],
         { artifact: "/custom", smolvm: "/custom/smolvm" },
       );
@@ -1435,12 +1428,12 @@ test("enabled session VMs resolve package bundles while explicit paths and disab
     assert.equal(
       cfg(`{
   "session": {
-    "isolation": {
-      "enabled": true
+    "defaults": {
+      "isolation": "vm"
     }
   }
-}`).isolation.enabled,
-      true,
+}`).defaults.isolation,
+      "vm",
     );
   } finally {
     if (previous === undefined) Deno.env.delete("LOOM_BUNDLED_RUNTIMES");
@@ -1470,14 +1463,8 @@ test("title models are scoped to providers, including Claude profiles", () => {
         }
       }
     }
-  },
-  "session": {
-    "titles": {
-      "enabled": false
-    }
   }
 }`);
-  assert.deepEqual(c.titles, { enabled: false });
   assert.equal(c.providers.claude.titleModel, "haiku");
   assert.equal(c.providers.aisdk["codex:work"]?.titleModel, "gpt-5-mini");
   assert.equal(c.providers.aisdk.local?.titleModel, "small-local-model");
@@ -1490,14 +1477,12 @@ test("JSONC accepts comments, trailing commas and a BOM without changing strings
       `{
     // Comment before settings.
     "base_branch": "trunk",
-    "session": {"notify": {"webhook": "https://example.com/a//b/*literal*/"},},
+    "worktree_dir": "/a//b/*literal*/",
     "repos": [{"path": "/repo", "hooks": [],},],
   }`,
   );
   assert.equal(raw.base_branch, "trunk");
-  assert.deepEqual(raw.session, {
-    notify: { webhook: "https://example.com/a//b/*literal*/" },
-  });
+  assert.equal(raw.worktree_dir, "/a//b/*literal*/");
   assert.deepEqual(raw.repos, [{ path: "/repo", hooks: [] }]);
 });
 
@@ -1633,37 +1618,4 @@ test("Claude and Codex labels use tag, then profile name, then provider name", (
       [family + ":blank", ""],
     ]);
   }
-});
-test("a removed session.isolation.launcher still parses, is ignored and is reported", () => {
-  assert.deepEqual(removedConfigWarnings(normalizeConfig({})), []);
-  for (const launcher of ["legacy", "isolation", "remote", 3]) {
-    const cfg = normalizeConfig({ session: { isolation: { enabled: true, launcher } } });
-    assert.equal(cfg.isolation.enabled, true);
-    assert(!("launcher" in cfg.isolation));
-    assert.deepEqual(cfg.removedKeys, ["session.isolation.launcher"]);
-    const [warning, ...rest] = removedConfigWarnings(cfg);
-    assert.match(
-      warning!,
-      /^session\.isolation\.launcher is no longer read \(.*isolation library\)/,
-    );
-    assert.deepEqual(rest, []);
-    // Reported on its own, once per daemon, not among the per-load lint warnings.
-    assert(!lintConfig(cfg).some((line) => line.includes("launcher")));
-  }
-});
-test("a removed db setting still parses, is ignored and is reported", () => {
-  assert(!("db" in normalizeConfig({})));
-  const cfg = normalizeConfig({
-    db: ".loom/loom.db",
-    session: { isolation: { launcher: "legacy" } },
-  });
-  assert(!("db" in cfg));
-  assert.deepEqual(cfg.removedKeys, ["session.isolation.launcher", "db"]);
-  const warnings = removedConfigWarnings(cfg);
-  assert.equal(warnings.length, 2);
-  assert.match(
-    warnings[1]!,
-    /^db is no longer read \(the database lives in \$XDG_STATE_HOME\/loom\/repos\/<repo>\/loom\.db\)/,
-  );
-  assert(!lintConfig(cfg).some((line) => line.includes("db")));
 });

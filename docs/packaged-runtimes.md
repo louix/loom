@@ -40,7 +40,7 @@ runtime pruning.
 The default Loom Nix package bundles Claude, Codex and AISDK session runtimes
 and smolvm. The `withClaude`, `withCodex` and `withAisdk` overrides control
 those bundles. Session isolation remains opt-in through
-`session.isolation.enabled`. Bundled agent runtimes update with Loom. On Apple
+`session.defaults.isolation`. Bundled agent runtimes update with Loom. On Apple
 Silicon without a matching pin, Loom builds the session runtime itself on first
 use ([below](#host-and-guest-packaging-boundary)).
 

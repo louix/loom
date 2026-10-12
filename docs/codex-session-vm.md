@@ -11,14 +11,14 @@ nix build .#session-runtime --out-link /tmp/loom-codex-runtime
 ```jsonc
 {
   "session": {
-    "isolation": {
-      "enabled": true,
+    "defaults": {
+      "isolation": "vm",
     },
   },
 }
 ```
 
-`enabled = false` disables an inherited policy. Restart the daemon after changes.
+`"isolation": "none"` disables an inherited policy. Restart the daemon after changes.
 AISDK and Claude VM policies are independent. Old host sessions remain readable;
 fork them to continue under the new policy.
 
@@ -33,7 +33,7 @@ run inside the VM. See [repository mounts](repository-mounts.md) for the shared
 Git metadata and filesystem boundaries.
 
 Direct egress is disabled. The host HTTPS proxy permits `chatgpt.com:443` plus
-trusted `session.isolation.extra_allowed_hosts` for worktree commands. MCP endpoints use
+trusted `session.isolation.network.allowed_hosts` for worktree commands. MCP endpoints use
 private relays. Native web search remains controlled by the provider's existing
 `builtin_web_search` setting.
 

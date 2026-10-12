@@ -24,14 +24,7 @@ const f = await gitFixture();
 Deno.env.set("XDG_STATE_HOME", join(f.root, "persistent"));
 Deno.env.set("XDG_CONFIG_HOME", join(f.root, "config"));
 await Deno.mkdir(join(f.root, "config/loom"), { recursive: true });
-await Deno.writeTextFile(
-  join(f.root, "config/loom/config.jsonc"),
-  `{
-  "titles": {
-    "enabled": false
-  }
-}`,
-);
+await Deno.writeTextFile(join(f.root, "config/loom/config.jsonc"), "{}");
 let daemon: Daemon | undefined;
 let success = false;
 try {

@@ -32,7 +32,7 @@ Editor schemas: [project](../environment-config/project.schema.json) and
     "prepare": [{ "run": "npm ci", "timeoutSeconds": 600 }],
     "start": [{ "name": "services", "run": "just services" }]
   },
-  "access": { "network": { "presets": ["javascript"], "hosts": ["api.example.com"] } }
+  "access": { "network": { "presets": ["javascript"], "allowedHosts": ["api.example.com"] } }
 }
 ```
 
@@ -66,10 +66,10 @@ lifecycle defaults, repositories or grants.
     {
       "path": "/home/me/src/project",
       "environment": { "resources": { "memoryMiB": 8192 } },
-      "access": { "network": { "hosts": ["internal.example.com"] } },
+      "access": { "network": { "allowedHosts": ["internal.example.com"] } },
       "grants": {
         "setup": true,
-        "network": { "presets": ["javascript"], "hosts": ["api.example.com"] },
+        "network": { "presets": ["javascript"], "allowedHosts": ["api.example.com"] },
       },
     },
   ],
@@ -117,9 +117,11 @@ Environment fields resolve in four layers, later winning:
 
 Each field replaces the earlier value. `resources.cpus` and `resources.memoryMiB`
 merge individually. **Hook arrays replace earlier arrays whole**, including an
-empty array; they never append. Host `access.network.hosts` and `.presets` in
-`repos[]` each replace the user-level field; granted project hosts are then
-added. `loom-isolate config inspect` shows the layer behind each value.
+empty array; they never append. Host `access.network.allowedHosts` and
+`.presets` in `repos[]` each replace the user-level field; granted project
+hosts are then added. `hosts`, the old name of `allowedHosts`, still parses
+wherever `allowedHosts` does; `loom-isolate` reports it once per run, and
+`allowedHosts` wins when both are set. `loom-isolate config inspect` shows the layer behind each value.
 
 This differs from Loom's `config.jsonc`, where a matching `repos[]` entry's
 `hooks` **append** to the global `hooks` and other arrays replace. That rule is
@@ -159,18 +161,21 @@ that exists. The report lists every setting under one of:
 
 - **converted**: `session.auto_nix` → `environment.nix.auto`;
   `session.isolation.environment` → `commandPrefix`, `timeoutSeconds`,
-  `resources`; `extra_allowed_hosts`/`network_presets` → `access.network`;
-  `session.isolation.enabled`, `session.worktree.enabled` and
-  `isolation.checkout.mode` → `lifecycle.execution`/`workspace`;
+  `resources`; `session.isolation.network.allowed_hosts`/`presets` →
+  `access.network.allowedHosts`/`presets`; `session.defaults.isolation` and
+  `session.defaults.workspace` → `lifecycle.execution`/`workspace` (deprecated
+  names such as `session.isolation.enabled` convert as their replacements, with
+  a note);
   `idle_timeout_minutes` → `lifecycle.idleTimeoutMinutes`; `workspace_prepare`
   and `workspace_start` hooks → `environment.prepare`/`start`.
 - **stays in Loom config**: providers, models and modes, TUI, daemon, tools and
   MCP servers, search, Git identity, worktree/branch/database settings,
-  auto-resume and other session policy, the VM launcher, clone publication
+  auto-resume and other session policy, clone publication
   policy, per-provider runtimes, and every non-workspace hook event.
 - **not converted**: settings the new format cannot express, such as `async`
   start hooks, project-scoped (`project` glob) workspace hooks, `auto_nix` that
   Loom ignores under a `command_prefix`, clearing an inherited command prefix,
+  removed settings (`session.titles`, `session.notify`, the VM launcher, `db`),
   and keys Loom itself ignores.
 
 Old settings are trusted host configuration, so they convert into host layers

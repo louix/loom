@@ -24,6 +24,8 @@ import { userConfigPath } from "../config-path.ts";
 import type { GitIdentityConfig } from "./git-identity.ts";
 import type { PriceRow } from "./pricing.ts";
 import { resolveToolSelection, toolExecutionError } from "./tool-selection.ts";
+import { migrateConfigLayer, showDeprecatedKey, type DeprecatedKey } from "./legacy-keys.ts";
+import type { WorkspaceMode } from "@loom/core/wire";
 
 /**
  * Loom configuration, loaded only from the trusted user config file.
@@ -222,14 +224,19 @@ interface HookFields {
 }
 
 export interface LoomConfig {
-  /** Removed settings the file still sets: ignored, and reported by removedConfigWarnings. */
-  removedKeys?: string[];
+  /** Removed or renamed settings the file still sets; reported by removedConfigWarnings. */
+  deprecatedKeys?: readonly DeprecatedKey[];
+  /** `session.defaults`: what a new session gets unless it chooses. Existing sessions keep theirs. */
+  defaults: {
+    /** Runtime availability is separate: each session can still choose the other. */
+    isolation: "none" | "vm";
+    /** `clone` applies to VM sessions; a host session gets a worktree. */
+    workspace: WorkspaceMode;
+  };
   autoNix: boolean;
   tui: { includeEventLogInEditor: boolean; compat: boolean };
   providerAccess: { only?: string[]; disabled: string[] };
   isolation: {
-    /** Project-wide default for new sessions; runtime availability is separate. */
-    enabled?: boolean;
     /** Available runtimes, including ones disabled as the default. */
     runtimes?: Partial<Record<"claude" | "aisdk" | "codex", { artifact: string; smolvm: string }>>;
     claude?: { artifact: string; smolvm: string };
@@ -238,8 +245,8 @@ export interface LoomConfig {
     extraAllowedHosts: string[];
     idleTimeoutMinutes?: number;
     environment?: SessionEnvironment;
-    /** How new VM sessions reach the repository. Absent means mount. */
-    checkout?: { mode: "mount" | "clone"; visibleRefs: string[]; maxPushBytes: number };
+    /** Private-clone publication policy for clone sessions. */
+    checkout?: { visibleRefs: string[]; maxPushBytes: number };
   };
   /**
    * `base_branch`, when set (globally or by a matching `repos[]` entry): the
@@ -256,14 +263,6 @@ export interface LoomConfig {
    * the fallback `default_provider`.
    */
   claudeProfiles: ClaudeProfile[];
-  /**
-   * Worktree isolation for new sessions. `enabled` (the default) gives each
-   * session its own `git worktree` + branch off `baseBranch`. Off → sessions
-   * run directly in the repo working dir: no branch isolation, concurrent
-   * sessions can collide, and hard-fork is unavailable (undo still works).
-   * `session.create` takes a per-session `worktree` boolean that overrides it.
-   */
-  worktree: { enabled: boolean };
   /**
    * Keep a session's branch current with its base. When `enabled`, the daemon —
    * each time a session goes idle — replays (or merges) the branch onto the
@@ -350,11 +349,6 @@ export interface LoomConfig {
     oauth?: McpOAuthConfig;
     defaultFor: McpCapability[];
   }>;
-  titles: {
-    /** Auto-summarise the first message into a session title after turn 1. */
-    enabled: boolean;
-  };
-  notify: { webhook: string };
   /**
    * Shell commands the daemon runs when something happens in a session — a
    * linter after the agent edits a file, `notify-send` when a turn parks on a
@@ -445,9 +439,9 @@ export const DEFAULT_CONFIG: LoomConfig = {
   tui: { includeEventLogInEditor: false, compat: false },
   worktreeDir: "",
   providerAccess: { disabled: [] },
-  isolation: { enabled: false, extraAllowedHosts: [] },
+  defaults: { isolation: "none", workspace: "worktree" },
+  isolation: { extraAllowedHosts: [] },
   claudeProfiles: [{ dir: "~/.claude", name: "", color: "" }],
-  worktree: { enabled: true },
   autoRebase: { enabled: false, mode: "rebase" },
   autoResume: { enabled: true },
   commitReminder: { enabled: true },
@@ -470,8 +464,6 @@ export const DEFAULT_CONFIG: LoomConfig = {
   },
   mcp: [],
   httpMcp: [],
-  titles: { enabled: true },
-  notify: { webhook: "" },
   hooks: [],
   search: { backend: "none", apiKeyEnv: "", apiKey: "", apiBase: "", maxResults: 5 },
   agents: { maxDepth: DEFAULT_MAX_DEPTH, profiles: {} },
@@ -627,21 +619,15 @@ export const resolveApiKey = (
   return "";
 };
 
-/** Why each removed setting is no longer read. */
-export const removedConfigKeys: Record<string, string> = {
-  "session.isolation.launcher": "session VMs always start through the isolation library",
-  db: "the database lives in $XDG_STATE_HOME/loom/repos/<repo>/loom.db",
-};
+const deprecatedKeys = (keys: readonly DeprecatedKey[]): Pick<LoomConfig, "deprecatedKeys"> =>
+  keys.length > 0 ? { deprecatedKeys: keys } : {};
 
-const removedKeys = (keys: string[]): Pick<LoomConfig, "removedKeys"> =>
-  keys.length > 0 ? { removedKeys: keys } : {};
-
-/** One line per removed setting the config still sets; it parses and is ignored. */
+/**
+ * One line per removed or renamed setting the config still sets. Both parse:
+ * a removed one is ignored, a renamed one read as its replacement.
+ */
 export const removedConfigWarnings = (cfg: LoomConfig): string[] =>
-  (cfg.removedKeys ?? []).map(
-    (key) =>
-      `${key} is no longer read (${removedConfigKeys[key] ?? "removed"}); remove it from the config`,
-  );
+  (cfg.deprecatedKeys ?? []).map(showDeprecatedKey);
 
 /**
  * Human-readable warnings about the loaded config — misconfigured providers,
@@ -760,7 +746,8 @@ export const normalizeConfig = (
     throw new Error(
       "Define local_tools, vm_tools or remote_tools by name and select them under session.",
     );
-  const settings = parseSettings(settingsSchema, raw);
+  const migrated = migrateConfigLayer(r);
+  const settings = parseSettings(settingsSchema, migrated.layer);
   const {
     session: {
       isolation,
@@ -768,7 +755,7 @@ export const normalizeConfig = (
     },
     providers: { claude },
   } = settings;
-  const vmEnabled = isolation.enabled;
+  const vmEnabled = settings.session.defaults.isolation === "vm";
   const runtimes: NonNullable<LoomConfig["isolation"]["runtimes"]> = {};
   for (const name of ["claude", "aisdk", "codex"] as const) {
     const value = isolation[name];
@@ -784,7 +771,7 @@ export const normalizeConfig = (
       smolvm: expandTilde(value.smolvm ?? bundle?.smolvm ?? "smolvm"),
     };
   }
-  const aisdk = parseAisdkProfiles(r);
+  const aisdk = parseAisdkProfiles(migrated.layer);
   const claudeProfiles = parseClaudeProfiles(
     Object.entries(claude.profiles).map(([name, p]) => ({
       name: name === "default" ? "" : name,
@@ -824,10 +811,8 @@ export const normalizeConfig = (
   });
 
   return {
-    ...removedKeys([
-      ...(isolation.launcher !== undefined ? ["session.isolation.launcher"] : []),
-      ...(settings.db !== undefined ? ["db"] : []),
-    ]),
+    ...deprecatedKeys(migrated.deprecated),
+    defaults: settings.session.defaults,
     autoNix: settings.session.auto_nix,
     tui: {
       includeEventLogInEditor: settings.tui.include_event_log_in_editor,
@@ -837,25 +822,22 @@ export const normalizeConfig = (
     worktreeDir: settings.worktree_dir,
     providerAccess: { ...(only ? { only } : {}), disabled },
     isolation: {
-      enabled: vmEnabled,
       idleTimeoutMinutes: isolation.idle_timeout_minutes,
       runtimes,
       extraAllowedHosts: [
         ...new Set([
-          ...normalizeExtraHosts(isolation.extra_allowed_hosts),
-          ...expandNetworkPresets(isolation.network_presets),
+          ...normalizeExtraHosts(isolation.network.allowed_hosts),
+          ...expandNetworkPresets(isolation.network.presets),
         ]),
       ],
       environment: normalizeSessionEnvironment(isolation.environment, settings.session.auto_nix),
       checkout: {
-        mode: isolation.checkout.mode,
         visibleRefs: isolation.checkout.visible_refs,
         maxPushBytes: isolation.checkout.max_push_bytes,
       },
       ...(vmEnabled ? runtimes : {}),
     },
     claudeProfiles,
-    worktree: settings.session.worktree,
     autoRebase: settings.session.auto_rebase,
     autoResume: settings.session.auto_resume,
     commitReminder: settings.session.commit_reminder,
@@ -884,8 +866,6 @@ export const normalizeConfig = (
     mcp,
     httpMcp,
     mcpServers: settings.mcp_servers,
-    titles: settings.session.titles,
-    notify: settings.session.notify,
     hooks: settings.hooks.map((h): HookConfig => ({
       ...(h.kind === "check"
         ? { kind: h.kind, on: h.on as WriteHookEvent[] }
@@ -1061,6 +1041,7 @@ export const loadConfig = (repoRoot: string, configFile = userConfigPath()): Loo
   const target = configRepoPath(resolve(repoRoot));
   const seen = new Set<string>();
   let selected: Record<string, unknown> = {};
+  let selectedPath = "";
   for (const entry of repos) {
     if (
       !entry ||
@@ -1077,12 +1058,20 @@ export const loadConfig = (repoRoot: string, configFile = userConfigPath()): Loo
     if (path === target) {
       const { path: _, ...overrides } = entry;
       selected = overrides;
+      selectedPath = entry.path;
     }
   }
   const repoProviders = Object.entries(asRecord(asRecord(selected.agents).profiles))
     .filter(([, p]) => asRecord(p).provider !== undefined)
     .map(([name]) => name);
-  return normalizeConfig(mergeRepoOverride(defaults, selected), new Set(repoProviders));
+  // Each layer in current names before merging, so a repo entry's old key
+  // still overrides a global new one.
+  const global = migrateConfigLayer(defaults);
+  const repo = migrateConfigLayer(selected, `repos[${selectedPath}].`);
+  return {
+    ...normalizeConfig(mergeRepoOverride(global.layer, repo.layer), new Set(repoProviders)),
+    ...deprecatedKeys([...global.deprecated, ...repo.deprecated]),
+  };
 };
 
 /** One repo override over the user defaults, before normalization. */
