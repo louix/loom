@@ -49,6 +49,7 @@ import {
   type CacheStatus,
   type Connection,
   type FleetChild,
+  type TreeBranch,
   type TuiState,
 } from "./model.ts";
 import { parseAskUserQuestions, type AskUserQuestionItem } from "./interactions.ts";
@@ -278,7 +279,7 @@ export const Fleet = memo(
               return FleetChildRow({
                 rowKey: `${entry.s.id}:${entry.c.key}`,
                 c: entry.c,
-                isLast: entry.isLast,
+                branch: entry.branch,
                 sel: entry.c.key === childKeyOf(entry.s),
                 tick,
                 iw,
@@ -291,7 +292,7 @@ export const Fleet = memo(
                   tone="faint"
                   underline={hover === `childMore:${entry.s.id}`}
                 >
-                  {`  └ +${entry.extra} more`}
+                  {`  ${treeBranch(entry.branch)}+${entry.extra} more`}
                 </Text>
               );
           }
@@ -382,7 +383,7 @@ const FleetRow = ({
   status: SessionStateKind;
   /** A Loom agent under its supervisor: indented behind a tree branch, like
    *  the work rows a session fans out, but a session row in full. */
-  nest?: { depth: number; isLast: boolean };
+  nest?: TreeBranch;
   /** A supervisor's spend with its agents', and how many wait on the person. */
   agents?: { cost: Pick<SessionSnapshot, "costUsd" | "costSource">; waiting: number };
   selected: boolean;
@@ -420,7 +421,7 @@ const FleetRow = ({
   const idColor = blocked ? C.faint : pcolor.get(s.provider) || C.faint;
   const forked = s.parentId != null && s.forkTurn != null;
   const idText = forked ? `⑂${id}` : id;
-  const branch = nest ? `${"  ".repeat(nest.depth - 1)}${nest.isLast ? "└ " : "├ "}` : "";
+  const branch = nest ? treeBranch(nest) : "";
   const width = Math.max(
     6,
     iw - (2 + branch.length + 2 + idText.length + 3 + 2 + 2 + asking.length + cost.length + 1),
@@ -459,6 +460,11 @@ const FleetRow = ({
  *  person — apart from its own glyph, which is its own question. */
 export const showAgentsWaiting = (waiting: number): string => (waiting > 0 ? ` ?${waiting}` : "");
 
+/** A row's tree connectors: `│` down each level whose line runs on past it,
+ *  then its own `├`/`└`. */
+const treeBranch = ({ rails, isLast }: TreeBranch): string =>
+  rails.map((on) => (on ? "│ " : "  ")).join("") + (isLast ? "└ " : "├ ");
+
 /** Glyph per background-task kind — a hint at what the child is. */
 const BG_KIND_GLYPH: Record<string, string> = {
   subagent: "⑂",
@@ -487,7 +493,7 @@ const childGlyph = (c: FleetChild): string =>
 const FleetChildRow = ({
   rowKey,
   c,
-  isLast,
+  branch,
   sel,
   tick,
   iw,
@@ -497,20 +503,21 @@ const FleetChildRow = ({
    *  once every row sits in one flat list. */
   rowKey: string;
   c: FleetChild;
-  /** Last child shown for its session (draws `└` instead of `├`) — false
-   *  when a "+N more" row follows it. */
-  isLast: boolean;
+  /** Where it hangs under its session — one level deeper than the session's
+   *  own row, `├` while a "+N more" row or the session's agents follow. */
+  branch: TreeBranch;
   sel: boolean;
   tick: number;
   iw: number;
   /** Under the mouse pointer: a click selects it. */
   hovered?: boolean;
 }): ReactNode => {
-  const room = Math.max(6, iw - 8);
+  const tree = treeBranch(branch);
+  const room = Math.max(6, iw - 6 - tree.length);
   return (
     <Line key={rowKey}>
       <Text tone={sel ? "accent" : "faint"}>{sel ? "▍ " : "  "}</Text>
-      <Text tone="faint">{isLast ? "└ " : "├ "}</Text>
+      <Text tone="faint">{tree}</Text>
       <Text tone="accentDim">{spinnerFrame(tick) + " "}</Text>
       <Text tone="faint">{childGlyph(c) + " "}</Text>
       <Text tone={sel || hovered ? "text" : "dim"} bold={sel} underline={hovered}>

@@ -1435,6 +1435,14 @@ export type FleetHit =
   | { kind: "childMore"; y: number; x0: number; x1: number; sessionId: string }
   | { kind: "mode" | "promptMode"; y: number; x0: number; x1: number };
 
+/** Where a FLEET row hangs in its session's tree: for each level above its
+ *  own branch, whether that level's line runs on past it (`│`), and whether
+ *  it is the last thing under its parent (`└` rather than `├`). */
+export interface TreeBranch {
+  readonly rails: readonly boolean[];
+  readonly isLast: boolean;
+}
+
 /**
  * One row of the FLEET list, in the exact order `Fleet` draws it: a blank
  * spacer before every status group but the first, its header, then each
@@ -1451,16 +1459,16 @@ export type FleetEntry =
       s: SessionSnapshot;
       /** What the row shows — see `fleet-status.ts`. */
       status: SessionStateKind;
-      /** A Loom agent drawn under its supervisor: how deep, and whether it is
-       *  that supervisor's last. Absent for a row at the top of its group. */
-      nest?: { depth: number; isLast: boolean };
+      /** A Loom agent drawn under its supervisor. Absent for a row at the
+       *  top of its group. */
+      nest?: TreeBranch;
       /** For a supervisor: its spend with its agents', and how many of them
        *  (however deep) wait on the person (display only). Absent for a
        *  session that supervises none. */
       agents?: { cost: Pick<SessionSnapshot, "costUsd" | "costSource">; waiting: number };
     }
-  | { kind: "child"; s: SessionSnapshot; c: FleetChild; isLast: boolean }
-  | { kind: "childMore"; s: SessionSnapshot; extra: number };
+  | { kind: "child"; s: SessionSnapshot; c: FleetChild; branch: TreeBranch }
+  | { kind: "childMore"; s: SessionSnapshot; extra: number; branch: TreeBranch };
 
 /** An active filter renders one flat ranked list; otherwise the status
  *  groups (see {@link groupsOf}). */
@@ -1477,7 +1485,7 @@ export const fleetEntries = (
   const out: FleetEntry[] = [];
   const placed = new Set<string>();
 
-  const pushSession = (s: SessionSnapshot, nest?: { depth: number; isLast: boolean }): void => {
+  const pushSession = (s: SessionSnapshot, nest?: TreeBranch): void => {
     if (placed.has(s.id)) return;
     placed.add(s.id);
     const mine = agentsOf(all, s.id);
@@ -1490,21 +1498,22 @@ export const fleetEntries = (
         ? { agents: { cost: treeCost(s, all), waiting: waiting(s).length } }
         : {}),
     });
+    // Its Loom agents are full sessions, drawn under it after its children,
+    // one level deeper than it (a filtered list is flat, ranked by relevance).
+    const agents = active ? [] : mine.filter((a) => entered.has(s.id) || status(a) !== "done");
+    const rails = nest ? [...nest.rails, !nest.isLast] : [];
     const kids = childrenOf(s);
     // Mirrors the FLEET row cap: 4 children shown, lifted while drilled in.
     const drilled = parent?.id === s.id;
     const shown = drilled ? kids : kids.slice(0, 4);
     const extra = drilled ? 0 : kids.length - shown.length;
+    const lastChild = extra === 0 && agents.length === 0 ? shown.length - 1 : -1;
     shown.forEach((c, i) =>
-      out.push({ kind: "child", s, c, isLast: i === shown.length - 1 && extra === 0 }),
+      out.push({ kind: "child", s, c, branch: { rails, isLast: i === lastChild } }),
     );
-    if (extra > 0) out.push({ kind: "childMore", s, extra });
-    // Its Loom agents are full sessions, drawn under it like its children (a
-    // filtered list is flat, ranked by relevance).
-    const agents = active ? [] : mine.filter((a) => entered.has(s.id) || status(a) !== "done");
-    agents.forEach((agent, i) =>
-      pushSession(agent, { depth: (nest?.depth ?? 0) + 1, isLast: i === agents.length - 1 }),
-    );
+    if (extra > 0)
+      out.push({ kind: "childMore", s, extra, branch: { rails, isLast: agents.length === 0 } });
+    agents.forEach((agent, i) => pushSession(agent, { rails, isLast: i === agents.length - 1 }));
   };
 
   if (active) {

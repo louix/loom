@@ -20,8 +20,10 @@ import { agentsWaitingLine, detailLayout, Fleet, showAgentsWaiting } from "@loom
 import { fleetPaneView } from "@loom/tui/views";
 import {
   fleetEntries,
+  fleetHits,
   fleetLayout,
   fleetSessions,
+  focusedChildOf,
   initialState,
   reduce,
   type Action,
@@ -470,5 +472,148 @@ describe("the cursor in a supervision tree", () => {
     s = reduce(s, { t: "childEnter", ids });
     s = reduce(s, { t: "childMove", delta: 5, ids });
     assert.deepEqual(cursor(s), ["lead", "bg:t2"]);
+  });
+});
+
+const shells = (...ids: string[]) =>
+  ids.map((id) => ({ id, kind: "shell" as const, title: `task ${id}` }));
+
+/**
+ *   lead      (tasks l1 l2)
+ *   ├ b       (task b1)
+ *   │ └ ba    (task z1)
+ *   └ a       (tasks a1 a2)
+ *     ├ ab    (six tasks: four drawn, "+2 more")
+ *     └ aa    (task x1)
+ */
+const tasked = (): SessionSnapshot[] => [
+  snap({
+    id: "lead",
+    status: "idle",
+    createdAt: 1,
+    backgroundTasks: shells("l1", "l2"),
+  }),
+  snap({
+    id: "a",
+    status: "running",
+    supervisorId: "lead",
+    createdAt: 2,
+    backgroundTasks: shells("a1", "a2"),
+  }),
+  snap({
+    id: "aa",
+    status: "running",
+    supervisorId: "a",
+    createdAt: 3,
+    backgroundTasks: shells("x1"),
+  }),
+  snap({
+    id: "ab",
+    status: "running",
+    supervisorId: "a",
+    createdAt: 4,
+    backgroundTasks: shells("y1", "y2", "y3", "y4", "y5", "y6"),
+  }),
+  snap({
+    id: "b",
+    status: "running",
+    supervisorId: "lead",
+    createdAt: 5,
+    backgroundTasks: shells("b1"),
+  }),
+  snap({
+    id: "ba",
+    status: "running",
+    supervisorId: "b",
+    createdAt: 6,
+    backgroundTasks: shells("z1"),
+  }),
+];
+
+/** The FLEET pane for `s`, its entry rows cut to their tree, glyphs and
+ *  id/label (titles and costs dropped), and the click hits for the same frame. */
+const drawn = (s: TuiState) => {
+  const layout = fleetLayout(s, 40);
+  const view = fleetPaneView(s.fleet, layout, s.selectedId, focusedChildOf(s), null);
+  const lines = stripVTControlCharacters(
+    renderToString(createElement(Fleet, { view, find: null, tick: 0, width: 60, now: 0 }), {
+      columns: 60,
+    }),
+  ).split("\n");
+  const cut = (line: string) => line.slice(2).replace(/(?<=[^\s▍│├└])\s{2,}.*$/, "");
+  const hits = fleetHits(
+    s,
+    {
+      originX: 1,
+      listW: 60,
+      originY: 1,
+      maxY: lines.length,
+    },
+    layout,
+  );
+  return {
+    rows: lines.slice(4, -1).map(cut),
+    line: (y: number) => cut(lines[y - 1]!),
+    hits,
+  };
+};
+
+describe("a nested agent's task rows", () => {
+  test("a top-level session's tasks hang one level under it", () => {
+    const s = withFleet([
+      snap({ id: "solo", status: "idle", backgroundTasks: shells("s1", "s2") }),
+    ]);
+    assert.deepEqual(drawn(s).rows, ["▍ ○ solo", "  ├ ⠋ $ task s1", "  └ ⠋ $ task s2"]);
+  });
+
+  test("hang one level under their agent, at any depth, with │ past a non-last branch", () => {
+    const s = reduce(withFleet(tasked()), { t: "select", id: "lead" });
+    assert.deepEqual(drawn(s).rows, [
+      "▍ ◐ lead",
+      "  ├ ⠋ $ task l1",
+      "  ├ ⠋ $ task l2",
+      "  ├ ⠋ b",
+      "  │ ├ ⠋ $ task b1",
+      "  │ └ ⠋ ba",
+      "  │   └ ⠋ $ task z1",
+      "  └ ⠋ a",
+      "    ├ ⠋ $ task a1",
+      "    ├ ⠋ $ task a2",
+      "    ├ ⠋ ab",
+      "    │ ├ ⠋ $ task y1",
+      "    │ ├ ⠋ $ task y2",
+      "    │ ├ ⠋ $ task y3",
+      "    │ ├ ⠋ $ task y4",
+      "    │ └ +2 more",
+      "    └ ⠋ aa",
+      "      └ ⠋ $ task x1",
+    ]);
+  });
+
+  test("the cursor and click targets sit on the rows drawn", () => {
+    const onRows = (s: TuiState) => {
+      const { rows, line, hits } = drawn(s);
+      assert.equal(hits.length, rows.length, "one click target per entry row");
+      for (const h of hits) {
+        if (h.kind === "session") {
+          assert.match(line(h.y), new RegExp(`[├└◐] (⠋ )?${h.id}$`));
+        } else if (h.kind === "child") {
+          assert.match(line(h.y), new RegExp(`task ${h.key.slice(3)}$`));
+        } else if (h.kind === "childMore") {
+          assert.match(line(h.y), /│ └ \+2 more$/);
+        }
+      }
+      return { line, hits };
+    };
+    const capped = onRows(reduce(withFleet(tasked()), { t: "select", id: "lead" }));
+    assert.ok(capped.hits.some((h) => h.kind === "childMore" && h.sessionId === "ab"));
+
+    let s = reduce(withFleet(tasked()), { t: "select", id: "ab" });
+    s = reduce(s, { t: "childEnter" });
+    assert.deepEqual(cursor(s), ["ab", "bg:y1"]);
+    const { line, hits } = onRows(s);
+    const focused = hits.find((h) => h.kind === "child" && h.key === "bg:y1")!;
+    assert.match(line(focused.y), /^▍ {3}│ ├ ⠋ \$ task y1$/);
+    assert.ok(!hits.some((h) => h.kind === "childMore"), "entered: its tasks are uncapped");
   });
 });
