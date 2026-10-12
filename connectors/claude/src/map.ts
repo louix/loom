@@ -99,6 +99,7 @@ interface SdkMsgLite {
   rate_limit_info?: {
     status?: string;
     rateLimitType?: string;
+    /** Fraction of the window used, 0-1 — unlike `get_usage`, which reports 0-100. */
     utilization?: number;
     resetsAt?: number;
   };
@@ -494,13 +495,21 @@ export class ClaudeEventMapper {
     // The stream reports epoch seconds; everything downstream is epoch ms.
     let resetsAt = info.resetsAt;
     if (typeof resetsAt === "number" && resetsAt < 1e12) resetsAt *= 1000;
+    // The stream reports utilization as a 0-1 fraction — the CLI passes the
+    // `anthropic-ratelimit-unified-*-utilization` headers through as is —
+    // where `get_usage` and everything downstream use percent. Rounded to
+    // hundredths of a percent so 0.84 lands on the same 84 a poll reports.
+    const utilization =
+      typeof info.utilization === "number"
+        ? Math.round(info.utilization * 10_000) / 100
+        : undefined;
     return [
       {
         type: "rate_limit",
         ...this.#base(null),
         status,
         ...(info.rateLimitType ? { window: info.rateLimitType } : {}),
-        ...(typeof info.utilization === "number" ? { utilization: info.utilization } : {}),
+        ...(utilization !== undefined ? { utilization } : {}),
         ...(typeof resetsAt === "number" ? { resetsAt } : {}),
       },
     ];

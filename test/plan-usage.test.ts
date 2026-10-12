@@ -5,7 +5,8 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { PlanWindow } from "@loom/core/events";
+import { ClaudeEventMapper } from "@loom/connector-claude/map";
+import type { HarnessEvent, PlanWindow } from "@loom/core/events";
 import { openDb } from "@loom/daemon/store/db";
 import { SessionStore } from "@loom/daemon/store/sessions";
 import {
@@ -501,6 +502,48 @@ test("a full reading of a window that has not restarted replaces the passed rese
       observedAt: later,
     });
     assert.equal(s.planUsageState("acct", later + MIN).stale, false);
+  } finally {
+    db.close();
+  }
+});
+
+test("a Claude poll and a streamed reading of the same window store the same percent", () => {
+  const db = openDb(":memory:");
+  try {
+    const s = new SessionStore(db);
+    const m = new ClaudeEventMapper("s1");
+    const resetsAt = Date.parse("2030-01-01T00:00:00Z");
+    const recorded = (events: HarnessEvent[]) => {
+      for (const ev of events) {
+        if (ev.type === "rate_limit") s.recordAccountUsage("acct", ev);
+      }
+      return s.accountUsage("acct", resetsAt - MIN).seven_day?.utilization;
+    };
+    const poll = () =>
+      m.mapPlanUsage({
+        rate_limits_available: true,
+        rate_limits: {
+          seven_day: {
+            utilization: 84,
+            resets_at: new Date(resetsAt).toISOString(),
+          },
+        },
+      });
+    const stream = () =>
+      m.map({
+        type: "rate_limit_event",
+        rate_limit_info: {
+          status: "allowed_warning",
+          resetsAt: resetsAt / 1000,
+          rateLimitType: "seven_day",
+          utilization: 0.84,
+          surpassedThreshold: 0.75,
+        },
+      });
+    assert.equal(recorded(poll()), 84);
+    assert.equal(recorded(stream()), 84);
+    assert.equal(recorded(poll()), 84);
+    assert.equal(recorded(stream()), 84);
   } finally {
     db.close();
   }

@@ -572,20 +572,53 @@ test("a rate_limit_event becomes a rate_limit event", () => {
   const m = new ClaudeEventMapper(SID);
   const out = m.map({
     type: "rate_limit_event",
+    // The frame the CLI builds from the `anthropic-ratelimit-unified-7d-*`
+    // headers: utilization and the crossed threshold are 0-1 fractions.
     rate_limit_info: {
       status: "allowed_warning",
-      rateLimitType: "five_hour",
-      utilization: 82,
       // The stream reports epoch seconds.
       resetsAt: 1_791_600_063,
+      rateLimitType: "seven_day",
+      utilization: 0.51,
+      isUsingOverage: false,
+      surpassedThreshold: 0.5,
     },
+    uuid: "4b1f0c2e-0000-4000-8000-000000000000",
+    session_id: SID,
   });
   const ev = byType(out, "rate_limit")[0];
   assert.ok(ev);
   assert.equal(ev.status, "allowed_warning");
-  assert.equal(ev.window, "five_hour");
-  assert.equal(ev.utilization, 82);
+  assert.equal(ev.window, "seven_day");
+  assert.equal(ev.utilization, 51);
   assert.equal(ev.resetsAt, 1_791_600_063_000);
+});
+
+test("a streamed utilization fraction lands on the percent get_usage reports", () => {
+  const m = new ClaudeEventMapper(SID);
+  const streamed = (utilization: number) =>
+    byType(
+      m.map({
+        type: "rate_limit_event",
+        rate_limit_info: {
+          status: "allowed",
+          rateLimitType: "five_hour",
+          utilization,
+        },
+      }),
+      "rate_limit",
+    )[0]?.utilization;
+  // 0.84 * 100 is 84.00000000000001 in floating point.
+  assert.equal(streamed(0.84), 84);
+  assert.equal(streamed(0.29), 29);
+  assert.equal(streamed(0), 0);
+  assert.equal(streamed(1), 100);
+  assert.equal(streamed(0.123456), 12.35);
+  const polled = m.mapPlanUsage({
+    rate_limits_available: true,
+    rate_limits: { five_hour: { utilization: 84, resets_at: null } },
+  });
+  assert.equal(byType(polled, "rate_limit")[0]?.utilization, streamed(0.84));
 });
 
 test("a rate_limit_event reset time already in epoch ms is kept as is", () => {
