@@ -70,6 +70,7 @@ exec "$interpreter" -c "$wrapper" "$@"
 
 const cliArgs = (f: Fixture, args: string[]) => [
   "run",
+  "--quiet",
   "-A",
   "--deny-net",
   fixture,
