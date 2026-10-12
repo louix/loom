@@ -1131,7 +1131,9 @@ export class CodexAppServerSession implements AgentSession {
         sessionId: this.id,
         ts: now(),
         id: pid,
-        tool: "Bash",
+        // `writeStdin` (on by default since Codex 0.160): input for a terminal
+        // `command` already runs, under its own `approvalId` — not a new run.
+        tool: p["kind"] === "writeStdin" ? "write_stdin" : "Bash",
         input: { command: p["command"], cwd: p["cwd"], reason: p["reason"] },
       });
     } else if (method === "item/fileChange/requestApproval") {

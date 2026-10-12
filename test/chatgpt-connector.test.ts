@@ -3130,3 +3130,47 @@ test("Codex's own item start and completion times stamp the transcript's calls a
   const text = events.find((e) => e.type === "assistant_text");
   assert.ok(text && text.ts >= before);
 });
+
+test("a Codex stdin-write approval is its own write_stdin request, answered like a command approval", async () => {
+  const resultFile = join(tmpdir(), `approval-result-write-stdin-${process.pid}.json`);
+  Deno.env.set(
+    "LOOM_TEST_APPROVAL_SPEC",
+    JSON.stringify({
+      method: "item/commandExecution/requestApproval",
+      params: {
+        itemId: "cmd-1",
+        approvalId: "stdin-approval-1",
+        kind: "writeStdin",
+        command: "python3",
+        cwd: "/tmp",
+        reason: null,
+      },
+    }),
+  );
+  Deno.env.set("LOOM_TEST_APPROVAL_RESULT_FILE", resultFile);
+  try {
+    const s = await CodexAppServerSession.start(
+      { sessionId: "write-stdin", cwd: "/tmp", prompt: "go", mode: "default", mcpServers: [] },
+      { dir: "/tmp/loom-codex-write-stdin", authJsonPath: "/tmp/loom-codex-write-stdin/auth.json" },
+      FAKE_CODEX,
+    );
+    try {
+      for await (const ev of s.events()) {
+        if (ev.type !== "permission_request") continue;
+        // The stdin callback's own id, not the command item's.
+        assert.equal(ev.id, "stdin-approval-1");
+        assert.equal(ev.tool, "write_stdin");
+        assert.deepEqual(ev.input, { command: "python3", cwd: "/tmp", reason: null });
+        await s.respondToPermission(ev.id, { behavior: "allow" });
+        break;
+      }
+      assert.deepEqual(JSON.parse(await waitForFile(resultFile)), { decision: "accept" });
+    } finally {
+      await s.close();
+    }
+  } finally {
+    Deno.env.delete("LOOM_TEST_APPROVAL_SPEC");
+    Deno.env.delete("LOOM_TEST_APPROVAL_RESULT_FILE");
+    await rm(resultFile, { force: true });
+  }
+});
