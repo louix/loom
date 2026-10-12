@@ -4,6 +4,7 @@
  * removed one is dropped, and each is recorded so Loom can say so once.
  */
 import { absurd } from "@loom/core/absurd";
+import { foldLegacyTools } from "./legacy-tools.ts";
 
 type Raw = Record<string, unknown>;
 
@@ -24,6 +25,13 @@ export type ConfigKeyNotice =
       readonly key: string;
       readonly replacement: string;
       readonly advice: string;
+    }
+  /** Moved into a catalog that says what it was with other keys; `how` names them. */
+  | {
+      readonly kind: "folded";
+      readonly key: string;
+      readonly replacement: string;
+      readonly how: string;
     }
   /** Not a setting of the section it is in; ignored. */
   | { readonly kind: "unknown"; readonly key: string };
@@ -177,13 +185,14 @@ const ENTRIES: readonly { readonly path: string; readonly scope: Scope }[] = [
 /**
  * One config layer (the user defaults, or one `repos[]` entry's overrides) in
  * current names, and what it still sets under old ones. `at` prefixes the
- * reported keys.
+ * reported keys. Throws where an old key has no single meaning in new ones.
  */
 export const migrateConfigLayer = (
   layer: Raw,
   at = "",
-): { readonly layer: Raw; readonly notices: readonly ConfigKeyNotice[] } =>
-  ENTRIES.reduce(
+): { readonly layer: Raw; readonly notices: readonly ConfigKeyNotice[] } => {
+  const tools = foldLegacyTools(layer, at);
+  const migrated = ENTRIES.reduce(
     (acc, { path, scope }) => {
       const entries = migrateEntries(readPath(acc.layer, path), scope, at + path);
       return entries.notices.length === 0
@@ -193,8 +202,10 @@ export const migrateConfigLayer = (
             notices: [...acc.notices, ...entries.notices],
           };
     },
-    migrateScope(layer, LAYER, at),
+    migrateScope(tools.layer, LAYER, at),
   );
+  return { layer: migrated.layer, notices: [...tools.notices, ...migrated.notices] };
+};
 
 /** One line per notice, naming what to write instead. */
 export const showConfigKeyNotice = (d: ConfigKeyNotice): string => {
@@ -207,6 +218,8 @@ export const showConfigKeyNotice = (d: ConfigKeyNotice): string => {
         : `${d.key} is deprecated; write ${d.replacement} instead`;
     case "superseded":
       return `${d.key} is deprecated and ignored: ${d.replacement} is also set and wins; remove ${d.key}`;
+    case "folded":
+      return `${d.key} is deprecated; write ${d.replacement} with ${d.how} instead`;
     case "deprecated":
       return `${d.key} is deprecated and still read as before: ${d.advice}`;
     case "unknown":

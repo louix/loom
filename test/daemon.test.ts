@@ -2772,9 +2772,9 @@ test("a mode notification for a session with no live adapter writes nothing", as
 test("doctor reflects configured HTTP mounts, preferences and disabled native tools", async () => {
   const hh = await makeHarness({
     config: `{
-  "remote_tools": {
+  "mcp_servers": {
     "research": {
-      "url": "https://example.invalid/mcp?private=do-not-display",
+      "source": { "kind": "http", "url": "https://example.invalid/mcp?private=do-not-display" },
       "default_for": [
         "web_search"
       ]
@@ -2788,7 +2788,7 @@ test("doctor reflects configured HTTP mounts, preferences and disabled native to
     }
   },
   "session": {
-    "remote_tools": [
+    "mcp_servers": [
       "research"
     ]
   }
@@ -2819,9 +2819,11 @@ test("tool preflight rejects missing host executables and VM placement before al
   for (const vm of [false, true]) {
     const hh = await makeHarness({
       config: JSON.stringify({
-        local_tools: { files: { command: "loom-test-missing-host-tool" } },
+        mcp_servers: {
+          files: { source: { kind: "command", command: "loom-test-missing-host-tool" } },
+        },
         session: {
-          local_tools: ["files"],
+          mcp_servers: ["files"],
           isolation: { enabled: vm, ...(vm ? { claude: { artifact: "/unused-runtime" } } : {}) },
         },
         providers: { claude: { models: ["fixture"] } },
@@ -2839,7 +2841,7 @@ test("tool preflight rejects missing host executables and VM placement before al
       });
       await assert.rejects(
         c.request("session.create", { provider: vm ? "claude" : "fake", prompt: "go" }),
-        vm ? /host tools are selected/ : /Required host tool files/,
+        vm ? /host commands are selected/ : /MCP server files: host command/,
       );
       const list = await c.request<SessionSnapshot[]>("session.list");
       assert.equal(list.length, 0);
@@ -2850,9 +2852,11 @@ test("tool preflight rejects missing host executables and VM placement before al
         before,
       );
       const report = await c.request<DoctorReport>("daemon.doctor");
-      assert.match(report.mcp[0]!.note, /Host tool.*Required/);
+      assert.match(report.mcp[0]!.note, /Host command.*Required/);
       if (vm)
-        assert.ok(report.configWarnings.some((line) => line.includes("host tools are selected")));
+        assert.ok(
+          report.configWarnings.some((line) => line.includes("host commands are selected")),
+        );
     } finally {
       await c.close();
       await hh.cleanup();

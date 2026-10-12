@@ -78,6 +78,7 @@ export class McpHub {
     for (const h of handles) {
       if (h.spec.transport === "runtime")
         throw new Error("Packaged MCP was not mounted by the daemon");
+      const serverCwd = h.spec.transport === "stdio" ? (h.spec.cwd ?? cwd) : undefined;
       let client: experimental_MCPClient | undefined;
       try {
         client = await experimental_createMCPClient({
@@ -91,7 +92,7 @@ export class McpHub {
                   // relative paths (tilth's `--scope` default `.`) against their
                   // own cwd, which without this is the daemon's cwd — the main
                   // repo, not the worktree the session edits.
-                  ...(cwd ? { cwd } : {}),
+                  ...(serverCwd ? { cwd: serverCwd } : {}),
                 })
               : {
                   type: "http",

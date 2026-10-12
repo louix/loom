@@ -33,8 +33,20 @@ export const nixMcpSourceSchema = z.strictObject({
   args: z.array(z.string()).default([]),
 });
 export type NixMcpSource = z.output<typeof nixMcpSourceSchema>;
+/** A host executable: unconfined, so only sessions that run on the host can use it. */
+const commandMcpSourceSchema = z.strictObject({
+  kind: z.literal("command"),
+  command: text,
+  args: z.array(z.string()).default([]),
+  env: z.record(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/), z.string()).default({}),
+  cwd: z
+    .string()
+    .refine((v) => v.startsWith("/") || v.startsWith("~/"), "must be absolute or start with ~/")
+    .optional(),
+});
 export const mcpSourceSchema = z.union([
   nixMcpSourceSchema,
+  commandMcpSourceSchema,
   z.strictObject({ kind: z.literal("runtime"), ref: text }),
   z.strictObject({
     kind: z.literal("http"),

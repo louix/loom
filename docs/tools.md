@@ -2,8 +2,9 @@
 
 Define servers in trusted user configuration and select them under
 `session.mcp_servers`. Definitions and preparation do not enable a server.
-Each local server runs in its own per-session smolvm container/VM, independently
-of the agent's execution mode.
+`source.kind` says where a server runs: `nix` and `runtime` servers run in
+their own per-session smolvm container/VM, independently of the agent's
+execution mode; `command` servers run on the host; `http` servers are remote.
 
 ```jsonc
 {
@@ -182,74 +183,42 @@ retain their running servers and grants. Restart the daemon to apply changed
 definitions or selections; new/resumed sessions then use the current configuration.
 There is no live tool-list refresh or grant mutation.
 
-## Legacy tool selections
+## Host commands
 
-The existing `local_tools`, `vm_tools`, and `remote_tools` definitions and lists
-remain supported. They can coexist with unified definitions, but selecting the
-same server name twice is an error. Legacy VM definitions retain read-write
-workspace access and offline networking. Host commands remain explicitly
-unsandboxed local integrations.
-
-# Legacy configuration examples
-
-Loom separates host commands, separate tool VMs, and remote MCP services. Define
-integrations once in the trusted user config, then select them globally or per
-repo. Defining or bundling a tool does not enable it. With no selections, agents
-use their native tools and Loom's session tools. These lists configure Loom-managed
-integrations; provider-native settings and plugins remain separate.
+A `command` source runs an executable on the host, unconfined, as the agent's
+own MCP client starts it:
 
 ```jsonc
 {
-  "local_tools": {
-    "tilth": {
-      "command": "tilth",
-      "args": ["--mcp", "--edit"],
-      "default_for": ["read", "write", "edit"],
-    },
+  "mcp_servers": {
     "fff": {
-      "command": "fff-mcp",
+      "source": {
+        "kind": "command",
+        "command": "fff-mcp", // looked up on PATH, or an absolute path
+        "args": ["--stdio"], // an array, never a shell command string
+        "env": { "FFF_LOG": "warn" }, // added to the environment it inherits
+        "cwd": "~/tools/fff", // absolute or ~/; omitted: the session's worktree
+      },
       "default_for": ["find", "grep"],
     },
   },
-  "vm_tools": {
-    "tilth": {
-      "runtime": "tilth",
-      "default_for": ["read", "write", "edit", "find", "grep"],
-    },
-  },
-  "remote_tools": {
-    "docs": {
-      "url": "https://docs.example.com/mcp",
-      "bearer_token_env": "DOCS_TOKEN",
-    },
-  },
-  "session": {
-    "local_tools": [],
-    "vm_tools": [],
-    "remote_tools": [],
-  },
+  "session": { "mcp_servers": ["fff"] },
 }
 ```
 
-`tools` are executables installed on the host. Arguments are an array, never a
-shell command string. `vm_tools` use packaged runtimes in separate offline VMs;
-their manifests supply commands and arguments. They receive the repository mounts,
-including shared Git metadata, without host credentials. `remote_tools` receive
-per-session HTTP relays; inline `bearer_token` overrides `bearer_token_env`.
-
-All selected tools are required. Missing executables, runtime artifacts or selected
-remote credentials fail preflight. Connection failures are surfaced rather than
-silently dropping selected integrations. Availability checks do not boot VMs or
-prove remote connectivity; those are checked during launch. Unselected definitions
-are syntax-validated but do not require installation or credentials.
+Only sessions that run on the host can use one. Selecting a host command for a
+session whose agent runs in a VM (`session.defaults.isolation: "vm"`, or a VM
+runtime for that provider) fails before any session resources are created; a
+host command is never silently moved into a VM, and a failed VM never falls back
+to the host. Package the server with Nix (`source.kind: "nix"`) to run it beside
+a VM agent. `grants` do not apply to a host command and are rejected. A missing
+executable fails preflight.
 
 ## Common configurations
 
-Add these settings to the matching `repos` array in your user config. Each example
-assumes the definitions above. Host/VM agent execution and the workspace come
-from `session.defaults`; the other `session` keys select tools.
-
-### Host agent and host tools, in the current checkout
+Add these to the matching `repos` entry of your user config, assuming the
+definitions above. Host/VM agent execution and the workspace come from
+`session.defaults`.
 
 ```jsonc
 {
@@ -257,85 +226,46 @@ from `session.defaults`; the other `session` keys select tools.
     {
       "path": "~/dev/project",
       "session": {
-        "local_tools": ["tilth", "fff"],
-        "vm_tools": [],
-        "remote_tools": [],
-        "defaults": {
-          "isolation": "none",
-          "workspace": "in-place",
-        },
+        // Host agent, host tools, in the current checkout.
+        "mcp_servers": ["fff"],
+        "defaults": { "isolation": "none", "workspace": "in-place" },
       },
     },
-  ],
-}
-```
-
-Set `repos[].session.defaults.workspace = "worktree"` for separate branches and worktrees while
-keeping agent and tool execution on the host.
-
-### Host agent and a separate Tilth VM
-
-Keep the host execution settings above and replace the tool selections:
-
-```jsonc
-{
-  "repos": [
     {
-      "path": "~/dev/project",
+      "path": "~/dev/other",
       "session": {
-        "local_tools": [],
-        "vm_tools": ["tilth"],
-        "remote_tools": [],
+        // VM agent; Tilth in its own VM, Kagi remote.
+        "mcp_servers": ["tilth", "kagi"],
+        "defaults": { "isolation": "vm", "workspace": "worktree" },
       },
     },
   ],
 }
 ```
 
-Only Tilth is confined in a VM. The agent still runs on the host.
+Node, Python and other programs inside an agent VM belong to its
+[development environment](session-environments.md), not to an MCP server.
+`loom doctor` reports the selected servers with their placement and warns about
+host commands incompatible with configured VM agents.
 
-### VM agent and a separate Tilth VM
+## Old tool catalogs
 
-```jsonc
-{
-  "repos": [
-    {
-      "path": "~/dev/project",
-      "session": {
-        "local_tools": [],
-        "vm_tools": ["tilth"],
-        "remote_tools": ["docs"],
-        "defaults": {
-          "isolation": "vm",
-          "workspace": "worktree",
-        },
-      },
-    },
-  ],
-}
-```
+`local_tools`, `vm_tools` and `remote_tools`, and their `session` lists, are
+the old form. Loom still reads them, folds them into `mcp_servers` and
+`session.mcp_servers`, and reports each once (`loom doctor`, `config.check`):
 
-Agent VMs reject selected host tools before session resources are created. A host
-tool is never silently moved into a VM, and a failed VM never falls back to host
-execution. Node, Python and other programs inside the agent VM belong to its
-[development environment](session-environments.md), not `vm_tools`.
+| Old                                               | New `mcp_servers.<name>`                                                         |
+| ------------------------------------------------- | -------------------------------------------------------------------------------- |
+| `local_tools.<name>: { command, args }`           | `source: { kind: "command", command, args }`                                     |
+| `vm_tools.<name>: { runtime }`                    | `source: { kind: "runtime", ref: runtime }, grants: { workspace: "read-write" }` |
+| `remote_tools.<name>: { url, bearer_token_env }`  | `source: { kind: "http", url }, auth: { bearer_token_env }`                      |
+| `session.local_tools`, `vm_tools`, `remote_tools` | `session.mcp_servers`, in that order, before its own names                       |
 
-## Selection and diagnostics
-
-Each list inherits independently from `session`; `repos[].session` replaces only
-the lists it specifies. `[]` clears a group. Unknown selections, duplicate names
-within a list, or selecting the same name from different groups are errors.
-Definitions can share a name across groups, as Tilth does above.
-
-`default_for` is a capability preference, not a tool allowlist or renaming rule.
-Only one selected tool can be preferred for each capability. Unselected definitions
-can declare overlapping preferences. Native tools remain available as fallbacks
-where the agent supports them; selecting a required integration still requires it
-to connect.
-
-`loom doctor` reports selected tools with host, separate VM or remote placement
-and warns about host tools incompatible with configured VM agents. Changes apply
-after restarting the daemon; resumed sessions receive the current selections.
+`default_for` carries over. Each config layer is folded on its own, so a
+`repos[]` entry that sets any of the old lists now replaces the whole
+`session.mcp_servers` list rather than one group. A name defined in two old
+catalogs, or in an old catalog and `mcp_servers`, is an error naming the
+entries to write instead.
 
 The old `[[mcp]]`, `[[command-mcp]]` and `[[http-mcp]]` syntax is rejected. There is
-no compatibility mode or implicit Tilth/fff selection.
+no implicit Tilth/fff selection.

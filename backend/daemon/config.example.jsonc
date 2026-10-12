@@ -76,6 +76,11 @@
       "auth": { "bearer_token_env": "KAGI_API_KEY" },
       "default_for": ["web_search", "web_fetch"],
     },
+    // A host executable: unconfined, so only sessions that run on the host can select it.
+    // "fff": {
+    //   "source": { "kind": "command", "command": "fff-mcp", "args": [], "env": {}, "cwd": "~/tools" },
+    //   "default_for": ["find", "grep"],
+    // },
   },
   // Loom agents: profiles a session starts children with (built in: self, the
   // spawner's own settings). Unset fields follow the spawner.

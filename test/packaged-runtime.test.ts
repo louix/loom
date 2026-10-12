@@ -27,9 +27,9 @@ const manifest = {
 };
 test("packaged MCP config rejects ambiguous commands and unsupported permission grants", () => {
   const base = `{
-  "vm_tools": {
+  "mcp_servers": {
     "code": {
-      "runtime": "tilth",
+      "source": { "kind": "runtime", "ref": "tilth" },
       "default_for": [
         "read",
         "edit"
@@ -37,7 +37,7 @@ test("packaged MCP config rejects ambiguous commands and unsupported permission 
     }
   },
   "session": {
-    "vm_tools": [
+    "mcp_servers": [
       "code"
     ]
   }
@@ -49,6 +49,7 @@ test("packaged MCP config rejects ambiguous commands and unsupported permission 
       runtime: "tilth",
       isolation: "vm",
       defaultFor: ["read", "edit"],
+      grants: { workspace: "none", network: [] },
     },
   ]);
   for (const extra of [
@@ -62,13 +63,13 @@ test("packaged MCP config rejects ambiguous commands and unsupported permission 
   ]) {
     assert.throws(() =>
       normalizeConfig({
-        vm_tools: {
-          code: { runtime: "tilth", ...extra },
+        mcp_servers: {
+          code: { source: { kind: "runtime", ref: "tilth", ...extra } },
         },
       }),
     );
   }
-  assert.throws(() => normalizeConfig(parse(base.replace('"runtime":', '"command":'))));
+  assert.throws(() => normalizeConfig(parse(base.replace('"ref":', '"command":'))));
 });
 test("manifest cannot grant authority; VM mount and environment policies are fixed", () => {
   assert.deepEqual(decodeManifest(manifest), manifest);

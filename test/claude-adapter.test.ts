@@ -7,8 +7,10 @@ import {
   ClaudeProvider,
   __setClaudeSdk,
   allowedWriteRoots,
+  mcpConfig,
   outOfTreeWriteReason,
 } from "@loom/connector-claude/adapter";
+import { execFileSync } from "node:child_process";
 import { setLogLevel } from "@loom/core/logger";
 
 setLogLevel("error");
@@ -1596,4 +1598,25 @@ test("send now asks the CLI for priority now only while every root call in fligh
   q.push({ type: "result", subtype: "success", is_error: false, result: "", usage: {} });
   await delay(20);
   assert.equal(await priority({ now: true }), undefined, "the turn ended: nothing runs");
+});
+
+test("mcpConfig starts a host command with a working directory through sh, which changes to it", () => {
+  // given
+  const dir = Deno.realPathSync(tmpdir());
+  // when
+  const config = mcpConfig([
+    {
+      name: "where",
+      spec: { transport: "stdio", command: "sh", args: ["-c", "pwd; echo $0", "it's"], cwd: dir },
+    },
+    { name: "plain", spec: { transport: "stdio", command: "plain", env: { A: "1" } } },
+  ]);
+  // then
+  const where = config["where"];
+  assert.ok(where && "command" in where && where.command !== undefined);
+  assert.equal(
+    execFileSync(where.command, where.args ?? [], { encoding: "utf8" }),
+    `${dir}\nit's\n`,
+  );
+  assert.deepEqual(config["plain"], { type: "stdio", command: "plain", env: { A: "1" } });
 });

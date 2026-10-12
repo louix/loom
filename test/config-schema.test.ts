@@ -135,7 +135,7 @@ test("editor schema validates user inputs, optional defaults, and repo overrides
         {
           path: "~/dev/project",
           session: {
-            vm_tools: [],
+            mcp_servers: [],
             defaults: { isolation: "vm" },
             isolation: {
               network: { presets: ["nix", "rust"] },
@@ -181,10 +181,11 @@ test("editor schema validates user inputs, optional defaults, and repo overrides
       },
     },
     {
-      local_tools: {
+      mcp_servers: {
         code: {},
       },
     },
+    { mcp_servers: { code: { source: { kind: "command" } } } },
     { hooks: [{ on: "typo", run: "check" }] },
     { hooks: [{ on: "turn_end" }] },
     {
@@ -238,9 +239,9 @@ test("scaffolding refreshes the offline schema without overwriting user settings
 test("config validation errors identify fields without exposing credentials or hook commands", () => {
   for (const raw of [
     {
-      remote_tools: {
+      mcp_servers: {
         private: {
-          url: "https://user:secret-token@host/mcp",
+          source: { kind: "http", url: "https://user:secret-token@host/mcp" },
         },
       },
     },
@@ -251,7 +252,7 @@ test("config validation errors identify fields without exposing credentials or h
       (error: unknown) => {
         assert.ok(error instanceof Error);
         assert.doesNotMatch(error.message, /secret-token/);
-        assert.match(error.message, /remote_tools|hooks/);
+        assert.match(error.message, /mcp_servers|hooks/);
         return true;
       },
     );
@@ -260,7 +261,7 @@ test("config validation errors identify fields without exposing credentials or h
 
 test("null reads as absent; a wrong type is an error naming the key", () => {
   const config = normalizeConfig({
-    local_tools: null,
+    mcp_servers: null,
     tui: null,
     providers: {
       claude: {
@@ -268,7 +269,7 @@ test("null reads as absent; a wrong type is an error naming the key", () => {
       },
     },
     session: {
-      local_tools: null,
+      mcp_servers: null,
     },
   });
   assert.deepEqual(config.mcp, []);

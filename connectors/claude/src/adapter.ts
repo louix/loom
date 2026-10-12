@@ -450,17 +450,23 @@ const bounded = <K>(into: Map<K, unknown> | Set<K>): void => {
   if (into.size > QUEUED_INPUTS_MAX) into.delete(into.keys().next().value as K);
 };
 
-const mcpConfig = (handles: McpServerHandle[]): Record<string, McpServerConfig> => {
+export const mcpConfig = (handles: McpServerHandle[]): Record<string, McpServerConfig> => {
   const out: Record<string, McpServerConfig> = {};
   for (const h of handles) {
     if (h.spec.transport === "runtime")
       throw new Error("Packaged MCP was not mounted by the daemon");
     if (h.spec.transport === "stdio") {
+      const { command, args = [], env, cwd } = h.spec;
       out[h.name] = {
         type: "stdio",
-        command: h.spec.command,
-        ...(h.spec.args ? { args: h.spec.args } : {}),
-        ...(h.spec.env ? { env: h.spec.env } : {}),
+        // The SDK's stdio config has no working directory, so sh changes to it first.
+        ...(cwd === undefined
+          ? { command, ...(h.spec.args ? { args } : {}) }
+          : {
+              command: "sh",
+              args: ["-c", 'cd -- "$1" && shift && exec "$@"', "sh", cwd, command, ...args],
+            }),
+        ...(env ? { env } : {}),
       };
     } else {
       out[h.name] = {

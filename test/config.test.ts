@@ -568,9 +568,9 @@ test("loadConfig merges an exact repo override from the user file and ignores re
       `{
   "base_branch": "trunk",
   "default_provider": "deepseek",
-  "local_tools": {
+  "mcp_servers": {
     "local": {
-      "command": "tool"
+      "source": { "kind": "command", "command": "tool" }
     }
   },
   "repos": [
@@ -587,7 +587,7 @@ test("loadConfig merges an exact repo override from the user file and ignores re
         }
       },
       "session": {
-        "local_tools": [
+        "mcp_servers": [
           "local"
         ]
       }
@@ -608,7 +608,7 @@ test("loadConfig merges an exact repo override from the user file and ignores re
     }
   },
   "session": {
-    "local_tools": []
+    "mcp_servers": []
   }
 }`,
     );

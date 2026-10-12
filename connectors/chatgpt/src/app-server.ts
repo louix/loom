@@ -75,6 +75,7 @@ export const mcpConfig = (servers: McpServerHandle[]): string => {
           ...(s.required ? ["required = true"] : []),
           ...(spec.args?.length ? [`args = [${spec.args.map(value).join(", ")}]`] : []),
           ...(spec.env ? [`env = ${table(spec.env)}`] : []),
+          ...(spec.cwd !== undefined ? [`cwd = ${value(spec.cwd)}`] : []),
         ];
         return [s.name, `{ ${fields.join(", ")} }`] as const;
       }

@@ -106,6 +106,8 @@ export const mcpServerHandleSchema = z.object({
       command: z.string(),
       args: z.array(z.string()).optional(),
       env: z.record(z.string(), z.string()).optional(),
+      /** Absolute; absent runs it in the session's working directory. */
+      cwd: z.string().optional(),
     }),
     z.object({
       transport: z.literal("http"),

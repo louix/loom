@@ -228,6 +228,18 @@ test("Code Mode serializes command and HTTP MCP mounts into app-server config", 
   );
 });
 
+test("Code Mode passes a host command's env and working directory", () => {
+  assert.equal(
+    mcpConfig([
+      {
+        name: "files",
+        spec: { transport: "stdio", command: "files", env: { A: "1" }, cwd: "/srv/tools" },
+      },
+    ]),
+    '{ "files" = { command = "files", env = { "A" = "1" }, cwd = "/srv/tools" } }',
+  );
+});
+
 test("Codex requires explicitly selected command and remote tools", () => {
   assert.equal(
     mcpConfig([

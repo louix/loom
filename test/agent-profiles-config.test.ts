@@ -24,8 +24,8 @@ test("agents default to depth 2 and no configured profiles", () => {
 
 test("a profile keeps what it sets and follows the spawner for the rest", () => {
   const c = cfg({
-    session: { local_tools: ["tilth"] },
-    local_tools: { tilth: { command: "tilth" } },
+    session: { mcp_servers: ["tilth"] },
+    mcp_servers: { tilth: { source: { kind: "command", command: "tilth" } } },
     providers: { claude: { profiles: { personal: { config_dir: "~/.claude-personal" } } } },
     agents: {
       max_depth: 3,

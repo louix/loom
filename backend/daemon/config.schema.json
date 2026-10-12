@@ -52,6 +52,42 @@
                 "properties": {
                   "kind": {
                     "type": "string",
+                    "const": "command"
+                  },
+                  "command": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "args": {
+                    "default": [],
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "env": {
+                    "default": {},
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                    },
+                    "additionalProperties": {
+                      "type": "string"
+                    }
+                  },
+                  "cwd": {
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "command"],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
                     "const": "runtime"
                   },
                   "ref": {
@@ -265,22 +301,16 @@
           "description": "Replaced by session.environment.auto_nix."
         },
         "local_tools": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
+          "deprecated": true,
+          "description": "Replaced by session.mcp_servers."
         },
         "vm_tools": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
+          "deprecated": true,
+          "description": "Replaced by session.mcp_servers."
         },
         "remote_tools": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
+          "deprecated": true,
+          "description": "Replaced by session.mcp_servers."
         },
         "mcp_servers": {
           "type": "array",
@@ -577,96 +607,16 @@
       "additionalProperties": false
     },
     "local_tools": {
-      "default": {},
-      "type": "object",
-      "propertyNames": {
-        "type": "string",
-        "pattern": "^[a-zA-Z0-9_-]+$"
-      },
-      "additionalProperties": {
-        "type": "object",
-        "properties": {
-          "default_for": {
-            "default": [],
-            "type": "array",
-            "items": {
-              "type": "string",
-              "enum": ["read", "write", "edit", "find", "grep", "web_search", "web_fetch"]
-            }
-          },
-          "command": {
-            "type": "string"
-          },
-          "args": {
-            "default": [],
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          }
-        },
-        "required": ["command"],
-        "additionalProperties": false
-      }
+      "deprecated": true,
+      "description": "Replaced by mcp_servers.<name> with source.kind \"command\"."
     },
     "vm_tools": {
-      "default": {},
-      "type": "object",
-      "propertyNames": {
-        "type": "string",
-        "pattern": "^[a-zA-Z0-9_-]+$"
-      },
-      "additionalProperties": {
-        "type": "object",
-        "properties": {
-          "default_for": {
-            "default": [],
-            "type": "array",
-            "items": {
-              "type": "string",
-              "enum": ["read", "write", "edit", "find", "grep", "web_search", "web_fetch"]
-            }
-          },
-          "runtime": {
-            "type": "string"
-          }
-        },
-        "required": ["runtime"],
-        "additionalProperties": false
-      }
+      "deprecated": true,
+      "description": "Replaced by mcp_servers.<name> with source.kind \"runtime\"."
     },
     "remote_tools": {
-      "default": {},
-      "type": "object",
-      "propertyNames": {
-        "type": "string",
-        "pattern": "^[a-zA-Z0-9_-]+$"
-      },
-      "additionalProperties": {
-        "type": "object",
-        "properties": {
-          "default_for": {
-            "default": [],
-            "type": "array",
-            "items": {
-              "type": "string",
-              "enum": ["read", "write", "edit", "find", "grep", "web_search", "web_fetch"]
-            }
-          },
-          "url": {
-            "type": "string"
-          },
-          "bearer_token": {
-            "type": "string"
-          },
-          "bearer_token_env": {
-            "default": "",
-            "type": "string"
-          }
-        },
-        "required": ["url"],
-        "additionalProperties": false
-      }
+      "deprecated": true,
+      "description": "Replaced by mcp_servers.<name> with source.kind \"http\"."
     },
     "$schema": {
       "type": "string"
@@ -1621,6 +1571,42 @@
                       "properties": {
                         "kind": {
                           "type": "string",
+                          "const": "command"
+                        },
+                        "command": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "args": {
+                          "default": [],
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "env": {
+                          "default": {},
+                          "type": "object",
+                          "propertyNames": {
+                            "type": "string",
+                            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                          },
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "cwd": {
+                          "type": "string"
+                        }
+                      },
+                      "required": ["kind", "command"],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
                           "const": "runtime"
                         },
                         "ref": {
@@ -1834,22 +1820,16 @@
                 "description": "Replaced by session.environment.auto_nix."
               },
               "local_tools": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
+                "deprecated": true,
+                "description": "Replaced by session.mcp_servers."
               },
               "vm_tools": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
+                "deprecated": true,
+                "description": "Replaced by session.mcp_servers."
               },
               "remote_tools": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
+                "deprecated": true,
+                "description": "Replaced by session.mcp_servers."
               },
               "mcp_servers": {
                 "type": "array",
@@ -2146,96 +2126,16 @@
             "additionalProperties": false
           },
           "local_tools": {
-            "default": {},
-            "type": "object",
-            "propertyNames": {
-              "type": "string",
-              "pattern": "^[a-zA-Z0-9_-]+$"
-            },
-            "additionalProperties": {
-              "type": "object",
-              "properties": {
-                "default_for": {
-                  "default": [],
-                  "type": "array",
-                  "items": {
-                    "type": "string",
-                    "enum": ["read", "write", "edit", "find", "grep", "web_search", "web_fetch"]
-                  }
-                },
-                "command": {
-                  "type": "string"
-                },
-                "args": {
-                  "default": [],
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
-                }
-              },
-              "required": ["command"],
-              "additionalProperties": false
-            }
+            "deprecated": true,
+            "description": "Replaced by mcp_servers.<name> with source.kind \"command\"."
           },
           "vm_tools": {
-            "default": {},
-            "type": "object",
-            "propertyNames": {
-              "type": "string",
-              "pattern": "^[a-zA-Z0-9_-]+$"
-            },
-            "additionalProperties": {
-              "type": "object",
-              "properties": {
-                "default_for": {
-                  "default": [],
-                  "type": "array",
-                  "items": {
-                    "type": "string",
-                    "enum": ["read", "write", "edit", "find", "grep", "web_search", "web_fetch"]
-                  }
-                },
-                "runtime": {
-                  "type": "string"
-                }
-              },
-              "required": ["runtime"],
-              "additionalProperties": false
-            }
+            "deprecated": true,
+            "description": "Replaced by mcp_servers.<name> with source.kind \"runtime\"."
           },
           "remote_tools": {
-            "default": {},
-            "type": "object",
-            "propertyNames": {
-              "type": "string",
-              "pattern": "^[a-zA-Z0-9_-]+$"
-            },
-            "additionalProperties": {
-              "type": "object",
-              "properties": {
-                "default_for": {
-                  "default": [],
-                  "type": "array",
-                  "items": {
-                    "type": "string",
-                    "enum": ["read", "write", "edit", "find", "grep", "web_search", "web_fetch"]
-                  }
-                },
-                "url": {
-                  "type": "string"
-                },
-                "bearer_token": {
-                  "type": "string"
-                },
-                "bearer_token_env": {
-                  "default": "",
-                  "type": "string"
-                }
-              },
-              "required": ["url"],
-              "additionalProperties": false
-            }
+            "deprecated": true,
+            "description": "Replaced by mcp_servers.<name> with source.kind \"http\"."
           },
           "$schema": {
             "type": "string"

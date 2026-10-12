@@ -155,61 +155,18 @@ export const mcpDefinitionSchema = z
         });
     } else if (value.auth)
       ctx.addIssue({ code: "custom", message: "Authentication is only supported for HTTP MCPs" });
+    if (value.source.kind === "command" && value.grants)
+      ctx.addIssue({
+        code: "custom",
+        message: "A host command runs unconfined; grants apply only to nix and runtime sources",
+      });
   });
 export const toolSettingsSchema = z.object({
-  mcp_servers: z.record(toolName, mcpDefinitionSchema).default({}),
-  session: preprocess(
-    (v) => v ?? {},
-    z.strictObject({
-      local_tools: selections,
-      vm_tools: selections,
-      remote_tools: selections,
-      mcp_servers: selections,
-    }),
-  ),
-  local_tools: preprocess(
-    (v) => v ?? {},
-    z
-      .record(
-        toolName,
-        z.strictObject({
-          ...toolDefaults,
-          command: requiredText,
-          args: z.array(z.string()).default([]),
-        }),
-      )
-      .default({}),
-  ),
-  vm_tools: preprocess(
-    (v) => v ?? {},
-    z.record(toolName, z.strictObject({ ...toolDefaults, runtime: requiredText })).default({}),
-  ),
-  remote_tools: preprocess(
-    (v) => v ?? {},
-    z
-      .record(
-        toolName,
-        z.strictObject({
-          ...toolDefaults,
-          url: z.string().refine((value) => {
-            try {
-              const url = new URL(value);
-              return (
-                ["http:", "https:"].includes(url.protocol) &&
-                !url.username &&
-                !url.password &&
-                !url.hash
-              );
-            } catch {
-              return false;
-            }
-          }, "must be an HTTP(S) URL without embedded credentials or a fragment"),
-          bearer_token: z.string().optional(),
-          bearer_token_env: z.string().default(""),
-        }),
-      )
-      .default({}),
-  ),
+  mcp_servers: preprocess((v) => v ?? {}, z.record(toolName, mcpDefinitionSchema)),
+  session: preprocess((v) => v ?? {}, z.object({ mcp_servers: selections })),
+  local_tools: deprecated('Replaced by mcp_servers.<name> with source.kind "command".'),
+  vm_tools: deprecated('Replaced by mcp_servers.<name> with source.kind "runtime".'),
+  remote_tools: deprecated('Replaced by mcp_servers.<name> with source.kind "http".'),
 });
 export type ToolSettings = z.output<typeof toolSettingsSchema>;
 
@@ -400,9 +357,9 @@ export const createConfigSchema = (d: LoomConfig, events: readonly HookEvent[]) 
           })
           .prefault({}),
         auto_nix: deprecated("Replaced by session.environment.auto_nix."),
-        local_tools: selections,
-        vm_tools: selections,
-        remote_tools: selections,
+        local_tools: deprecated("Replaced by session.mcp_servers."),
+        vm_tools: deprecated("Replaced by session.mcp_servers."),
+        remote_tools: deprecated("Replaced by session.mcp_servers."),
         mcp_servers: selections,
         defaults: section({
           isolation: z

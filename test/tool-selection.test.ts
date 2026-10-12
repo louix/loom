@@ -5,36 +5,29 @@ import { normalizeConfig, loadConfig, lintConfig } from "@loom/daemon/config/con
 import { preflightTools, toolExecutionError } from "../backend/daemon/src/daemon/tool-preflight.ts";
 import { withExternalMcp } from "../backend/daemon/src/daemon/mcp-provider.ts";
 import { makeLogger } from "@loom/core/logger";
+import { homedir } from "node:os";
 
 const combine = (base: string, extra: string) =>
   JSON.stringify({ ...parse(base), ...parse(extra) });
 
 const definitions = `{
-  "local_tools": {
+  "mcp_servers": {
+    "tilth-host": {
+      "source": { "kind": "command", "command": "missing-host-tool" },
+      "default_for": ["read"]
+    },
     "tilth": {
-      "command": "missing-host-tool",
-      "default_for": [
-        "read"
-      ]
-    }
-  },
-  "vm_tools": {
-    "tilth": {
-      "runtime": "tilth",
-      "default_for": [
-        "read"
-      ]
-    }
-  },
-  "remote_tools": {
+      "source": { "kind": "runtime", "ref": "tilth" },
+      "default_for": ["read"]
+    },
     "docs": {
-      "url": "https://docs.example/mcp",
-      "bearer_token_env": "LOOM_TEST_UNSET_TOOL_CREDENTIAL"
+      "source": { "kind": "http", "url": "https://docs.example/mcp" },
+      "auth": { "bearer_token_env": "LOOM_TEST_UNSET_TOOL_CREDENTIAL" }
     }
   }
 }`;
 
-test("definitions are inert until selected; same name in different catalogs is allowed", async () => {
+test("definitions are inert until selected", async () => {
   const config = normalizeConfig(parse(definitions));
   assert.deepEqual(config.mcp, []);
   assert.deepEqual(config.httpMcp, []);
@@ -51,7 +44,7 @@ test("definitions are inert until selected; same name in different catalogs is a
   });
 });
 
-test("repo lists replace independently while definitions and other selections inherit", async () => {
+test("a repo's session.mcp_servers replaces the global list while definitions inherit", async () => {
   const dir = await Deno.makeTempDir();
   try {
     const file = `${dir}/config.jsonc`;
@@ -59,27 +52,10 @@ test("repo lists replace independently while definitions and other selections in
       file,
       combine(
         definitions,
-        `{
-  "repos": [
-    {
-      "path": ${JSON.stringify(dir)},
-      "session": {
-        "local_tools": [],
-        "vm_tools": [
-          "tilth"
-        ]
-      }
-    }
-  ],
-  "session": {
-    "local_tools": [
-      "tilth"
-    ],
-    "remote_tools": [
-      "docs"
-    ]
-  }
-}`,
+        JSON.stringify({
+          repos: [{ path: dir, session: { mcp_servers: ["tilth"] } }],
+          session: { mcp_servers: ["tilth-host", "docs"] },
+        }),
       ),
     );
     const local = loadConfig(dir, file);
@@ -87,10 +63,7 @@ test("repo lists replace independently while definitions and other selections in
       local.mcp.map((m) => ("runtime" in m ? m.runtime : m.command)),
       ["tilth"],
     );
-    assert.deepEqual(
-      local.httpMcp.map((m) => m.name),
-      ["docs"],
-    );
+    assert.deepEqual(local.httpMcp, []);
     const other = loadConfig(`${dir}/elsewhere`, file);
     assert.deepEqual(
       other.mcp.map((m) => ("command" in m ? m.command : m.runtime)),
@@ -105,113 +78,89 @@ test("repo lists replace independently while definitions and other selections in
   }
 });
 
-test("selections reject duplicates, ambiguous preferences and unknown names", () => {
-  for (const selection of [
-    `{
-  "local_tools": [
-    "tilth",
-    "tilth"
-  ]
-}`,
-    `{
-  "local_tools": [
-    "tilth"
-  ],
-  "vm_tools": [
-    "tilth"
-  ]
-}`,
-    `{
-  "vm_tools": [
-    "absent"
-  ]
-}`,
-    `{
-  "remote_tools": "docs"
-}`,
-  ])
+test("selections reject duplicates, competing preferences and unknown names", () => {
+  for (const selection of [["tilth", "tilth"], ["tilth", "tilth-host"], ["absent"], "docs"])
     assert.throws(() =>
-      normalizeConfig(
-        parse(
-          combine(
-            definitions,
-            JSON.stringify({
-              session: parse(selection),
-            }),
-          ),
-        ),
-      ),
+      normalizeConfig({ ...parse(definitions), session: { mcp_servers: selection } }),
     );
   assert.throws(
+    () => normalizeConfig({ ...parse(definitions), session: { mcp_servers: ["absent"] } }),
+    /Unknown MCP server absent selected by session\.mcp_servers/,
+  );
+  assert.throws(
     () =>
-      normalizeConfig(
-        parse(`{
-  "local_tools": {
-    "a": {
-      "command": "a",
-      "default_for": [
-        "read"
-      ]
+      normalizeConfig({ ...parse(definitions), session: { mcp_servers: ["tilth", "tilth-host"] } }),
+    /Multiple tool defaults for read/,
+  );
+});
+
+test("a command source runs on the host with its env and working directory", () => {
+  const config = normalizeConfig({
+    mcp_servers: {
+      files: {
+        source: {
+          kind: "command",
+          command: "files-mcp",
+          args: ["--stdio"],
+          env: { FILES_MODE: "strict" },
+          cwd: "~/tools",
+        },
+      },
+      plain: { source: { kind: "command", command: "plain-mcp" } },
     },
-    "b": {
-      "command": "b",
-      "default_for": [
-        "read"
-      ]
-    }
-  },
-  "session": {
-    "local_tools": [
-      "a",
-      "b"
-    ]
-  }
-}`),
-      ),
-    /Multiple tool defaults/,
+    session: { mcp_servers: ["files", "plain"] },
+  });
+  assert.deepEqual(config.mcp, [
+    {
+      name: "files",
+      required: true,
+      defaultFor: [],
+      command: "files-mcp",
+      args: ["--stdio"],
+      env: { FILES_MODE: "strict" },
+      cwd: `${homedir()}/tools`,
+    },
+    { name: "plain", required: true, defaultFor: [], command: "plain-mcp", args: [] },
+  ]);
+  for (const source of [
+    { kind: "command", command: "" },
+    { kind: "command", command: "x", cwd: "relative/dir" },
+    { kind: "command", command: "x", env: { "NOT-A-NAME": "1" } },
+    { kind: "command", command: "x", runtime: "tilth" },
+  ])
+    assert.throws(() => normalizeConfig({ mcp_servers: { bad: { source } } }));
+  assert.throws(
+    () =>
+      normalizeConfig({
+        mcp_servers: {
+          bad: { source: { kind: "command", command: "x" }, grants: { workspace: "read-only" } },
+        },
+      }),
+    /host command runs unconfined/,
   );
 });
 
 test("host selection fails before runtime lookup for every VM engine, but works with host agents", async () => {
-  const config = normalizeConfig(
-    parse(
-      combine(
-        definitions,
-        `{
-  "providers": {
-    "codex": {
-      "model": "test"
+  const config = normalizeConfig({
+    ...parse(definitions),
+    providers: {
+      codex: { model: "test" },
+      openai_compatible: {
+        profiles: { local: { base_url: "https://api.example/v1", model: "test" } },
+      },
     },
-    "openai_compatible": {
-      "profiles": {
-        "local": {
-          "base_url": "https://api.example/v1",
-          "model": "test"
-        }
-      }
-    }
-  },
-  "session": {
-    "local_tools": [
-      "tilth"
-    ],
-    "isolation": {
-      "enabled": true,
-      "claude": {
-        "artifact": "/claude"
+    session: {
+      mcp_servers: ["tilth-host"],
+      defaults: { isolation: "vm" },
+      isolation: {
+        runtimes: {
+          claude: { artifact: "/claude" },
+          codex: { artifact: "/codex" },
+          aisdk: { artifact: "/aisdk" },
+        },
       },
-      "codex": {
-        "artifact": "/codex"
-      },
-      "aisdk": {
-        "artifact": "/aisdk"
-      }
-    }
-  }
-}`,
-      ),
-    ),
-  );
+    },
+  });
   for (const provider of ["claude", "claude:work", "chatgpt", "local"])
     await assert.rejects(
       preflightTools(config, provider, {
@@ -222,7 +171,7 @@ test("host selection fails before runtime lookup for every VM engine, but works 
           throw new Error("should reject placement first");
         },
       }),
-      /host tools are selected/,
+      /host commands are selected: tilth-host\. Remove them from session\.mcp_servers/,
     );
   const host = {
     ...config,
@@ -237,25 +186,12 @@ test("host selection fails before runtime lookup for every VM engine, but works 
         throw new Error("unexpected runtime");
       },
     }),
-    /Required host tool tilth/,
+    /MCP server tilth-host: host command missing-host-tool is unavailable/,
   );
 });
 
 test("selected runtime errors propagate, and required remote credentials are checked", async () => {
-  const vm = normalizeConfig(
-    parse(
-      combine(
-        definitions,
-        `{
-  "session": {
-    "vm_tools": [
-      "tilth"
-    ]
-  }
-}`,
-      ),
-    ),
-  );
+  const vm = normalizeConfig({ ...parse(definitions), session: { mcp_servers: ["tilth"] } });
   await assert.rejects(
     preflightTools(vm, "claude", {
       onPath: () => true,
@@ -265,20 +201,7 @@ test("selected runtime errors propagate, and required remote credentials are che
     }),
     /runtime unavailable/,
   );
-  const remote = normalizeConfig(
-    parse(
-      combine(
-        definitions,
-        `{
-  "session": {
-    "remote_tools": [
-      "docs"
-    ]
-  }
-}`,
-      ),
-    ),
-  );
+  const remote = normalizeConfig({ ...parse(definitions), session: { mcp_servers: ["docs"] } });
   const old = Deno.env.get("LOOM_TEST_UNSET_TOOL_CREDENTIAL");
   Deno.env.delete("LOOM_TEST_UNSET_TOOL_CREDENTIAL");
   try {
@@ -313,7 +236,7 @@ test("VM tool placement validation precedes all MCP worker launches", async () =
         { name: "host", spec: { transport: "stdio", command: "tool" } },
       ],
     }),
-    /Host tool host cannot/,
+    /Host command host cannot/,
   );
   assert.equal(launches, 0);
 });

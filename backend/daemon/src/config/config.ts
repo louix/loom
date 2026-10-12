@@ -344,7 +344,7 @@ export interface LoomConfig {
   mcpServers?: Record<string, z.output<typeof mcpDefinitionSchema>>;
   mcp: Array<
     { name: string; defaultFor?: McpCapability[]; required?: boolean } & (
-      | { command: string; args?: string[] }
+      | { command: string; args?: string[]; env?: Record<string, string>; cwd?: string }
       | { runtime: string; isolation: "vm"; grants?: McpGrants }
     )
   >;
@@ -728,7 +728,7 @@ export const lintConfig = (
   }
   for (const m of cfg.mcp) {
     if ("command" in m && !onPath(m.command, env))
-      w.push(`Required host tool "${m.name}": executable ${m.command} is unavailable`);
+      w.push(`MCP "${m.name}": host command ${m.command} is unavailable`);
   }
   for (const id of [
     ...cfg.claudeProfiles.map(claudeProfileId),
@@ -758,9 +758,7 @@ export const normalizeConfig = (
 ): LoomConfig => {
   const r = asRecord(raw);
   if (["command-mcp", "http-mcp", "mcp"].some((key) => key in r))
-    throw new Error(
-      "Define local_tools, vm_tools or remote_tools by name and select them under session.",
-    );
+    throw new Error("Define mcp_servers by name and select them under session.mcp_servers.");
   const migrated = migrateConfigLayer(r);
   const { value: settings, unknownKeys } = parseSettings(settingsSchema, migrated.layer);
   const {

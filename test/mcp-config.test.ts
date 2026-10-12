@@ -9,10 +9,10 @@ import type { McpServerHandle } from "@loom/core/types";
 
 const config = (s: string) => normalizeConfig(parse(s || "{}"));
 const http = `{
-  "remote_tools": {
+  "mcp_servers": {
     "research": {
-      "url": "https://mcp.example.com/mcp",
-      "bearer_token_env": "SEARCH_CREDENTIAL",
+      "source": { "kind": "http", "url": "https://mcp.example.com/mcp" },
+      "auth": { "bearer_token_env": "SEARCH_CREDENTIAL" },
       "default_for": [
         "web_search",
         "web_fetch"
@@ -20,20 +20,25 @@ const http = `{
     }
   },
   "session": {
-    "remote_tools": [
+    "mcp_servers": [
       "research"
     ]
   }
 }`;
 
 test("named tool definitions resolve selected transports and credential references", () => {
+  const parsed = parse(http);
   const cfg = normalizeConfig({
-    ...parse(http),
-    session: { remote_tools: ["research"], local_tools: ["code"] },
-    local_tools: {
+    ...parsed,
+    session: { mcp_servers: ["research", "code"] },
+    mcp_servers: {
+      ...(parsed.mcp_servers as Record<string, unknown>),
       code: {
-        command: "/path with spaces/tool",
-        args: ["--mcp", "literal $HOME"],
+        source: {
+          kind: "command",
+          command: "/path with spaces/tool",
+          args: ["--mcp", "literal $HOME"],
+        },
         default_for: ["read", "write", "edit"],
       },
     },
@@ -92,38 +97,35 @@ test("catalogs reject old syntax and malformed definitions even when unselected"
 }`,
     http.replace('"web_search"', '"invented"'),
     http.replace('"bearer_token_env": "SEARCH_CREDENTIAL"', '"bearer_token_env": 42'),
+    http.replace('"kind": "http"', '"kind": "command"'),
     http.replace('"default_for":', '"override":'),
     http.replace("https://mcp.example.com/mcp", "file:///tmp/key"),
     http.replace("https://mcp.example.com/mcp", "https://user:password@example.com/mcp"),
     `{
-  "local_tools": {
+  "mcp_servers": {
     "loom": {
-      "command": "tool"
+      "source": { "kind": "command", "command": "tool" }
     }
   }
 }`,
     `{
-  "local_tools": {
+  "mcp_servers": {
     "broken": {
-      "command": "tool",
-      "args": [
-        1
-      ]
+      "source": { "kind": "command", "command": "tool", "args": [1] }
     }
   }
 }`,
     `{
-  "local_tools": {
+  "mcp_servers": {
     "broken": {
-      "runtime": "tilth"
+      "source": { "kind": "command", "runtime": "tilth" }
     }
   }
 }`,
     `{
-  "vm_tools": {
+  "mcp_servers": {
     "broken": {
-      "runtime": "tilth",
-      "command": "host"
+      "source": { "kind": "runtime", "ref": "tilth", "command": "host" }
     }
   }
 }`,
@@ -134,13 +136,13 @@ test("catalogs reject old syntax and malformed definitions even when unselected"
 }`,
     `{
   "session": {
-    "local_tools": [
+    "mcp_servers": [
       "missing"
     ]
   }
 }`,
     `{
-  "local_tools": []
+  "mcp_servers": []
 }`,
   ])
     assert.throws(() => config(text), text);

@@ -5537,12 +5537,18 @@ export class Daemon {
             ...(m.grants ? { grants: m.grants } : {}),
           },
         };
-      const { command, args } = m;
+      const { command, args, env, cwd } = m;
       return {
         name: m.name,
         ...(m.required ? { required: true } : {}),
         ...(m.defaultFor ? { defaultFor: m.defaultFor } : {}),
-        spec: { transport: "stdio", command, args: args ?? [] },
+        spec: {
+          transport: "stdio",
+          command,
+          args: args ?? [],
+          ...(env ? { env } : {}),
+          ...(cwd !== undefined ? { cwd } : {}),
+        },
       };
     });
     const http: McpServerHandle[] = this.config.httpMcp.map((m) => {
@@ -5616,7 +5622,7 @@ export class Daemon {
           command: m.command,
           resolved: [command, ...args].join(" "),
           status: mcpStatusOf(command),
-          note: ["Host tool.", m.required ? "Required." : ""].filter(Boolean).join(" "),
+          note: ["Host command.", m.required ? "Required." : ""].filter(Boolean).join(" "),
         };
       }),
     );

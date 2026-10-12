@@ -17,7 +17,7 @@ export const preflightTools = async (
     if ("runtime" in m) await dependencies.resolveRuntime(m.runtime);
     else if (m.required && !dependencies.onPath(m.command))
       throw new Error(
-        `Required host tool ${m.name}: executable ${m.command} is unavailable. Install it or change session.local_tools.`,
+        `MCP server ${m.name}: host command ${m.command} is unavailable. Install it or remove ${m.name} from session.mcp_servers.`,
       );
   }
   for (const m of config.httpMcp) {

@@ -9,6 +9,7 @@ import { nixMcpRuntime } from "../../core/src/mcp-config.ts";
 import { resolveMcpGrants } from "../../backend/daemon/src/config/tool-selection.ts";
 import { resolveRuntime } from "../../runtime/src/packaged/artifact.ts";
 import { prepareRuntime } from "./runtime.ts";
+import { onPath } from "@loom/core/paths";
 
 /** Operate on definitions by name; defining/preparing a server does not select it. */
 export const mcpCommand = async (
@@ -100,6 +101,12 @@ export const mcpCommand = async (
           transport: "http",
           connectivity: "checked at session launch",
         });
+        continue;
+      }
+      if (entry.source.kind === "command") {
+        const { command } = entry.source;
+        if (!onPath(command)) throw new Error(`Host command ${command} is unavailable`);
+        rows.push({ name, status: "ready", transport: "command", command });
         continue;
       }
       const runtime = entry.source.kind === "nix" ? nixMcpRuntime(entry.source) : entry.source.ref;

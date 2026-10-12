@@ -64,14 +64,15 @@ interface below remains the worker-side interface during this migration.
 
 ### External MCP workers
 
-Define host commands under `local_tools.<name>`, separate offline packaged VMs
-under `vm_tools.<name>`, and remote services under `remote_tools.<name>`.
-Select names with the three corresponding lists under `session` or
-`repos[].session`. There are no implicit external tools. See
-[tool selection](tools.md) and [packaged runtimes](packaged-runtimes.md).
-Each active session gets a separate relay for each remote service. Only selected
-remote credentials are required; inline `bearer_token` overrides the env var.
-Names must be unique across selected tools; `loom` is reserved.
+Define every server under `mcp_servers.<name>`: `source.kind` says whether it
+is a host command (`command`), a separate offline packaged VM (`nix`,
+`runtime`) or a remote service (`http`). Select names with
+`session.mcp_servers` or `repos[].session.mcp_servers`. There are no implicit
+external tools. See [MCP servers](tools.md) and
+[packaged runtimes](packaged-runtimes.md). Each active session gets a separate
+relay for each remote service. Only selected remote credentials are required;
+inline `auth.bearer_token` overrides `auth.bearer_token_env`. `loom` is a
+reserved name.
 
 `default_for` declares capability preferences, not tool aliases. Supported values
 are `read`, `write`, `edit`, `find`, `grep`, `web_search` and `web_fetch`.
@@ -84,24 +85,18 @@ guarantee that every call uses the preferred server.
 
 ```jsonc
 {
-  "remote_tools": {
+  "mcp_servers": {
     "kagi": {
-      "url": "https://mcp.kagi.com/mcp",
-      "bearer_token_env": "KAGI_API_KEY",
+      "source": { "kind": "http", "url": "https://mcp.kagi.com/mcp" },
+      "auth": { "bearer_token_env": "KAGI_API_KEY" },
       "default_for": ["web_search", "web_fetch"],
     },
-  },
-  "local_tools": {
     "tilth": {
-      "command": "tilth",
-      "args": ["--mcp", "--edit"],
+      "source": { "kind": "command", "command": "tilth", "args": ["--mcp", "--edit"] },
       "default_for": ["read", "write", "edit"],
     },
   },
-  "session": {
-    "local_tools": ["tilth"],
-    "remote_tools": ["kagi"],
-  },
+  "session": { "mcp_servers": ["tilth", "kagi"] },
 }
 ```
 

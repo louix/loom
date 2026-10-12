@@ -29,8 +29,8 @@ forks start a fresh provider session with saved conversation context.
   See [repository access](repository-mounts.md) for limitations.
 - Local MCP servers configured under `mcp_servers` run in separate VMs with
   explicit workspace and network grants. HTTP MCP credentials stay in host
-  relays. Legacy host tools remain trusted, unsandboxed integrations and cannot
-  be selected by VM agents. See [tools](tools.md).
+  relays. Host commands (`source.kind: "command"`) remain trusted, unsandboxed
+  integrations and cannot be selected by VM agents. See [tools](tools.md).
 - The daemon remains trusted with configuration, credentials, files, Git and VM
   lifecycle. Standard CLI/TUI/daemon launches allow only the repository's Unix
   socket; networked work runs in children. Deno permissions do not confine native

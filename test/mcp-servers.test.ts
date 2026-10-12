@@ -104,7 +104,7 @@ test("MCP catalogs reject permissions on remote servers and malformed local gran
         vm_tools: { tilth: { runtime: "tilth" } },
         session: { mcp_servers: ["tilth"], vm_tools: ["tilth"] },
       }),
-    /multiple groups/,
+    /vm_tools\.tilth and mcp_servers\.tilth share the name tilth/,
   );
   assert.deepEqual(
     mcpGrantsSchema.parse({ network: ["EXAMPLE.com", "example.com", "*.Example.com"] }).network,

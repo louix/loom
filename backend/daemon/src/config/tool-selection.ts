@@ -2,12 +2,12 @@
 import { nixMcpRuntime, mcpGrantsSchema, type McpGrants } from "../../../../core/src/mcp-config.ts";
 import { expandNetworkPresets } from "../../../../runtime/src/session-vm/network-policy.ts";
 import { isClaudeId } from "@loom/core/provider-id";
-import { MCP_CAPABILITIES } from "@loom/core/types";
+import { absurd } from "@loom/core/absurd";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { z } from "zod";
 import type { mcpGrantsConfigSchema, ToolSettings } from "./schema.ts";
 import type { LoomConfig } from "./config.ts";
-
-const groups = ["local_tools", "vm_tools", "remote_tools"] as const;
 
 /** Configured grants, presets expanded; none configured grants nothing. */
 export const resolveMcpGrants = (
@@ -22,66 +22,51 @@ export const resolveMcpGrants = (
   });
 /** Resolve only explicitly selected definitions into connector-neutral transports. */
 export const resolveToolSelection = (raw: ToolSettings): Pick<LoomConfig, "mcp" | "httpMcp"> => {
-  const session = raw.session;
   const mcp: LoomConfig["mcp"] = [];
   const httpMcp: LoomConfig["httpMcp"] = [];
-  for (const group of groups) {
-    const catalog = raw[group];
-    const selected = session[group];
-    for (const name of selected) {
-      if (!Object.hasOwn(catalog, name))
-        throw new Error(`Unknown tool ${group}.${name} selected by session.${group}`);
-      const entry = catalog[name] as Record<string, unknown>;
-      const common = {
-        name,
-        required: true,
-        defaultFor: (entry.default_for ?? []) as (typeof MCP_CAPABILITIES)[number][],
-      };
-      if (group === "remote_tools")
-        httpMcp.push({
-          ...common,
-          url: entry.url as string,
-          bearerTokenEnv: (entry.bearer_token_env ?? "") as string,
-          ...(entry.bearer_token !== undefined
-            ? { bearerToken: entry.bearer_token as string }
-            : {}),
-        });
-      else if (group === "vm_tools")
-        mcp.push({ ...common, runtime: entry.runtime as string, isolation: "vm" });
-      else
-        mcp.push({
-          ...common,
-          command: entry.command as string,
-          args: (entry.args ?? []) as string[],
-        });
-    }
-  }
-  for (const name of session.mcp_servers) {
-    if (!Object.hasOwn(raw.mcp_servers, name)) throw new Error(`Unknown MCP server ${name}`);
+  for (const name of raw.session.mcp_servers) {
+    if (!Object.hasOwn(raw.mcp_servers, name))
+      throw new Error(`Unknown MCP server ${name} selected by session.mcp_servers`);
     const entry = raw.mcp_servers[name]!;
     const common = { name, required: true, defaultFor: entry.default_for };
-    if (entry.source.kind === "http") {
-      httpMcp.push({
-        ...common,
-        url: entry.source.url,
-        bearerTokenEnv: entry.auth?.bearer_token_env ?? "",
-        ...(entry.auth?.bearer_token !== undefined ? { bearerToken: entry.auth.bearer_token } : {}),
-        ...(entry.auth?.oauth ? { oauth: entry.auth.oauth } : {}),
-      });
-    } else {
-      mcp.push({
-        ...common,
-        runtime: entry.source.kind === "nix" ? nixMcpRuntime(entry.source) : entry.source.ref,
-        isolation: "vm",
-        grants: resolveMcpGrants(entry.grants),
-      });
+    switch (entry.source.kind) {
+      case "http":
+        httpMcp.push({
+          ...common,
+          url: entry.source.url,
+          bearerTokenEnv: entry.auth?.bearer_token_env ?? "",
+          ...(entry.auth?.bearer_token !== undefined
+            ? { bearerToken: entry.auth.bearer_token }
+            : {}),
+          ...(entry.auth?.oauth ? { oauth: entry.auth.oauth } : {}),
+        });
+        break;
+      case "command": {
+        const { command, args, env, cwd } = entry.source;
+        mcp.push({
+          ...common,
+          command,
+          args,
+          ...(Object.keys(env).length > 0 ? { env } : {}),
+          ...(cwd !== undefined ? { cwd: expandHome(cwd) } : {}),
+        });
+        break;
+      }
+      case "nix":
+      case "runtime":
+        mcp.push({
+          ...common,
+          runtime: entry.source.kind === "nix" ? nixMcpRuntime(entry.source) : entry.source.ref,
+          isolation: "vm",
+          grants: resolveMcpGrants(entry.grants),
+        });
+        break;
+      default:
+        absurd(entry.source);
     }
   }
-  const names = new Set<string>();
   const roles = new Set<string>();
   for (const tool of [...mcp, ...httpMcp]) {
-    if (names.has(tool.name)) throw new Error(`Tool ${tool.name} is selected from multiple groups`);
-    names.add(tool.name);
     for (const role of tool.defaultFor ?? []) {
       if (roles.has(role)) throw new Error(`Multiple tool defaults for ${role}`);
       roles.add(role);
@@ -98,7 +83,10 @@ export const toolExecutionError = (config: LoomConfig, provider: string): string
   const host = config.mcp.filter((m) => "command" in m);
   if ((config.defaults.isolation === "vm" || vm) && host.length)
     return (
-      `Provider ${provider} runs in a VM but host tools are selected: ${host.map((m) => m.name).join(", ")}. ` +
-      "Set session.local_tools = [] and select vm_tools or remote_tools instead."
+      `Provider ${provider} runs in a VM but host commands are selected: ${host.map((m) => m.name).join(", ")}. ` +
+      'Remove them from session.mcp_servers, or select servers whose source.kind is "nix", "runtime" or "http".'
     );
 };
+
+const expandHome = (path: string): string =>
+  path.startsWith("~/") ? join(homedir(), path.slice(2)) : path;

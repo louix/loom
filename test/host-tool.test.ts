@@ -12,12 +12,14 @@ test("onPath finds a real binary and rejects a bogus one", () => {
 });
 
 test(
-  "legacy host tilth definitions still speak MCP on stdio",
+  "a host command tilth definition speaks MCP on stdio",
   { skip: onPath("tilth") ? false : "tilth is not installed" },
   async () => {
     const mount = normalizeConfig({
-      local_tools: { tilth: { command: "tilth", args: ["--mcp", "--edit"] } },
-      session: { local_tools: ["tilth"] },
+      mcp_servers: {
+        tilth: { source: { kind: "command", command: "tilth", args: ["--mcp", "--edit"] } },
+      },
+      session: { mcp_servers: ["tilth"] },
     }).mcp[0]!;
     assert.ok("command" in mount);
     const { command, args = [] } = mount;
