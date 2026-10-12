@@ -49,3 +49,7 @@ try {
   await daemon.stop("test");
 }
 console.log("network-denied daemon catalog and provider turn passed");
+// Like loomd, exit once stopped rather than when the event loop drains: an
+// `AbortSignal.any` over an `AbortSignal.timeout` keeps Deno alive until that
+// timeout fires, even once aborted (catalogue discovery and plan usage: 30 s).
+Deno.exit(0);
