@@ -1864,6 +1864,57 @@ const PaletteRow = ({
   </Box>
 );
 
+interface SlugColumns {
+  /** Spaces after the label cell. */
+  gap: number;
+  labelW: number;
+}
+
+/** A model list's columns — label, then the id it stands for — sized from
+ *  every row like the palette's, so a filter never shifts them. Null when no
+ *  row has a slug, or when the row has no room for one after its label and
+ *  hint: the label then gets the row, as a narrow palette drops descriptions. */
+const slugColumns = (items: readonly PickItem[], room: number): SlugColumns | null => {
+  if (!items.some((it) => it.slug !== undefined)) return null;
+  const gap = room < 56 ? 1 : 2;
+  const body = Math.max(1, room - 2);
+  const hintW = Math.max(0, ...items.map((it) => stringWidth(it.hint ?? "")));
+  const cap = Math.max(7, Math.min(32, Math.floor(body * 0.4)));
+  const labelW = Math.min(cap, Math.max(7, ...items.map((it) => stringWidth(it.label))));
+  return body - labelW - gap - (hintW ? hintW + 2 : 0) >= 12 ? { gap, labelW } : null;
+};
+
+/** One model: its label, the id it stands for — or, while it cannot be
+ *  picked, why not — then its hint. */
+const SlugRow = ({
+  item,
+  on,
+  columns,
+}: {
+  item: PickItem;
+  on: boolean;
+  columns: SlugColumns;
+}): ReactNode => (
+  <Box>
+    <Box flexShrink={0}>
+      <Text tone={on ? "accent" : "faint"}>{on ? "▍ " : "  "}</Text>
+    </Box>
+    <PaletteCell width={columns.labelW} gap={columns.gap}>
+      <Line tone={rowTone(item, on)} bold={on}>
+        {item.label}
+      </Line>
+    </PaletteCell>
+    <Box flexGrow={1} flexShrink={1} minWidth={0}>
+      <Line tone={item.disabled ? "faint" : "dim"}>{item.disabled ?? item.slug ?? ""}</Line>
+    </Box>
+    {item.hint ? (
+      <Box marginLeft={2} flexShrink={0}>
+        <Line tone="faint">{item.hint}</Line>
+      </Box>
+    ) : null}
+  </Box>
+);
+
 /** A picker's list as drawn: its items, each with its index into the visible
  *  ones, and a heading wherever they move into a new section. */
 type PickerLine =
@@ -1895,6 +1946,8 @@ export const Picker = ({
   const current = pickerCurrent(picker);
   // The command palette reads as a table: KEY, COMMAND, DESCRIPTION.
   const columns = picker.step === "command" ? paletteColumns(picker.items, room) : null;
+  // A model list reads as LABEL, then the id it stands for.
+  const slugged = columns === null ? slugColumns(picker.items, room) : null;
   const header = columns !== null && !compact;
   const rows = Math.max(1, height - (compact ? 9 : 11) - (header ? 1 : 0));
   // The visible items with a heading wherever they move into a new section;
@@ -1970,6 +2023,7 @@ export const Picker = ({
               const { item: it } = line;
               const on = line.index === picker.index;
               if (columns) return <PaletteRow key={it.id} item={it} on={on} columns={columns} />;
+              if (slugged) return <SlugRow key={it.id} item={it} on={on} columns={slugged} />;
               return (
                 <Box key={it.id}>
                   <Box flexShrink={0}>

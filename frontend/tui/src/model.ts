@@ -1009,7 +1009,8 @@ const providerStepItems = (s: TuiState, dest: PickerDest): PickItem[] =>
 /**
  * The model rows every selector shows for `providerId` — new session, live
  * switch and plan retarget alike — straight from that provider's catalogue:
- * its labels and descriptions over stable ids. `keep` is a session's current
+ * each label beside the stable id it stands for (once, when the two are the
+ * same), with its context window. `keep` is a session's current
  * model; when the catalogue no longer lists it, it stays choosable and says
  * so rather than vanishing (nothing is substituted for it).
  */
@@ -1022,10 +1023,13 @@ export const modelPickItems = (
   if (!p) return [];
   const items: PickItem[] = p.modelChoices?.length
     ? p.modelChoices.map((c) => {
-        const hint = [c.context ? `${humanTokens(c.context)} ctx` : "", c.description ?? ""]
-          .filter(Boolean)
-          .join(" · ");
-        return { id: c.id, label: c.label, ...(hint ? { hint } : {}) };
+        const hint = c.context ? `${humanTokens(c.context)} ctx` : "";
+        return {
+          id: c.id,
+          label: c.label,
+          ...(c.label !== c.id ? { slug: c.id } : {}),
+          ...(hint ? { hint } : {}),
+        };
       })
     : p.models.map((m) => ({ id: m, label: m }));
   if (keep && items.length > 0 && !items.some((it) => it.id === keep))

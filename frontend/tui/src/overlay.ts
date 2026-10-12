@@ -235,6 +235,9 @@ export interface PickItem {
   hint?: string;
   /** Extra text folded into the fuzzy match (a turn's user text for `undo`). */
   blob?: string;
+  /** The stable id behind a friendly label — a model's id beside its name,
+   *  drawn in its own column; absent when the label already is the id. */
+  slug?: string;
   /** What the item does — the command palette's DESCRIPTION column. */
   description?: string;
   /** Why the item cannot be chosen now; shown, but Enter does nothing. */
@@ -347,11 +350,11 @@ const fuzzyMatch = (hay: string, q: string): boolean => {
   return true;
 };
 
-/** The picker's items narrowed to the current filter (label + blob). */
+/** The picker's items narrowed to the current filter (label + slug + blob). */
 export const pickerVisible = (p: Picker): PickItem[] => {
   const q = p.filter.text;
   if (q === "") return p.items;
-  return p.items.filter((it) => fuzzyMatch(`${it.label} ${it.blob ?? ""}`, q));
+  return p.items.filter((it) => fuzzyMatch(`${it.label} ${it.slug ?? ""} ${it.blob ?? ""}`, q));
 };
 
 /** The currently-highlighted item, honouring the filter. */

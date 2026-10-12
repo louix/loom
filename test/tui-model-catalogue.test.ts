@@ -18,7 +18,7 @@ import {
   type Action,
   type TuiState,
 } from "@loom/tui/model";
-import type { Overlay, PickerDest } from "@loom/tui/overlay";
+import { pickerVisible, type Overlay, type PickerDest } from "@loom/tui/overlay";
 import { fleet, snap } from "./tui-fixtures.ts";
 
 const provider = (over: Partial<ProviderInfo> & { id: string }): ProviderInfo => ({
@@ -43,6 +43,7 @@ const PERSONAL = provider({
       id: "claude-opus-5",
       label: "Opus",
       description: "Most capable",
+      context: 200_000,
       supportsEffort: true,
       effortLevels: ["low", "high", "max"],
       defaultEffort: "high",
@@ -75,7 +76,8 @@ const withFleet = (providers: ProviderInfo[], sessions = [] as ReturnType<typeof
   reduce(initialState(), fleet(sessions, providers));
 
 const pickerOf = (o: Overlay) => (o.t === "picker" ? o.picker : null);
-const rows = (o: Overlay) => pickerOf(o)?.items.map((i) => [i.id, i.label, i.hint ?? ""]);
+const rows = (o: Overlay) =>
+  pickerOf(o)?.items.map((i) => [i.id, i.label, i.slug ?? "", i.hint ?? ""]);
 
 test("every selector shows one provider's catalogue rows, by id, with the same labels", () => {
   const session = snap({ id: "s1", provider: "claude", model: "claude-opus-5" });
@@ -94,8 +96,8 @@ test("every selector shows one provider's catalogue rows, by id, with the same l
     ),
   );
   assert.deepEqual(shown[0], [
-    ["claude-opus-5", "Opus", "Most capable"],
-    ["claude-sonnet-5", "Sonnet", ""],
+    ["claude-opus-5", "Opus", "claude-opus-5", "200.0k ctx"],
+    ["claude-sonnet-5", "Sonnet", "claude-sonnet-5", ""],
   ]);
   assert.deepEqual(shown[1], shown[0]);
   // Profiles never share a list: the work profile shows only its own.
@@ -107,6 +109,43 @@ test("every selector shows one provider's catalogue rows, by id, with the same l
     modelPickItems(s, "codex").map((i) => i.id),
     ["gpt-5.6-sol"],
   );
+});
+
+test("a model row names its id once when the label already is the id, and filters by it", () => {
+  const s = withFleet([
+    provider({
+      id: "local",
+      tag: "local",
+      models: ["qwen3-coder", "llama-4"],
+      modelChoices: [
+        { id: "qwen3-coder", label: "qwen3-coder" },
+        { id: "llama-4", label: "Llama 4" },
+      ],
+    }),
+    provider({ id: "bare", tag: "bare", models: ["m-1"] }),
+  ]);
+  assert.deepEqual(
+    modelPickItems(s, "local").map((i) => [i.label, i.slug ?? null]),
+    [
+      ["qwen3-coder", null],
+      ["Llama 4", "llama-4"],
+    ],
+  );
+  // A provider with no catalogue rows lists bare ids — nothing to repeat.
+  assert.equal(modelPickItems(s, "bare")[0]?.slug, undefined);
+  // Filtering matches the slug as well as the label.
+  const p = pickerOf(
+    pickerStep(withFleet([PERSONAL]), "model", {
+      dest: { t: "session", sessionId: "s1", back: null },
+      chosen: { provider: "claude", model: null },
+      from: "model",
+    }),
+  )!;
+  const match = (q: string) =>
+    pickerVisible({ ...p, filter: { ...p.filter, text: q } }).map((i) => i.id);
+  assert.deepEqual(match("son5"), ["claude-sonnet-5"]);
+  assert.deepEqual(match("claude-opus"), ["claude-opus-5"]);
+  assert.deepEqual(match("claude-"), ["claude-opus-5", "claude-sonnet-5"]);
 });
 
 test("a relabelled catalogue keeps ids — and an open picker's highlight follows the id", () => {

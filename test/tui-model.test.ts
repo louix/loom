@@ -2758,10 +2758,10 @@ test("a snapshot's providers populate state and the derived helpers", () => {
     ["deepseek-chat", "deepseek-reasoner"],
   );
   assert.equal(providerPickItems(s).length, 3);
-  // claude's picker uses the CLI catalog's friendly names + context tags
+  // claude's picker uses the CLI catalog's friendly names, their ids + context tags
   assert.deepEqual(modelPickItems(s, "claude"), [
-    { id: "claude-opus-5", label: "Claude Opus 4.8", hint: "1.0M ctx" },
-    { id: "claude-sonnet-5", label: "Claude Sonnet 5" },
+    { id: "claude-opus-5", label: "Claude Opus 4.8", slug: "claude-opus-5", hint: "1.0M ctx" },
+    { id: "claude-sonnet-5", label: "Claude Sonnet 5", slug: "claude-sonnet-5" },
   ]);
   // aisdk with no modelChoices falls back to bare ids
   assert.deepEqual(

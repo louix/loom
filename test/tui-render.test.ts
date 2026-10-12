@@ -3248,6 +3248,60 @@ test("the palette fits short and narrow viewports and keeps the last command rea
   }
 });
 
+test("a model picker row shows the label, then its id in a column — once when they match", async () => {
+  const { Picker } = await import("@loom/tui/components");
+  const { makePicker } = await import("@loom/tui/overlay");
+  const items = [
+    { id: "claude-opus-5-5", label: "Opus 5.5", slug: "claude-opus-5-5", hint: "1M ctx" },
+    { id: "claude-sonnet-5-5", label: "Sonnet 5.5", slug: "claude-sonnet-5-5" },
+    { id: "gpt-oss", label: "gpt-oss" },
+    {
+      id: "claude-haiku-4-5",
+      label: "Haiku 4.5",
+      slug: "claude-haiku-4-5",
+      disabled: "Not on this plan.",
+    },
+  ];
+  const frame = (width: number, height = 20) =>
+    stripVTControlCharacters(
+      renderToString(
+        createElement(Picker, {
+          picker: makePicker({
+            step: "model",
+            title: "model · personal",
+            items,
+            dest: { t: "session", sessionId: "a", back: null },
+          }),
+          width,
+          height,
+        }),
+        { columns: width },
+      ),
+    );
+  for (const width of [96, 50]) {
+    const lines = frame(width).split("\n");
+    const opus = lines.find((l) => /▍ Opus 5\.5 +claude-opus-5-5 +1M ctx/.test(l));
+    const sonnet = lines.find((l) => /Sonnet 5\.5 +claude-sonnet-5-5/.test(l));
+    assert.ok(opus && sonnet, lines.join("\n"));
+    // The ids line up in one column.
+    assert.equal(opus.indexOf("claude-"), sonnet.indexOf("claude-"));
+    // A label that is its id is shown once.
+    const oss = lines.find((l) => l.includes("gpt-oss"))!;
+    assert.equal(oss.split("gpt-oss").length, 2, oss);
+    // A disabled row gives its reason in the id's place.
+    const haiku = lines.find((l) => l.includes("Haiku 4.5"))!;
+    assert.equal(haiku.indexOf("Not on this plan"), opus.indexOf("claude-"), haiku);
+    assert.doesNotMatch(haiku, /claude-haiku/);
+    // No catalogue description column.
+    assert.doesNotMatch(lines.join("\n"), /DESCRIPTION/);
+  }
+  // Too narrow for the id: the label gets the row.
+  const narrow = frame(28, 12);
+  assert.ok(narrow.split("\n").length <= 12);
+  assert.match(narrow, /▍ Opus 5\.5/);
+  assert.doesNotMatch(narrow, /claude-/);
+});
+
 test("cold send dismisses the prompt for startup and recovers an unaccepted draft on rejection", async () => {
   const fake = mkFakeClient();
   const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
