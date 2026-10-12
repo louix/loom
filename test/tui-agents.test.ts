@@ -186,7 +186,11 @@ test("agents sit under their supervisor, sorted like the fleet, the archived hid
     ["kid1", "running", true, false],
     ["other", "running", null, false],
   ]);
-  assert.deepEqual(treeCost(lead, fleetSessions(state)), { costUsd: 2, costSource: "provider" });
+  assert.deepEqual(treeCost(lead, fleetSessions(state)), {
+    kind: "complete",
+    usd: 2,
+    source: "provider",
+  });
   // ↓ from the supervisor reaches the row below it, not an agent.
   let s = reduce(state, { t: "select", id: "lead" });
   s = reduce(s, { t: "move", delta: -1 });
@@ -267,10 +271,58 @@ test("Detail shows a supervisor's spend with its agents' under its own, as the f
     }),
   );
   assert.match(fleetOut, /Coordinate\s+\?1 Σ~\$2\.75/, "the fleet row agrees");
-  const unpriced = [...deep, snap({ id: "free", status: "idle", supervisorId: "grand" })];
-  assert.match(detail(lead, unpriced), / Σ -- with agents, part unpriced\s+│\n/);
   const estimated = [lead, ...kids].map((x) => ({ ...x, costSource: "table" as const }));
   assert.match(detail(estimated[0]!, estimated), / Σ ~\$2\.00 with agents, estimated\s+│\n/);
+});
+
+test("an unpriced agent leaves the Σ what is known, marked partial, on the fleet row and in Detail", () => {
+  const { lead, kids } = tree();
+  const free = snap({ id: "free", title: "Free", status: "idle", supervisorId: "kid1" });
+  const both = (list: readonly SessionSnapshot[]) => {
+    const state = withFleet([...list]);
+    const view = fleetPaneView(state.fleet, fleetLayout(state, 40), "lead", null, null);
+    const fleetOut = stripVTControlCharacters(
+      renderToString(createElement(Fleet, { view, find: null, tick: 0, width: 100, now: 0 }), {
+        columns: 100,
+      }),
+    );
+    const withAgents = treeCost(list[0]!, fleetSessions(state));
+    const detailOut = stripVTControlCharacters(
+      renderToString(detailLayout(list[0]!, { width: 100, withAgents }).render(0), {
+        columns: 100,
+      }),
+    );
+    return {
+      cost: withAgents,
+      row: fleetOut.split("\n").find((l) => l.includes("lead"))!,
+      detail: detailOut,
+    };
+  };
+
+  const partial = both([lead, ...kids, free]);
+  assert.deepEqual(partial.cost, { kind: "partial", usd: 2, estimated: false });
+  assert.match(partial.row, /Coordinate\s+\?1 Σ\$2\.00\+/);
+  assert.match(partial.detail, / Σ \$2\.00\+ with agents, part unpriced\s+│\n/);
+
+  // A session that is itself part unpriced adds the part it knows.
+  const half = { ...kids[0]!, costUsd: 0.5, costSource: "partial" as const };
+  assert.deepEqual(both([lead, half, kids[1]!, kids[2]!]).cost, {
+    kind: "partial",
+    usd: 2,
+    estimated: false,
+  });
+
+  const guess = { ...kids[1]!, costUsd: 0.4, costSource: "table" as const };
+  const mixed = both([lead, kids[0]!, guess, kids[2]!, free]);
+  assert.match(mixed.row, /Coordinate\s+\?1 Σ~\$2\.15\+/);
+  assert.match(mixed.detail, / Σ ~\$2\.15\+ with agents, part unpriced\s+│\n/);
+
+  const none = [lead, ...kids].map((x) => ({ ...x, costUsd: 0, costSource: "none" as const }));
+  const unpriced = both([...none, free]);
+  assert.deepEqual(unpriced.cost, { kind: "unpriced" });
+  assert.match(unpriced.row, /Coordinate\s+\?1 Σ--/);
+  assert.match(unpriced.detail, / Σ -- with agents, unavailable\s+│\n/);
+  assert.match(unpriced.detail, /-- unavailable/, "its own cost: unchanged");
 });
 
 test("archiving or deleting a supervisor asks about its agents, c toggles stop and detach", () => {

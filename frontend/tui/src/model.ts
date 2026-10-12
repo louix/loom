@@ -1404,11 +1404,18 @@ export const groupsOf = (
 export const agentsOf = (sessions: readonly SessionSnapshot[], id: string): SessionSnapshot[] =>
   sessions.filter((s) => s.supervisorId === id && s.id !== id);
 
+/** A supervisor's spend with its agents': the sum of what is known, and
+ *  whether that is all of it. */
+export type TreeCost =
+  /** Nothing in the tree has a cost yet. */
+  | { kind: "unpriced" }
+  | { kind: "complete"; usd: number; source: "provider" | "table" | "mixed" }
+  /** Some of the tree is unpriced; `usd` is the rest. A `partial` session's
+   *  known part carries no provenance, so only a priced session sets `estimated`. */
+  | { kind: "partial"; usd: number; estimated: boolean };
+
 /** What a supervisor and every agent under it (however deep) have spent. */
-export const treeCost = (
-  s: SessionSnapshot,
-  sessions: readonly SessionSnapshot[],
-): Pick<SessionSnapshot, "costUsd" | "costSource"> => {
+export const treeCost = (s: SessionSnapshot, sessions: readonly SessionSnapshot[]): TreeCost => {
   const seen = new Set<string>();
   const all: SessionSnapshot[] = [];
   const walk = (at: SessionSnapshot): void => {
@@ -1418,10 +1425,19 @@ export const treeCost = (
     for (const agent of agentsOf(sessions, at.id)) walk(agent);
   };
   walk(s);
-  const sources = new Set(all.map((x) => x.costSource));
-  let costSource: SessionSnapshot["costSource"] = sources.size === 1 ? s.costSource : "mixed";
-  if (sources.size > 1 && (sources.has("none") || sources.has("partial"))) costSource = "partial";
-  return { costUsd: all.reduce((sum, x) => sum + x.costUsd, 0), costSource };
+  const usd = all.reduce((sum, x) => sum + x.costUsd, 0);
+  const sources = new Set(
+    all.flatMap((x) =>
+      x.costSource === "none" || x.costSource === "partial" ? [] : [x.costSource],
+    ),
+  );
+  const unpriced = all.some((x) => x.costSource === "none" || x.costSource === "partial");
+  if (!unpriced) {
+    const [only] = sources;
+    return { kind: "complete", usd, source: sources.size === 1 && only ? only : "mixed" };
+  }
+  if (sources.size === 0 && usd === 0) return { kind: "unpriced" };
+  return { kind: "partial", usd, estimated: sources.has("table") || sources.has("mixed") };
 };
 
 /** A clickable region in the current frame: one terminal row, columns `x0..x1`
@@ -1465,7 +1481,7 @@ export type FleetEntry =
       /** For a supervisor: its spend with its agents', and how many of them
        *  (however deep) wait on the person (display only). Absent for a
        *  session that supervises none. */
-      agents?: { cost: Pick<SessionSnapshot, "costUsd" | "costSource">; waiting: number };
+      agents?: { cost: TreeCost; waiting: number };
     }
   | { kind: "child"; s: SessionSnapshot; c: FleetChild; branch: TreeBranch }
   | { kind: "childMore"; s: SessionSnapshot; extra: number; branch: TreeBranch };

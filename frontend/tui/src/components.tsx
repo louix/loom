@@ -50,6 +50,7 @@ import {
   type Connection,
   type FleetChild,
   type TreeBranch,
+  type TreeCost,
   type TuiState,
 } from "./model.ts";
 import { parseAskUserQuestions, type AskUserQuestionItem } from "./interactions.ts";
@@ -77,11 +78,13 @@ import {
   modeChipText,
   modeText,
   sessionCost,
+  showTreeCost,
   shortId,
   spinnerFrame,
   statusLook,
   statusTone,
   toneColor,
+  treeCostScope,
   truncate,
   inside,
   wrapText,
@@ -385,7 +388,7 @@ const FleetRow = ({
    *  the work rows a session fans out, but a session row in full. */
   nest?: TreeBranch;
   /** A supervisor's spend with its agents', and how many wait on the person. */
-  agents?: { cost: Pick<SessionSnapshot, "costUsd" | "costSource">; waiting: number };
+  agents?: { cost: TreeCost; waiting: number };
   selected: boolean;
   /** The fleet is drilled into this row's children — its cursor goes dim and
    *  the bright one moves onto the focused child row. */
@@ -413,7 +416,7 @@ const FleetRow = ({
   if (blocked || (nest && status === "done" && !selected)) titleColor = C.faint;
   const id = shortId(s.id);
   // A supervisor's figure is its spend with its agents'.
-  const cost = agents ? `Σ${sessionCost(agents.cost)}` : sessionCost(s);
+  const cost = agents ? `Σ${showTreeCost(agents.cost)}` : sessionCost(s);
   const asking = showAgentsWaiting(agents?.waiting ?? 0);
   const heat = cacheHeat(cacheStatus(s, now));
   // Always 2 cols so titles stay aligned whether or not a session has a warm cache.
@@ -565,7 +568,7 @@ export const detailLayout = (
     waiting?: readonly SessionSnapshot[];
     /** For a supervisor: its spend with its agents' (however deep) — the
      *  fleet row's `Σ`, see `treeCost`. Null for a session that supervises none. */
-    withAgents?: Pick<SessionSnapshot, "costUsd" | "costSource"> | null;
+    withAgents?: TreeCost | null;
   } = {},
 ) => {
   // `hovered`: the mouse pointer is over this row's click target.
@@ -692,11 +695,12 @@ export const detailLayout = (
     // Under its own cost, a supervisor's with its agents' (the fleet row's Σ);
     // reported is the default and goes unsaid.
     if (withAgents) {
-      const { costUsd, costSource } = withAgents;
-      const scope = costSource === "provider" ? "" : `, ${costScope(costSource)}`;
+      const reported = withAgents.kind === "complete" && withAgents.source === "provider";
+      const scope = reported ? "" : `, ${treeCostScope(withAgents)}`;
+      const known = withAgents.kind !== "unpriced" && withAgents.usd > 0;
       add(
         <Field label="">
-          <Text tone={costUsd ? "good" : "faint"}>{`Σ ${sessionCost(withAgents)}`}</Text>
+          <Text tone={known ? "good" : "faint"}>{`Σ ${showTreeCost(withAgents)}`}</Text>
           <Text tone="faint">{` with agents${scope}`}</Text>
         </Field>,
       );

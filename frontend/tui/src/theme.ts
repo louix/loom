@@ -4,7 +4,9 @@
  * No React in here — components read these constants, and the formatting
  * helpers are unit-tested directly.
  */
+import { absurd } from "@loom/core/absurd";
 import type { SessionStateKind } from "@loom/core/events";
+import type { TreeCost } from "./model.ts";
 
 export type ThemeMode = "dark" | "light" | "argonext";
 
@@ -343,6 +345,27 @@ export const costScope = (source: CostSource): string =>
     partial: "part unpriced",
     none: "unavailable",
   })[source];
+
+/** A {@link TreeCost} after its `Σ`: like {@link sessionCost}, with a `+` when
+ *  part of the tree is unpriced, and `--` only when all of it is. */
+export const showTreeCost = (c: TreeCost): string => {
+  switch (c.kind) {
+    case "unpriced":
+      return "--";
+    case "complete":
+      return sessionCost({ costUsd: c.usd, costSource: c.source });
+    case "partial":
+      return `${c.estimated ? "~" : ""}$${c.usd.toFixed(2)}+`;
+    default:
+      return absurd(c);
+  }
+};
+
+/** What {@link showTreeCost} is, like {@link costScope}. */
+export const treeCostScope = (c: TreeCost): string =>
+  costScope(
+    c.kind === "complete" ? c.source : ({ partial: "partial", unpriced: "none" } as const)[c.kind],
+  );
 
 /** How a permission mode reads in the UI. The wire / SDK value stays `default`;
  *  we call it `manual` — you approve everything yourself. */
