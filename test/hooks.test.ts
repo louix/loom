@@ -534,7 +534,8 @@ test("a turn_end hook runs with the turn's written files in $LOOM_FILES", async 
     fs?.emit({ type: "tool_result", id: "3", ok: true, output: "…" });
     await delay(60);
     fs?.finishTurn();
-    await delay(250);
+    await until(() => existsSync(log));
+    await delay(100);
 
     const fired = readFileSync(log, "utf8").trim().split("\n");
     assert.equal(fired.length, 1, `expected one turn_end run, got ${JSON.stringify(fired)}`);
@@ -563,7 +564,7 @@ test("a waiting hook fires when the turn blocks, with the reason in the environm
     });
     const fs = ((await hh.daemon.providers.get("fake")) as FakeProvider).session(snap.id);
     fs?.emit({ type: "permission_request", id: "p1", tool: "Bash", input: { command: "rm" } });
-    await delay(250);
+    await until(() => existsSync(log) && readFileSync(log, "utf8").trim().split("\n").length >= 2);
 
     const fired = readFileSync(log, "utf8").trim().split("\n").sort();
     // both the specific `permission` hook and the catch-all `waiting` one fire
@@ -595,13 +596,14 @@ test("a failing write hook sends its output to the agent, once per distinct fail
       provider: "fake",
     });
     const fs = ((await hh.daemon.providers.get("fake")) as FakeProvider).session(snap.id);
-    await delay(40);
+    await until(() => userMsgs.length > 0);
     userMsgs.length = 0; // drop the opening-prompt echo
 
     fs?.emit({ type: "assistant_text", text: "done" });
     await delay(20);
     fs?.finishTurn();
-    await delay(300);
+    await until(() => userMsgs.length > 0);
+    await delay(100);
     assert.equal(userMsgs.length, 1, JSON.stringify(userMsgs));
     assert.match(userMsgs[0] ?? "", /\[loom\] The `lint` hook exited 1/);
     assert.match(userMsgs[0] ?? "", /a\.ts:1 no semicolon/);
@@ -647,11 +649,11 @@ test("`project` scopes a hook to one repo, and hooks hot-apply on a config edit"
       hh.configPath,
       JSON.stringify({ hooks: [{ on: "turn_end", project: hh.repoRoot, run: `touch ${log}` }] }),
     );
-    await delay(600);
+    await until(() => hh.daemon.config.hooks[0]?.project === hh.repoRoot);
     fs?.emit({ type: "assistant_text", text: "again" });
     await delay(20);
     fs?.finishTurn();
-    await delay(300);
+    await until(() => existsSync(log));
     assert.ok(existsSync(log), "the reloaded hook fires without a restart");
   } finally {
     await c.close();
@@ -681,10 +683,10 @@ test("a hook that hangs is killed at its timeout, and the agent hears why", asyn
       provider: "fake",
     });
     const fs = ((await hh.daemon.providers.get("fake")) as FakeProvider).session(snap.id);
-    await delay(40);
+    await until(() => userMsgs.length > 0);
     userMsgs.length = 0;
     fs?.finishTurn();
-    await delay(1_800);
+    await until(() => userMsgs.length > 0);
     assert.equal(userMsgs.length, 1, JSON.stringify(userMsgs));
     assert.match(userMsgs[0] ?? "", /`slow` hook timed out after 1000ms/);
   } finally {
