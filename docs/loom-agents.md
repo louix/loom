@@ -356,35 +356,59 @@ detach` on `session.markDone` / `session.remove`, `--children` in the CLI,
 - Codex models with `multi_agent_version` v2 still list Codex's built-in
   sub-agent tools (`spawn_agent`, `wait_agent`, …) with both feature flags
   off; only the developer instructions keep the model from using them
-  (upstream openai/codex#50880; see Open).
+  (openai/codex#50880; see [Waiting on upstream](#waiting-on-upstream)).
+- A Codex v2 model cannot supervise Loom sub-agents. On v2 models (e.g.
+  `gpt-6-luna`, `gpt-5.6-terra`) the loom-agents dynamic tools are only visible
+  nested inside Codex's `exec` code-mode tool, and the model reports that it
+  cannot call `agents_profiles` or `agent_start`. v1 models
+  (`gpt-5.6-luna`) work. Pick a v1 model for a Codex supervisor (see
+  [Waiting on upstream](#waiting-on-upstream)).
 - Supervisor question handling is not designed: a sub-agent's question does not
   reach its supervisor, which has no tool to answer or escalate it.
 - Clone sub-agents (a worktree off the supervisor's clone) are stage 2, not
   built.
 
+## Waiting on upstream
+
+Codex issues Loom is waiting on. On each Codex bump, run the listed live check
+(`scripts/test-live-daemon-acceptance.ts`) against a v2 model and update the
+entry.
+
+- **Native sub-agent tools on v2 models**:
+  [openai/codex#50880](https://github.com/openai/codex/issues/50880) (open;
+  0.160.0 too). On a model whose catalogue entry declares
+  `multi_agent_version` v2, Codex keeps listing `spawn_agent`,
+  `followup_task`, `send_message`, `wait_agent`, `interrupt_agent` and
+  `list_agents` with `features.multi_agent` and `features.multi_agent_v2`
+  both off, so a Codex session could start sub-agents Loom does not track.
+  Workaround: Loom passes
+  `features.multi_agent_v2={enabled=false, max_concurrent_threads_per_session=1}`
+  (the reporter found the cap refuses a spawn; the tools stay listed) and the
+  developer instructions rule the tools out
+  (`connectors/chatgpt/src/app-server.ts`, `NATIVE_SUBAGENT_FLAGS`). Live
+  (2026-10-11, Codex 0.153.2, `gpt-5.6-terra`): asked to call `spawn_agent`,
+  the model declined, citing its configuration, so whether Codex itself refuses
+  the spawn is unconfirmed. Untried: a `model_catalog_json` that pins
+  `multi_agent_version` to v1. Re-check: `codex-tools <v2 model>`; done when
+  no native sub-agent tool is listed (v1 models such as `gpt-5.6-luna` already
+  pass).
+- **Dynamic tools only inside code mode on v2 models**: no upstream issue
+  found (searched 2026-10-12; the nearest,
+  [openai/codex#50693](https://github.com/openai/codex/issues/50693), is about
+  the size of Code Mode results from dynamic tools). On v2 models (e.g.
+  `gpt-6-luna`, `gpt-5.6-terra`) the loom-agents tools, passed as
+  `thread/start` `dynamicTools`, are only visible nested inside Codex's `exec`
+  code-mode tool, and the model reports that it cannot call `agents_profiles`
+  or `agent_start`, so Loom sub-agents are effectively unusable with a Codex v2
+  supervisor. Workaround: none in Loom; use a v1 model (`gpt-5.6-luna`, which
+  live acceptance picks) for a Codex supervisor. Re-check:
+  `agents-codex <v2 model>`; done when the supervisor starts its `self`
+  child.
+
 ## Open
 
-- Codex's switch for disabling its native sub-agents: `features.multi_agent`
-  (on by default) and `features.multi_agent_v2` are set off; both flags exist
-  in Codex 0.156.1. The bundled model catalogue also declares a per-model
-  `multi_agent_version` (`v2` for the current models), and
-  `codex debug prompt-input` still renders the v2 team instructions with both
-  flags off, though it may not apply feature gating at all. Live (2026-10-11,
-  Codex 0.153.2, `scripts/test-live-daemon-acceptance.ts codex-tools <model>`):
-  for `gpt-5.6-luna` (`multi_agent_version` v1) the flags work, and no
-  `spawn_agent`/`send_input`/`close_agent` is offered (its `wait` is code
-  mode's, for an `exec` cell); for `gpt-5.6-terra` (v2) the thread still
-  offers `spawn_agent`, `followup_task`, `send_message`, `wait_agent`,
-  `interrupt_agent` and `list_agents`. The catalogue's `multi_agent_version`
-  overrides both flags: upstream openai/codex#50880 (open, 0.160.0 too), whose
-  reporter found only
-  `features.multi_agent_v2={enabled=false, max_concurrent_threads_per_session=1}`
-  refuses the spawn (the tools stay listed). Loom now passes that switch and
-  tells the model not to use Codex's sub-agent tools. Live (2026-10-11, Codex
-  0.153.2, terra): the v2 tools are still listed; asked to call `spawn_agent`
-  once, the model declined, citing its configuration, so no call reached Codex
-  and whether Codex itself refuses the spawn is unconfirmed. Untried: a
-  `model_catalog_json` that pins `multi_agent_version` to v1.
+- Codex's native sub-agents on v2 models: see
+  [Waiting on upstream](#waiting-on-upstream).
 - Shared VM for sub-agents (running inside the supervisor's VM).
 - Clone sub-agents while the supervisor's VM is stopped: the clone directory
   persists on the host, so the sub-agent can still mount it; confirm nothing in the

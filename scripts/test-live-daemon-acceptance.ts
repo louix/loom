@@ -22,7 +22,8 @@
  *   forks                               native Claude/Codex forks, Claude→Codex handoff
  *   queue-claude | queue-codex          a message folded in at a Bash boundary; three
  *                                       held by an interrupt, released in order
- *   agents-claude | agents-codex        Loom agents (docs/loom-agents.md): no native
+ *   agents-claude | agents-codex [model]
+ *                                       Loom agents (docs/loom-agents.md): no native
  *                                       sub-agent tools, loom-agents present; a `self`
  *                                       child started, (Claude) a supervisor message
  *                                       steered down while it works, notified up,
@@ -1043,7 +1044,7 @@ const codexTools = async (model: string | undefined) => {
  * and reads it; with `steer`, it first messages the child while it works and
  * sees the message reach the child labelled, ahead of its report.
  */
-const agents = async (provider: string) => {
+const agents = async (provider: string, pinned: string | undefined) => {
   const claudeReal = new Deno.Command("bash", { args: ["-c", "command -v claude"] }).outputSync();
   const claudeTap = await cliTap("claude", new TextDecoder().decode(claudeReal.stdout).trim(), {
     stdout: '"subtype":"init"',
@@ -1052,7 +1053,7 @@ const agents = async (provider: string) => {
   await writeConfig({ claudeCli: claudeTap.tap, codexCli: codexTap.tap });
   await start();
   await waitCatalogue(provider);
-  const model = await cheapModel(provider);
+  const model = pinned ?? (await cheapModel(provider));
   const codex = provider === CODEX;
   const steer = !codex;
   const extra = { model, isolation: "none", ...(codex ? { effort: "low", mode: "auto" } : {}) };
@@ -1381,8 +1382,8 @@ const run = async () => {
     else if (check === "forks") await forks();
     else if (check === "queue-claude") await queue(CLAUDE);
     else if (check === "queue-codex") await queue(CODEX);
-    else if (check === "agents-claude") await agents(CLAUDE);
-    else if (check === "agents-codex") await agents(CODEX);
+    else if (check === "agents-claude") await agents(CLAUDE, undefined);
+    else if (check === "agents-codex") await agents(CODEX, Deno.args[1]);
     else if (check === "codex-tools") await codexTools(Deno.args[1]);
     else if (check === "tail-claude") await tail();
     else if (check === "codex-turn-facts") await codexTurnFacts();

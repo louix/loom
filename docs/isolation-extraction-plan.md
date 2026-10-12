@@ -94,6 +94,10 @@ Outstanding:
   warns once.
 - A real credential renewal on the isolation path; forced renewal is avoided
   against logins in active use.
+- Codex upstream: v2 models keep native sub-agent tools listed
+  (openai/codex#50880), and show loom-agents only inside `exec` code mode, so a
+  v2 Codex model cannot supervise Loom sub-agents (no upstream issue found);
+  see [Waiting on upstream](loom-agents.md#waiting-on-upstream).
 - Follow-ups: `loom shell` and daemon-run hooks ignore Git identity overrides;
   `loom-isolate` has no persistent host, private clones or process-group
   interrupt without `-t`; the Loom dev shell needs `static.crates.io` for the

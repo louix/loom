@@ -100,7 +100,7 @@ export const mcpConfig = (servers: McpServerHandle[]): string => {
  * there, a cap of one thread per session (its own), refuses a spawn; the
  * tools stay listed, so the developer instructions also rule them out
  * (`subAgentInstructions`). The table form disables v2 as `=false` did. See
- * docs/loom-agents.md, Open.
+ * docs/loom-agents.md, Waiting on upstream.
  */
 export const NATIVE_SUBAGENT_FLAGS = [
   "features.multi_agent=false",
