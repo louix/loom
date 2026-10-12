@@ -99,12 +99,17 @@ export const planTests = (args: string[], readFile: (path: string) => string): T
   };
 };
 
-/** `DENO_JOBS` when set, as `deno test --parallel` reads it; else every core. */
-const jobs = (env: Record<string, string>) => {
+/**
+ * Files in flight per pass: `DENO_JOBS` when set, else 3/8 of the cores.
+ * Most files spawn daemons, workers and git of their own; on 32 cores the
+ * suite took 33 s at Deno's default of one file per core, 29 s at 16, 25 s
+ * at 12 and 10, and 29 s at 8 — and at 32 every case ran about twice as long.
+ */
+const jobs = (env: Record<string, string>): number => {
   const configured = Number(env["DENO_JOBS"]);
   return Number.isInteger(configured) && configured > 0
     ? configured
-    : navigator.hardwareConcurrency;
+    : Math.max(2, Math.round((navigator.hardwareConcurrency * 3) / 8));
 };
 
 /** Run `tasks` with at most `limit` in flight; results in order. */
@@ -170,16 +175,17 @@ export const runTests = async (args: string[], output: TestOutput): Promise<Test
     }
     const reporter = output === "junit" ? ["--reporter=junit"] : [];
     const test = ["test", "-A", "--no-check", ...reporter, ...plan.flags];
+    const limit = jobs(home.env);
     const started_ms = performance.now();
     const ownProcess = pooled(
-      jobs(home.env),
+      limit,
       plan.ownProcess.map((file) => () => run([...test, file], home.env, "piped")),
     );
     const parallel =
       plan.parallel.length > 0
         ? run(
             [...test, "--parallel", ...plan.parallel],
-            home.env,
+            { ...home.env, DENO_JOBS: String(limit) },
             output === "live" ? "inherit" : "piped",
           )
         : Promise.resolve({ code: 0, stdout: "", stderr: "" });
