@@ -10,7 +10,7 @@ import {
 } from "../runtime/src/session-vm/repo-base.ts";
 import { lockSessionState } from "../runtime/src/session-vm/persistence.ts";
 import { pruneRuntimeCache } from "../runtime/src/packaged/prune.ts";
-import { vmMaintenanceLock } from "../runtime/src/packaged/maintenance.ts";
+import { referencedBases, vmMaintenanceLock } from "../runtime/src/packaged/maintenance.ts";
 import type { HeldFlock } from "../core/src/flock.ts";
 import { loadAllRepoConfigs } from "../backend/daemon/src/config/config.ts";
 
@@ -237,6 +237,30 @@ test("cache collection excludes new VM launches until its guard is released", as
     assert.equal(acquired, true);
   } finally {
     reader?.release();
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+test("a VM state removed between listing the temporary directory and reading it is not in use", async () => {
+  const root = await Deno.realPath(await Deno.makeTempDir());
+  // given: a VM state created and removed back to back on another thread
+  const churn = new Worker(new URL("./fixtures/vm-state-churn.ts", import.meta.url), {
+    type: "module",
+  });
+  const next = () => new Promise((resolve) => (churn.onmessage = resolve));
+  const stop = new Int32Array(new SharedArrayBuffer(4));
+  try {
+    const churning = next();
+    churn.postMessage({ path: join(root, "loom-session-vm-churn"), stop });
+    await churning;
+    for (let i = 0; i < 500; i++)
+      // when / then
+      assert.deepEqual(await referencedBases(root), new Set(), `read ${i}`);
+  } finally {
+    const stopped = next();
+    Atomics.store(stop, 0, 1);
+    await stopped;
+    churn.terminate();
     await Deno.remove(root, { recursive: true });
   }
 });

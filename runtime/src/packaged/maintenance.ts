@@ -22,14 +22,21 @@ export const vmMaintenanceLock = async (exclusive = false, temporary = "/tmp") =
   }
 };
 
+/** An entry removed since its directory was listed is nobody's state any more. */
+const lstatIfPresent = (path: string) =>
+  Deno.lstat(path).catch((error) => {
+    if (error instanceof Deno.errors.NotFound) return null;
+    throw error;
+  });
+
 /** Retained state is evidence of use even if its supervisor crashed. Never follow symlinks. */
 export const retainedVmStates = async (temporary = "/tmp"): Promise<string[]> => {
   const states: string[] = [];
   for await (const entry of Deno.readDir(temporary)) {
     if (!/^loom-(?:session-vm|svm|vm)-[a-z0-9]+$/.test(entry.name)) continue;
     const path = join(temporary, entry.name);
-    const info = await Deno.lstat(path);
-    if (info.uid === Deno.uid()) states.push(path);
+    const info = await lstatIfPresent(path);
+    if (info?.uid === Deno.uid()) states.push(path);
   }
   return states;
 };
@@ -37,7 +44,8 @@ export const retainedVmStates = async (temporary = "/tmp"): Promise<string[]> =>
 export const referencedBases = async (temporary = "/tmp"): Promise<Set<string>> => {
   const bases = new Set<string>();
   for (const state of await retainedVmStates(temporary)) {
-    const info = await Deno.lstat(state);
+    const info = await lstatIfPresent(state);
+    if (info === null) continue;
     if (!info.isDirectory || info.isSymlink) throw new Error("Unsafe retained VM state");
     try {
       const file = join(state, "base-generation");
