@@ -241,6 +241,9 @@ export interface PickItem {
   slug?: string;
   /** What the item does — the command palette's DESCRIPTION column. */
   description?: string;
+  /** What a profile row sets (provider / model, effort, mode), drawn in its
+   *  own column between its name and its description. */
+  target?: string;
   /** Why the item cannot be chosen now; shown, but Enter does nothing. */
   disabled?: string;
   /** The heading of the group this row belongs to; a heading is drawn where

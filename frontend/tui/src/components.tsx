@@ -1965,6 +1965,72 @@ const SlugRow = ({
   </Box>
 );
 
+interface ProfileColumns {
+  /** Spaces after the name and target cells. */
+  gap: number;
+  nameW: number;
+  targetW: number;
+  /** Whether the row has room for a description after the target. */
+  described: boolean;
+}
+
+const PROFILE_DESCRIPTION_MIN_W = 12;
+
+/** The agent profile rows' columns — NAME, what it sets, then the description —
+ *  sized from every profile, so a filter never shifts them. Names are the
+ *  identifier and are never cut: the name column fits the longest one. The
+ *  target comes next and is cut only when it alone overflows the row; the
+ *  description gets what is left, or is dropped when that is too little. Null
+ *  when the list has no profile rows. */
+const profileColumns = (items: readonly PickItem[], room: number): ProfileColumns | null => {
+  const profiles = items.filter((it) => it.profile !== undefined);
+  if (profiles.length === 0) return null;
+  const gap = room < 56 ? 1 : 2;
+  const body = Math.max(1, room - 2);
+  const nameW = Math.min(body, Math.max(...profiles.map((it) => stringWidth(it.label))));
+  const rest = Math.max(0, body - nameW - gap);
+  const targetW = Math.min(rest, Math.max(...profiles.map((it) => stringWidth(it.target ?? ""))));
+  return {
+    gap,
+    nameW,
+    targetW,
+    described: rest - targetW - gap >= PROFILE_DESCRIPTION_MIN_W,
+  };
+};
+
+/** One agent profile: its name, what it sets, then what it is for — or, while
+ *  it cannot be picked, why not. */
+const ProfileRow = ({
+  item,
+  on,
+  columns,
+}: {
+  item: PickItem;
+  on: boolean;
+  columns: ProfileColumns;
+}): ReactNode => (
+  <Box>
+    <Box flexShrink={0}>
+      <Text tone={on ? "accent" : "faint"}>{on ? "▍ " : "  "}</Text>
+    </Box>
+    <PaletteCell width={columns.nameW} gap={columns.gap}>
+      <Line tone={rowTone(item, on)} bold={on}>
+        {item.label}
+      </Line>
+    </PaletteCell>
+    {columns.targetW > 0 ? (
+      <PaletteCell width={columns.targetW} gap={columns.gap}>
+        <Line tone={item.disabled ? "faint" : "dim"}>{item.target ?? ""}</Line>
+      </PaletteCell>
+    ) : null}
+    {columns.described ? (
+      <Box flexGrow={1} flexShrink={1} minWidth={0}>
+        <Line tone="faint">{item.disabled ?? item.description ?? ""}</Line>
+      </Box>
+    ) : null}
+  </Box>
+);
+
 /** A picker's list as drawn: its items, each with its index into the visible
  *  ones, and a heading wherever they move into a new section. */
 type PickerLine =
@@ -1979,6 +2045,15 @@ const pickerLines = (vis: readonly PickItem[]): PickerLine[] =>
       { t: "item", item, index },
     ];
   });
+
+const PICKER_ITEM_ROWS_MAX = 8;
+
+/** The list rows a picker asks for: one per item up to a cap, and one per
+ *  section heading on top of that, so a heading never takes an item's row. */
+const pickerListRows = (items: readonly PickItem[]): number => {
+  const headings = pickerLines(items).length - items.length;
+  return Math.max(1, Math.min(PICKER_ITEM_ROWS_MAX, items.length)) + headings;
+};
 
 export const Picker = ({
   picker,
@@ -1998,6 +2073,8 @@ export const Picker = ({
   const columns = picker.step === "command" ? paletteColumns(picker.items, room) : null;
   // A model list reads as LABEL, then the id it stands for.
   const slugged = columns === null ? slugColumns(picker.items, room) : null;
+  // The new-session list's agent profiles read as NAME, what it sets, DESCRIPTION.
+  const profiled = profileColumns(picker.items, room);
   const header = columns !== null && !compact;
   const rows = Math.max(1, height - (compact ? 9 : 11) - (header ? 1 : 0));
   // The visible items with a heading wherever they move into a new section;
@@ -2073,6 +2150,8 @@ export const Picker = ({
               const { item: it } = line;
               const on = line.index === picker.index;
               if (columns) return <PaletteRow key={it.id} item={it} on={on} columns={columns} />;
+              if (profiled && it.profile !== undefined)
+                return <ProfileRow key={it.id} item={it} on={on} columns={profiled} />;
               if (slugged) return <SlugRow key={it.id} item={it} on={on} columns={slugged} />;
               return (
                 <Box key={it.id}>
@@ -2230,7 +2309,7 @@ export const SelectionModal = ({
       ? Math.min(
           available,
           // The command palette's column header takes a row of its own.
-          (o.picker.step === "command" ? 12 : 11) + Math.max(1, Math.min(8, o.picker.items.length)),
+          (o.picker.step === "command" ? 12 : 11) + pickerListRows(o.picker.items),
         )
       : Math.min(
           available,

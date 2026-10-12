@@ -4306,7 +4306,7 @@ test("⌥p lists providers, then agent profiles; a profile applies whole and clo
     assert.equal(pickerCurrent(p)?.id, "claude:personal");
     const frame = pickerText(handle);
     assert.match(frame, /── providers ─+[\s\S]*claude personal[\s\S]*── agent profiles ─+/);
-    assert.match(frame, /opus\s+Careful · claude personal \/ claude-opus-5-5 · high · auto/);
+    assert.match(frame, /opus\s+claude personal \/ claude-opus-5-5 · high · auto\s+Careful/);
 
     pickRow(handle, "profile:opus");
     const q = newPromptOf(handle);

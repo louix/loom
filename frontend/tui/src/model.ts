@@ -985,17 +985,21 @@ export const newSessionPickItems = (s: TuiState): PickItem[] => {
     ...providerPickItems(s).map((it) => ({ ...it, section: PROVIDERS_SECTION })),
     ...profiles.map((p): PickItem => {
       const blocked = profileBlocked(p, providers);
-      const target = [p.provider ? (providerInfo(s, p.provider)?.tag ?? p.provider) : "", p.model]
+      const providerModel = [
+        p.provider ? (providerInfo(s, p.provider)?.tag ?? p.provider) : "",
+        p.model,
+      ]
         .filter(Boolean)
         .join(" / ");
-      const hint = [p.description, target, p.effort, p.mode].filter(Boolean).join(" · ");
+      const target = [providerModel, p.effort, p.mode].filter(Boolean).join(" · ");
       return {
         id: profileItemId(p.name),
         label: p.name,
         section: PROFILES_SECTION,
         profile: p.name,
-        blob: hint,
-        ...(hint ? { hint } : {}),
+        target,
+        blob: [p.description, target].filter(Boolean).join(" · "),
+        ...(p.description ? { description: p.description } : {}),
         ...(blocked ? { disabled: blocked } : {}),
       };
     }),

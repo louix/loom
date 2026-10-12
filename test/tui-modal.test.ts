@@ -1,14 +1,23 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { describe, test } from "node:test";
 import { createElement as h } from "react";
 import { Box, Text, renderToString } from "ink";
 import { NewSessionModal, newSessionLayout, SelectionModal } from "@loom/tui/components";
 import { stripVTControlCharacters } from "node:util";
+import stringWidth from "string-width";
+import type { ProviderInfo } from "@loom/core/wire";
 import { loadableLoaded } from "@loom/core/loadable";
-import { initialState, reduce } from "@loom/tui/model";
+import {
+  initialState,
+  newSettings,
+  pickerStep,
+  profileItemId,
+  reduce,
+  type TuiState,
+} from "@loom/tui/model";
 import { headerText, newSessionHeader } from "@loom/tui/new-session-header";
 import { newPrompt, makePicker, type NewSessionSettings, type PickerStep } from "@loom/tui/overlay";
-import { fleet } from "./tui-fixtures.ts";
+import { daemon, fleet } from "./tui-fixtures.ts";
 
 test("every picker floats over the fleet with the selected row and actions in view", () => {
   const steps: PickerStep[] = ["provider", "model", "effort", "command", "repository", "undo"];
@@ -290,4 +299,137 @@ test("narrow new-session settings wrap between settings and keep every key in vi
       );
     if (feedback) assert.match(frame, /isolation is now/);
   }
+});
+
+// ---------------------------------------------------------------------------
+// the new-session ⌥p list at several widths: providers, then agent profiles
+// ---------------------------------------------------------------------------
+
+const profilePickerState = (): TuiState => {
+  const provider = (id: string, tag: string, model: string, isDefault: boolean): ProviderInfo => ({
+    id,
+    tag,
+    color: "",
+    models: [model],
+    defaultModel: model,
+    defaultEffort: "",
+    defaultMode: "default",
+    isDefault,
+    defaultIsolation: "none",
+    defaultWorkspace: { none: "worktree", vm: "clone" },
+  });
+  const s = reduce(initialState(), {
+    t: "state",
+    state: loadableLoaded({
+      daemon,
+      sessions: [],
+      providers: [
+        provider("claude:personal", "claude personal", "claude-sonnet-5-5", true),
+        provider("codex:personal", "codex personal", "gpt-6-astra", false),
+      ],
+      agentProfiles: [
+        {
+          name: "opus",
+          description: "Strongest Claude model; for hard, open-ended or high-stakes work.",
+          provider: "claude:personal",
+          model: "claude-opus-5-5",
+        },
+        {
+          name: "sonnet",
+          description: "Cheaper Claude model; for well-specified, verifiable tasks.",
+          provider: "claude:personal",
+          model: "claude-sonnet-5-5",
+        },
+        {
+          name: "astra",
+          description: "Codex on the largest model; for long autonomous runs that need no review.",
+          provider: "codex:personal",
+          model: "gpt-6-astra",
+        },
+        {
+          name: "luna",
+          description: "Codex on the fast model; for quick edits and questions about the code.",
+          provider: "codex:personal",
+          model: "gpt-5.6-luna",
+        },
+      ],
+    }),
+  });
+  const dest = {
+    t: "newSession" as const,
+    settings: newSettings(s, null, null, null),
+    draft: "",
+  };
+  return {
+    ...s,
+    overlay: pickerStep(s, "provider", {
+      dest,
+      chosen: { provider: null, model: null },
+      from: "provider",
+      pick: profileItemId("sonnet"),
+    }),
+  };
+};
+
+const PROFILE_TARGETS = [
+  ["opus", "claude personal / claude-opus-5-5"],
+  ["sonnet", "claude personal / claude-sonnet-5-5"],
+  ["astra", "codex personal / gpt-6-astra"],
+  ["luna", "codex personal / gpt-5.6-luna"],
+] as const;
+
+const pickerFrame = (state: TuiState, cols: number, rows: number): string[] =>
+  stripVTControlCharacters(
+    renderToString(
+      h(Box, { width: cols, height: rows }, h(SelectionModal, { state, cols, rows })),
+      { columns: cols },
+    ),
+  ).split("\n");
+
+describe("the agent profiles section of the new-session picker", () => {
+  for (const cols of [80, 96, 140]) {
+    test(`at ${cols} columns every profile shows whole in aligned columns`, () => {
+      // given
+      const state = profilePickerState();
+      // when
+      const lines = pickerFrame(state, cols, 40);
+      const frame = lines.join("\n");
+      // then
+      const rowOf = (name: string) => lines.find((l) => new RegExp(`[▍ ] ${name} {2,}`).test(l))!;
+      const rows = PROFILE_TARGETS.map(([name]) => rowOf(name));
+      for (const [i, [name, target]] of PROFILE_TARGETS.entries()) {
+        assert.ok(rows[i], `${name} is listed:\n${frame}`);
+        assert.ok(rows[i]!.includes(target), `${name} shows ${target}:\n${frame}`);
+      }
+      const columnOf = (at: (row: string, i: number) => number) => rows.map((r, i) => at(r, i));
+      const sameColumn = (cols: number[]) => cols.every((c) => c > 0 && c === cols[0]);
+      assert.ok(sameColumn(columnOf((r, i) => r.indexOf(PROFILE_TARGETS[i]![0]))), "names align");
+      assert.ok(sameColumn(columnOf((r, i) => r.indexOf(PROFILE_TARGETS[i]![1]))), "targets align");
+      const describedAt = columnOf(
+        (r, i) => r.indexOf(PROFILE_TARGETS[i]![1]) + PROFILE_TARGETS[i]![1].length,
+      );
+      assert.ok(
+        rows.every((r, i) => /^ +\S/.test(r.slice(describedAt[i]!))),
+        "descriptions start in one column after the target",
+      );
+      assert.ok(
+        rows.every((r) => /…\s+│$/.test(r)),
+        "long descriptions give way with …",
+      );
+      assert.doesNotMatch(frame, /… \d+ more/);
+      for (const line of lines) {
+        assert.ok(stringWidth(line) <= cols, `overflow: ${line}`);
+      }
+    });
+  }
+
+  test("a short window scrolls with the selected profile in view", () => {
+    // given
+    const state = profilePickerState();
+    // when
+    const frame = pickerFrame(state, 96, 16).join("\n");
+    // then
+    assert.match(frame, /▍ sonnet {2}claude personal \/ claude-sonnet-5-5/);
+    assert.match(frame, /… \d+ more/);
+  });
 });
