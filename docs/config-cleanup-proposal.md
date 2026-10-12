@@ -1,8 +1,7 @@
 # Config cleanup: proposed further renames
 
-Status: **two rounds done; the high-risk rows remain proposals.** Each
-remaining row needs approval before it changes. Every rename follows one
-compatibility pattern: the old key still parses, is read under its new
+Status: **three rounds done.** What remains is one docs-only row. Every
+rename of a released `config.jsonc` key follows one compatibility pattern: the old key still parses, is read under its new
 name, and Loom warns once per daemon (and lists it in `config.check` and
 `loom doctor`). `backend/daemon/src/config/legacy-keys.ts` holds the table, so a
 rename is one entry plus its schema, docs and tests.
@@ -50,17 +49,22 @@ behaviour, crosses a file or wire format, or removes something people use.
 | `providers.claude.worker_allowed_hosts` (replaces Claude's hosts)                                                                                                          | `providers.claude.network.allowed_hosts` (adds to them); the old key keeps its replacing meaning, with a warning                                                                                        |
 | Lenient `.catch(default)` coercions                                                                                                                                        | a wrong type or range is an error naming the key; an unknown key in a section that used to drop it is ignored and reported                                                                              |
 
+## Done (third round)
+
+The high-risk rows, approved together. Unreleased formats (the environment
+files) changed without a compatibility layer.
+
+| Was                                                                                                                 | Now                                                                                                                                                                     |
+| ------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `local_tools.<n>: { command, args }`                                                                                | `mcp_servers.<n>.source: { kind: "command", command, args, env, pass_env, cwd }`: host only, no grants                                                                  |
+| `vm_tools.<n>: { runtime }`                                                                                         | `mcp_servers.<n>.source: { kind: "runtime", ref }`, `grants.workspace: "read-write"`                                                                                    |
+| `remote_tools.<n>: { url, bearer_token(_env) }`                                                                     | `mcp_servers.<n>.source: { kind: "http", url }`, `auth.bearer_token(_env)`                                                                                              |
+| `session.{local_tools, vm_tools, remote_tools}`                                                                     | `session.mcp_servers` (folded per layer; a name in two catalogs is an error saying what to write)                                                                       |
+| `search.{backend, api_key, api_key_env, api_base, max_results}` and the AISDK Brave/Tavily client                   | removed (warned once); `brave` and `tavily` `mcp_servers` entries in the starter config and example, unselected; wire protocol v8 drops the doctor report's `webSearch` |
+| environment-config camelCase (`commandPrefix`, `timeoutSeconds`, `memoryMiB`, `allowedHosts`, `idleTimeoutMinutes`) | snake_case (`command_prefix`, `timeout_seconds`, `memory_mib`, `allowed_hosts`, `idle_stop_minutes`), still `version: 1`; `hosts` and `"local"` no longer read          |
+
 ## Proposed
 
-| Current key                                                                                       | Proposed                                                                                                        | Reason                                                                                                                                                                                                                                     | Risk                                                           |
-| ------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------- |
-| `local_tools`, `vm_tools`, `remote_tools` (+ `session.local_tools` / `vm_tools` / `remote_tools`) | fold into `mcp_servers` with `source.kind: "command"` for host tools; one selection list, `session.mcp_servers` | Two catalogs for one concept: `mcp_servers` already covers VM (`nix`/`runtime`) and remote (`http`) tools, with auth and grants the old catalogs lack. `remote_tools.*.bearer_token_env` duplicates `mcp_servers.*.auth.bearer_token_env`. | high: four keys, selections merge, `tool-selection.ts` rewrite |
-| `search.{backend, api_key, api_key_env, api_base, max_results}`                                   | remove; configure a search MCP under `mcp_servers` (as Kagi already is)                                         | Duplicated concept: a built-in Brave/Tavily client beside MCP search. Kagi was already moved out (`search.backend: "kagi"` is rejected with that advice). `max_results: 0` is silently coerced to 1.                                       | high: removes a feature some AISDK users rely on               |
-| `hooks[].project` (glob)                                                                          | keep, but document `repos[].hooks` as the default way                                                           | Two ways to scope a hook to a repository; the glob one also covers groups of repos, so both stay.                                                                                                                                          | none (docs only)                                               |
-| Loom `config.jsonc` snake_case vs environment-config camelCase                                    | document; do not change                                                                                         | Two files, two casings. The environment format is versioned and shared; converging would be a format version bump.                                                                                                                         | high, not proposed                                             |
-
-## Top items
-
-1. Fold `local_tools` / `vm_tools` / `remote_tools` into `mcp_servers`: the
-   largest duplicated concept, and the source of most tool-selection errors.
-2. Retire the built-in `search` backend in favour of a search MCP.
+| Current key              | Proposed                                              | Reason                                                                                            | Risk             |
+| ------------------------ | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------- | ---------------- |
+| `hooks[].project` (glob) | keep, but document `repos[].hooks` as the default way | Two ways to scope a hook to a repository; the glob one also covers groups of repos, so both stay. | none (docs only) |
