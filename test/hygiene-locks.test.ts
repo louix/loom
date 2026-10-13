@@ -4,7 +4,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDb } from "@loom/daemon/store/db";
@@ -155,7 +163,8 @@ test("startup hygiene locks session trees made before Loom locked them, and no o
   const env = { HOME: root, XDG_RUNTIME_DIR: "/nonexistent-run", XDG_STATE_HOME: join(root, "st") };
   const db = openDb(join(root, "loom.db"));
   try {
-    // given: an unlocked session tree, a shared one, and a tree no session has
+    // given: an unlocked session tree, a shared one, and a tree no session has,
+    // all named through a symlink while Git records their realpaths
     execFileSync("git", ["init", "-q", "-b", "main", repo]);
     git(
       repo,
@@ -169,6 +178,8 @@ test("startup hygiene locks session trees made before Loom locked them, and no o
       "-m",
       "base",
     );
+    mkdirSync(join(root, "real-trees"));
+    symlinkSync(join(root, "real-trees"), join(root, "trees"));
     const paths = loomPaths(repo, join(root, "trees"), env);
     const session = join(paths.trees, "session");
     const stray = join(paths.trees, "stray");
