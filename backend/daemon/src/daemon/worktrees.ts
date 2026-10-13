@@ -464,7 +464,11 @@ export class WorktreeManager {
       return refuse(`${admin} is no worktree admin directory of ${common}`);
     const tooOld = this.#gitTooOld();
     if (tooOld) return refuse(tooOld);
-    this.ensureSetup();
+    try {
+      this.ensureSetup();
+    } catch (error) {
+      return refuse(error instanceof Error ? error.message : String(error));
+    }
     if (!this.isBranch(branch)) return refuse(`branch "${branch}" no longer exists`);
     if (this.list().some((w) => w.branch === branch))
       return refuse(`branch "${branch}" is checked out in another worktree`);
