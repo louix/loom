@@ -117,9 +117,8 @@ Then run Loom from your project:
 
 ```sh
 loom                                      # open the TUI; daemon starts automatically
-loom run --profile reviewer "Explain this codebase"
-# Or override a profile's model and mode for this run:
-loom run --profile reviewer --model claude-opus-4-1 --mode plan "Explain this codebase"
+loom run --provider claude --mode plan "Explain this codebase"
+loom run --profile reviewer "Review the last commit"   # on an agent profile
 loom shell <session-id>                    # enter a session's environment
 ```
 
