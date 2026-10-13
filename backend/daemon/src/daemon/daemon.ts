@@ -4126,7 +4126,8 @@ export class Daemon {
    * other. Whether it waits behind a hold or lifts it is the enqueue's
    * decision (by its `sender`, "Holds" H2), and so is whether the session is to be
    * brought back for it: one that waits wakes nothing, a cold session
-   * included. A revival that fails takes the message back (H5).
+   * included. A revival that fails takes the message back, except a
+   * sub-agent's report, which stays queued (H5).
    *
    * A compaction, a rewind or a stop in progress does not refuse the
    * message, and neither does a clone's guest Git for a Loom agent's: it
@@ -4172,7 +4173,7 @@ export class Daemon {
             entryId,
             err: error instanceof Error ? error.message : String(error),
           });
-          return { entryId, state: "queued", hold: queued.hold, waited: true };
+          return { entryId, state: "queued", hold: queued.hold, waited: queued.waited };
         }
         // Already handed over (by a revival that raced this one): it went.
         if (queued.undo() || !this.#handedOver(id, entryId)) throw error;
