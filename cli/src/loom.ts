@@ -40,7 +40,7 @@ commands:
   ping                   round-trip latency to the daemon
   tail                   stream the live event feed (Ctrl-C to stop)
 
-  run <prompt...>        start a session   [--provider P] [--model M] [--mode manual|plan|acceptEdits|auto]
+  run <prompt...>        start a session   [--profile NAME] [--provider P] [--model M] [--mode manual|plan|acceptEdits|auto]
                          [--in-place | --worktree]  override session.defaults.workspace for this session
   send <id> <text...>    queue a follow-up for the next tool boundary   [--end-of-turn]
   queue <id>             show a session's queued messages and when each goes   [--release] [--json]
@@ -110,6 +110,7 @@ loom mcp logout <name> [--json]
   guest source); the first session start builds it too and later ones reuse it.`,
   run: `loom run <prompt...>  — start a session
 
+  --profile NAME              configured agent profile (see \`agents.profiles\`)
   --provider P                 provider id (see \`loom providers\`); default from config
   --model M                    model id; default from the provider
   --mode manual|plan|acceptEdits|auto
@@ -227,6 +228,7 @@ const main = async (): Promise<void> => {
       smolvm: { type: "string" },
       status: { type: "string" },
       provider: { type: "string" },
+      profile: { type: "string" },
       model: { type: "string" },
       mode: { type: "string" },
       reason: { type: "string" },
@@ -559,6 +561,8 @@ const main = async (): Promise<void> => {
       case "run": {
         const prompt = positionals.slice(1).join(" ");
         if (!prompt) need(undefined, "run <prompt...>");
+        if (values.profile === "self")
+          need(undefined, 'run: profile "self" is only for sub-agents');
         if (values["in-place"] && values.worktree) {
           need(undefined, "run: --in-place and --worktree are mutually exclusive");
         }
@@ -573,6 +577,7 @@ const main = async (): Promise<void> => {
           prompt,
           by: client.clientId,
           ...(values.provider ? { provider: values.provider } : {}),
+          ...(values.profile ? { profile: values.profile } : {}),
           ...(values.model ? { model: values.model } : {}),
           ...(values.mode ? { mode: values.mode } : {}),
           ...(worktree !== undefined ? { worktree } : {}),

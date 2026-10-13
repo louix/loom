@@ -118,6 +118,45 @@ const finish = async (env: Env, child: { id: string; fs: FakeSession }, message:
 };
 
 describe("loom agents", { concurrency: 4 }, () => {
+  test("a user-started session can use a configured profile", async (env) => {
+    const created = await env.c.request<SessionSnapshot>("session.create", {
+      prompt: "review this",
+      profile: "implementer",
+      provider: "fake",
+      model: "override-model",
+      mode: "plan",
+    });
+    const row = await get(env.c, created.id);
+    assert.equal(row.agentProfile, "implementer");
+    assert.equal(row.provider, "fake");
+    assert.equal(row.model, "override-model");
+    assert.equal(row.mode, "plan");
+    const opts = env.provider.creates.find((o) => o.sessionId === created.id)!;
+    assert.match(opts.agentPrompt ?? "", /IMPLEMENT exactly the task\./);
+    assert.equal(opts.promptByHuman, true);
+  });
+
+  nodeTest("a profile provider conflict is rejected before session creation", async () => {
+    await withEnv(
+      async (env) => {
+        await assert.rejects(
+          env.c.request("session.create", {
+            prompt: "review this",
+            profile: "reviewer",
+            provider: "fake",
+          }),
+          /conflicts with agent profile "reviewer" provider "mock"/,
+        );
+        assert.equal(env.provider.creates.length, 0);
+        const sessions = await env.c.request<SessionSnapshot[]>("session.list");
+        assert.equal(sessions.length, 0);
+      },
+      JSON.stringify({
+        agents: { profiles: { reviewer: { description: "Review", provider: "mock" } } },
+      }),
+    );
+  });
+
   test("a supervisor starts a child on a profile, in a worktree off its own branch", async (env) => {
     const lead = await idleSession(env);
     const creates = env.provider.creates;

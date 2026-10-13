@@ -67,6 +67,14 @@ allow/deny lists (`tools`), and an inline `prompt` appended to the agent's own.
 A separate prompt file may come later. The new-session prompt lists the
 profiles under the providers (`⌥p`); no profile means today's settings.
 
+The CLI can start the same configured profiles with `loom run --profile NAME
+"prompt"`. The profile supplies its provider, model, mode, prompt, MCP servers,
+skills and tools; `--model`, `--mode`, and workspace/isolation flags override
+the corresponding session settings. A profile's provider cannot be overridden
+with a different `--provider`; a profile without a provider follows the chosen
+provider. `self` is only meaningful to a running supervisor and is not accepted
+by `loom run`.
+
 `mcp_servers` is shaped like `session.provider_access`. Omitted, the agent gets
 every session MCP server and `loom-agents` (still subject to
 `agents.max_depth`). `{ "allow": [...] }` keeps only the servers it names,

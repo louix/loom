@@ -4660,6 +4660,11 @@ export class Daemon {
             ? `agent profile "${p.profile}" is not available in this repository: session.provider_access does not allow its provider`
             : `no agent profile "${p.profile}"; configured: ${Object.keys(available).join(", ") || "none"}`,
         );
+      if (profile?.provider && p.provider && profile.provider !== p.provider)
+        throw new RpcError(
+          "bad_request",
+          `--provider "${p.provider}" conflicts with agent profile "${p.profile}" provider "${profile.provider}"`,
+        );
 
       const providerId = p.provider ?? profile?.provider ?? this.#defaultProviderId();
       const mode = p.mode ?? profile?.mode ?? this.#defaultMode(providerId);
