@@ -198,7 +198,8 @@ sub-agents inside the supervisor's VM is a later shared-VM feature.
   Whether the queue is held is decided as the entry is
   queued, so a stop that lands while a cold supervisor is coming back for it
   still holds it. The user's send or release (`r`) revives a cold supervisor
-  and delivers. A sub-agent waiting for input (a permission or a question) is not
+  and delivers. A supervisor that cannot be revived for it keeps it queued
+  (H5): it goes, once, when the supervisor next runs. A sub-agent waiting for input (a permission or a question) is not
   notified: both go to the user, so the supervisor could not act on it, and
   the fleet already shows the sub-agent waiting, on its row and its supervisors'.
   Waits stay unnotified until supervisor question handling is designed.

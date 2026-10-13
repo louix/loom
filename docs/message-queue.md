@@ -360,6 +360,8 @@ they say so.
   at once with the message queued; if it fails later, or the environment
   refresh it waited out does, the message is withdrawn and the hold put
   back then, on the same terms, and the failure is reported on the session.
+  A sub-agent's report is the exception: no sender is left to retry it, so
+  it stays queued, and goes when the session next runs (a resume, a send).
 - **H6 A stop that does not complete.** A close by someone
   (`SessionManager.close(by)`: an archive, a VM stop) applies its stop
   before it awaits anything. If the close fails, or the archive around it

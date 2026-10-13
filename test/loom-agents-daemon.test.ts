@@ -833,6 +833,31 @@ describe("loom agents", { concurrency: 4 }, () => {
     assert.match(notes()[0]!, /Widget added\./);
   });
 
+  test("H5: a report whose supervisor cannot be revived stays queued and goes once it resumes", async (env) => {
+    const lead = await idleSession(env);
+    const child = await startChild(env, lead.fs);
+    lead.fs.endStream();
+    await delay(50);
+    env.provider.failNextResume = new Error("Cannot resolve workspace Git metadata");
+    await finish(env, child, "Widget added.");
+    await waitFor(() => env.provider.resumes.some((r) => r.sessionId === lead.id));
+    await delay(50);
+    assert.equal(env.provider.session(lead.id), lead.fs, "not revived");
+    assert.equal((await get(env.c, lead.id)).queue?.entries.length, 1, "kept");
+
+    await env.c.request("session.resume", { id: lead.id });
+    await waitFor(() => env.provider.session(lead.id) !== lead.fs);
+    const revived = env.provider.session(lead.id)!;
+    const notes = () => revived.sends.filter((s) => s.startsWith("[from your sub-agent"));
+    await waitFor(() => notes().length > 0);
+    revived.finishTurn();
+    await waitFor(async () => (await get(env.c, lead.id)).status.kind === "idle");
+    await delay(50);
+    assert.equal(notes().length, 1);
+    assert.match(notes()[0]!, /Widget added\./);
+    assert.equal((await get(env.c, lead.id)).queue, undefined);
+  });
+
   test("H7: a supervisor's message to a busy child waits instead of failing", async (env) => {
     const lead = await idleSession(env);
     const child = await startChild(env, lead.fs);

@@ -4143,12 +4143,23 @@ export class Daemon {
     );
     const r = queued.result;
     if (!r.ok) throw new RpcError(r.code, r.message, { sessionId: id });
+    // A sub-agent's report has no sender left to retry it: a failed revival
+    // leaves it queued, to go when the session next runs (H5).
+    const kept = opts.sender === "child";
     if (queued.revive) {
       try {
         // A revival that outlasts the call (a VM runtime build) and fails
         // later takes the message back then.
-        await this.#reviveForQueue(id, () => queued.undo());
+        await this.#reviveForQueue(id, kept ? undefined : () => queued.undo());
       } catch (error) {
+        if (kept) {
+          this.#log.warn("report kept queued: its session could not be revived", {
+            id,
+            entryId,
+            err: error instanceof Error ? error.message : String(error),
+          });
+          return { entryId, state: "queued", hold: queued.hold, waited: true };
+        }
         // Already handed over (by a revival that raced this one): it went.
         if (queued.undo() || !this.#handedOver(id, entryId)) throw error;
       }

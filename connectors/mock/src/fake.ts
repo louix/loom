@@ -390,9 +390,17 @@ export class FakeProvider implements AgentProvider {
     };
   }
 
+  /** Make the next `resumeSession()` throw this instead of resuming. */
+  failNextResume: Error | null = null;
+
   async resumeSession(ref: SessionRef): Promise<AgentSession> {
     this.resumes.push(ref);
     if (this.#resumeGate) await this.#resumeGate;
+    const failure = this.failNextResume;
+    if (failure) {
+      this.failNextResume = null;
+      throw failure;
+    }
     if (ref.forkHistory && !this.capabilities.forking)
       throw new Error("fake: native history forks are off (capabilities.forking)");
     const s = new FakeSession(
