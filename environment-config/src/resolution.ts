@@ -13,6 +13,7 @@
  */
 import { parse, type ParseError } from "jsonc-parser";
 import type { z } from "zod";
+import { assertNoDuplicateJsoncKeys } from "../../core/src/jsonc.ts";
 import type { InitHook } from "../../core/src/init-hook.ts";
 import type { SessionEnvironment } from "../../core/src/session-environment.ts";
 import {
@@ -49,6 +50,7 @@ export const parseProjectEnvironment = (text: string, source = "loom.json") => {
   } catch {
     throw new Error(source + ": expected strict JSON");
   }
+  assertNoDuplicateJsoncKeys(text, source);
   return validate(projectEnvironmentSchema, raw, source);
 };
 
@@ -57,6 +59,7 @@ export const parseEnvironmentUser = (text: string, source = "environment.jsonc")
   const errors: ParseError[] = [];
   const raw: unknown = parse(text.replace(/^\uFEFF/, ""), errors, { allowTrailingComma: true });
   if (errors.length) throw new Error(source + ": invalid JSONC at offset " + errors[0]!.offset);
+  assertNoDuplicateJsoncKeys(text.replace(/^\uFEFF/, ""), source);
   if (raw && typeof raw === "object" && !Array.isArray(raw) && !("version" in raw))
     throw new Error(
       source +

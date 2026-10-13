@@ -1471,6 +1471,35 @@ test("JSONC accepts comments, trailing commas and a BOM without changing strings
   assert.deepEqual(raw.repos, [{ path: "/repo", hooks: [] }]);
 });
 
+test("JSONC rejects duplicate keys with their path and both lines", () => {
+  const cases = [
+    ['{\n  "name": 1,\n  "name": 2,\n}', "name", 2, 3],
+    ['{\n  "outer": {\n    "name": 1,\n    "name": 2,\n  },\n}', "outer.name", 3, 4],
+    ['{\n  "items": [{\n    "name": 1,\n    "name": 2,\n  }],\n}', "items[0].name", 3, 4],
+    [
+      '{\n  "agents": {\n    "profiles": {\n      "overseer": {\n        "provider": "claude:work"\n      },\n      "overseer": {\n        "provider": "claude:personal"\n      }\n    }\n  }\n}',
+      "agents.profiles.overseer",
+      4,
+      7,
+    ],
+  ] as const;
+  for (const [text, path, firstLine, secondLine] of cases)
+    assert.throws(
+      () => parseConfig(text),
+      new RegExp(
+        `config\\.jsonc: duplicate key ${path.replace(/[.[\]]/g, "\\$&")} ` +
+          `\\(lines ${firstLine} and ${secondLine}\\); JSON keeps only the last`,
+      ),
+    );
+});
+
+test("the same key in sibling objects is allowed", () => {
+  assert.deepEqual(parseConfig('{"left":{"name":1},"right":{"name":2}}'), {
+    left: { name: 1 },
+    right: { name: 2 },
+  });
+});
+
 test("JSONC rejects malformed or non-object configs instead of using partial results", () => {
   for (const text of [
     "",

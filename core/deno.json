@@ -35,6 +35,7 @@
     "./worker": "./src/worker.ts",
     "./rpc-params": "./src/rpc-params.ts",
     "./model-catalogue": "./src/model-catalogue.ts",
-    "./message-queue": "./src/message-queue.ts"
+    "./message-queue": "./src/message-queue.ts",
+    "./jsonc": "./src/jsonc.ts"
   }
 }

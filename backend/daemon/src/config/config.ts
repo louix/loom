@@ -17,6 +17,7 @@ import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { parse, printParseErrorCode, type ParseError } from "jsonc-parser";
 import { onPath, tryFindRepoRoot } from "@loom/core/paths";
+import { assertNoDuplicateJsoncKeys } from "@loom/core/jsonc";
 import { isClaudeId } from "@loom/core/provider-id";
 import type { McpCapability, SessionMode } from "@loom/core/types";
 import { DEFAULT_MAX_DEPTH, LOOM_AGENTS_SERVER, SELF_PROFILE } from "@loom/core/agents";
@@ -1027,6 +1028,7 @@ export const parseConfig = (text: string): Record<string, unknown> => {
       `Invalid JSONC at line ${line}, column ${column}: ${printParseErrorCode(error.error)}`,
     );
   }
+  assertNoDuplicateJsoncKeys(text.replace(/^\uFEFF/, ""), "config.jsonc");
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
     throw new Error("Config must be a JSON object");
   return parsed as Record<string, unknown>;

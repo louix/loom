@@ -51,6 +51,17 @@ Deno.test("schemas are versioned and strict, and projects cannot carry host auth
   assert.throws(() => user({ repos: [{ path: "relative" }] }), /absolute/);
 });
 
+Deno.test("environment JSONC rejects duplicate keys with its source and lines", () => {
+  assert.throws(
+    () => parseEnvironmentUser('{\n  "version": 1,\n  "version": 1,\n}', "environment.jsonc"),
+    /environment\.jsonc: duplicate key version \(lines 2 and 3\); JSON keeps only the last/,
+  );
+  assert.throws(
+    () => parseProjectEnvironment('{\n  "version": 1,\n  "version": 1\n}', "loom.json"),
+    /loom\.json: duplicate key version \(lines 2 and 3\); JSON keeps only the last/,
+  );
+});
+
 Deno.test("Loom's config.jsonc is rejected with a pointer to the converter", () => {
   assert.throws(
     () => parseEnvironmentUser('{"session":{"isolation":{"enabled":true}}}', "x.jsonc"),
