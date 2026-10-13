@@ -509,6 +509,27 @@ export class WorktreeManager {
     return this.#git(["worktree", "prune"]).ok;
   }
 
+  /**
+   * Lock session trees made before Loom locked them (see {@link LOCK_REASON}).
+   * A lock already there stays; a tree Git does not list is skipped. Returns
+   * how many it locked.
+   */
+  lock(trees: ReadonlyArray<{ id: string; path: string }>): number {
+    const unlocked = new Set(
+      this.list()
+        .filter((w) => w.locked === null)
+        .map((w) => canonicalHostPath(w.path)),
+    );
+    let locked = 0;
+    for (const { id, path } of trees) {
+      if (!unlocked.has(canonicalHostPath(path))) continue;
+      const res = this.#git(["worktree", "lock", "--reason", lockReason(id), path]);
+      if (res.ok) locked++;
+      else this.#log.warn("worktree lock failed", { path, error: res.stderr.trim() || res.error });
+    }
+    return locked;
+  }
+
   /** The worktree's current `git HEAD` (full SHA), or null if it can't be read. */
   headSha(path: string): string | null {
     if (!path || !existsSync(path)) return null;

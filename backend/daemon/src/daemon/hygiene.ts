@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { Logger } from "@loom/core/logger";
@@ -7,10 +6,12 @@ import { pidAlive } from "@loom/core/daemon-endpoint";
 import { clearStaleIndexLock, showIndexLockCheck } from "@loom/core/git-lock";
 import type { ChildStore, MidRunSession } from "../store/sessions.ts";
 import type { Registry } from "./registry.ts";
+import type { WorktreeManager } from "./worktrees.ts";
 
 export interface HygieneInput {
   paths: LoomPaths;
   registry: Registry;
+  worktrees: WorktreeManager;
   children: ChildStore;
   /** Identifier for this daemon run; children tagged with a different one are stale. */
   epoch: string;
@@ -43,9 +44,10 @@ export interface HygieneReport {
  *     unused (core/src/git-lock.ts), in the worktree directory and the legacy
  *     `.loom/trees`, but not in one a session VM may still have mounted; then
  *     `git worktree prune` drops vanished worktrees
+ *   - a session tree made before Loom locked its trees is locked
  */
 export const runStartupHygiene = (input: HygieneInput): HygieneReport => {
-  const { paths, registry, children, epoch, vmWorktrees, log } = input;
+  const { paths, registry, worktrees, children, epoch, vmWorktrees, log } = input;
 
   const interruptedSessions = registry.markMidRunInterrupted();
   if (interruptedSessions.length > 0) {
@@ -55,7 +57,18 @@ export const runStartupHygiene = (input: HygieneInput): HygieneReport => {
   }
 
   const reapedChildren = reapChildren(children, epoch, log);
-  const { clearedLocks, worktreePruned } = tidyWorktrees(paths, vmWorktrees, log);
+  const clearedLocks = clearWorktreeLocks(paths, vmWorktrees, log);
+  const worktreePruned = worktrees.prune();
+  const locked = worktrees.lock(
+    registry
+      .list()
+      .flatMap((s) =>
+        s.worktree && !s.inPlace && s.checkout !== "clone" && !s.worktreeOwner
+          ? [{ id: s.id, path: s.worktree }]
+          : [],
+      ),
+  );
+  if (locked > 0) log.info("locked session worktrees", { locked });
 
   return { interruptedSessions, reapedChildren, clearedLocks, worktreePruned };
 };
@@ -138,23 +151,4 @@ const clearWorktreeLocks = (
     }
   }
   return clearedLocks;
-};
-
-const tidyWorktrees = (
-  paths: LoomPaths,
-  vmWorktrees: ReadonlySet<string> | "unknown",
-  log: Logger,
-): { clearedLocks: string[]; worktreePruned: boolean } => {
-  const clearedLocks = clearWorktreeLocks(paths, vmWorktrees, log);
-  let worktreePruned = false;
-  const res = spawnSync("git", ["-C", paths.repoRoot, "worktree", "prune"], {
-    encoding: "utf8",
-    timeout: 10_000,
-  });
-  if (res.status === 0) {
-    worktreePruned = true;
-  } else if (res.error) {
-    log.debug("git worktree prune skipped", { err: String(res.error) });
-  }
-  return { clearedLocks, worktreePruned };
 };

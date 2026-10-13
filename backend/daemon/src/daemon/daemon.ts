@@ -823,6 +823,7 @@ export class Daemon {
     this.#hygiene = runStartupHygiene({
       paths: this.paths,
       registry: this.#registry,
+      worktrees: this.#worktrees,
       children: this.#children,
       epoch: this.epoch,
       vmWorktrees,

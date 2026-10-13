@@ -11,7 +11,8 @@ import { openDb } from "@loom/daemon/store/db";
 import { ChildStore } from "@loom/daemon/store/sessions";
 import { Registry } from "@loom/daemon/daemon/registry";
 import { runStartupHygiene } from "@loom/daemon/daemon/hygiene";
-import { loomPaths } from "@loom/core/paths";
+import { WorktreeManager } from "@loom/daemon/daemon/worktrees";
+import { loomPaths, type LoomPaths } from "@loom/core/paths";
 import { makeLogger, setLogLevel } from "@loom/core/logger";
 
 setLogLevel("error");
@@ -20,6 +21,15 @@ const OLD_s = Date.now() / 1000 - 600;
 
 const git = (cwd: string, ...args: string[]): string =>
   execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", stdio: "pipe" }).trim();
+
+const worktreesOf = (paths: LoomPaths): WorktreeManager =>
+  new WorktreeManager({
+    repoRoot: paths.repoRoot,
+    treesDir: paths.trees,
+    hooksDir: paths.hooks,
+    baseBranch: "main",
+    log: makeLogger("test"),
+  });
 
 const lockOf = (tree: string): string =>
   git(tree, "rev-parse", "--path-format=absolute", "--git-path", "index.lock");
@@ -74,6 +84,7 @@ test("startup hygiene clears old index locks in current and legacy worktrees, no
     const report = runStartupHygiene({
       paths,
       registry: new Registry(db, makeLogger("test")),
+      worktrees: worktreesOf(paths),
       children: new ChildStore(db),
       epoch: "now",
       vmWorktrees: new Set([mounted]),
@@ -122,6 +133,7 @@ test("startup hygiene clears no index lock when recovery could not list the sess
     const report = runStartupHygiene({
       paths,
       registry: new Registry(db, makeLogger("test")),
+      worktrees: worktreesOf(paths),
       children: new ChildStore(db),
       epoch: "now",
       vmWorktrees: "unknown",
@@ -131,6 +143,58 @@ test("startup hygiene clears no index lock when recovery could not list the sess
     // then
     assert.deepEqual(report.clearedLocks, []);
     assert.equal(existsSync(lock), true, "a VM recovery never saw may still run a git there");
+  } finally {
+    db.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("startup hygiene locks session trees made before Loom locked them, and no other tree", () => {
+  const root = mkdtempSync(join(tmpdir(), "loom-hygiene-locks-"));
+  const repo = join(root, "repo");
+  const env = { HOME: root, XDG_RUNTIME_DIR: "/nonexistent-run", XDG_STATE_HOME: join(root, "st") };
+  const db = openDb(join(root, "loom.db"));
+  try {
+    // given: an unlocked session tree, a shared one, and a tree no session has
+    execFileSync("git", ["init", "-q", "-b", "main", repo]);
+    git(
+      repo,
+      "-c",
+      "user.email=t@example.com",
+      "-c",
+      "user.name=t",
+      "commit",
+      "-q",
+      "--allow-empty",
+      "-m",
+      "base",
+    );
+    const paths = loomPaths(repo, join(root, "trees"), env);
+    const session = join(paths.trees, "session");
+    const stray = join(paths.trees, "stray");
+    git(repo, "worktree", "add", "-q", "-b", "a", session);
+    git(repo, "worktree", "add", "-q", "-b", "b", stray);
+    const registry = new Registry(db, makeLogger("test"));
+    registry.create({ id: "owner", provider: "fake", worktree: session, branch: "a" });
+    registry.create({ id: "sharer", provider: "fake", worktree: session, branch: "a" });
+    registry.setFields("sharer", { worktreeOwner: "owner" });
+
+    // when
+    runStartupHygiene({
+      paths,
+      registry,
+      worktrees: worktreesOf(paths),
+      children: new ChildStore(db),
+      epoch: "now",
+      vmWorktrees: new Set(),
+      log: makeLogger("test"),
+    });
+
+    // then
+    const locked = git(repo, "worktree", "list", "--porcelain")
+      .split("\n")
+      .filter((line) => line.startsWith("locked"));
+    assert.deepEqual(locked, ["locked loom session owner"]);
   } finally {
     db.close();
     rmSync(root, { recursive: true, force: true });
