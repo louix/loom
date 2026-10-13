@@ -40,6 +40,8 @@ export interface HeaderView {
   readonly waiting: number;
   readonly running: number;
   readonly background: number;
+  /** Config areas waiting for a daemon restart (R). */
+  readonly restartPending: readonly string[];
 }
 
 const basename = (p: string): string => p.replace(/\/+$/, "").split("/").pop() || p;
@@ -65,6 +67,7 @@ export const headerView = (fleet: ClientState): HeaderView => {
     waiting,
     running,
     background,
+    restartPending: fleet.tag === "data" ? (fleet.value.restartPending ?? []) : [],
   };
 };
 

@@ -181,6 +181,9 @@ export const Header = memo(({ view, width }: { view: HeaderView; width: number }
         <Line tone="text">{view.repo}</Line>
       </Box>
       <Box gap={1}>
+        {view.restartPending.length ? (
+          <Line tone="warn">{`R restart to apply ${view.restartPending.join(", ")}`}</Line>
+        ) : null}
         <Line tone="dim">{`${view.sessions} sessions`}</Line>
         {view.waiting ? <Text tone="await_">{`◆ ${view.waiting}`}</Text> : null}
         {view.running ? <Text tone="accent">{`● ${view.running}`}</Text> : null}

@@ -268,6 +268,9 @@ export const daemonSnapshotSchema = z.object({
   /** The configured agent profiles (`agents.profiles`), for the new-session
    *  prompt's `⌥p` list. Absent from a daemon that predates them. */
   agentProfiles: z.array(agentProfileInfoSchema).optional(),
+  /** Config areas edited since the daemon started that apply only after a
+   *  restart (e.g. "providers", "session VMs"). Absent: nothing pending. */
+  restartPending: z.array(z.string()).optional(),
 });
 export type DaemonSnapshot = z.infer<typeof daemonSnapshotSchema>;
 

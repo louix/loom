@@ -21,7 +21,7 @@ export const withExternalMcp = async (
   start = startMcpWorker,
   startRuntime = startRuntimeMcp,
   repoRoot?: string,
-  httpDefinitions: LoomConfig["httpMcp"] = [],
+  httpDefinitions: () => LoomConfig["httpMcp"] = () => [],
   startHostCommand = startHostCommandMcp,
 ): Promise<AgentProvider> => {
   const base = await create(context);
@@ -69,7 +69,7 @@ export const withExternalMcp = async (
           workers.push(worker);
           return { ...handle, spec: worker.handle.spec };
         }
-        const definition = httpDefinitions.find(
+        const definition = httpDefinitions().find(
           (m) =>
             m.name === handle.name && handle.spec.transport === "http" && m.url === handle.spec.url,
         );

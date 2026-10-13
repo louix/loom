@@ -240,7 +240,8 @@ lists and Loom's network grants do not apply to them.
 }
 ```
 
-A matching `repos[]` entry can set it for one repository. When it is off, Loom
+A matching `repos[]` entry can set it for one repository; like other provider
+settings, a change applies after a daemon restart. When it is off, Loom
 starts Claude Code with the `disableClaudeAiConnectors` setting and
 `ENABLE_CLAUDEAI_MCP_SERVERS=false`. When it is on, Loom sets neither, and a
 [Claude session VM](claude-session-vm.md) may also reach `mcp-proxy.anthropic.com`
@@ -342,10 +343,11 @@ when unselected. Duplicate selections, unknown names and competing
 `default_for` preferences fail validation.
 
 Repository `session.mcp_servers` lists replace the global list; `[]` clears it.
-Definitions merge using the existing trusted user-config rules. Existing sessions
-retain their running servers and grants. Restart the daemon to apply changed
-definitions or selections; new/resumed sessions then use the current configuration.
-There is no live tool-list refresh or grant mutation.
+Definitions merge using the existing trusted user-config rules. The daemon
+re-reads the config when the file changes, and changed definitions or selections
+apply to every session started or resumed after that, without a restart. Running
+sessions retain their servers and grants; there is no live tool-list refresh or
+grant mutation.
 
 ## Request timeouts
 

@@ -229,7 +229,8 @@ export class ProviderRegistry {
   }
 
   async #build(id: string, isolation: "vm" | "none"): Promise<AgentProvider> {
-    const effectiveConfig = this.configFor(id, isolation);
+    const vmReason = isolation === "vm" ? this.vmUnavailableReason(id) : undefined;
+    if (vmReason) throw new Error(vmReason);
     const pkg = this.#packageFor(id);
     const load = this.#manifest[pkg];
     if (!load) {
@@ -273,7 +274,8 @@ export class ProviderRegistry {
       undefined,
       undefined,
       this.#repoRoot,
-      effectiveConfig.httpMcp,
+      // A config reload replaces the definitions; a session takes them as it starts.
+      () => this.#config.httpMcp,
     );
     this.#loaded.add(pkg);
     const initStop = new AbortController();
@@ -289,7 +291,7 @@ export class ProviderRegistry {
             const signal = signalOf(options);
             signal?.throwIfAborted();
             const oneShot = "oneShot" in options && options.oneShot;
-            if (!oneShot) await preflightTools(effectiveConfig, id);
+            if (!oneShot) await preflightTools(this.configFor(id, isolation), id);
             const progress = (message: string) =>
               context.onStartupProgress?.(options.sessionId, message);
             if (!oneShot) this.#localEnvironments.delete(options.sessionId);

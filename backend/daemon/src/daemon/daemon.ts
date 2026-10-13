@@ -379,6 +379,8 @@ export class Daemon {
   readonly #shells = new SessionShells();
   /** Removed settings already reported: each is logged once per daemon. */
   readonly #removedWarned = new Set<string>();
+  /** Areas whose edited config waits for a daemon restart; clients show them. */
+  #restartPending: string[] = [];
   /** Live session VM environments, published while their workers run. */
   readonly #vmExecutions = new Map<string, SessionExecutions>();
   #environmentPoll: NodeJS.Timeout | undefined;
@@ -1044,6 +1046,7 @@ export class Daemon {
         providers: this.#providerList(),
         sessions: rows.map((s) => this.#enrich(s, false)),
         agentProfiles: profileInfos(this.config),
+        ...(this.#restartPending.length ? { restartPending: this.#restartPending } : {}),
       },
     };
   }
@@ -3998,8 +4001,9 @@ export class Daemon {
 
   /**
    * Re-read config on the fly. Fields that only steer *new* sessions or a timer
-   * are hot-applied; a change to the provider set / base branch / dirs / buffer
-   * size / mcp list needs a restart, so the operator gets a nudge instead.
+   * are hot-applied; the rest are built into providers, VMs and the worktree
+   * manager at startup, so a change to one waits for a restart, named in
+   * {@link #restartPending} until then.
    */
   #reloadConfig(): void {
     if (this.#stopping) return;
@@ -4012,9 +4016,35 @@ export class Daemon {
       return;
     }
     // Deep copy, not an alias: the hot-apply block below mutates `this.config`
-    // in place, and `needsRestart` must diff `next` against the pre-reload state.
+    // in place, and both diffs below are against the pre-reload state.
     const before = JSON.parse(JSON.stringify(this.config)) as LoomConfig;
-    if (JSON.stringify(next) === JSON.stringify(before)) return;
+    const differs = (a: unknown, b: unknown) => JSON.stringify(a) !== JSON.stringify(b);
+    // `auto_nix` is hot-applied into the session environment.
+    const isolation = before.isolation.environment
+      ? {
+          ...before.isolation,
+          environment: { ...before.isolation.environment, autoNix: next.autoNix },
+        }
+      : before.isolation;
+    // Restart-only fields keep their startup values in `this.config`, so these
+    // diff against what the daemon runs, and reverting an edit clears its entry.
+    const restartFor: Record<string, boolean> = {
+      providers:
+        differs(next.providers, before.providers) ||
+        differs(next.claudeProfiles, before.claudeProfiles) ||
+        differs(next.providerAccess, before.providerAccess),
+      "session VMs":
+        differs(next.isolation, isolation) || next.defaults.isolation !== before.defaults.isolation,
+      "base branch": next.baseBranch !== before.baseBranch,
+      "worktree directory": next.worktreeDir !== before.worktreeDir,
+    };
+    const restartPending = Object.keys(restartFor).filter((key) => restartFor[key]);
+    const pendingChanged = differs(restartPending, this.#restartPending);
+    this.#restartPending = restartPending;
+    if (!differs(next, before)) {
+      if (pendingChanged) this.#publishState();
+      return;
+    }
 
     // Hot-apply: these are read afresh when a session starts, or drive a timer.
     // The isolation default waits for a restart, like the VM runtimes it enables.
@@ -4025,6 +4055,16 @@ export class Daemon {
     this.config.autoRebase = next.autoRebase;
     this.config.branchPrefix = next.branchPrefix;
     this.config.commitReminder = next.commitReminder;
+    if (next.clone) this.config.clone = next.clone;
+    else delete this.config.clone;
+    if (next.git) this.config.git = next.git;
+    else delete this.config.git;
+    this.config.defaultProvider = next.defaultProvider;
+    // Planned per start and resume; a running session keeps the servers it started with.
+    this.config.mcp = next.mcp;
+    this.config.httpMcp = next.httpMcp;
+    if (next.mcpServers) this.config.mcpServers = next.mcpServers;
+    else delete this.config.mcpServers;
     // Read per start and resume; clients list the profiles off the snapshot.
     if (JSON.stringify(next.agents) !== JSON.stringify(before.agents)) {
       this.config.agents = next.agents;
@@ -4049,23 +4089,13 @@ export class Daemon {
     this.#warnRemovedSettings();
     for (const warning of this.#orphanedProviderWarnings()) this.#log.warn("config", { warning });
 
-    const needsRestart =
-      JSON.stringify(next.providers) !== JSON.stringify(before.providers) ||
-      JSON.stringify(next.claudeProfiles) !== JSON.stringify(before.claudeProfiles) ||
-      JSON.stringify(next.providerAccess) !== JSON.stringify(before.providerAccess) ||
-      JSON.stringify(next.isolation) !== JSON.stringify(this.config.isolation) ||
-      next.defaults.isolation !== before.defaults.isolation ||
-      next.baseBranch !== before.baseBranch ||
-      next.worktreeDir !== before.worktreeDir ||
-      JSON.stringify(next.mcp) !== JSON.stringify(before.mcp) ||
-      JSON.stringify(next.httpMcp) !== JSON.stringify(before.httpMcp);
-
-    this.#log.info("config reloaded", { needsRestart });
+    this.#log.info("config reloaded", { restartPending });
+    if (pendingChanged) this.#publishState();
     this.#emitNotice(
-      needsRestart
-        ? "config changed — press R to restart the daemon and apply provider / mcp changes"
+      restartPending.length
+        ? `config reloaded — press R to restart the daemon and apply: ${restartPending.join(", ")}`
         : "config reloaded",
-      needsRestart ? "warn" : "info",
+      restartPending.length ? "warn" : "info",
     );
   }
 

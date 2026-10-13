@@ -43,7 +43,9 @@ or network boundaries.
 
 Only the trusted user configuration is read. Use `repos[].path` for repository
 overrides and `session.provider_access` to restrict providers. Restart the daemon
-after changing isolation or provider policy. Unavailable sessions remain readable
+after changing isolation or provider policy; until then the TUI header names the
+edits waiting for it (`R restart to apply providers, session VMs`). MCP server
+changes need no restart. Unavailable sessions remain readable
 and can be continued by forking into an enabled provider.
 
 - [Claude VMs](claude-session-vm.md): authentication, recovery and diagnostics.

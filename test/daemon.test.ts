@@ -2050,6 +2050,79 @@ test("a provider-set change on disk asks for a restart rather than applying live
     // the running provider list is unchanged until a restart
     const list = await c.request<Array<{ id: string }>>("providers.list");
     assert.ok(!list.some((p) => p.id === "local"));
+    const pending = () => {
+      const state = c.getState();
+      return state.tag === "data" ? state.value.restartPending : undefined;
+    };
+    await waitFor(() => pending()?.join() === "providers");
+
+    // reverting the edit leaves nothing to restart for
+    writeFileSync(cfgPath, `{ "base_branch": "main" }`);
+    await waitFor(() => pending() === undefined);
+    await c.close();
+  } finally {
+    await hh.cleanup();
+  }
+});
+
+test("an MCP server selected on disk reaches the next session without a restart", async () => {
+  const hh = await makeHarness({ config: "{}" });
+  const withFiles = (selected: boolean) =>
+    JSON.stringify({
+      mcp_servers: { files: { source: { kind: "command", command: "git" } } },
+      repos: [{ path: hh.repoRoot, session: { mcp_servers: selected ? ["files"] : [] } }],
+    });
+  try {
+    const c = await LoomClient.connect({
+      repoRoot: hh.repoRoot,
+      sockPath: hh.sockPath,
+      autospawn: false,
+    });
+    const notices: string[] = [];
+    c.onPush((f) => {
+      if (f.type === "notice") notices.push(f.text);
+    });
+    const provider = (await hh.daemon.providers.get("fake")) as FakeProvider;
+    const servers = (id: string) =>
+      provider.creates.find((o) => o.sessionId === id)?.mcpServers.map((m) => m.name);
+    const start = async (prompt: string) => {
+      const s = await c.request<SessionSnapshot>("session.create", { prompt, provider: "fake" });
+      await waitFor(() => servers(s.id) !== undefined);
+      return s.id;
+    };
+    const reload = async (config: string) => {
+      const seen = notices.length;
+      writeFileSync(hh.configPath, config);
+      await waitFor(() => notices.slice(seen).some((t) => /config reloaded/.test(t)));
+      assert.ok(
+        !notices.slice(seen).some((t) => /restart/.test(t)),
+        `got notices: ${JSON.stringify(notices)}`,
+      );
+    };
+
+    // given a session running before the server exists
+    const running = await start("before");
+    assert.deepEqual(servers(running), []);
+    const live = provider.session(running);
+
+    // when the server is defined and selected
+    await reload(withFiles(true));
+    const added = await start("added");
+
+    // then the next session gets it, and the running one keeps its own
+    assert.deepEqual(servers(added), ["files"]);
+    assert.deepEqual(servers(running), []);
+    assert.equal(provider.session(running), live);
+    assert.equal(live?.closed, false);
+    assert.equal(
+      provider.resumes.some((r) => r.sessionId === running),
+      false,
+    );
+
+    // when the selection is removed, a later session goes without it
+    await reload(withFiles(false));
+    const removed = await start("removed");
+    assert.deepEqual(servers(removed), []);
     await c.close();
   } finally {
     await hh.cleanup();

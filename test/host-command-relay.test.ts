@@ -162,7 +162,7 @@ test("withExternalMcp: a VM session gets its own relayed endpoint, and refuses a
     undefined,
     undefined,
     "/repo",
-    [],
+    () => [],
     async (name, spec) => {
       started.push({ name, cwd: spec.cwd, requestTimeoutMs: spec.requestTimeoutMs });
       return mkFakeRelay(4100 + started.length, closed);
@@ -232,7 +232,7 @@ test("withExternalMcp: a host session runs a relayed command itself, unrelayed",
     undefined,
     undefined,
     "/repo",
-    [],
+    () => [],
     async () => {
       throw new Error("must not relay for a host session");
     },

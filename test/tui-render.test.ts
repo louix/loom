@@ -1,4 +1,4 @@
-import { fleet, queueEntry, queueOf, snap } from "./tui-fixtures.ts";
+import { daemon, fleet, queueEntry, queueOf, snap } from "./tui-fixtures.ts";
 import assert from "node:assert/strict";
 import { outboxOf } from "@loom/tui/composer";
 import { describe, test as nodeTest } from "node:test";
@@ -3151,6 +3151,30 @@ describe("tui interaction actions through the handle", () => {
   });
 });
 
+test("the header names the config changes waiting for a daemon restart", async () => {
+  const { Header } = await import("@loom/tui/components");
+  const { headerView } = await import("@loom/tui/views");
+  const header = (restartPending?: string[]) =>
+    stripVTControlCharacters(
+      renderToString(
+        createElement(Header, {
+          width: 120,
+          view: headerView(
+            loadableLoaded({
+              daemon,
+              providers: [],
+              sessions: [],
+              ...(restartPending ? { restartPending } : {}),
+            }),
+          ),
+        }),
+        { columns: 120 },
+      ),
+    );
+  assert.match(header(["providers", "base branch"]), /R restart to apply providers, base branch/);
+  assert.doesNotMatch(header(), /restart/);
+});
+
 test("an unchanged memoized header reads the new palette when the theme changes", async () => {
   const { Header, PaletteContext } = await import("@loom/tui/components");
   const { PALETTES } = await import("@loom/tui/theme");
@@ -3172,6 +3196,7 @@ test("an unchanged memoized header reads the new palette when the theme changes"
       waiting: 0,
       running: 0,
       background: 0,
+      restartPending: [],
     },
   });
   const stdout = new FakeOut();

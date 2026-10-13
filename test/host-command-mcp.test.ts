@@ -221,7 +221,7 @@ test("withExternalMcp: a VM session's host command starts at home and ends with 
     undefined,
     undefined,
     "/repo",
-    [],
+    () => [],
     async (...args: Parameters<typeof startHostCommandMcp>) => {
       const worker = await startHostCommandMcp(...args);
       workers.push(worker);
