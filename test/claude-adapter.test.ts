@@ -1245,6 +1245,7 @@ test("every Claude session, on the host or in a session VM, hides commit and PR 
   for (const options of captured) {
     assert.deepEqual(options.settings, {
       autoMemoryEnabled: false,
+      disableClaudeAiConnectors: true,
       attribution: { commit: "", pr: "", sessionUrl: false },
     });
     assert.equal((options.env as Record<string, string>).CLAUDE_CODE_DISABLE_AUTO_MEMORY, "1");
@@ -1270,6 +1271,51 @@ test("every Claude session, on the host or in a session VM, hides commit and PR 
     (enabledOptions.env as Record<string, string>).CLAUDE_CODE_DISABLE_AUTO_MEMORY,
     undefined,
   );
+});
+
+test("Claude Code loads claude.ai connectors only when enabled, on the host and in a session VM", async () => {
+  const captured: Array<Record<string, unknown>> = [];
+  __setClaudeSdk({
+    query: (args) => {
+      captured.push(args.options as Record<string, unknown>);
+      return fakeQuery() as never;
+    },
+  });
+  for (const executionEnvironment of ["host", "session-vm"] as const)
+    for (const claudeAiConnectors of [undefined, false, true]) {
+      // given
+      const provider = createProvider({
+        id: "claude",
+        config: claudeAiConnectors === undefined ? {} : { claudeAiConnectors },
+        executionEnvironment,
+        logger: makeLogger("test"),
+      });
+      // when
+      const session = await provider.createSession({
+        sessionId: `connectors-${executionEnvironment}-${claudeAiConnectors}`,
+        cwd: "/tmp",
+        prompt: "go",
+        mode: "default",
+        mcpServers: [],
+        loomServer: false,
+      });
+      await session.close();
+      // then
+      const options = captured.at(-1)!;
+      const settings = options.settings as Record<string, unknown>;
+      const env = options.env as Record<string, string>;
+      const label = `${executionEnvironment}, claudeAiConnectors ${claudeAiConnectors}`;
+      if (claudeAiConnectors === true) {
+        assert.equal("disableClaudeAiConnectors" in settings, false, label);
+        assert.equal(env.ENABLE_CLAUDEAI_MCP_SERVERS, undefined, label);
+        assert.equal(Deno.env.get("ENABLE_CLAUDEAI_MCP_SERVERS"), undefined, label);
+      } else {
+        assert.equal(settings.disableClaudeAiConnectors, true, label);
+        assert.equal(env.ENABLE_CLAUDEAI_MCP_SERVERS, "false", label);
+        assert.equal(Deno.env.get("ENABLE_CLAUDEAI_MCP_SERVERS"), "false", label);
+      }
+    }
+  Deno.env.delete("ENABLE_CLAUDEAI_MCP_SERVERS");
 });
 
 test("Claude registers async init on a new fork but does not retain it across query restarts", async () => {
@@ -1311,6 +1357,7 @@ test("Claude registers async init on a new fork but does not retain it across qu
     await session.rewind(0, "keep-this");
     assert.deepEqual(captured[1]?.settings, {
       autoMemoryEnabled: false,
+      disableClaudeAiConnectors: true,
       attribution: { commit: "", pr: "", sessionUrl: false },
     });
   } finally {

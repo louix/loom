@@ -365,6 +365,7 @@ const queryEnv = (opts: {
   promptCacheTtl?: string | undefined;
   configDir?: string | undefined;
   autoMemory?: boolean | undefined;
+  claudeAiConnectors?: boolean | undefined;
 }): Record<string, string> => {
   const env: Record<string, string> = { ...Deno.env.toObject(), NO_COLOR: "1" };
   delete env["FORCE_COLOR"];
@@ -377,6 +378,8 @@ const queryEnv = (opts: {
   if (opts.configDir) env["CLAUDE_CONFIG_DIR"] = expandTilde(opts.configDir);
   if (opts.autoMemory === false) env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1";
   else delete env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"];
+  if (opts.claudeAiConnectors === false) env["ENABLE_CLAUDEAI_MCP_SERVERS"] = "false";
+  else delete env["ENABLE_CLAUDEAI_MCP_SERVERS"];
   return env;
 };
 
@@ -501,6 +504,7 @@ interface StartExtra {
   promptCacheTtl?: string;
   configDir?: string;
   autoMemory?: boolean;
+  claudeAiConnectors?: boolean;
   base?: string;
 }
 
@@ -664,7 +668,7 @@ class ClaudeSession implements AgentSession {
     this.#backgroundTasks = [];
     this.#startOpts = opts;
     this.#startExtra = extra;
-    const { resume, cli, promptCacheTtl, configDir, autoMemory } = extra;
+    const { resume, cli, promptCacheTtl, configDir, autoMemory, claudeAiConnectors } = extra;
     // A new CLI process: the old one's queue and its uuids are gone with it.
     this.#queued.clear();
     this.#settledInputs.clear();
@@ -771,7 +775,7 @@ class ClaudeSession implements AgentSession {
         this.#agentCall(tool, input),
       );
 
-    const env = queryEnv({ promptCacheTtl, configDir, autoMemory });
+    const env = queryEnv({ promptCacheTtl, configDir, autoMemory, claudeAiConnectors });
     const queryEffort = opts.effort ? asQueryEffort(opts.effort) : undefined;
     const options: Options = {
       // Flag settings: no `Co-Authored-By` trailer or PR line, whatever the
@@ -781,6 +785,9 @@ class ClaudeSession implements AgentSession {
       settings: {
         ...init?.settings,
         autoMemoryEnabled: autoMemory ?? false,
+        // Connectors Claude Code fetches from claude.ai bypass Loom's MCP config
+        // and allow/deny. A `false` here would not re-enable them, so omit it.
+        ...(claudeAiConnectors === true ? {} : { disableClaudeAiConnectors: true }),
         attribution: NO_ATTRIBUTION,
       },
       cwd: opts.cwd,
@@ -1936,6 +1943,8 @@ export interface ClaudeProviderOptions {
   promptCacheTtl?: string;
   /** Whether Claude Code automatic memory files are enabled. */
   autoMemory?: boolean;
+  /** Whether Claude Code fetches the account's claude.ai MCP connectors. */
+  claudeAiConnectors?: boolean;
   /** `CLAUDE_CONFIG_DIR` for this profile — "" leaves the SDK's default. */
   configDir?: string;
   /** The repo's base branch — feeds the `status` tool's ahead/behind counts. */
@@ -1951,6 +1960,7 @@ export class ClaudeProvider implements AgentProvider {
   readonly #base: string;
   readonly #promptCacheTtl: string;
   readonly #autoMemory: boolean;
+  readonly #claudeAiConnectors: boolean;
   readonly #configDir: string;
   #cli: string | undefined;
   #cliResolved = false;
@@ -1961,6 +1971,7 @@ export class ClaudeProvider implements AgentProvider {
     this.#base = opts.base ?? "";
     this.#promptCacheTtl = opts.promptCacheTtl ?? "";
     this.#autoMemory = opts.autoMemory ?? false;
+    this.#claudeAiConnectors = opts.claudeAiConnectors ?? false;
     this.#configDir = opts.configDir ?? "";
   }
 
@@ -1992,6 +2003,7 @@ export class ClaudeProvider implements AgentProvider {
       ...(cli ? { cli } : {}),
       ...(this.#promptCacheTtl ? { promptCacheTtl: this.#promptCacheTtl } : {}),
       autoMemory: this.#autoMemory,
+      claudeAiConnectors: this.#claudeAiConnectors,
       ...(this.#configDir ? { configDir: this.#configDir } : {}),
       ...(base ? { base } : {}),
     };

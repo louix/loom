@@ -527,6 +527,9 @@ export const createConfigSchema = (d: LoomConfig, events: readonly HookEvent[]) 
           auto_memory: flag(d.providers.claude.autoMemory).describe(
             "Whether Claude Code may save and load automatic memories. When enabled, memories are stored in <config dir>/projects/<project>/memory/.",
           ),
+          claude_ai_connectors: flag(d.providers.claude.claudeAiConnectors).describe(
+            "Whether Claude Code loads the account's claude.ai MCP connectors. They are remote servers reached through Anthropic's proxy (mcp-proxy.anthropic.com, added to a VM session's network allowlist when enabled) and are outside Loom's MCP configuration and allow/deny lists.",
+          ),
           disable_builtin: strings(d.providers.claude.disableBuiltin),
           cli_path: optionalText(),
           network: section({
@@ -558,6 +561,12 @@ export const createConfigSchema = (d: LoomConfig, events: readonly HookEvent[]) 
                   .optional()
                   .describe(
                     "Whether this Claude profile may save and load automatic memories; memories are stored in <config dir>/projects/<project>/memory/.",
+                  ),
+                claude_ai_connectors: z
+                  .boolean()
+                  .optional()
+                  .describe(
+                    "Whether Claude Code loads this profile's claude.ai MCP connectors; they run through Anthropic's proxy, outside Loom's MCP allow/deny.",
                   ),
               }),
             ),

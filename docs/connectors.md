@@ -59,6 +59,12 @@ notes in `<config dir>/projects/<project>/memory/` (`MEMORY.md` and topic files)
 The setting can also be set on a `providers.claude.profiles.*` entry or a
 matching `repos[]` override.
 
+Claude Code's claude.ai connectors are also off by default; see
+[claude.ai connectors](tools.md#claudeai-connectors). Loom passes the
+`disableClaudeAiConnectors` setting and `ENABLE_CLAUDEAI_MCP_SERVERS=false` unless
+`providers.claude.claude_ai_connectors` is `true` (globally, on a profile, or in a
+`repos[]` override).
+
 Validation uses the installed real Claude SDK with a local CLI fixture, including
 discovery, permission/question/plan callbacks, filesystem and Loom Git tools,
 compaction, persisted SDK rewind, resume, profile sharing and process cleanup.

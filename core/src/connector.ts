@@ -59,6 +59,8 @@ const connectorConfigFields = z.object({
   promptCacheTtl: z.string(),
   /** Claude: enable Claude Code automatic memory files. */
   autoMemory: z.boolean().optional(),
+  /** Claude: let Claude Code fetch the account's claude.ai MCP connectors. */
+  claudeAiConnectors: z.boolean().optional(),
   /**
    * Claude: `CLAUDE_CONFIG_DIR` for this provider instance — the profile's
    * config directory, already tilde-expanded and absolute. "" = the SDK's

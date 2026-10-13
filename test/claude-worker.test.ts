@@ -453,6 +453,13 @@ test(
         "title",
       );
       assert.equal(enabled.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY, undefined);
+      assert.equal(spec.env.ENABLE_CLAUDEAI_MCP_SERVERS, "false");
+      const connectors = claudeWorkerSpec(
+        { ...f.ctx, config: { ...f.ctx.config, claudeAiConnectors: true } },
+        f.workspace,
+        "title",
+      );
+      assert.equal(connectors.env.ENABLE_CLAUDEAI_MCP_SERVERS, undefined);
       await assert.rejects(
         RemoteWorkerSession.connect("missing", f.ctx.id, { ...spec, executable: "/missing/deno" }),
       );

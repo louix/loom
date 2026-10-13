@@ -168,15 +168,20 @@ for (const kind of ["claude", "codex", "aisdk"] as const) {
             !Deno.env.get("ANTHROPIC_API_KEY") &&
             !Deno.env.get("CLAUDE_CODE_OAUTH_TOKEN")),
       );
-      if (kind !== "claude")
-        assert.deepEqual(launches[0]!.providerHosts, [
-          kind === "codex" ? "chatgpt.com" : "api.openai.com",
-        ]);
+      assert.deepEqual(
+        launches[0]!.providerHosts,
+        { claude: undefined, codex: ["chatgpt.com"], aisdk: ["api.openai.com"] }[kind],
+      );
       const frames = requests
         .join("")
         .trim()
         .split("\n")
         .map((line) => JSON.parse(line));
+      if (kind === "claude")
+        assert.equal(
+          frames.find((f) => f.method === "initialize").args[0].config.claudeAiConnectors,
+          false,
+        );
       assert.equal(
         frames.find((f) => f.method === "initialize").args[0].connector,
         `@loom/connector-${{ codex: "chatgpt", aisdk: "generic", claude: "claude" }[kind]}`,
@@ -240,6 +245,51 @@ for (const kind of ["claude", "codex", "aisdk"] as const) {
     }
   });
 }
+
+Deno.test("a Claude VM session with claude.ai connectors enabled may reach Anthropic's MCP proxy", async () => {
+  // given
+  const root = await Deno.makeTempDir();
+  const launches: SessionVmOptions[] = [];
+  const base: AgentProvider = new FakeProvider();
+  const provider = await withVmSessions(
+    base,
+    {
+      id: "claude",
+      logger: makeLogger("vm-connectors-test"),
+      config: {
+        sessionVm: { repoRoot: root, artifact: root, smolvm: Deno.execPath() },
+        configDir: root,
+        claudeAiConnectors: true,
+      },
+    },
+    "claude",
+    () => ({
+      launch: (options) => {
+        launches.push(options);
+        return Promise.reject(new Error("launch captured"));
+      },
+      close: async () => {},
+    }),
+  );
+  try {
+    // when
+    await assert.rejects(
+      provider.createSession({
+        sessionId: "s",
+        cwd: root,
+        prompt: "",
+        mode: "default",
+        mcpServers: [],
+      }),
+      /launch captured/,
+    );
+    // then
+    assert.deepEqual(launches[0]!.providerHosts, ["api.anthropic.com", "mcp-proxy.anthropic.com"]);
+  } finally {
+    await provider.close?.();
+    await Deno.remove(root, { recursive: true });
+  }
+});
 
 Deno.test("profileSkills copies only the named skills into the guest's profile, never through a guest symlink", async () => {
   // given

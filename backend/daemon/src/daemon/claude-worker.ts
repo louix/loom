@@ -58,6 +58,8 @@ export const claudeWorkerSpec = (
   }
   if (ctx.config.autoMemory !== true) env.CLAUDE_CODE_DISABLE_AUTO_MEMORY = "1";
   else delete env.CLAUDE_CODE_DISABLE_AUTO_MEMORY;
+  if (ctx.config.claudeAiConnectors !== true) env.ENABLE_CLAUDEAI_MCP_SERVERS = "false";
+  else delete env.ENABLE_CLAUDEAI_MCP_SERVERS;
   const home = env.HOME!;
   const profile = ctx.config.configDir || env.CLAUDE_CONFIG_DIR || join(home, ".claude");
   const profileConfig =
@@ -117,6 +119,7 @@ export const createClaudeWorkerProvider = async (ctx: ConnectorContext) => {
         configDir: ctx.config.configDir ?? "",
         promptCacheTtl: ctx.config.promptCacheTtl ?? "",
         autoMemory: ctx.config.autoMemory ?? false,
+        claudeAiConnectors: ctx.config.claudeAiConnectors ?? false,
       },
       ...(ctx.baseBranch ? { baseBranch: ctx.baseBranch } : {}),
     },

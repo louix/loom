@@ -219,6 +219,35 @@ it.** Whatever that profile may do in AWS, an agent can now ask for.
   `PATH` (`nix profile add nixpkgs#uv nixpkgs#python3`) and add
   `"UV_PYTHON_DOWNLOADS": "never"` to `env`.
 
+## claude.ai connectors
+
+Claude Code can also load the connectors connected to a Claude account on
+claude.ai (Datadog, Atlassian, GitHub, …) by itself. Loom turns this off by
+default. These connectors are not Loom MCP servers: they are remote services
+called through Anthropic's MCP proxy (`mcp-proxy.anthropic.com`), Loom neither
+defines nor prepares them, and `session.mcp_servers`, agent profiles' allow/deny
+lists and Loom's network grants do not apply to them.
+
+```jsonc
+{
+  "providers": {
+    "claude": {
+      "claude_ai_connectors": true,
+      // or per account:
+      "profiles": { "work": { "config_dir": "~/.claude-work", "claude_ai_connectors": true } },
+    },
+  },
+}
+```
+
+A matching `repos[]` entry can set it for one repository. When it is off, Loom
+starts Claude Code with the `disableClaudeAiConnectors` setting and
+`ENABLE_CLAUDEAI_MCP_SERVERS=false`. When it is on, Loom sets neither, and a
+[Claude session VM](claude-session-vm.md) may also reach `mcp-proxy.anthropic.com`
+besides `api.anthropic.com`. A `disableClaudeAiConnectors: true` in the account's
+own Claude settings still wins. Connectors need a claude.ai login; an API key or a
+`claude setup-token` token disables them.
+
 ## Permissions
 
 A local `source` (`nix`, `runtime`) always runs in a VM; the old

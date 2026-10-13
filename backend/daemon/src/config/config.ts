@@ -147,6 +147,8 @@ export interface ClaudeProfile {
   color: string;
   /** Whether Claude Code automatic memories are enabled for this profile. */
   autoMemory?: boolean;
+  /** Whether Claude Code fetches the account's claude.ai MCP connectors for this profile. */
+  claudeAiConnectors?: boolean;
 }
 
 /**
@@ -342,6 +344,8 @@ export interface LoomConfig {
       promptCacheTtl: PromptCacheTtl;
       /** Whether Claude Code automatic memories are enabled. */
       autoMemory: boolean;
+      /** Whether Claude Code fetches the account's claude.ai MCP connectors. */
+      claudeAiConnectors: boolean;
     };
     /** Resolved native API, Codex and OpenAI-compatible profiles, keyed by id. */
     aisdk: Record<string, AisdkProfile>;
@@ -481,6 +485,7 @@ export const DEFAULT_CONFIG: LoomConfig = {
       cliPath: "",
       promptCacheTtl: "default",
       autoMemory: false,
+      claudeAiConnectors: false,
     },
     aisdk: {},
     echo: false,
@@ -540,6 +545,9 @@ const parseClaudeProfiles = (rows: ClaudeProfile[]): ClaudeProfile[] => {
       ...(entry.tag !== undefined ? { tag: entry.tag } : {}),
       color: entry.color,
       ...(entry.autoMemory !== undefined ? { autoMemory: entry.autoMemory } : {}),
+      ...(entry.claudeAiConnectors !== undefined
+        ? { claudeAiConnectors: entry.claudeAiConnectors }
+        : {}),
     };
     const id = claudeProfileId(profile);
     if (seen.has(id)) continue;
@@ -807,6 +815,9 @@ export const normalizeConfig = (
       dir: p.config_dir ?? "",
       ...(p.tag !== undefined ? { tag: p.tag } : {}),
       ...(p.auto_memory !== undefined ? { autoMemory: p.auto_memory } : {}),
+      ...(p.claude_ai_connectors !== undefined
+        ? { claudeAiConnectors: p.claude_ai_connectors }
+        : {}),
       color: p.color ?? "",
     })),
   );
@@ -901,6 +912,7 @@ export const normalizeConfig = (
         ...(workerHosts ? { workerHosts } : {}),
         promptCacheTtl: claude.prompt_cache_ttl,
         autoMemory: claude.auto_memory,
+        claudeAiConnectors: claude.claude_ai_connectors,
       },
       aisdk,
       echo,

@@ -799,6 +799,11 @@
               "description": "Whether Claude Code may save and load automatic memories. When enabled, memories are stored in <config dir>/projects/<project>/memory/.",
               "type": "boolean"
             },
+            "claude_ai_connectors": {
+              "default": false,
+              "description": "Whether Claude Code loads the account's claude.ai MCP connectors. They are remote servers reached through Anthropic's proxy (mcp-proxy.anthropic.com, added to a VM session's network allowlist when enabled) and are outside Loom's MCP configuration and allow/deny lists.",
+              "type": "boolean"
+            },
             "disable_builtin": {
               "default": [],
               "type": "array",
@@ -855,6 +860,10 @@
                   },
                   "auto_memory": {
                     "description": "Whether this Claude profile may save and load automatic memories; memories are stored in <config dir>/projects/<project>/memory/.",
+                    "type": "boolean"
+                  },
+                  "claude_ai_connectors": {
+                    "description": "Whether Claude Code loads this profile's claude.ai MCP connectors; they run through Anthropic's proxy, outside Loom's MCP allow/deny.",
                     "type": "boolean"
                   }
                 },
@@ -2345,6 +2354,11 @@
                     "description": "Whether Claude Code may save and load automatic memories. When enabled, memories are stored in <config dir>/projects/<project>/memory/.",
                     "type": "boolean"
                   },
+                  "claude_ai_connectors": {
+                    "default": false,
+                    "description": "Whether Claude Code loads the account's claude.ai MCP connectors. They are remote servers reached through Anthropic's proxy (mcp-proxy.anthropic.com, added to a VM session's network allowlist when enabled) and are outside Loom's MCP configuration and allow/deny lists.",
+                    "type": "boolean"
+                  },
                   "disable_builtin": {
                     "default": [],
                     "type": "array",
@@ -2401,6 +2415,10 @@
                         },
                         "auto_memory": {
                           "description": "Whether this Claude profile may save and load automatic memories; memories are stored in <config dir>/projects/<project>/memory/.",
+                          "type": "boolean"
+                        },
+                        "claude_ai_connectors": {
+                          "description": "Whether Claude Code loads this profile's claude.ai MCP connectors; they run through Anthropic's proxy, outside Loom's MCP allow/deny.",
                           "type": "boolean"
                         }
                       },

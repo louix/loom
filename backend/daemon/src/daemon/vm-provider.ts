@@ -20,6 +20,7 @@ import type { ConnectorConfig } from "@loom/core/connector";
 import { ClaudeAuthOwner } from "./claude-auth.ts";
 import { copyClaudeSkills } from "@loom/core/claude-skills";
 import {
+  defaultProviderHosts,
   sessionVmGeneration,
   type SessionVmOptions,
 } from "../../../../runtime/src/session-vm/launch.ts";
@@ -28,6 +29,10 @@ import { RemoteWorkerSession } from "./worker-provider.ts";
 import { mockLaunchSpec, type WorkerProcess } from "./worker-launch.ts";
 import { createIsolatedWorkerLauncher, type IsolatedLaunchOptions } from "./isolated-worker.ts";
 import { sessionGitIdentity, type SessionGitIdentity } from "../config/git-identity.ts";
+
+/** Where Claude Code sends every claude.ai connector call (`MCP_PROXY_URL` in the CLI). */
+const CLAUDE_AI_CONNECTOR_PROXY_HOST = "mcp-proxy.anthropic.com";
+
 const executable = async (name: string) => {
   for (const path of name.includes("/")
     ? [resolve(name)]
@@ -114,7 +119,6 @@ export const withVmSessions = async <T extends AgentProvider>(
       modelContext: ctx.config.modelContext ?? {},
       maxSteps: ctx.config.maxSteps ?? 50,
       promptCacheTtl: ctx.config.promptCacheTtl ?? "",
-      autoMemory: ctx.config.autoMemory ?? false,
     };
     connector = sdk === "google" ? "@loom/connector-gemini" : "@loom/connector-generic";
     providerHosts = [endpoint.hostname];
@@ -153,8 +157,14 @@ export const withVmSessions = async <T extends AgentProvider>(
       cliPath: "",
       configDir: "/tmp/loom-home/.claude",
       promptCacheTtl: ctx.config.promptCacheTtl ?? "",
+      autoMemory: ctx.config.autoMemory ?? false,
+      claudeAiConnectors: ctx.config.claudeAiConnectors ?? false,
     };
     connector = "@loom/connector-claude";
+    // Claude Code lists connectors via api.anthropic.com and calls them through this proxy.
+    providerHosts = ctx.config.claudeAiConnectors
+      ? [...defaultProviderHosts, CLAUDE_AI_CONNECTOR_PROXY_HOST]
+      : undefined;
     auth = apiKey ? { ANTHROPIC_API_KEY: apiKey } : { CLAUDE_CODE_OAUTH_TOKEN: oauth! };
   }
   const start = async (input: CreateSessionOptions | SessionRef, resume: boolean) =>

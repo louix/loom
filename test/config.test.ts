@@ -27,6 +27,33 @@ test("an empty config yields the defaults: claude default, no aisdk profiles", (
   assert.equal(c.defaultProvider, "claude");
   assert.deepEqual(c.providers.aisdk, {});
   assert.equal(c.providers.claude.autoMemory, false);
+  assert.equal(c.providers.claude.claudeAiConnectors, false);
+});
+
+test("claude.ai connectors can be enabled globally, per profile, and per repository", () => {
+  assert.equal(
+    cfg('{"providers":{"claude":{"claude_ai_connectors":true}}}').providers.claude
+      .claudeAiConnectors,
+    true,
+  );
+  const profile = cfg(
+    '{"providers":{"claude":{"profiles":{"work":{"config_dir":"~/.claude-work","claude_ai_connectors":true}}}}}',
+  );
+  assert.equal(profile.claudeProfiles.find((p) => p.name === "work")?.claudeAiConnectors, true);
+  const dir = mkdtempSync(join(tmpdir(), "loom-connectors-config-"));
+  try {
+    const file = join(dir, "config.json");
+    mkdirSync(join(dir, "repo"));
+    writeFileSync(
+      file,
+      JSON.stringify({
+        repos: [{ path: join(dir, "repo"), providers: { claude: { claude_ai_connectors: true } } }],
+      }),
+    );
+    assert.equal(loadConfig(join(dir, "repo"), file).providers.claude.claudeAiConnectors, true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("Claude automatic memory can be enabled globally, per profile, and per repository", () => {

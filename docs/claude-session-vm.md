@@ -10,7 +10,8 @@ a private workspace and publishes commits through a host relay instead. See
 
 IP networking stays disabled. A loopback proxy in the guest relays through a
 separate Unix/vsock endpoint to a host CONNECT proxy. The default permitted target
-is `api.anthropic.com:443`; trusted repo policy can add exact HTTPS hosts. The host resolves this fixed name; requests
+is `api.anthropic.com:443`, plus `mcp-proxy.anthropic.com:443` when
+[claude.ai connectors](tools.md#claudeai-connectors) are enabled; trusted repo policy can add exact HTTPS hosts. The host resolves this fixed name; requests
 cannot supply an IP, alternative port or DNS server. TLS remains end-to-end.
 The diagnostic stream records bounded destination names and allow/deny decisions,
 never proxy headers or TLS payloads. Optional Deno/Claude update traffic is disabled.
