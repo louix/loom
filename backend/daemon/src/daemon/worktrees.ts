@@ -592,11 +592,11 @@ export class WorktreeManager {
     const unlocked = new Set(
       this.list()
         .filter((w) => w.locked === null)
-        .map((w) => canonicalHostPath(w.path)),
+        .map((w) => treeKey(w.path)),
     );
     let locked = 0;
     for (const { id, path } of trees) {
-      if (!unlocked.has(canonicalHostPath(path))) continue;
+      if (!unlocked.has(treeKey(path))) continue;
       const res = this.#git(["worktree", "lock", "--reason", lockReason(id), path]);
       if (res.ok) locked++;
       else this.#log.warn("worktree lock failed", { path, error: res.stderr.trim() || res.error });
@@ -1059,11 +1059,12 @@ export class WorktreeManager {
   /** Lift Loom's own lock on the tree at `path` for its removal. Returns what
    *  puts it back should the removal fail; another lock stays, and Git refuses. */
   #unlockOwn(path: string): () => void {
-    const at = canonicalHostPath(path);
-    const reason = this.list().find((w) => canonicalHostPath(w.path) === at)?.locked;
-    if (!reason?.startsWith(LOCK_REASON)) return () => {};
-    this.#git(["worktree", "unlock", path]);
-    return () => void this.#git(["worktree", "lock", "--reason", reason, path]);
+    const at = treeKey(path);
+    const entry = this.list().find((w) => treeKey(w.path) === at);
+    const reason = entry?.locked;
+    if (!entry || !reason?.startsWith(LOCK_REASON)) return () => {};
+    this.#git(["worktree", "unlock", entry.path]);
+    return () => void this.#git(["worktree", "lock", "--reason", reason, entry.path]);
   }
 
   /** The name of a git operation currently in progress in `path`
@@ -1171,6 +1172,16 @@ export const slugify = (hint: string): string => {
     .filter(Boolean);
   const slug = words.slice(0, 5).join("-").slice(0, 40).replace(/-+$/g, "");
   return slug || "session";
+};
+
+/** Git records a tree's realpath; Loom may name it through a symlink (its
+ *  trees directory, `$HOME`, the repository). A missing tree has none. */
+const treeKey = (path: string): string => {
+  try {
+    return realpathSync(path);
+  } catch {
+    return canonicalHostPath(path);
+  }
 };
 
 const randomSuffix = (): string => {

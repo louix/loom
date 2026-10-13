@@ -9,6 +9,7 @@ import {
   mkdtempSync,
   renameSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -635,6 +636,38 @@ test("Loom removes and prunes its locked trees, but leaves a user's lock alone",
   }
 });
 
+test("Loom locks, finds and removes its trees through a symlinked trees directory", () => {
+  const { root, cleanup } = repo();
+  try {
+    // Git records each tree's realpath; Loom names it through the link.
+    const real = join(root, "real-trees");
+    mkdirSync(real);
+    symlinkSync(real, join(root, "trees"));
+    const m = new WorktreeManager({
+      repoRoot: root,
+      treesDir: join(root, "trees"),
+      hooksDir: join(root, ".loom", "hooks"),
+      baseBranch: "main",
+      log: makeLogger("test"),
+    });
+    const lockOf = (path: string) =>
+      m.list().find((w) => w.path === Deno.realPathSync(path))?.locked;
+    const wt = m.create(fakeId("aaaaaaaa"), LOOM);
+    assert.ok(wt.path.startsWith(join(root, "trees") + "/"));
+    assert.equal(lockOf(wt.path), `loom session ${fakeId("aaaaaaaa")}`);
+    m.remove(wt.path, { force: true });
+    assert.ok(!existsSync(wt.path));
+
+    // As startup hygiene finds a tree made before Loom locked them.
+    const old = m.create(fakeId("bbbbbbbb"), LOOM);
+    execFileSync("git", ["-C", root, "worktree", "unlock", old.path]);
+    assert.equal(m.lock([{ id: fakeId("bbbbbbbb"), path: old.path }]), 1);
+    assert.equal(lockOf(old.path), `loom session ${fakeId("bbbbbbbb")}`);
+  } finally {
+    cleanup();
+  }
+});
+
 test("relink rebuilds a tree's pruned metadata and keeps its uncommitted work", () => {
   const { root, cleanup } = repo();
   const git = (cwd: string, ...args: string[]) =>
@@ -825,6 +858,11 @@ test("async removal preserves dirty trees unless forced and keeps the branch", a
     const wt = m.create(fakeId("async123"), LOOM);
     writeFileSync(join(wt.path, "uncommitted.txt"), "keep until forced");
     await assert.rejects(m.removeAsync(wt.path), /git worktree remove failed/);
+    assert.equal(
+      m.list().find((w) => w.path === wt.path)?.locked,
+      `loom session ${fakeId("async123")}`,
+      "a failed removal puts the lock back",
+    );
     assert.ok(existsSync(join(wt.path, "uncommitted.txt")));
     await m.removeAsync(wt.path, { force: true });
     assert.equal(existsSync(wt.path), false);
