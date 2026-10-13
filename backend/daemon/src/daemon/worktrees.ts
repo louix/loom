@@ -474,7 +474,7 @@ export class WorktreeManager {
       return refuse(`branch "${branch}" is checked out in another worktree`);
     // Built aside, where Git looks for no worktree, and renamed into place
     // whole: a crash leaves no half-made admin directory to read as linked.
-    // Only then does `commondir` name the common directory from `admin`.
+    // `commondir` is `..` from staging, and `../..` once under `worktrees/`.
     const staging = join(common, `loom-relink-${basename(admin)}`);
     rmSync(staging, { recursive: true, force: true }); // a crashed attempt's
     try {
