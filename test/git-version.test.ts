@@ -2,9 +2,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { WorktreeManager } from "@loom/daemon/daemon/worktrees";
 import { makeLogger, setLogLevel } from "@loom/core/logger";
 import { writeExecutableSync } from "../scripts/lib/executable-fixture.ts";
@@ -71,5 +71,36 @@ test("Git 2.33 makes locked session worktrees", () => {
       execFileSync("git", ["-C", repo, "worktree", "list", "--porcelain"], { encoding: "utf8" }),
       new RegExp(`worktree ${Deno.realPathSync(wt.path)}\\n[^]*locked loom session aaaaaaaa-1111`),
     );
+  });
+});
+
+test("a clone session's branch needs no Git 2.33", () => {
+  withGitVersion("2.32.7", (repo) => {
+    const made = mgr(repo).createBranch("aaaaaaaa-1111", { branchPrefix: ["loom"] });
+    assert.equal(made.branch, "loom/aaaaaaaa");
+  });
+});
+
+test("relink on a Git older than 2.33 refuses instead of throwing", () => {
+  withGitVersion("2.33.0", (repo) => {
+    const wt = mgr(repo).create("aaaaaaaa-1111", { branchPrefix: ["loom"] });
+    const admin = execFileSync(
+      "git",
+      ["-C", wt.path, "rev-parse", "--path-format=absolute", "--git-dir"],
+      { encoding: "utf8" },
+    ).trim();
+    rmSync(admin, { recursive: true });
+    const bin = join(dirname(repo), "bin", "git");
+    writeExecutableSync(
+      bin,
+      Deno.readTextFileSync(bin).replace("git version 2.33.0", "git version 2.32.7"),
+      0o755,
+    );
+
+    const result = mgr(repo).relink("aaaaaaaa-1111", wt.path, wt.branch);
+
+    assert.equal(result.kind, "refused");
+    assert.match(result.kind === "refused" ? result.reason : "", /needs Git 2\.33/);
+    assert.ok(!existsSync(admin));
   });
 });

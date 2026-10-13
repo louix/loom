@@ -172,13 +172,6 @@ export class WorktreeManager {
   /** Idempotent one-time repo prep: worktree-scoped config + the push hook. */
   ensureSetup(): void {
     if (this.#setupDone) return;
-    const version = this.#gitRead(["version"]);
-    const [major = 0, minor = 0] = (/(\d+)\.(\d+)/.exec(version) ?? []).slice(1).map(Number);
-    const [needMajor, needMinor] = MIN_GIT_VERSION;
-    if (major < needMajor || (major === needMajor && minor < needMinor))
-      throw new Error(
-        `Loom needs Git ${needMajor}.${needMinor} or later for its session worktrees; found "${version || "no git"}"`,
-      );
     // These settings apply only to the main worktree until worktreeConfig is
     // enabled. Afterwards Git would inherit them in every linked worktree.
     // Address the common directory explicitly: setup may itself run in a link.
@@ -307,6 +300,8 @@ export class WorktreeManager {
    * session.
    */
   create(id: string, opts: { branchPrefix: BranchPrefix; baseRef?: string }): WorktreeInfo {
+    const tooOld = this.#gitTooOld();
+    if (tooOld) throw new Error(tooOld);
     this.ensureSetup();
     let baseRef: string;
     const baseRefOverride = opts.baseRef;
@@ -376,6 +371,8 @@ export class WorktreeManager {
    * in the user's own git).
    */
   reattach(id: string, branch: string): WorktreeInfo {
+    const tooOld = this.#gitTooOld();
+    if (tooOld) throw new Error(tooOld);
     this.ensureSetup();
     if (!this.#git(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]).ok) {
       throw new Error(`branch "${branch}" no longer exists`);
@@ -465,6 +462,8 @@ export class WorktreeManager {
       realpathSync(owner) !== realpathSync(common)
     )
       return refuse(`${admin} is no worktree admin directory of ${common}`);
+    const tooOld = this.#gitTooOld();
+    if (tooOld) return refuse(tooOld);
     this.ensureSetup();
     if (!this.isBranch(branch)) return refuse(`branch "${branch}" no longer exists`);
     if (this.list().some((w) => w.branch === branch))
@@ -1088,6 +1087,17 @@ export class WorktreeManager {
   }
 
   // --- internals -------------------------------------------------
+
+  /** Why this Git cannot make Loom's locked session trees, if it cannot. A
+   *  clone session's branch needs no such tree. */
+  #gitTooOld(): string | null {
+    const version = this.#gitRead(["version"]);
+    const [major = 0, minor = 0] = (/(\d+)\.(\d+)/.exec(version) ?? []).slice(1).map(Number);
+    const [needMajor, needMinor] = MIN_GIT_VERSION;
+    return major < needMajor || (major === needMajor && minor < needMinor)
+      ? `Loom needs Git ${needMajor}.${needMinor} or later for its session worktrees; found "${version || "no git"}"`
+      : null;
+  }
 
   /** Lift Loom's own lock on the tree at `path` for its removal. Returns what
    *  puts it back should the removal fail; another lock stays, and Git refuses. */
