@@ -18,6 +18,7 @@ import {
   readdirSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -399,19 +400,20 @@ export class WorktreeManager {
   }
 
   /**
-   * Rebuild the admin directory of session `id`'s tree at `path` when it is
-   * gone — deleted by a `git worktree prune` that could not see the tree, from
-   * before Loom locked its trees — while the tree's `.git` file still names it
-   * and `branch` is checked out nowhere else. The admin directory is made as
+   * Rebuild the admin directory of the tree at `path`, owned by session `id`,
+   * when it is gone — deleted by a `git worktree prune` that could not see the
+   * tree, from before Loom locked its trees — while the tree's `.git` file
+   * still names it and `branch` is checked out nowhere else. It is made as
    * {@link create} makes it, locked, with HEAD on `branch` and an index read
    * from it: the files are untouched, so staged changes show as unstaged and
-   * nothing uncommitted is lost.
+   * nothing uncommitted is lost. `linked`: the admin directory is there and
+   * names this tree; `unlinked`: the tree has no `.git` file to follow.
    */
   relink(
     id: string,
     path: string,
     branch: string,
-  ): { kind: "intact" } | { kind: "relinked" } | { kind: "refused"; reason: string } {
+  ): { kind: "linked" | "unlinked" | "relinked" } | { kind: "refused"; reason: string } {
     const refuse = (reason: string) => {
       this.#log.warn("worktree metadata not rebuilt", { path, reason });
       return { kind: "refused" as const, reason };
@@ -419,15 +421,27 @@ export class WorktreeManager {
     const dotGit = join(this.#hostOnly(path), ".git");
     let pointer: string;
     try {
-      if (!lstatSync(dotGit).isFile()) return { kind: "intact" };
+      if (!lstatSync(dotGit).isFile()) return { kind: "unlinked" };
       pointer = readFileSync(dotGit, "utf8");
-    } catch {
-      return refuse("the tree has no .git file");
+    } catch (error) {
+      if ((error as { code?: string }).code === "ENOENT") return { kind: "unlinked" };
+      return refuse(error instanceof Error ? error.message : String(error));
     }
     const named = /^gitdir: (.+)$/m.exec(pointer)?.[1]?.trim();
     if (!named) return refuse("the tree's .git file names no gitdir");
     const admin = resolve(path, named);
-    if (existsSync(admin)) return { kind: "intact" };
+    if (existsSync(admin)) {
+      // After a prune, another tree with the same basename can take the name.
+      let back: string;
+      try {
+        back = resolve(admin, readFileSync(join(admin, "gitdir"), "utf8").trim());
+      } catch {
+        return refuse(`${admin} names no worktree`);
+      }
+      return treeKey(back) === treeKey(dotGit)
+        ? { kind: "linked" }
+        : refuse(`${admin} belongs to the worktree at ${dirname(back)}`);
+    }
     const common = this.#gitRead(["rev-parse", "--path-format=absolute", "--git-common-dir"]);
     // Only an admin directory of this repository's is ours to write. A prune
     // that empties `worktrees/` deletes it too, so compare its parent.
@@ -443,26 +457,30 @@ export class WorktreeManager {
     if (!this.isBranch(branch)) return refuse(`branch "${branch}" no longer exists`);
     if (this.list().some((w) => w.branch === branch))
       return refuse(`branch "${branch}" is checked out in another worktree`);
+    // Built aside, where Git looks for no worktree, and renamed into place
+    // whole: a crash leaves no half-made admin directory to read as linked.
+    // Only then does `commondir` name the common directory from `admin`.
+    const staging = join(common, `loom-relink-${basename(admin)}`);
+    rmSync(staging, { recursive: true, force: true }); // a crashed attempt's
     try {
-      mkdirSync(dirname(admin), { recursive: true });
-      mkdirSync(admin);
-      writeFileSync(join(admin, "HEAD"), `ref: refs/heads/${branch}\n`);
-      writeFileSync(join(admin, "commondir"), "../..\n");
-      writeFileSync(join(admin, "gitdir"), `${dotGit}\n`);
-      writeFileSync(join(admin, "locked"), lockReason(id));
-    } catch (error) {
-      rmSync(admin, { recursive: true, force: true });
-      return refuse(error instanceof Error ? error.message : String(error));
-    }
-    for (const args of [
-      ["config", "--worktree", "core.hooksPath", this.#hooksDir],
-      ["read-tree", "HEAD"],
-    ]) {
-      const res = this.#git(args, path);
-      if (!res.ok) {
-        rmSync(admin, { recursive: true, force: true });
-        return refuse(`git ${args[0]} failed: ${res.stderr.trim() || res.error}`);
+      mkdirSync(staging);
+      writeFileSync(join(staging, "locked"), lockReason(id));
+      writeFileSync(join(staging, "HEAD"), `ref: refs/heads/${branch}\n`);
+      writeFileSync(join(staging, "commondir"), "..\n");
+      writeFileSync(join(staging, "gitdir"), `${dotGit}\n`);
+      for (const args of [
+        ["config", "--worktree", "core.hooksPath", this.#hooksDir],
+        ["read-tree", "HEAD"],
+      ]) {
+        const res = this.#git(["--git-dir", staging, "--work-tree", path, ...args], path);
+        if (!res.ok) throw new Error(`git ${args[0]} failed: ${res.stderr.trim() || res.error}`);
       }
+      writeFileSync(join(staging, "commondir"), "../..\n");
+      mkdirSync(dirname(admin), { recursive: true });
+      renameSync(staging, admin);
+    } catch (error) {
+      rmSync(staging, { recursive: true, force: true });
+      return refuse(error instanceof Error ? error.message : String(error));
     }
     this.invalidateFacts(path);
     this.#log.warn("worktree metadata rebuilt", { path, branch });

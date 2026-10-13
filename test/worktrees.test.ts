@@ -735,7 +735,7 @@ test("relink rebuilds a tree's pruned metadata and keeps its uncommitted work", 
       git(wt.path, "config", "--worktree", "core.hooksPath"),
       Deno.realPathSync(join(root, ".loom", "hooks")),
     );
-    assert.deepEqual(m.relink(id, wt.path, wt.branch), { kind: "intact" });
+    assert.deepEqual(m.relink(id, wt.path, wt.branch), { kind: "linked" });
   } finally {
     cleanup();
   }
@@ -758,6 +758,67 @@ test("relink refuses a branch checked out elsewhere and writes nothing", () => {
 
     assert.equal(result.kind, "refused");
     assert.ok(!existsSync(admin));
+  } finally {
+    cleanup();
+  }
+});
+
+test("relink refuses an admin directory another tree took after the prune", () => {
+  const { root, cleanup } = repo();
+  const git = (cwd: string, ...args: string[]) =>
+    execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
+  try {
+    const m = mgr(root);
+    const wt = m.create(fakeId("aaaaaaaa"), LOOM);
+    const admin = git(wt.path, "rev-parse", "--path-format=absolute", "--git-dir");
+    rmSync(admin, { recursive: true });
+    // Git names an admin directory after its tree's basename.
+    const namesake = join(root, "elsewhere", "aaaaaaaa");
+    git(root, "worktree", "add", "-q", namesake, "-b", "namesake");
+    assert.equal(git(namesake, "rev-parse", "--path-format=absolute", "--git-dir"), admin);
+
+    const result = m.relink(fakeId("aaaaaaaa"), wt.path, wt.branch);
+
+    assert.equal(result.kind, "refused");
+    assert.equal(git(namesake, "rev-parse", "--abbrev-ref", "HEAD"), "namesake");
+  } finally {
+    cleanup();
+  }
+});
+
+test("relink that fails part-way leaves no admin directory, and a crashed one's is cleared", () => {
+  const { root, cleanup } = repo();
+  const git = (cwd: string, ...args: string[]) =>
+    execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
+  try {
+    const m = mgr(root);
+    const id = fakeId("aaaaaaaa");
+    const wt = m.create(id, LOOM);
+    const admin = git(wt.path, "rev-parse", "--path-format=absolute", "--git-dir");
+    const staging = join(root, ".git", "loom-relink-aaaaaaaa");
+    rmSync(admin, { recursive: true });
+    // A branch on a commit whose tree is missing: no index can be read from it.
+    const commit = execFileSync(
+      "git",
+      ["-C", root, "hash-object", "-t", "commit", "--literally", "-w", "--stdin"],
+      {
+        input: `tree ${"1".repeat(40)}\nauthor a <a> 0 +0000\ncommitter a <a> 0 +0000\n\nbroken\n`,
+        encoding: "utf8",
+      },
+    ).trim();
+    git(root, "update-ref", "refs/heads/broken", commit);
+
+    const failed = m.relink(id, wt.path, "broken");
+    assert.equal(failed.kind, "refused");
+    assert.match(failed.kind === "refused" ? failed.reason : "", /git read-tree failed/);
+    assert.ok(!existsSync(admin));
+    assert.ok(!existsSync(staging));
+
+    mkdirSync(staging);
+    writeFileSync(join(staging, "HEAD"), "half-written");
+    assert.deepEqual(m.relink(id, wt.path, wt.branch), { kind: "relinked" });
+    assert.ok(!existsSync(staging));
+    assert.equal(git(wt.path, "rev-parse", "--abbrev-ref", "HEAD"), wt.branch);
   } finally {
     cleanup();
   }
