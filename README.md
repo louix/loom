@@ -138,5 +138,7 @@ deno task loom
 ```
 
 Source launches need separately configured artifacts for VM execution.
+They use the `git` on your `PATH`, which must be 2.33 or later; the Nix package
+brings its own.
 Run `deno task typecheck`, `deno task lint`, `deno task format:check` and
 `deno task test:silent` before submitting code changes.

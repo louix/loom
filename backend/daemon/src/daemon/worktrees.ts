@@ -55,6 +55,8 @@ const GIT_MAX_BUFFER = 64 * 1024 * 1024;
  * would otherwise delete its admin directory and leave it no repository.
  */
 const LOCK_REASON = "loom session";
+/** `git worktree add --lock --reason` arrived in Git 2.33.0. */
+const MIN_GIT_VERSION = [2, 33] as const;
 const lockReason = (id: string): string => `${LOCK_REASON} ${id}`;
 
 const PRE_PUSH_HOOK = `#!/bin/sh
@@ -170,6 +172,13 @@ export class WorktreeManager {
   /** Idempotent one-time repo prep: worktree-scoped config + the push hook. */
   ensureSetup(): void {
     if (this.#setupDone) return;
+    const version = this.#gitRead(["version"]);
+    const [major = 0, minor = 0] = (/(\d+)\.(\d+)/.exec(version) ?? []).slice(1).map(Number);
+    const [needMajor, needMinor] = MIN_GIT_VERSION;
+    if (major < needMajor || (major === needMajor && minor < needMinor))
+      throw new Error(
+        `Loom needs Git ${needMajor}.${needMinor} or later for its session worktrees; found "${version || "no git"}"`,
+      );
     // These settings apply only to the main worktree until worktreeConfig is
     // enabled. Afterwards Git would inherit them in every linked worktree.
     // Address the common directory explicitly: setup may itself run in a link.
