@@ -1,10 +1,14 @@
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 
-/** Keep host paths intact so linked worktrees and Git's admin pointers work. */
-export const workspaceMounts = async (workspace: string, repoRoot?: string): Promise<string[]> => {
+/**
+ * Keep host paths intact so linked worktrees and Git's admin pointers work. A linked
+ * worktree needs only its own tree and the Git common directory, never the main
+ * checkout's files: smolvm watches every mount recursively with inotify, so a
+ * checkout's node_modules alone can exhaust the user's watch limit.
+ */
+export const workspaceMounts = async (workspace: string): Promise<string[]> => {
   const cwd = await Deno.realPath(workspace);
   const paths = [cwd];
-  if (repoRoot) paths.push(await Deno.realPath(repoRoot));
   const result = await new Deno.Command("git", {
     args: ["-C", cwd, "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir"],
     stdin: "null",
@@ -15,8 +19,7 @@ export const workspaceMounts = async (workspace: string, repoRoot?: string): Pro
     const [root, common] = new TextDecoder().decode(result.stdout).trim().split("\n");
     if (!root || !common) throw new Error("Cannot resolve repository mount paths");
     paths.push(await Deno.realPath(root));
-    const metadata = await Deno.realPath(common);
-    paths.push(metadata.endsWith("/.git") ? dirname(metadata) : metadata);
+    paths.push(await Deno.realPath(common));
   } else {
     // Ordinary non-Git workspaces remain usable, but never hide a broken Git layout.
     try {

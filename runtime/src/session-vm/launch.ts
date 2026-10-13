@@ -167,10 +167,7 @@ const launchSessionVmOwned = async (
   const mounts =
     git || privateWorkspace
       ? []
-      : [
-          ...(await workspaceMounts(workspace, options.repoRoot)),
-          ...(packageCache ? [packageCache] : []),
-        ];
+      : [...(await workspaceMounts(workspace)), ...(packageCache ? [packageCache] : [])];
   const manifest = await inspectArtifact(artifact);
   try {
     if (

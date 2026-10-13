@@ -136,8 +136,8 @@ Deno.test("tool VMs for a clone session mount the clone without running Git in i
     await f.git("-C", clone, "config", "core.fsmonitor", `touch ${marker}; false`);
     assert.deepEqual(await mcpWorkspaceMounts(clone, f.repo), [dirname(clone)]);
     await assert.rejects(Deno.stat(marker), Deno.errors.NotFound);
-    // A host worktree still gets the repository and its Git directory.
-    assert.deepEqual(await mcpWorkspaceMounts(f.workspace, f.repo), [f.workspace, f.repo]);
+    // A host worktree gets its Git directory, never the main checkout.
+    assert.deepEqual(await mcpWorkspaceMounts(f.workspace, f.repo), [f.workspace, f.commonDir]);
   } finally {
     if (previous === undefined) Deno.env.delete("XDG_STATE_HOME");
     else Deno.env.set("XDG_STATE_HOME", previous);

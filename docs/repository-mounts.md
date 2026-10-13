@@ -3,14 +3,17 @@
 This section describes `session.defaults.workspace: "worktree"` VM sessions. For private
 clone sessions and prepared workspaces, see [Session environments](session-environments.md).
 
-Each agent session retains its own VM and worktree. Loom mounts the full host
-repository and the selected worktree at their original absolute paths. External
-Git common directories are mounted too, so linked worktree pointers remain valid.
-Preparation uses the same layout with a disposable worktree.
+Each agent session retains its own VM and worktree. Loom mounts the selected
+worktree and the repository's Git common directory (usually `<repo>/.git`) at
+their original absolute paths, so linked worktree pointers remain valid. The main
+checkout's files are not mounted: smolvm watches every mount recursively with
+host inotify, and each session watching the checkout's `node_modules` again
+exhausted the user's watch limit. Preparation uses the same layout with a
+disposable worktree.
 
 Session worktrees default to `$XDG_DATA_HOME/loom/worktrees/<repo>-<hash>/<id>`
 (`~/.local/share` when unset). Only the selected external worktree is mounted,
-so the repository mount no longer exposes sibling session worktrees.
+so sibling session worktrees are not exposed.
 The `session.worktree_dir` config setting overrides
 the directory, including a location on another drive.
 
@@ -46,9 +49,10 @@ inside the guest and their commands must be available there. A rejecting
 `pre-commit` hook fails the Git command and returns its output to the agent.
 Loom's `workspace_start` hook runs on worker creation and resume in both VM and host sessions.
 
-This trusts agents with the mounted repository: shared hooks/config and any
-worktrees still nested inside it are accessible. Changes to hooks/config can execute code when Git later
-runs on the host. Files and secrets inside the repo are not isolated from agents.
+This trusts agents with the mounted Git directory: shared hooks/config and all
+repository history are accessible. Changes to hooks/config can execute code when Git later
+runs on the host. Files and secrets in the worktree are not isolated from agents;
+untracked files in the main checkout are not mounted.
 Unmounted home directories, provider profiles and private VM state remain outside
 the repo mount. Network allowlists and per-session VM lifetimes are unchanged.
 

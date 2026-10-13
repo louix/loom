@@ -114,11 +114,10 @@ reaps after supervisor death. Cleanup has bounded retries for smolvm's
 asynchronous registry removal; unresolved state is retained with its path in the
 error.
 
-When workspace access is granted, the whole repository and selected worktree
-are mounted at their host paths.
+When workspace access is granted, the selected worktree and the repository's Git
+directory are mounted at their host paths; the main checkout's files are not.
 Git metadata is shared, so native Git, hooks and config work normally and commits
-are immediately visible on the host. With read-write access, sessions can modify shared Git metadata and
-other worktrees within the mounted repo. Hooks/config modified by an agent can
+are immediately visible on the host. With read-write access, sessions can modify shared Git metadata. Hooks/config modified by an agent can
 affect later host Git commands. Secrets inside the repo are also accessible.
 
 ## Verification
