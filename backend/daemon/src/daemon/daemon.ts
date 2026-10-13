@@ -2679,8 +2679,22 @@ export class Daemon {
       row.checkout !== "clone" &&
       worktree !== this.repoRoot
     ) {
-      // Its owner's branch is the one checked out in a shared tree.
-      if (!row.worktreeOwner) this.#worktrees.relink(id, worktree, row.branch);
+      // A shared tree is its owner's, on its owner's branch.
+      const owner = (row.worktreeOwner && this.#registry.get(row.worktreeOwner)) || row;
+      const branch = owner.branch ?? row.branch;
+      const link = this.#worktrees.relink(owner.id, worktree, branch);
+      if (link.kind === "refused")
+        throw new RpcError(
+          "worktree_error",
+          `the session's worktree lost its Git metadata, and it could not be rebuilt: ${link.reason}`,
+        );
+      // HEAD is set to the recorded branch, which need not be where the agent
+      // left it: on another branch, detached or mid-rebase.
+      if (link.kind === "relinked")
+        this.#emitNotice(
+          `${id.slice(0, 8)}: worktree Git metadata rebuilt on ${branch}; check git status in ${worktree}`,
+          "warn",
+        );
       // Never the user's checkout: only a Loom-made session tree has its own config.
       this.#worktrees.clearLegacyIdentity(worktree);
     }

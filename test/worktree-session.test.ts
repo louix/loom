@@ -211,6 +211,8 @@ test("messaging an archived session re-checks out its branch and resumes on it",
 
 test("resuming a session whose worktree metadata a prune deleted relinks its tree", async () => {
   const c = await client();
+  const frames: PushFrame[] = [];
+  c.onPush((f) => frames.push(f));
   const s = await c.request<SessionSnapshot>("session.create", {
     prompt: "relink me",
     provider: "fake",
@@ -250,6 +252,50 @@ test("resuming a session whose worktree metadata a prune deleted relinks its tre
     execFileSync("git", ["-C", wt, "status", "--porcelain"], { encoding: "utf8" }),
     "?? uncommitted.txt\n",
   );
+  assert.ok(
+    frames.some(
+      (f) =>
+        f.type === "notice" &&
+        f.tone === "warn" &&
+        f.text.includes(`worktree Git metadata rebuilt on ${branch}`),
+    ),
+    "the user is told to check the tree",
+  );
+  await c.close();
+});
+
+test("a resume whose pruned worktree metadata cannot be rebuilt says so", async () => {
+  const c = await client();
+  const s = await c.request<SessionSnapshot>("session.create", {
+    prompt: "lose my branch",
+    provider: "fake",
+  });
+  const wt = s.worktree as string;
+  const fake = (await h.daemon.providers.get("fake")) as unknown as FakeProvider;
+  await waitFor(() => fake.session(s.id) !== undefined);
+  const fs = fake.session(s.id) as FakeSession;
+  fs.finishTurn();
+  let branch = "";
+  await waitFor(async () => {
+    branch = (await c.request<SessionSnapshot>("session.get", { id: s.id })).branch ?? "";
+    return branch !== `loom/${s.id.slice(0, 8)}`;
+  });
+  fs.endStream();
+  await delay(50);
+  const admin = execFileSync(
+    "git",
+    ["-C", wt, "rev-parse", "--path-format=absolute", "--git-dir"],
+    { encoding: "utf8" },
+  ).trim();
+  rmSync(admin, { recursive: true });
+  // With its admin directory gone, nothing holds the branch any more.
+  execFileSync("git", ["-C", h.repoRoot, "branch", "-D", branch], { stdio: "pipe" });
+
+  await assert.rejects(
+    c.request("session.send", { id: s.id, text: "keep going" }),
+    new RegExp(`could not be rebuilt: branch "${branch}" no longer exists`),
+  );
+  assert.ok(!existsSync(admin));
   await c.close();
 });
 

@@ -7,7 +7,7 @@
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
@@ -373,5 +373,33 @@ test("a sharing fork works in the source's worktree and never removes it", async
     assert.ok(git(hh.repoRoot, "branch", "--list", parent.branch!));
     await c.request("session.remove", { id: parent.id, force: true });
     assert.equal(existsSync(parent.worktree!), false);
+  });
+});
+
+test("a sharing fork revived while its owner is cold relinks the owner's pruned tree", async () => {
+  await withDaemon(async (hh, c) => {
+    const parent = await parentWithHistory(hh, c);
+    const fork = await c.request<SessionSnapshot>("session.fork", {
+      id: parent.id,
+      provider: "mock",
+      workspace: "share",
+    });
+    const forked = (await providerOf(hh, "mock")).session(fork.id)!;
+    forked.finishTurn();
+    await waitFor(async () => (await get(c, fork.id)).status.kind === "idle");
+    (await providerOf(hh, "fake")).session(parent.id)!.endStream();
+    forked.endStream();
+    await delay(50);
+    const tree = parent.worktree!;
+    rmSync(git(tree, "rev-parse", "--path-format=absolute", "--git-dir"), { recursive: true });
+
+    await c.request("session.send", { id: fork.id, text: "carry on" });
+    await waitFor(async () => (await providerOf(hh, "mock")).session(fork.id) !== forked);
+
+    assert.equal(git(tree, "rev-parse", "--abbrev-ref", "HEAD"), parent.branch);
+    const entry = git(hh.repoRoot, "worktree", "list", "--porcelain")
+      .split("\n\n")
+      .find((e) => e.startsWith(`worktree ${Deno.realPathSync(tree)}\n`));
+    assert.match(entry ?? "", new RegExp(`\\nlocked loom session ${parent.id}$`));
   });
 });
