@@ -224,7 +224,6 @@ export class WorktreeManager {
       );
     }
     for (const key of migrate) checked(["config", "--file", sharedConfig, "--unset-all", key]);
-    mkdirSync(this.#treesDir, { recursive: true });
     mkdirSync(this.#hooksDir, { recursive: true });
     const hook = join(this.#hooksDir, "pre-push");
     if (!existsSync(hook)) {
@@ -325,6 +324,9 @@ export class WorktreeManager {
     const slug = this.#uniqueDir(id);
     const path = join(this.#treesDir, slug);
     const branch = this.#uniqueBranch(opts.branchPrefix, id);
+    // Only as a tree is made: an unmounted volume's empty mountpoint must not
+    // grow an empty trees directory, which would read as every tree gone.
+    mkdirSync(this.#treesDir, { recursive: true });
 
     const add = this.#git([
       "worktree",
@@ -383,6 +385,7 @@ export class WorktreeManager {
     this.prune();
     const slug = this.#uniqueDir(id);
     const path = join(this.#treesDir, slug);
+    mkdirSync(this.#treesDir, { recursive: true });
 
     const add = this.#git(["worktree", "add", "--lock", "--reason", lockReason(id), path, branch]);
     if (!add.ok) {

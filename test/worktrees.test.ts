@@ -669,6 +669,38 @@ test("prune keeps the lock of a tree the host cannot see, as against one that is
   }
 });
 
+test("setup on an unmounted volume's empty mountpoint makes no trees directory to prune by", () => {
+  const { root, cleanup } = repo();
+  try {
+    const mount = join(root, "volume");
+    const at = (treesDir: string) =>
+      new WorktreeManager({
+        repoRoot: root,
+        treesDir,
+        hooksDir: join(root, ".loom", "hooks"),
+        baseBranch: "main",
+        log: makeLogger("test"),
+      });
+    const treesDir = join(mount, "loom", "trees");
+    const wt = at(treesDir).create(fakeId("aaaaaaaa"), LOOM);
+    renameSync(mount, `${mount}.unmounted`);
+    mkdirSync(mount);
+
+    // A fresh daemon sets the repository up (a clone session's branch does) and prunes.
+    const m = at(treesDir);
+    m.createBranch(fakeId("bbbbbbbb"), LOOM);
+    m.prune();
+
+    assert.ok(!existsSync(treesDir));
+    assert.equal(
+      m.list().find((w) => w.path === wt.path)?.locked,
+      `loom session ${fakeId("aaaaaaaa")}`,
+    );
+  } finally {
+    cleanup();
+  }
+});
+
 test("Loom locks, finds and removes its trees through a symlinked trees directory", () => {
   const { root, cleanup } = repo();
   try {
