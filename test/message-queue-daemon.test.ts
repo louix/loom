@@ -787,6 +787,8 @@ describe("holds", { concurrency: 4 }, () => {
       const worktree = (await get(c, id)).worktree!;
       const lock = (verb: "lock" | "unlock") =>
         new Deno.Command("git", { args: ["-C", h.repoRoot, "worktree", verb, worktree] }).output();
+      // Loom lifts its own lock to remove a tree, but not one of the user's.
+      await lock("unlock");
       await lock("lock");
       try {
         await assert.rejects(
@@ -814,6 +816,8 @@ describe("holds", { concurrency: 4 }, () => {
     const worktree = (await get(c, id)).worktree!;
     const lock = (verb: "lock" | "unlock") =>
       new Deno.Command("git", { args: ["-C", h.repoRoot, "worktree", verb, worktree] }).output();
+    // Loom lifts its own lock to remove a tree, but not one of the user's.
+    await lock("unlock");
     await lock("lock");
     try {
       await assert.rejects(
