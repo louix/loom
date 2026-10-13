@@ -97,6 +97,12 @@ export const fleetProviders = (s: Pick<TuiState, "fleet">): ProviderInfo[] =>
 export const fleetAgentProfiles = (s: Pick<TuiState, "fleet">): AgentProfileInfo[] =>
   s.fleet.tag === "data" ? (s.fleet.value.agentProfiles ?? []) : [];
 
+/** Profiles whose provider access allows them to be selected in this repo. */
+export const choosableAgentProfiles = (s: Pick<TuiState, "fleet">): AgentProfileInfo[] => {
+  const providers = fleetProviders(s);
+  return fleetAgentProfiles(s).filter((profile) => !profileBlocked(profile, providers));
+};
+
 export const fleetDaemon = (s: Pick<TuiState, "fleet">): DaemonInfo | null =>
   s.fleet.tag === "data" ? s.fleet.value.daemon : null;
 
@@ -1356,7 +1362,8 @@ export const startModelSelection = (
 /**
  * `⌥p` in the new-session prompt: the providers and, under them, the agent
  * profiles, with the current choice highlighted. With no profiles it is the
- * ordinary provider → model → effort wizard (which skips a lone provider).
+ * ordinary provider → model → effort wizard (which skips a lone provider when
+ * there is no profile to choose).
  */
 export const startNewSessionPicker = (
   s: TuiState,
@@ -1364,7 +1371,7 @@ export const startNewSessionPicker = (
   draft: string,
 ): Overlay => {
   const dest: PickerDest = { t: "newSession", settings, draft };
-  if (fleetAgentProfiles(s).length === 0) return startModelSelection(s, dest, settings);
+  if (choosableAgentProfiles(s).length === 0) return startModelSelection(s, dest, settings);
   return pickerStep(s, "provider", {
     dest,
     from: "provider",

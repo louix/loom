@@ -4,6 +4,7 @@ import {
   type SessionState,
   type SessionStateKind,
 } from "@loom/core/session-state";
+import type { AgentProfileInfo } from "@loom/core/agents";
 import type { DaemonInfo, ProviderInfo, SessionSnapshot } from "@loom/core/wire";
 import { loadableLoaded } from "@loom/core/loadable";
 import type { QueueEntryView, SessionQueue } from "@loom/core/message-queue";
@@ -107,7 +108,11 @@ export const daemon: DaemonInfo = {
  * whole fleet as it stands after the change, which is exactly what the daemon
  * does.
  */
-export const fleet = (sessions: SessionSnapshot[], providers: ProviderInfo[] = []): Action => ({
+export const fleet = (
+  sessions: SessionSnapshot[],
+  providers: ProviderInfo[] = [],
+  agentProfiles: AgentProfileInfo[] = [],
+): Action => ({
   t: "state",
-  state: loadableLoaded({ daemon, providers, sessions }),
+  state: loadableLoaded({ daemon, providers, sessions, agentProfiles }),
 });

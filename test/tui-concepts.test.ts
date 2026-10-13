@@ -11,9 +11,11 @@ import { detailLayout } from "@loom/tui/components";
 import {
   escapePicker,
   initialState,
+  newSessionPickItems,
   reduce,
   selectModel,
   startModelSelection,
+  startNewSessionPicker,
 } from "@loom/tui/model";
 import type { ProviderInfo } from "@loom/core/wire";
 import type { PickerDest } from "@loom/tui/overlay";
@@ -214,6 +216,58 @@ test("one model-selection flow serves new sessions, live sessions, and plans, re
       selection: { provider: "test", model: "model", effort: "high" },
     });
   }
+});
+
+test("a single provider keeps the new-session profile picker reachable", () => {
+  const provider: ProviderInfo = {
+    id: "test",
+    models: ["model"],
+    defaultModel: "model",
+    defaultEffort: "",
+    defaultMode: "default",
+    tag: "test",
+    color: "",
+    isDefault: true,
+    modelChoices: [{ id: "model", label: "Model", supportsEffort: false, effortLevels: [] }],
+  };
+  const settings = { provider: "test", model: "model", effort: null, mode: "default" as const };
+  const available = {
+    name: "cheap-worker",
+    description: "cheap",
+    provider: "test",
+    model: "model",
+  };
+  const blocked = { ...available, name: "elsewhere", provider: "missing" };
+  const withProfile = reduce(initialState(), fleet([], [provider], [available, blocked]));
+  const opened = startNewSessionPicker(withProfile, settings, "work");
+  assert.equal(opened.t, "picker");
+  if (opened.t !== "picker") throw new Error("expected profile picker");
+  assert.match(opened.picker.title, /provider or agent profile/);
+  assert.deepEqual(
+    newSessionPickItems(withProfile)
+      .filter((item) => item.profile)
+      .map((item) => item.label),
+    ["cheap-worker", "elsewhere"],
+  );
+  const profileIndex = opened.picker.items.findIndex((item) => item.profile === "cheap-worker");
+  const selected = selectModel(withProfile, { ...opened.picker, index: profileIndex });
+  assert.equal(selected.tag, "show");
+  if (selected.tag !== "show" || selected.overlay.t !== "prompt")
+    throw new Error("expected new-session prompt");
+  if (selected.overlay.prompt.t !== "new") throw new Error("expected new prompt");
+  assert.equal(selected.overlay.prompt.settings.profile, "cheap-worker");
+
+  const noProfiles = reduce(initialState(), fleet([], [provider]));
+  const skipped = startNewSessionPicker(noProfiles, settings, "work");
+  assert.equal(skipped.t, "picker");
+  if (skipped.t !== "picker") throw new Error("expected model picker");
+  assert.equal(skipped.picker.step, "model");
+
+  const onlyBlocked = reduce(initialState(), fleet([], [provider], [blocked]));
+  const blockedOnly = startNewSessionPicker(onlyBlocked, settings, "work");
+  assert.equal(blockedOnly.t, "picker");
+  if (blockedOnly.t !== "picker") throw new Error("expected model picker");
+  assert.equal(blockedOnly.picker.step, "model");
 });
 
 test("prepared detail and doctor resolve every theme without changing their geometry", () => {
