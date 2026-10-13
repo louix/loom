@@ -14,7 +14,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { WorktreeManager, slugify } from "@loom/daemon/daemon/worktrees";
 import { setLogLevel, makeLogger } from "@loom/core/logger";
 import { writeExecutableSync } from "../scripts/lib/executable-fixture.ts";
@@ -653,17 +653,39 @@ test("prune keeps the lock of a tree the host cannot see, as against one that is
       chmodSync(trees, 0o755);
     }
     assert.equal(locked(wt.path), reason);
-    // Its whole volume unmounted: the parent is missing too.
-    renameSync(trees, `${trees}.unmounted`);
+    // Its whole volume unmounted: the directory holding the trees directory
+    // is missing too.
+    const volume = dirname(trees);
+    renameSync(volume, `${volume}.unmounted`);
     try {
       m.prune();
     } finally {
-      renameSync(`${trees}.unmounted`, trees);
+      renameSync(`${volume}.unmounted`, volume);
     }
     assert.equal(locked(wt.path), reason);
     rmSync(wt.path, { recursive: true, force: true });
     m.prune();
     assert.equal(locked(wt.path), undefined, "a tree deleted from its directory is pruned");
+  } finally {
+    cleanup();
+  }
+});
+
+test("prune releases the trees of a deleted trees directory, and with them their branches", () => {
+  const { root, cleanup } = repo();
+  const trees = join(root, ".loom", "trees");
+  try {
+    const m = mgr(root);
+    const wt = m.create(fakeId("aaaaaaaa"), LOOM);
+    rmSync(trees, { recursive: true, force: true });
+
+    m.prune();
+
+    assert.equal(
+      m.list().find((w) => w.path === wt.path),
+      undefined,
+    );
+    assert.equal(m.deleteBranch(wt.branch), true);
   } finally {
     cleanup();
   }

@@ -603,13 +603,15 @@ export class WorktreeManager {
 
   /**
    * `git worktree prune`: drop the entries of trees whose directory is gone.
-   * The host's view is the true one, so a session tree gone here is
-   * unlocked first (see {@link treeGone}); a lock that is not Loom's is the user's to lift. Returns
-   * whether the prune ran.
+   * The host's view is the true one, so a session tree gone here is unlocked
+   * first (see {@link treeGone}); a lock that is not Loom's is the user's to
+   * lift. Returns whether the prune ran.
    */
   prune(): boolean {
+    // Spelled as Git spells the trees it records: through no symlink.
+    const trees = join(treeKey(dirname(this.#treesDir)), basename(this.#treesDir));
     for (const w of this.list())
-      if (w.locked?.startsWith(LOCK_REASON) && treeGone(w.path))
+      if (w.locked?.startsWith(LOCK_REASON) && treeGone(w.path, trees))
         this.#git(["worktree", "unlock", w.path]);
     return this.#git(["worktree", "prune"]).ok;
   }
@@ -1216,22 +1218,29 @@ const treeKey = (path: string): string => {
 };
 
 /**
- * Whether the tree at `path` is really gone: no such entry, in a parent the
- * host can read. A tree the host merely cannot see — denied by permissions or
- * macOS privacy protections, on an unmounted volume or a lost FUSE mount —
- * is not.
+ * Whether the tree at `path` is really gone: no such entry in the nearest
+ * directory above it that exists and the host can read. The search climbs no
+ * higher than the directory holding `trees`, Loom's trees directory, so a
+ * deleted trees directory counts; for a tree elsewhere (the legacy
+ * `.loom/trees`), no higher than its parent. A tree the host merely cannot
+ * see — denied by permissions or macOS privacy protections, on an unmounted
+ * volume or a lost FUSE mount — is not gone.
  */
-const treeGone = (path: string): boolean => {
+const treeGone = (path: string, trees: string): boolean => {
   try {
     lstatSync(path);
     return false;
   } catch (error) {
     if ((error as { code?: string }).code !== "ENOENT") return false;
   }
-  try {
-    return !readdirSync(dirname(path)).includes(basename(path));
-  } catch {
-    return false;
+  const top = path.startsWith(trees + "/") ? dirname(trees) : dirname(path);
+  for (let child = path; ; child = dirname(child)) {
+    const dir = dirname(child);
+    try {
+      return !readdirSync(dir).includes(basename(child));
+    } catch (error) {
+      if ((error as { code?: string }).code !== "ENOENT" || dir === top) return false;
+    }
   }
 };
 
