@@ -43,6 +43,15 @@ const FACTS_TTL_MS = 3000;
  *  can exceed the 1 MB `spawnSync` default → `ENOBUFS` → `status: null`. */
 const GIT_MAX_BUFFER = 64 * 1024 * 1024;
 
+/**
+ * Every session tree is locked with a reason starting with this. `git worktree
+ * prune` (and `gc`) skip a locked tree: a prune run where the tree is not
+ * visible — a session VM mounts only its own tree, beside the whole `.git` —
+ * would otherwise delete its admin directory and leave it no repository.
+ */
+const LOCK_REASON = "loom session";
+const lockReason = (id: string): string => `${LOCK_REASON} ${id}`;
+
 const PRE_PUSH_HOOK = `#!/bin/sh
 # Installed by Loom. Sessions must never push — integrate in your own git.
 echo "loom: push is blocked in session worktrees" >&2
@@ -60,6 +69,15 @@ const chainHookScript = (origHooksDir: string): string =>
   `h="${origHooksDir}/$(basename "$0")"\n` +
   `[ -x "$h" ] && exec "$h" "$@"\n` +
   `exit 0\n`;
+
+/** An entry of `git worktree list`. `locked`: the lock's reason, "" when it
+ *  gives none; null when unlocked. */
+interface WorktreeEntry {
+  path: string;
+  branch: string | null;
+  head: string | null;
+  locked: string | null;
+}
 
 export interface WorktreeInfo {
   slug: string;
@@ -294,11 +312,21 @@ export class WorktreeManager {
     const path = join(this.#treesDir, slug);
     const branch = this.#uniqueBranch(opts.branchPrefix, id);
 
-    const add = this.#git(["worktree", "add", path, "-b", branch, baseRef]);
+    const add = this.#git([
+      "worktree",
+      "add",
+      "--lock",
+      "--reason",
+      lockReason(id),
+      path,
+      "-b",
+      branch,
+      baseRef,
+    ]);
     if (!add.ok) {
       // A partial checkout (disk full mid-`add`) leaves the dir behind — reclaim
       // it so the next attempt / `gc` isn't blocked by a stale entry.
-      this.#git(["worktree", "prune"]);
+      this.prune();
       throw new Error(`git worktree add failed: ${add.stderr.trim() || add.stdout.trim()}`);
     }
 
@@ -311,7 +339,7 @@ export class WorktreeManager {
         this.remove(path, { force: true });
         this.deleteBranch(branch);
       } catch {
-        this.#git(["worktree", "prune"]); // best-effort cleanup
+        this.prune(); // best-effort cleanup
       }
       throw new Error(
         `worktree config --worktree core.hooksPath failed: ${res.stderr.trim() || res.stdout.trim()}`,
@@ -338,13 +366,13 @@ export class WorktreeManager {
     }
     // A stale `worktree list` entry for a dir we already removed would make the
     // `add` fail with "already checked out" — clear it first.
-    this.#git(["worktree", "prune"]);
+    this.prune();
     const slug = this.#uniqueDir(id);
     const path = join(this.#treesDir, slug);
 
-    const add = this.#git(["worktree", "add", path, branch]);
+    const add = this.#git(["worktree", "add", "--lock", "--reason", lockReason(id), path, branch]);
     if (!add.ok) {
-      this.#git(["worktree", "prune"]);
+      this.prune();
       throw new Error(`git worktree add failed: ${add.stderr.trim() || add.stdout.trim()}`);
     }
 
@@ -355,7 +383,7 @@ export class WorktreeManager {
       try {
         this.remove(path, { force: true });
       } catch {
-        this.#git(["worktree", "prune"]); // best-effort cleanup
+        this.prune(); // best-effort cleanup
       }
       throw new Error(
         `worktree config --worktree core.hooksPath failed: ${res.stderr.trim() || res.stdout.trim()}`,
@@ -428,9 +456,11 @@ export class WorktreeManager {
     const args = ["worktree", "remove"];
     if (opts.force) args.push("--force");
     args.push(this.#hostOnly(path));
+    const relock = this.#unlockOwn(path);
     const res = this.#git(args);
     this.invalidateFacts(path);
     if (!res.ok) {
+      relock();
       throw new Error(`git worktree remove failed: ${res.stderr.trim() || res.stdout.trim()}`);
     }
     this.#log.info("worktree removed", { path });
@@ -441,6 +471,7 @@ export class WorktreeManager {
     const args = ["-C", this.#repoRoot, "worktree", "remove"];
     if (opts.force) args.push("--force");
     args.push(this.#hostOnly(path));
+    const relock = this.#unlockOwn(path);
     try {
       await new Promise<void>((resolve, reject) => {
         execFile(
@@ -449,6 +480,7 @@ export class WorktreeManager {
           { timeout: 15_000, maxBuffer: GIT_MAX_BUFFER },
           (error, stdout, stderr) => {
             if (error) {
+              relock();
               reject(
                 new Error(
                   `git worktree remove failed: ${stderr.trim() || stdout.trim() || error.message}`,
@@ -464,8 +496,17 @@ export class WorktreeManager {
     }
   }
 
-  prune(): void {
-    this.#git(["worktree", "prune"]);
+  /**
+   * `git worktree prune`: drop the entries of trees whose directory is gone.
+   * The host's view is the true one, so a session tree missing here is
+   * unlocked first; a lock that is not Loom's is the user's to lift. Returns
+   * whether the prune ran.
+   */
+  prune(): boolean {
+    for (const w of this.list())
+      if (w.locked?.startsWith(LOCK_REASON) && !existsSync(w.path))
+        this.#git(["worktree", "unlock", w.path]);
+    return this.#git(["worktree", "prune"]).ok;
   }
 
   /** The worktree's current `git HEAD` (full SHA), or null if it can't be read. */
@@ -621,15 +662,17 @@ export class WorktreeManager {
   }
 
   /** Parsed `git worktree list --porcelain`. */
-  list(): Array<{ path: string; branch: string | null; head: string | null }> {
+  list(): WorktreeEntry[] {
     const res = this.#git(["worktree", "list", "--porcelain"]);
     if (!res.ok) return [];
-    const out: Array<{ path: string; branch: string | null; head: string | null }> = [];
-    let cur: { path: string; branch: string | null; head: string | null } | null = null;
+    const out: WorktreeEntry[] = [];
+    let cur: WorktreeEntry | null = null;
     for (const line of res.stdout.split("\n")) {
       if (line.startsWith("worktree ")) {
         if (cur) out.push(cur);
-        cur = { path: line.slice("worktree ".length), branch: null, head: null };
+        cur = { path: line.slice("worktree ".length), branch: null, head: null, locked: null };
+      } else if (cur && (line === "locked" || line.startsWith("locked "))) {
+        cur.locked = line.slice("locked ".length);
       } else if (cur && line.startsWith("HEAD ")) {
         cur.head = line.slice("HEAD ".length);
       } else if (cur && line.startsWith("branch ")) {
@@ -917,6 +960,16 @@ export class WorktreeManager {
   }
 
   // --- internals -------------------------------------------------
+
+  /** Lift Loom's own lock on the tree at `path` for its removal. Returns what
+   *  puts it back should the removal fail; another lock stays, and Git refuses. */
+  #unlockOwn(path: string): () => void {
+    const at = canonicalHostPath(path);
+    const reason = this.list().find((w) => canonicalHostPath(w.path) === at)?.locked;
+    if (!reason?.startsWith(LOCK_REASON)) return () => {};
+    this.#git(["worktree", "unlock", path]);
+    return () => void this.#git(["worktree", "lock", "--reason", reason, path]);
+  }
 
   /** The name of a git operation currently in progress in `path`
    *  (rebase / merge / cherry-pick / revert), or null. Worktree-aware — each

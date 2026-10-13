@@ -7,6 +7,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -570,6 +571,65 @@ test("remove drops the worktree", () => {
     assert.ok(!existsSync(wt.path));
     // branch is retained
     execFileSync("git", ["-C", root, "rev-parse", "--verify", "loom/aaaaaaaa"]);
+  } finally {
+    cleanup();
+  }
+});
+
+test("a prune that cannot see a session tree, as from another session's VM, keeps it", () => {
+  const { root, cleanup } = repo();
+  const git = (cwd: string, ...args: string[]) =>
+    execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
+  try {
+    const m = mgr(root);
+    const own = m.create(fakeId("aaaaaaaa"), LOOM);
+    const other = m.create(fakeId("bbbbbbbb"), LOOM);
+    const plain = join(root, ".loom", "plain");
+    git(root, "worktree", "add", "-q", plain, "-b", "plain");
+    const admin = (path: string) => git(path, "rev-parse", "--path-format=absolute", "--git-dir");
+    const otherAdmin = admin(other.path);
+    const plainAdmin = admin(plain);
+    // The VM mounts `own` alone: every other tree's directory is missing there.
+    for (const path of [other.path, plain]) renameSync(path, `${path}.hidden`);
+    git(own.path, "worktree", "prune");
+    for (const path of [other.path, plain]) renameSync(`${path}.hidden`, path);
+
+    assert.ok(existsSync(otherAdmin));
+    assert.equal(git(other.path, "rev-parse", "--abbrev-ref", "HEAD"), other.branch);
+    assert.ok(!existsSync(plainAdmin), "an unlocked tree is pruned");
+  } finally {
+    cleanup();
+  }
+});
+
+test("Loom removes and prunes its locked trees, but leaves a user's lock alone", () => {
+  const { root, cleanup } = repo();
+  try {
+    const m = mgr(root);
+    const locked = (path: string) => m.list().find((w) => w.path === path)?.locked;
+    const wt = m.create(fakeId("aaaaaaaa"), LOOM);
+    assert.equal(locked(wt.path), `loom session ${fakeId("aaaaaaaa")}`);
+    writeFileSync(join(wt.path, "uncommitted.txt"), "x");
+    assert.throws(() => m.remove(wt.path), /git worktree remove failed/);
+    assert.equal(locked(wt.path), `loom session ${fakeId("aaaaaaaa")}`, "locked again");
+    m.remove(wt.path, { force: true });
+    assert.ok(!existsSync(wt.path));
+
+    // A tree deleted on the host is pruned, so its branch can come back.
+    const gone = m.reattach(fakeId("aaaaaaaa"), wt.branch);
+    rmSync(gone.path, { recursive: true, force: true });
+    assert.equal(m.prune(), true);
+    assert.equal(locked(gone.path), undefined);
+    const back = m.reattach(fakeId("aaaaaaaa"), wt.branch);
+    assert.ok(existsSync(back.path));
+
+    const user = m.create(fakeId("cccccccc"), LOOM);
+    execFileSync("git", ["-C", root, "worktree", "unlock", user.path]);
+    execFileSync("git", ["-C", root, "worktree", "lock", "--reason", "on a USB disk", user.path]);
+    assert.throws(() => m.remove(user.path, { force: true }), /locked/);
+    rmSync(user.path, { recursive: true, force: true });
+    m.prune();
+    assert.equal(locked(user.path), "on a USB disk");
   } finally {
     cleanup();
   }
