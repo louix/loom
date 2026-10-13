@@ -5,11 +5,21 @@ import { gitFixture } from "./lib/git-fixture.ts";
 import { launchTestSessionVm } from "./lib/session-launch.ts";
 import { RemoteWorkerSession } from "../backend/daemon/src/daemon/worker-provider.ts";
 import { mockLaunchSpec } from "../backend/daemon/src/daemon/worker-launch.ts";
+import { chainHookScript } from "../backend/daemon/src/daemon/worktrees.ts";
 const [artifact, smolvm] = Deno.args;
 assert(artifact && smolvm, "Pass rebuilt AISDK runtime and smolvm");
 const f = await gitFixture();
 // Keep this run's VM inventory and session state out of the user's.
 Deno.env.set("XDG_STATE_HOME", join(f.root, "xdg-state"));
+// Like Loom, point the worktree's hooks at a host directory outside the repository
+// whose wrappers delegate to the repository's own hooks.
+const loomHooks = join(f.root, "loom-hooks");
+await Deno.mkdir(loomHooks);
+await Deno.writeTextFile(join(loomHooks, "pre-commit"), chainHookScript(f.commonDir + "/hooks"), {
+  mode: 0o755,
+});
+await f.git("-C", f.repo, "config", "extensions.worktreeConfig", "true");
+await f.git("-C", f.workspace, "config", "--worktree", "core.hooksPath", loomHooks);
 try {
   const worker = await launchTestSessionVm({
     workspace: f.workspace,
@@ -48,6 +58,10 @@ try {
                   run: `exec >git-setup.log 2>&1
 set -eu
 git rev-parse --show-toplevel > git-root
+if touch "$(git rev-parse --git-path hooks)/agent-written" 2>/dev/null; then
+  echo 'Loom hooks are writable from the guest' >&2
+  exit 1
+fi
 hooks="$(git rev-parse --path-format=absolute --git-common-dir)/hooks"
 cat > "$hooks/pre-commit" <<'HOOK'
 #!/bin/sh
@@ -97,7 +111,7 @@ git -C /storage/dependency.git rev-parse HEAD > dependency-head`,
         /native-hook-rejected/,
       );
       console.log(
-        "Passed: real Git root discovery, native hook execution and rejection, shared config, host-visible commit and guest dependency clone",
+        "Passed: real Git root discovery, read-only Loom hooks chaining to native hook execution and rejection, shared config, host-visible commit and guest dependency clone",
       );
     } finally {
       await session.close();

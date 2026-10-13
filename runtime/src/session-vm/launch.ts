@@ -22,7 +22,7 @@ import { readRecovery, recoverSessionVm } from "./recovery.ts";
 import { finishSessionState, lockSessionState } from "./persistence.ts";
 import { workspaceMount } from "./workspace.ts";
 import { guestWorkingDirectory } from "../packaged/vm.ts";
-import { workspaceMounts } from "../packaged/workspace.ts";
+import { gitHookMounts, workspaceMounts } from "../packaged/workspace.ts";
 import { reapVm, type VmBinding } from "../packaged/vm.ts";
 import { cleanupSessionVm } from "./cleanup.ts";
 import { prepareCloneBinding, type SessionClone } from "./clone.ts";
@@ -168,6 +168,7 @@ const launchSessionVmOwned = async (
     git || privateWorkspace
       ? []
       : [...(await workspaceMounts(workspace)), ...(packageCache ? [packageCache] : [])];
+  const readOnlyMounts = mounts.length ? await gitHookMounts(workspace, mounts) : [];
   const manifest = await inspectArtifact(artifact);
   try {
     if (
@@ -229,6 +230,7 @@ const launchSessionVmOwned = async (
     token: crypto.randomUUID(),
     ...(environmentEnabled(options.environment) ? { writableNix: true } : {}),
     mounts,
+    ...(readOnlyMounts.length ? { readOnlyMounts } : {}),
     ...(packageCache ? { packageCache } : {}),
     ...(sessionDirectory ? { sessionDirectory } : {}),
     ...(options.mcpRelays ? { mcpRelays: options.mcpRelays } : {}),

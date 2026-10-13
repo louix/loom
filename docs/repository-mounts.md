@@ -44,8 +44,11 @@ is obsolete and can be removed.
 
 Use native Git hooks for commit checks. Loom's worktree hooks forward `pre-commit`,
 `prepare-commit-msg`, `commit-msg` and `post-commit` to the repository's hooks;
-its `pre-push` hook blocks session pushes. In VM sessions these hooks execute
-inside the guest and their commands must be available there. A rejecting
+its `pre-push` hook blocks session pushes. A relative `core.hooksPath` runs the
+worktree's own tracked copy, as Git does. In VM sessions these hooks execute
+inside the guest and their commands must be available there. Loom's hooks
+directory, and an absolute `core.hooksPath` outside the mounts, are mounted
+read-only, so the guest runs them but cannot change them. A rejecting
 `pre-commit` hook fails the Git command and returns its output to the agent.
 Loom's `workspace_start` hook runs on worker creation and resume in both VM and host sessions.
 

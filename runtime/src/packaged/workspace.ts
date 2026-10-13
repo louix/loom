@@ -36,3 +36,43 @@ export const workspaceMounts = async (workspace: string): Promise<string[]> => {
     (path, _, all) => !all.some((parent) => parent !== path && path.startsWith(parent + "/")),
   );
 };
+
+/**
+ * Hook directories Git runs from outside `mounts`: Loom's per-worktree hooks, and the
+ * repository or global `core.hooksPath` its wrappers delegate to. Mounted read-only,
+ * so the guest runs them but cannot plant a hook for host Git.
+ */
+export const gitHookMounts = async (workspace: string, mounts: string[]): Promise<string[]> => {
+  const git = async (...args: string[]) => {
+    const result = await new Deno.Command("git", {
+      args: ["-C", workspace, ...args],
+      stdin: "null",
+      stdout: "piped",
+      stderr: "null",
+    }).output();
+    return result.success ? new TextDecoder().decode(result.stdout).trim() : "";
+  };
+  const candidates = [await git("rev-parse", "--path-format=absolute", "--git-path", "hooks")];
+  // Unset exits 1. A relative value resolves inside the worktree, which is mounted.
+  const delegated = (
+    await git("config", "--type=path", "--show-scope", "--get-all", "core.hooksPath")
+  )
+    .split("\n")
+    .filter((line) => line && !line.startsWith("worktree\t"))
+    .at(-1)
+    ?.split("\t")[1];
+  if (delegated?.startsWith("/")) candidates.push(delegated);
+  const paths: string[] = [];
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    try {
+      const path = await Deno.realPath(candidate);
+      if (!(await Deno.stat(path)).isDirectory) continue;
+      if (mounts.some((mount) => path === mount || path.startsWith(mount + "/"))) continue;
+      if (!paths.includes(path)) paths.push(path);
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    }
+  }
+  return paths;
+};

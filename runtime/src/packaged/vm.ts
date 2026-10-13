@@ -22,6 +22,8 @@ export interface VmBinding {
   repoBaseDirectory?: string;
   packageCache?: string;
   mounts?: string[];
+  /** Host directories mounted read-only at their paths, e.g. Git hooks outside `mounts`. */
+  readOnlyMounts?: string[];
   /** Only command MCPs set this; agent VM policy is separate. */
   mcpGrants?: McpGrants;
   /** Required by packaged/main.ts, the stdio bridge's per-request bound. */
@@ -149,12 +151,16 @@ export const vmArguments = (b: VmBinding) => {
   if (grants?.workspace !== "none") {
     workspaceVolumes = b.privateWorkspace
       ? ["-v", `${b.privateWorkspace}:/workspace${mountMode}`]
-      : (b.mounts ?? [b.workspace]).flatMap((path) => ["-v", `${path}:${path}${mountMode}`]);
+      : [
+          ...(b.mounts ?? [b.workspace]).flatMap((path) => ["-v", `${path}:${path}${mountMode}`]),
+          ...(b.readOnlyMounts ?? []).flatMap((path) => ["-v", `${path}:${path}:ro`]),
+        ];
   }
   if (b.privateWorkspace) {
     if (
       b.workspace !== join(b.privateWorkspace, "checkout") ||
       (b.mounts ?? []).length ||
+      (b.readOnlyMounts ?? []).length ||
       b.packageCache ||
       !isAbsolute(b.privateWorkspace) ||
       b.privateWorkspace === "/" ||
@@ -166,7 +172,7 @@ export const vmArguments = (b: VmBinding) => {
     )
       throw new Error("Invalid private workspace mount");
   }
-  for (const path of b.mounts ?? [b.workspace]) {
+  for (const path of [...(b.mounts ?? [b.workspace]), ...(b.readOnlyMounts ?? [])]) {
     if (!isAbsolute(path) || path === "/" || /[:,;|\n\0]/.test(path))
       throw new Error("Unsupported repository mount path");
     if (
@@ -257,7 +263,7 @@ export const vmGitArguments = (b: VmBinding): string[] => {
     (!b.privateWorkspace && path !== join(b.sessionDirectory, "checkout"))
   )
     throw new Error("Session clone must be the session's checkout directory");
-  if ((b.mounts ?? [b.workspace]).length > 0 || b.packageCache)
+  if ((b.mounts ?? [b.workspace]).length > 0 || (b.readOnlyMounts ?? []).length || b.packageCache)
     throw new Error("Clone sessions must not mount the repository");
   if (b.preparationOnly) throw new Error("Preparation does not use a session clone");
   return [

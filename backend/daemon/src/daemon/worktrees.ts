@@ -68,11 +68,13 @@ exit 1
 /** Loom overrides `core.hooksPath` per worktree to install its push block, which
  *  also shadows the repo's own `pre-commit` / `commit-msg` / … . These wrappers
  *  chain through to the repo's real hooks dir so formatting / message checks
- *  still run on agent commits. `$0`'s basename is the hook being invoked. */
+ *  still run on agent commits. `$0`'s basename is the hook being invoked. A
+ *  relative dir resolves, as in Git, in the worktree whose top level runs the hook. */
 const CHAINED_HOOKS = ["pre-commit", "commit-msg", "prepare-commit-msg", "post-commit"] as const;
-const chainHookScript = (origHooksDir: string): string =>
+const CHAIN_MARKER = "# Installed by Loom — delegates to the repo's own hook.";
+export const chainHookScript = (origHooksDir: string): string =>
   `#!/bin/sh\n` +
-  `# Installed by Loom — delegates to the repo's own hook.\n` +
+  `${CHAIN_MARKER}\n` +
   `h="${origHooksDir}/$(basename "$0")"\n` +
   `[ -x "$h" ] && exec "$h" "$@"\n` +
   `exit 0\n`;
@@ -242,14 +244,21 @@ export class WorktreeManager {
     // hooks: `/dev/null` (the idiom for "disable all hooks", common in sandboxes
     // and CI), a stale path, or unset. Fall back to the git common dir so the
     // delegating wrappers still chain to `<repo>/.git/hooks`.
-    const custom = abs(this.#gitRead(["config", "--get", "core.hooksPath"]));
+    const configured = this.#gitRead(["config", "--get", "core.hooksPath"]);
+    const custom = abs(configured);
     const customDir = custom && isDir(custom) ? custom : "";
     const origHooksDir = customDir || join(commonDir, "hooks");
     if (origHooksDir !== this.#hooksDir) {
-      const script = chainHookScript(origHooksDir);
+      // A tracked hooks dir stays relative: each worktree runs its own copy, which its
+      // VM mounts, never the main checkout's.
+      const script = chainHookScript(
+        customDir && !configured.startsWith("/") ? configured : origHooksDir,
+      );
       for (const name of CHAINED_HOOKS) {
         const p = join(this.#hooksDir, name);
-        if (!existsSync(p)) {
+        // Rewrite Loom's own outdated wrappers; never a hook someone else put here.
+        const current = existsSync(p) ? readFileSync(p, "utf8") : undefined;
+        if (current === undefined || (current.includes(CHAIN_MARKER) && current !== script)) {
           writeFileSync(p, script);
           chmodSync(p, 0o755);
         }

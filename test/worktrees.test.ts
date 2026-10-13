@@ -8,6 +8,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   renameSync,
   rmSync,
   symlinkSync,
@@ -15,7 +16,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { WorktreeManager, slugify } from "@loom/daemon/daemon/worktrees";
+import { WorktreeManager, chainHookScript, slugify } from "@loom/daemon/daemon/worktrees";
 import { setLogLevel, makeLogger } from "@loom/core/logger";
 import { writeExecutableSync } from "../scripts/lib/executable-fixture.ts";
 
@@ -89,6 +90,42 @@ test("create makes a worktree + branch off base with a push block and no pinned 
     cleanup();
   } finally {
     if (existsSync(root)) cleanup();
+  }
+});
+
+test("a tracked hooks dir chains to each worktree's own copy, rewriting only Loom's wrappers", () => {
+  const { root, cleanup } = repo();
+  try {
+    const git = (path: string, ...a: string[]) =>
+      execFileSync("git", ["-C", path, ...a], { encoding: "utf8" }).trim();
+    mkdirSync(join(root, ".githooks"));
+    writeExecutableSync(
+      join(root, ".githooks", "pre-commit"),
+      "#!/bin/sh\necho tree >> hook-ran\n",
+      0o755,
+    );
+    git(root, "add", ".githooks");
+    git(root, "commit", "-q", "-m", "hooks");
+    git(root, "config", "core.hooksPath", ".githooks");
+    // The main checkout's uncommitted copy is not the worktree's.
+    writeExecutableSync(
+      join(root, ".githooks", "pre-commit"),
+      "#!/bin/sh\necho main >> hook-ran\n",
+      0o755,
+    );
+    const hooks = join(root, ".loom", "hooks");
+    mkdirSync(hooks, { recursive: true });
+    // What older versions wrote, and a hook that is not Loom's.
+    writeExecutableSync(join(hooks, "pre-commit"), chainHookScript(join(root, ".githooks")), 0o755);
+    const own = "#!/bin/sh\nexit 0\n";
+    writeExecutableSync(join(hooks, "commit-msg"), own, 0o755);
+    const wt = mgr(root).create(fakeId("aaaaaaaa"), LOOM);
+    assert.equal(readFileSync(join(hooks, "pre-commit"), "utf8"), chainHookScript(".githooks"));
+    assert.equal(readFileSync(join(hooks, "commit-msg"), "utf8"), own);
+    git(wt.path, "commit", "-q", "--allow-empty", "-m", "session");
+    assert.equal(readFileSync(join(wt.path, "hook-ran"), "utf8"), "tree\n");
+  } finally {
+    cleanup();
   }
 });
 
