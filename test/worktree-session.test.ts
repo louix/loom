@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { LoomClient } from "@loom/client";
@@ -205,6 +205,50 @@ test("messaging an archived session re-checks out its branch and resumes on it",
     }).trim(),
     sha,
     "the fresh tree sits on the archived branch's tip",
+  );
+  await c.close();
+});
+
+test("resuming a session whose worktree metadata a prune deleted relinks its tree", async () => {
+  const c = await client();
+  const s = await c.request<SessionSnapshot>("session.create", {
+    prompt: "relink me",
+    provider: "fake",
+  });
+  const wt = s.worktree as string;
+  const fake = (await h.daemon.providers.get("fake")) as unknown as FakeProvider;
+  await waitFor(() => fake.session(s.id) !== undefined);
+  const fs = fake.session(s.id) as FakeSession;
+  fs.finishTurn();
+  let branch: string | null = null;
+  await waitFor(async () => {
+    branch = (await c.request<SessionSnapshot>("session.get", { id: s.id })).branch;
+    return branch !== `loom/${s.id.slice(0, 8)}`;
+  });
+  writeFileSync(join(wt, "uncommitted.txt"), "keep me\n");
+  fs.endStream();
+  await delay(50);
+  const admin = execFileSync(
+    "git",
+    ["-C", wt, "rev-parse", "--path-format=absolute", "--git-dir"],
+    {
+      encoding: "utf8",
+    },
+  ).trim();
+  rmSync(admin, { recursive: true });
+
+  await c.request("session.send", { id: s.id, text: "keep going" });
+  await waitFor(() => fake.session(s.id) !== fs);
+
+  assert.equal(
+    execFileSync("git", ["-C", wt, "rev-parse", "--abbrev-ref", "HEAD"], {
+      encoding: "utf8",
+    }).trim(),
+    branch,
+  );
+  assert.equal(
+    execFileSync("git", ["-C", wt, "status", "--porcelain"], { encoding: "utf8" }),
+    "?? uncommitted.txt\n",
   );
   await c.close();
 });

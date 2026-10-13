@@ -635,6 +635,68 @@ test("Loom removes and prunes its locked trees, but leaves a user's lock alone",
   }
 });
 
+test("relink rebuilds a tree's pruned metadata and keeps its uncommitted work", () => {
+  const { root, cleanup } = repo();
+  const git = (cwd: string, ...args: string[]) =>
+    execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", stdio: "pipe" }).trim();
+  try {
+    const m = mgr(root);
+    const id = fakeId("aaaaaaaa");
+    const wt = m.create(id, LOOM);
+    writeFileSync(join(wt.path, "tracked.txt"), "committed\n");
+    git(wt.path, "add", "tracked.txt");
+    git(wt.path, "commit", "-q", "-m", "tracked");
+    writeFileSync(join(wt.path, "tracked.txt"), "edited\n");
+    writeFileSync(join(wt.path, "staged.txt"), "staged\n");
+    git(wt.path, "add", "staged.txt");
+    writeFileSync(join(wt.path, "untracked.txt"), "untracked\n");
+    // As an older Loom left it: unlocked, then pruned where it was not visible.
+    git(root, "worktree", "unlock", wt.path);
+    renameSync(wt.path, `${wt.path}.hidden`);
+    git(root, "worktree", "prune");
+    renameSync(`${wt.path}.hidden`, wt.path);
+    assert.throws(() => git(wt.path, "status"), /not a git repository/);
+
+    assert.deepEqual(m.relink(id, wt.path, wt.branch), { kind: "relinked" });
+
+    assert.equal(git(wt.path, "rev-parse", "--abbrev-ref", "HEAD"), wt.branch);
+    assert.equal(
+      execFileSync("git", ["-C", wt.path, "status", "--porcelain"], { encoding: "utf8" }),
+      " M tracked.txt\n?? staged.txt\n?? untracked.txt\n",
+    );
+    assert.equal(m.list().find((w) => w.path === wt.path)?.locked, `loom session ${id}`);
+    assert.equal(
+      git(wt.path, "config", "--worktree", "core.hooksPath"),
+      Deno.realPathSync(join(root, ".loom", "hooks")),
+    );
+    assert.deepEqual(m.relink(id, wt.path, wt.branch), { kind: "intact" });
+  } finally {
+    cleanup();
+  }
+});
+
+test("relink refuses a branch checked out elsewhere and writes nothing", () => {
+  const { root, cleanup } = repo();
+  try {
+    const m = mgr(root);
+    const wt = m.create(fakeId("aaaaaaaa"), LOOM);
+    const admin = execFileSync(
+      "git",
+      ["-C", wt.path, "rev-parse", "--path-format=absolute", "--git-dir"],
+      { encoding: "utf8" },
+    ).trim();
+    rmSync(admin, { recursive: true });
+    const other = m.create(fakeId("bbbbbbbb"), LOOM);
+
+    const result = m.relink(fakeId("aaaaaaaa"), wt.path, other.branch);
+
+    assert.equal(result.kind, "refused");
+    assert.ok(!existsSync(admin));
+  } finally {
+    cleanup();
+  }
+});
+
 test("fork copies staged, unstaged, binary, deleted and untracked files without changing parent", () => {
   const { root, cleanup } = repo();
   const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-C", cwd, ...args]);

@@ -2679,6 +2679,8 @@ export class Daemon {
       row.checkout !== "clone" &&
       worktree !== this.repoRoot
     ) {
+      // Its owner's branch is the one checked out in a shared tree.
+      if (!row.worktreeOwner) this.#worktrees.relink(id, worktree, row.branch);
       // Never the user's checkout: only a Loom-made session tree has its own config.
       this.#worktrees.clearLegacyIdentity(worktree);
     }
