@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { execFileSync } from "node:child_process";
 import {
   accessSync,
+  chmodSync,
   constants,
   existsSync,
   mkdirSync,
@@ -631,6 +632,38 @@ test("Loom removes and prunes its locked trees, but leaves a user's lock alone",
     rmSync(user.path, { recursive: true, force: true });
     m.prune();
     assert.equal(locked(user.path), "on a USB disk");
+  } finally {
+    cleanup();
+  }
+});
+
+test("prune keeps the lock of a tree the host cannot see, as against one that is gone", () => {
+  const { root, cleanup } = repo();
+  const trees = join(root, ".loom", "trees");
+  try {
+    const m = mgr(root);
+    const locked = (path: string) => m.list().find((w) => w.path === path)?.locked;
+    const wt = m.create(fakeId("aaaaaaaa"), LOOM);
+    const reason = `loom session ${fakeId("aaaaaaaa")}`;
+    // Unreadable, as behind macOS privacy protections: lstat fails EACCES.
+    chmodSync(trees, 0o000);
+    try {
+      m.prune();
+    } finally {
+      chmodSync(trees, 0o755);
+    }
+    assert.equal(locked(wt.path), reason);
+    // Its whole volume unmounted: the parent is missing too.
+    renameSync(trees, `${trees}.unmounted`);
+    try {
+      m.prune();
+    } finally {
+      renameSync(`${trees}.unmounted`, trees);
+    }
+    assert.equal(locked(wt.path), reason);
+    rmSync(wt.path, { recursive: true, force: true });
+    m.prune();
+    assert.equal(locked(wt.path), undefined, "a tree deleted from its directory is pruned");
   } finally {
     cleanup();
   }

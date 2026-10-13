@@ -15,6 +15,7 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -572,13 +573,13 @@ export class WorktreeManager {
 
   /**
    * `git worktree prune`: drop the entries of trees whose directory is gone.
-   * The host's view is the true one, so a session tree missing here is
-   * unlocked first; a lock that is not Loom's is the user's to lift. Returns
+   * The host's view is the true one, so a session tree gone here is
+   * unlocked first (see {@link treeGone}); a lock that is not Loom's is the user's to lift. Returns
    * whether the prune ran.
    */
   prune(): boolean {
     for (const w of this.list())
-      if (w.locked?.startsWith(LOCK_REASON) && !existsSync(w.path))
+      if (w.locked?.startsWith(LOCK_REASON) && treeGone(w.path))
         this.#git(["worktree", "unlock", w.path]);
     return this.#git(["worktree", "prune"]).ok;
   }
@@ -1181,6 +1182,26 @@ const treeKey = (path: string): string => {
     return realpathSync(path);
   } catch {
     return canonicalHostPath(path);
+  }
+};
+
+/**
+ * Whether the tree at `path` is really gone: no such entry, in a parent the
+ * host can read. A tree the host merely cannot see — denied by permissions or
+ * macOS privacy protections, on an unmounted volume or a lost FUSE mount —
+ * is not.
+ */
+const treeGone = (path: string): boolean => {
+  try {
+    lstatSync(path);
+    return false;
+  } catch (error) {
+    if ((error as { code?: string }).code !== "ENOENT") return false;
+  }
+  try {
+    return !readdirSync(dirname(path)).includes(basename(path));
+  } catch {
+    return false;
   }
 };
 
