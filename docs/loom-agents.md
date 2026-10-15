@@ -383,12 +383,6 @@ detach` on `session.markDone` / `session.remove`, `--children` in the CLI,
   sub-agent tools (`spawn_agent`, `wait_agent`, …) with both feature flags
   off; only the developer instructions keep the model from using them
   (openai/codex#50880; see [Waiting on upstream](#waiting-on-upstream)).
-- A Codex v2 model cannot supervise Loom sub-agents. On v2 models (e.g.
-  `gpt-6-luna`, `gpt-5.6-terra`) the loom-agents dynamic tools are only visible
-  nested inside Codex's `exec` code-mode tool, and the model reports that it
-  cannot call `agents_profiles` or `agent_start`. v1 models
-  (`gpt-5.6-luna`) work. Pick a v1 model for a Codex supervisor (see
-  [Waiting on upstream](#waiting-on-upstream)).
 - Supervisor question handling is not designed: a sub-agent's question does not
   reach its supervisor, which has no tool to answer or escalate it.
 - Clone sub-agents (a worktree off the supervisor's clone) are stage 2, not
@@ -418,18 +412,41 @@ entry.
   `multi_agent_version` to v1. Re-check: `codex-tools <v2 model>`; done when
   no native sub-agent tool is listed (v1 models such as `gpt-5.6-luna` already
   pass).
-- **Dynamic tools only inside code mode on v2 models**: no upstream issue
-  found (searched 2026-10-12; the nearest,
-  [openai/codex#50693](https://github.com/openai/codex/issues/50693), is about
-  the size of Code Mode results from dynamic tools). On v2 models (e.g.
-  `gpt-6-luna`, `gpt-5.6-terra`) the loom-agents tools, passed as
-  `thread/start` `dynamicTools`, are only visible nested inside Codex's `exec`
-  code-mode tool, and the model reports that it cannot call `agents_profiles`
-  or `agent_start`, so Loom sub-agents are effectively unusable with a Codex v2
-  supervisor. Workaround: none in Loom; use a v1 model (`gpt-5.6-luna`, which
-  live acceptance picks) for a Codex supervisor. Re-check:
-  `agents-codex <v2 model>`; done when the supervisor starts its `self`
-  child.
+
+## Codex v2 supervision: verified
+
+Codex v2 models can supervise Loom sub-agents through dynamic tools exposed
+inside `exec` Code Mode. Nesting does not make those tools unavailable.
+
+Live smoke tests on 2026-10-15 verified `self` child creation, readback of
+`LOOM_CHILD_OK`, archival and a completion notification:
+
+| Supervisor model | Supervisor session                     | Child session                          |
+| ---------------- | -------------------------------------- | -------------------------------------- |
+| `gpt-5.6-terra`  | `9d5254d3-5685-4df7-a950-e5fb4eeaa343` | `66e78395-251c-4a91-9710-39730afa9a0b` |
+| `gpt-6-luna`     | `b3ba6ca2-1915-4772-8771-44d2d8a83adf` | `b2c38f3b-0790-45d4-a32c-065655d80867` |
+| `gpt-6-luna`     | `0cefe9b4-7315-46bb-b4d5-d586713a42d9` | `ad593745-cc3d-4831-a52a-1b5fc0598852` |
+
+All used low effort and auto mode. The first two prompts supplied Code Mode
+call syntax. The third was a fresh session given only the task to start a
+`self` child, read its reply and archive it, without Code Mode hints. It
+succeeded with the existing instructions; no additional instruction text is
+justified by these results.
+
+The earlier 2026-10-12 `gpt-6-luna` run listed the nested tools, then reported
+that it could not call them. That observation did not establish a runtime
+restriction, and the cause of the difference remains unconfirmed. Its harness
+also failed on native tools still being listed, a separate upstream issue.
+
+Re-check Loom supervision with
+`scripts/test-live-daemon-acceptance.ts agents-codex gpt-6-luna` (or another
+explicit model). It checks tool registration and the child lifecycle without
+asking the supervisor to list tools or supplying Code Mode syntax. This check
+passed on 2026-10-15 with Codex 0.160.0 and `gpt-6-luna`: the child committed
+`child.txt`, its supervisor received the notification and archive reminder,
+archived it, and read its retained transcript. Native-tool
+visibility and the native spawn check remain in `codex-tools <model>`, under
+[Waiting on upstream](#waiting-on-upstream).
 
 ## Open
 

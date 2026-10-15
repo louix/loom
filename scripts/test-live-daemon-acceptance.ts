@@ -23,8 +23,8 @@
  *   queue-claude | queue-codex          a message folded in at a Bash boundary; three
  *                                       held by an interrupt, released in order
  *   agents-claude | agents-codex [model]
- *                                       Loom agents (docs/loom-agents.md): no native
- *                                       sub-agent tools, loom-agents present; a `self`
+ *                                       Loom agents (docs/loom-agents.md): loom-agents
+ *                                       registered and callable; a `self`
  *                                       child started, (Claude) a supervisor message
  *                                       steered down while it works, notified up,
  *                                       archive reminder, read
@@ -232,8 +232,8 @@ const create = async (provider: string, prompt: string, extra: Record<string, un
 const cheapModel = async (provider: string) => {
   const list = await rpc<Array<{ id: string; models: string[] }>>("providers.list");
   const models = list.find((p) => p.id === provider)?.models ?? [];
-  // The oldest small Codex model: newer ones (gpt-6-luna) are multi-agent v2,
-  // whose native tools stay listed (openai/codex#50880).
+  // Keep the oldest small Codex model as the default; pass an explicit model
+  // to agents-codex or codex-tools to cover newer models.
   return provider === CODEX
     ? (models.findLast((m) => /mini|luna/.test(m)) ?? models.at(-1))
     : (models.find((m) => /haiku/.test(m)) ?? models[0]);
@@ -928,27 +928,38 @@ const LIST_TOOLS =
   "If any tool's description lists further tools callable from inside it, write a line starting NESTED: with those names, comma separated. " +
   "If you have a tool named wait, write a line starting WAIT: quoting the first sentence of its description.";
 
-/**
- * A Codex session that answered {@link LIST_TOOLS} runs with the native
- * sub-agent switches off, was given the loom-agents dynamic tools, and lists
- * no native sub-agent tool — unless `allowListed` (a v2 model, whose tools
- * stay listed: openai/codex#50880). Returns the native tools listed.
- */
-const assertCodexTools = async (
+/** Check what Loom supplied to Codex, independently of the model's tool listing. */
+const assertCodexToolRegistration = async (
   s: SessionSnapshot,
   tap: Awaited<ReturnType<typeof cliTap>>,
-  allowListed = false,
 ) => {
   // The session's own thread/start (a child at max depth has no agent tools).
   const starts = (await tap.stdin()).map(
     (m) => (m["params"] ?? {}) as { cwd?: string; dynamicTools?: Array<{ name: string }> },
   );
-  const params = starts.find((p) => p.cwd === s.worktree) ?? starts[0] ?? {};
+  const params = starts.find((p) => p.cwd === s.worktree);
+  assert(params, "the supervisor's thread/start was recorded");
   const dynamic = (params.dynamicTools ?? []).map((t) => t.name);
   // The session's app-server, not a model-discovery or auth probe that may start after it.
   const argv = (await tap.argv()).filter(
     (a) => a.startsWith("app-server") && !a.endsWith(" -c mcp_servers={}"),
   );
+  log("codex tool registration", { model: s.model, argv: argv.at(-1), dynamicTools: dynamic });
+  assert(/features\.multi_agent=false/.test(argv.at(-1) ?? ""), "multi_agent off");
+  assert(
+    /features\.multi_agent_v2=\{enabled=false, max_concurrent_threads_per_session=1\}/.test(
+      argv.at(-1) ?? "",
+    ),
+    "multi_agent_v2 off, one thread",
+  );
+  for (const t of AGENT_TOOLS) assert(dynamic.includes(t), `dynamic tool ${t}`);
+};
+
+/** Read native-tool visibility separately from Loom agent functionality.
+ * v2 models may still list native tools (openai/codex#50880); codexTools then
+ * checks that asking for a native spawn starts no thread. */
+const assertCodexTools = async (s: SessionSnapshot, tap: Awaited<ReturnType<typeof cliTap>>) => {
+  await assertCodexToolRegistration(s, tap);
   const said = texts.get(s.id) ?? "";
   const listed = said.match(/TOOLS:(.*)/)?.[1] ?? "";
   const nested = said.match(/NESTED:(.*)/)?.[1] ?? "";
@@ -959,26 +970,15 @@ const assertCodexTools = async (
       .trim()
       .replace(/^[\w-]+\./, ""),
   );
+  const native = NATIVE_CODEX.filter((n) => names.includes(n));
   log("codex tools", {
     model: s.model,
-    argv: argv.at(-1),
-    dynamicTools: dynamic,
     modelListed: listed.trim(),
     nestedListed: nested.trim(),
     waitDescribed: said.match(/WAIT:(.*)/)?.[1]?.trim(),
-    nativeListed: NATIVE_CODEX.filter((n) => names.includes(n)),
+    nativeListed: native,
   });
-  assert(/features\.multi_agent=false/.test(argv.at(-1) ?? ""), "multi_agent off");
-  assert(
-    /features\.multi_agent_v2=\{enabled=false, max_concurrent_threads_per_session=1\}/.test(
-      argv.at(-1) ?? "",
-    ),
-    "multi_agent_v2 off, one thread",
-  );
-  for (const t of AGENT_TOOLS) assert(dynamic.includes(t), `dynamic tool ${t}`);
   assert(listed, "the model listed its tools");
-  const native = NATIVE_CODEX.filter((n) => names.includes(n));
-  if (!allowListed) assert.deepEqual(native, [], "no native sub-agents");
   // Code mode has a `wait` of its own (for an exec cell); v1's waits on agents.
   if (names.includes("wait"))
     assert.doesNotMatch(said.match(/WAIT:(.*)/)?.[1] ?? "", /agent/i, "wait is not v1's");
@@ -1003,7 +1003,7 @@ const codexTools = async (model: string | undefined) => {
     mode: "auto",
     isolation: "none",
   });
-  const native = await assertCodexTools(s, tap, true);
+  const native = await assertCodexTools(s, tap);
   if (!native.length) return;
   const tool = native.includes("spawn_agent") ? "spawn_agent" : native[0];
   await send(
@@ -1067,7 +1067,7 @@ const agents = async (provider: string, pinned: string | undefined) => {
     "reate a file child.txt containing exactly hi, commit it with the message 'add child', then reply with the commit's short hash.";
   let sup = await create(
     provider,
-    `${codex ? `${LIST_TOOLS} Then ` : ""}Call agents_profiles. Then call agent_start with profile "self", title "child", and task: "${childTask}". ` +
+    `Call agents_profiles. Then call agent_start with profile "self", title "child", and task: "${childTask}". ` +
       "Do not call agent_wait. Then end your turn, replying with the agent's id. Later, when you are notified about the agent, reply with one short sentence and use no tools unless I ask.",
     extra,
   );
@@ -1078,8 +1078,9 @@ const agents = async (provider: string, pinned: string | undefined) => {
     text: texts.get(sup.id)?.slice(0, 600),
   });
 
-  // 1. Native sub-agents absent; loom-agents present.
-  if (codex) await assertCodexTools(sup, codexTap);
+  // 1. Loom tools registered. Codex native-tool visibility is tested by codex-tools;
+  // this supervisor gets no tool-listing request or Code Mode syntax hints.
+  if (codex) await assertCodexToolRegistration(sup, codexTap);
   else {
     const init = (await claudeTap.stdout()).find((m) => m["subtype"] === "init");
     const tools = (init?.["tools"] ?? []) as string[];
