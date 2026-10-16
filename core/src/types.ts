@@ -4,11 +4,7 @@ import { z } from "zod";
 import { opaqueSchema } from "./schema.ts";
 import { initHookSchema } from "./init-hook.ts";
 const effortLevelSchema = z.string();
-/**
- * The provider seam (design spec §3). Nothing above the adapter layer imports a
- * vendor SDK; adapters normalize to the one `HarnessEvent` union and this pair
- * of interfaces. The Claude adapter ships in V1; ADK is a designed-for second.
- */
+/** Provider adapters normalize vendor SDKs to these interfaces and HarnessEvent. */
 import {
   providerTotalSchema,
   tokenUsageSchema,
@@ -21,21 +17,13 @@ import type { SendOptions } from "./message-queue.ts";
 export const sessionModeSchema = z.enum(["default", "plan", "acceptEdits", "auto"]);
 export type SessionMode = z.infer<typeof sessionModeSchema>;
 
-/** How hard the model should think. Claude's five levels are the well-known
- *  suggestions (for autocomplete); the type stays open so a model's own
- *  advertised strings (an OpenAI `minimal`, a future vendor value) pass
- *  through the shared interfaces and RPC validation without a cast — vendor-
- *  specific restrictions belong inside connectors, not this union. */
+/** Open-ended effort names preserve provider-advertised values; connectors validate them. */
 export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max" | (string & {});
 
 export const providerCapabilitiesSchema = z.object({
-  /** Mode changes take effect immediately (Claude) vs. next turn (ADK). See
-   *  {@link liveModelSwitch} for model-change timing, which can differ. */
+  /** Whether mode changes apply immediately; model-change timing is independent. */
   liveModeSwitch: z.boolean(),
-  /** Model changes take effect immediately vs. next turn — kept separate from
-   *  {@link liveModeSwitch} because a provider's timing for the two can differ
-   *  (Codex app-server applies a mode change live but a model change only on
-   *  the next turn). */
+  /** Whether model changes apply immediately rather than next turn. */
   liveModelSwitch: z.boolean(),
   /** `resumeSession` honours {@link SessionRef.forkHistory}: the provider can
    *  copy its own native history (Claude's session, a Codex thread) into a new
@@ -47,18 +35,9 @@ export const providerCapabilitiesSchema = z.object({
   subagents: z.boolean(),
   /** `compact()` is driven through the provider's own harness (vs. Loom rebuilding history). */
   compaction: z.boolean(),
-  /** `compact(instructions)` actually honors a custom `instructions` string
-   *  rather than silently ignoring it — independent of {@link compaction}
-   *  (Claude and aisdk both honor instructions but get there differently: one
-   *  through its own harness, one by Loom's own summarizer). A caller must
-   *  reject non-blank instructions up front when this is `false` rather than
-   *  silently downgrading to plain compaction the caller didn't ask for. */
+  /** Reject nonblank compaction instructions when false; never silently discard them. */
   compactionInstructions: z.boolean(),
-  /** The session's message history lives in Loom's own transcript store
-   *  (aisdk's `provider_messages`) rather than in a thread the provider owns
-   *  (Claude's session, a Codex app-server thread). Gates whether the daemon's
-   *  transcript-based checkpoint / rewind / fork / cross-provider-switch
-   *  machinery is safe to use. */
+  /** True when Loom owns the transcript. Gates transcript-based rewind, fork and provider switching. */
   ownsTranscript: z.boolean(),
   /** Can run a cheap, tool-free single-turn call (used for auto-titling). */
   oneShot: z.boolean(),
@@ -134,11 +113,7 @@ export type AgentDefinitionSpec = z.infer<typeof agentDefinitionSpecSchema>;
 // Shared with the VM runtime, which must not import session types.
 export { initHookSchema, type InitHook } from "./init-hook.ts";
 
-/**
- * Loom agents (`docs/loom-agents.md`): what a session gets from its agent
- * profile and its place in the supervision tree. The daemon recomputes them
- * for every start, resume included.
- */
+/** Profile restrictions and supervision settings, recomputed on every start/resume. */
 const agentSessionFields = {
   /** Mount the `loom-agents` tools: the session may start and manage children. */
   agentTools: z.boolean().optional(),
@@ -189,7 +164,7 @@ export const createSessionOptionsSchema = z.object({
     .optional(),
   /** Loom's session id. The adapter tags the provider's own id separately. */
   sessionId: z.string(),
-  /** The session's worktree (or, until the worktree manager lands, the repo root). */
+  /** The provider process's working directory. */
   cwd: z.string(),
   prompt: z.string(),
   /** A person wrote `prompt` — not a supervisor's task or a Loom-made seed. */
@@ -244,7 +219,7 @@ export const sessionRefSchema = z.object({
   model: z.string().optional(),
   effort: effortLevelSchema.optional(),
   mode: sessionModeSchema.optional(),
-  /** MCP servers to re-mount on resume (the daemon's current `[[mcp]]` list). */
+  /** MCP servers resolved from current configuration on resume. */
   mcpServers: z.array(mcpServerHandleSchema).optional(),
   /** Steering text for the provider's system prompt — recomputed by the daemon
    *  at resume time the same way as at creation (see `CreateSessionOptions`). */
@@ -463,17 +438,16 @@ export interface AgentProvider {
 }
 
 export const discoveredModelSchema = z.object({
-  /** The id to pass to the API. */
   id: z.string(),
-  /** A friendly display name, when the provider gives one. */
+
   label: z.string().optional(),
-  /** The provider's description of the model, when it gives one. */
+
   description: z.string().optional(),
-  /** The provider marks this as its default model. */
+
   isDefault: z.boolean().optional(),
   /** Context-window size in tokens, when known. */
   context: z.number().optional(),
-  /** Whether this model accepts a thinking-effort level. */
+
   supportsEffort: z.boolean().optional(),
   /** The effort levels it accepts, when the provider enumerates them.
    *  Endpoint-advertised lists pass through verbatim — they may name levels

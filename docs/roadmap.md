@@ -1,9 +1,5 @@
 # Remaining work
 
-This is the single backlog for documentation purposes. Proposals below are not
-claims that existing features are missing. Check current code before reviving a
-historical finding; completed plans and investigation reports remain in Git history.
-
 ## Validation
 
 - Live Google and native Anthropic VM checks, plus natural live Codex OAuth
@@ -31,7 +27,6 @@ historical finding; completed plans and investigation reports remain in Git hist
 - Provider/model defaults for titles, summaries and plan implementation.
 - A named `check` tool with bounded output for configured project checks.
 - Measure package size before dependency-pruning or standalone-distribution work.
-- Consider a standalone isolation launcher as a separate product.
 - Loom-managed memory shared across providers (Claude, Codex, AISDK), replacing
   each provider's own: Claude Code's auto memory is off by default
   (`providers.claude.auto_memory`), since its notes are per provider and, in a
@@ -50,3 +45,12 @@ historical finding; completed plans and investigation reports remain in Git hist
   `config.jsonc`), project MCP/skill requests and their grants, integration
   launch profiles, Git commit identity in loom-isolate, prepared bases from
   committed `loom.json`, and private-clone or worktree placement in loom-isolate.
+- Preflight host `nix-store` before on-demand runtime builds; currently it is
+  needed only at registration, so a missing executable wastes the build.
+- Scope disk-template pruning across all Loom data directories: they share the
+  per-user temporary cache, but one directory's update can evict another's templates.
+- Apply Git identity overrides to `loom shell` and daemon-run hooks.
+- Standalone isolation: persistent ownership and process-group interruption
+  without a PTY. See [agents](loom-agents.md#open) for supervision proposals.
+- Version-stable daemon shutdown/upgrade control, including attached TUI exit
+  and preventing an older installed client from restarting a newer daemon.

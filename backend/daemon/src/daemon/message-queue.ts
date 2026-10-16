@@ -1,10 +1,4 @@
-/**
- * The message queue's dispatch policy (spec: `docs/message-queue.md`, "Dispatch").
- * Pure: given a session's live entries, its hold and what its run is doing,
- * say what to hand the agent now — and, for the snapshot, when each entry
- * will go. The session manager re-evaluates it after every event, state
- * transition, queue mutation and hand-over, and carries out what it says.
- */
+/** Pure dispatch policy; SessionManager executes decisions. See docs/message-queue.md. */
 import type { DequeueHint, QueueEntry, QueueHold } from "@loom/core/message-queue";
 import type { SessionState } from "@loom/core/session-state";
 
@@ -25,7 +19,7 @@ export interface DispatchView {
    *  retry now would be refused the same way. */
   readonly backoff: boolean;
   /** A clone's guest Git runs for the daemon (docs/message-queue.md,
-   *  "Holds", H7): nothing goes, by any path, until it ends. */
+   *  "Holds"): nothing goes, by any path, until it ends. */
   readonly busy: boolean;
 }
 
@@ -46,7 +40,7 @@ const turnEnded = (s: SessionState): boolean =>
   s.kind === "working_background" ||
   s.kind === "error";
 
-/** Rule 1: states in which nothing is handed over at all. */
+/** States that block all delivery. */
 const blocked = (v: DispatchView): boolean =>
   !v.attached ||
   v.handingOver ||
@@ -57,23 +51,9 @@ const blocked = (v: DispatchView): boolean =>
   v.state.kind === "starting" ||
   v.state.kind === "awaiting_input";
 
-/**
- * What to hand over now.
- *
- * `forced` is an entry the user asked to go now — send now, or a message sent
- * to a held queue. It goes alone and ignores the hold: into the live turn
- * straight away, or as a fresh turn of its own.
- *
- * Otherwise, unheld:
- * - rule 2, a root tool in flight: every queued `next_boundary` entry, to be
- *   folded in at that tool's boundary;
- * - rule 3, the model only writing: nothing — entries stay editable;
- * - rule 4, the turn ended: every queued `next_boundary` entry, as one fresh
- *   turn;
- * - rule 5, settled with none of those left (idle, or a turn that was
- *   stopped or failed — not background work): the head `end_of_turn` entry,
- *   one per finish (the turn it starts makes the next finish a new one).
- */
+/** Forced entries go alone through a hold. Otherwise send boundary entries
+ * together at a root tool boundary or turn end, then one end-of-turn entry
+ * per settled turn. Text generation leaves entries editable. */
 export const nextAction = (
   entries: readonly Pick<QueueEntry, "id" | "state" | "delivery">[],
   hold: QueueHold | null,

@@ -7,7 +7,7 @@
  *
  * `ClaudeCliSim` models the CLI's cost ledger as SDK 0.3.282 documents it
  * (`SDKResultSuccess.total_cost_usd` / `modelUsage` in `sdk.d.ts`) and as the
- * CLI 2.1.280 was observed to behave (docs/cost-accounting-investigation.md):
+ * CLI 2.1.280 was observed to behave (docs/connectors.md#cost-accounting):
  * running totals per process covering main loop, subagents and compaction;
  * zeroed values on crash results; a `cost-state` stamp at a graceful exit that
  * `--resume` restores; `get_usage` reporting the restored ledger before the

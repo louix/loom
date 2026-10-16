@@ -19,13 +19,6 @@ import {
   taskOutputSchema,
 } from "./types.ts";
 
-// v4: `send` takes the queued input's `{ inputId, midTurn }`.
-// v5: `respondToAgentCall` answers a `loom-agents` tool call.
-// v6: `setBase` renames a live session's base.
-// v7: `refreshPlanUsage` polls a live session's plan windows; a `usage`
-//     utility worker answers `readPlanUsage` with a `planUsage` frame.
-// v8: `readTaskOutput` reads a background task's output tail, answered
-//     with a `taskOutput` frame; `send`'s options gain `now`.
 export const WORKER_VERSION = 8;
 export const MAX_FRAME_BYTES = 1024 * 1024;
 export const MAX_PENDING = 128;

@@ -1,13 +1,9 @@
 # Connectors
 
-## Worker migration
+## Worker boundary
 
-The CLI's mock/fake and Claude connectors run through `WorkerProvider`: a
-short-lived capability probe followed by one local Deno child per active session.
-Tests can still construct providers directly. Other connectors retain their
-existing in-process path until their migration lands. Claude model discovery,
-persisted-session enumeration and titling also run in dedicated short-lived
-workers; enumeration preserves the adapter's current empty-result behavior.
+Provider sessions run through worker transports; tests can construct providers
+directly. Discovery and titling use short-lived workers.
 
 The private protocol is in `core/src/worker.ts`; the worker entrypoint and framed
 transport live in `runtime/src/worker/`. The daemon owns the remote proxy and
@@ -65,81 +61,7 @@ Claude Code's claude.ai connectors are also off by default; see
 `providers.claude.claude_ai_connectors` is `true` (globally, on a profile, or in a
 `repos[]` override).
 
-Validation uses the installed real Claude SDK with a local CLI fixture, including
-discovery, permission/question/plan callbacks, filesystem and Loom Git tools,
-compaction, persisted SDK rewind, resume, profile sharing and process cleanup.
-This does not validate live provider authentication or token refresh.
-
-See [isolation](isolation.md) for current boundaries and remaining provider
-and daemon/TUI work. The connector-authoring
-interface below remains the worker-side interface during this migration.
-
-### External MCP workers
-
-Define every server under `mcp_servers.<name>`: `source.kind` says whether it
-is a host command (`command`), a separate offline packaged VM (`nix`,
-`runtime`) or a remote service (`http`). Select names with
-`session.mcp_servers` or `repos[].session.mcp_servers`. There are no implicit
-external tools. See [MCP servers](tools.md) and
-[packaged runtimes](packaged-runtimes.md). Each active session gets a separate
-relay for each remote service. Only selected remote credentials are required;
-inline `auth.bearer_token` overrides `auth.bearer_token_env`. `loom` is a
-reserved name.
-
-`default_for` declares capability preferences, not tool aliases. Supported values
-are `read`, `write`, `edit`, `find`, `grep`, `web_search` and `web_fetch`.
-Only one server may be the default for each capability. Omit it to mount a server
-without making it a default. Agents see the actual advertised tool names and
-schemas and instructions to prefer that server for the selected capabilities.
-Built-ins remain fallbacks where available, subject to the connector's existing
-tool settings. Permission checks are unchanged. This is agent guidance, not a
-guarantee that every call uses the preferred server.
-
-```jsonc
-{
-  "mcp_servers": {
-    "kagi": {
-      "source": { "kind": "http", "url": "https://mcp.kagi.com/mcp" },
-      "auth": { "bearer_token_env": "KAGI_API_KEY" },
-      "default_for": ["web_search", "web_fetch"],
-    },
-    "tilth": {
-      "source": { "kind": "command", "command": "tilth", "args": ["--mcp", "--edit"] },
-      "default_for": ["read", "write", "edit"],
-    },
-  },
-  "session": { "mcp_servers": ["tilth", "kagi"] },
-}
-```
-
-Kagi is a normal MCP server: its tools keep their advertised names, such as
-`kagi_search_fetch` and `kagi_extract`. Loom supplies no Kagi-specific wrappers
-or argument translations. `[[mcp]]` is rejected; use named definitions and
-explicit selections. Brave and Tavily are MCP servers in the same way (see
-[web search](tools.md#web-search)); Loom has no search backend of its own.
-
-Only the relay receives the upstream URL and HTTP credentials, over private
-stdin after a version handshake. Its launch policy grants the configured host
-and port plus an ephemeral loopback listener; it has no inherited environment,
-filesystem, subprocess, FFI or system grants. The connector receives a loopback
-HTTP endpoint and a random per-worker bearer token. This is an MCP transport,
-not a daemon admin endpoint. The URL and upstream credentials cannot be changed
-by requests. Redirects, browser Origin requests and sibling tokens are rejected.
-The proxy forwards MCP session/protocol headers and streams responses with
-backpressure. Requests are limited to 1 MiB, responses to 8 MiB, concurrency to
-32 and request/stream lifetime to 60 seconds.
-
-Close, connector event-stream completion and failed session construction release
-the relay. Unexpected relay exit closes its owning session and emits a fatal
-diagnostic; no tool call is retried. Daemon pipe EOF stops the relay, with a
-one-second shutdown limit. Resume creates fresh endpoints and tokens. The daemon
-supervises processes over stdio and does not perform their upstream HTTP calls.
-
-These are local Deno workers, not containers or microVMs yet. Loopback endpoints
-will need guest routing when the launcher gains VM support. The daemon still
-resolves credentials; unmigrated connectors still share its process, and native
-CLIs still have host authority. Removing explicit upstream keys from connector
-configuration does not prevent native code from reading host credentials.
+See [MCP servers](tools.md) for tool configuration and relay boundaries.
 
 A **connector** is a workspace member that teaches Loom to drive one kind of
 model backend:
@@ -174,30 +96,16 @@ Echo replies with `Echo: <your message>` and finishes each turn with zero usage
 and cost. It needs no credentials and runs locally (no VM backend). Omit the
 entry to hide it. Provider access rules still apply.
 
-## The layers
+## Dependencies
 
-```
-@loom/core        the seam — AgentProvider / AgentSession interfaces, the
-                  HarnessEvent union, ConnectorContext, TranscriptStore.
-                  No runtime dependency, no model SDK.
-   ▲
-@loom/aisdk       the shared Vercel AI SDK engine — AisdkSession (owns the
-   ▲              ModelMessage[], the permission gate, compaction, plan mode,
-   │              sub-agents), the first-party bash/edit/grep tools,
-   │              and makeAisdkProvider(opts, store). Deps: `ai`, `@ai-sdk/mcp`.
-   │
-@loom/connector-generic / -gemini    each owns the one `@ai-sdk/*` model factory
-                  its backend needs and calls makeAisdkProvider.
-@loom/connector-chatgpt             vendors a v5-compatible Codex OAuth adapter.
-@loom/connector-claude               wraps @anthropic-ai/claude-agent-sdk directly.
-```
+`@loom/core` defines `AgentProvider`, `AgentSession`, `HarnessEvent` and
+`ConnectorContext` without importing model SDKs. Generic and Gemini connectors
+use the shared `@loom/aisdk` engine; Claude wraps its agent SDK; Codex drives
+`codex app-server`.
 
-`@loom/daemon` depends on none of these. The `loom` CLI passes it a
-**`ConnectorManifest`** — `{ "@loom/connector-x": () => import("@loom/connector-x"), … }` —
-and `ProviderRegistry` invokes a thunk only when a session first uses that
-provider. So a Claude-only daemon never evaluates `ai`; an aisdk-only daemon
-never evaluates `@anthropic-ai/claude-agent-sdk`. `test/lazy-providers.test.ts`
-guards it.
+The CLI supplies a lazy `ConnectorManifest` to the daemon. An unused provider's
+SDK is never evaluated (`test/lazy-providers.test.ts`), though Deno installs
+all workspace dependencies.
 
 ## Writing a connector
 
@@ -292,15 +200,10 @@ directory is used consistently for discovery and for every spawned
 always authenticate against the same `auth.json`.
 
 Run it with `loom run --provider codex "…"`, or set
-`default_provider = "codex"` in the same configuration file.
+`"default_provider": "codex"` in the same configuration file.
 
-The connector follows each model's `tool_mode` metadata. Models without
-`code_mode_only` accept Loom's normal functions, so they can use MCP, web
-search, plan tools, and sub-agents (all still governed by Loom's permission
-gate). `code_mode_only` models start the local `codex app-server` binary, which
-in turn starts Codex's Code Mode host and provides its native patching,
-approvals, steering, and sub-agent tools. Install `codex` and run `codex login`
-before using one.
+Sessions run through `codex app-server`, including Code Mode models. Install
+`codex` and run `codex login` before using the connector.
 
 Set `cli_path` in `providers.codex` or one of its profiles
 when `codex` is not on `PATH`:
@@ -320,11 +223,10 @@ with the session's configured Loom mounts. Its tilth / fff servers therefore do
 not come from `~/.codex/config.toml`, and Codex approval callbacks are routed
 back through Loom's existing permission UI. HTTP MCP mounts use session relays;
 the native client receives a local access token rather than the upstream key.
-Set `builtin_web_search = true` to also expose Codex's native web search.
+Set `"builtin_web_search": true` to also expose Codex's native web search.
 
-This is a vendored compatibility connector over the private Codex backend,
-rather than the public OpenAI API. That backend and its accepted model IDs can
-change independently of Loom; model discovery avoids stale IDs.
+The native app-server protocol and authenticated model catalogue can change
+independently of Loom; discovery avoids hard-coded model IDs.
 
 ## Worktrees
 
@@ -337,3 +239,39 @@ volume falls back to copying.
 Loom's own session worktrees (`$XDG_DATA_HOME/loom/worktrees/<repo>-<hash>/<slug>`) never run an install: the
 daemon resolves its imports from where it was launched, and an agent's `bash` /
 `git` calls just need a working directory.
+
+## Cost accounting
+
+Context occupancy is the last main-loop request's input size; compaction can
+lower it without reducing spend. Usage deltas count new pipeline activity,
+including native sub-agents and compaction where reported. Provider totals
+belong to one provider session ID; Loom session cost accumulates deltas across
+processes. Subscription quota windows are separate from dollar estimates.
+
+Provider cost is an API-equivalent estimate, not a subscription bill. The UI
+distinguishes reported, table-estimated, mixed, partially unpriced and unavailable
+cost. Storage remains per session; supervisor totals are display aggregates.
+
+Claude restores `total_cost_usd` and `modelUsage` from history. Before releasing
+a resumed query's first prompt or mapping results, Loom seeds its baseline with
+`get_usage`, emitting no usage. The hold expires after ten seconds; late seeds
+are ignored because a turn may already be running.
+
+If that experimental API fails, use persisted `usage.provider_total` only for a
+matching provider ref. After a crash, the CLI can restore an older stamp; the
+fallback then undercounts until spend passes Loom's last observation. This is
+an accepted trade-off to avoid charging history twice.
+
+- Difference cumulative reports against a high-water baseline; duplicates,
+  partial reports and smaller totals alone do not start a new ledger.
+- Explicit `conversation_reset` carries charged spend and clears the baseline.
+  Query replacement carries only post-seed spend.
+- Forward trailing usage after interruption; it can contain real spend.
+- Persist provider-ref changes after undo, clear and fresh implementation so
+  resume and fallback refer to the same ledger.
+- Native forks seed copied history without inheriting the source Loom cost.
+
+Pre-fix stored totals cannot be repaired from the database alone.
+Implementation lives in `connectors/claude/src/{adapter,map}.ts` and
+`backend/daemon/src/store/sessions.ts`. The cost-accounting fixtures model
+CLI 2.1.280's restore/reset behavior, not captured model traffic.

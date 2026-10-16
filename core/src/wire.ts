@@ -8,44 +8,12 @@ import { modelChoiceSchema } from "./model-catalogue.ts";
 import { sessionQueueSchema } from "./message-queue.ts";
 import { agentProfileInfoSchema } from "./agents.ts";
 
-/**
- * Loom's client<->daemon wire protocol: newline-delimited JSON over a Unix
- * domain socket. One connection multiplexes two logical channels:
- *
- *   - request / response  (client -> daemon -> client), correlated by `id`
- *   - a server -> client push stream of events, each stamped with a monotonic `seq`
- *
- * Every frame is a single JSON object on its own line. `kind` discriminates.
- */
+/** NDJSON over a Unix socket: requests correlate by id; event seq is diagnostic only. */
 
-/**
- * v2 replaced the per-session `session_updated` / `session_removed` /
- * `providers_updated` pushes with one whole-fleet `state` snapshot. A v1 client
- * would sit with an empty fleet forever, so the mismatch has to be loud.
- */
-// v3 returns all search IDs in one response instead of paginating them.
-// v4 reconnects from a fresh snapshot and durable history; no transport replay.
-// v5 queues every `session.send` daemon-side (`SessionSnapshot.queue`); a
-// queued message reaches the log only once the agent has taken it.
-// v6 adds `interrupted` by `supervisor` (a Loom agent stopped by the session
-// supervising it), a state a v5 client cannot parse.
-// v7 spells host execution `none`, not `local` (session `isolation`,
-// `defaultIsolation`, `defaultWorkspace`), as the config does.
-// v8 drops the doctor report's `webSearch` (Loom's own search backend is gone),
-// which a v7 TUI reads unconditionally.
 export const PROTOCOL_VERSION = 8;
 
-/**
- * Hard cap on a single newline-delimited frame (bytes). Enforced identically on
- * both ends of the socket — a peer that sends a frame this large (or a stream
- * with no newline) is buggy or hostile, so the reader drops the connection
- * rather than grow its buffer without bound.
- */
+/** Disconnect peers exceeding this frame/buffer bound, including streams with no newline. */
 export const MAX_FRAME_BYTES = 16 * 1024 * 1024;
-
-// ---------------------------------------------------------------------------
-// Request / response
-// ---------------------------------------------------------------------------
 
 export const requestFrameSchema = z.object({
   kind: z.literal("req"),
@@ -84,19 +52,7 @@ export const wireErrorSchema = z.object({
 });
 export type WireError = z.infer<typeof wireErrorSchema>;
 
-// ---------------------------------------------------------------------------
-// Transcript
-// ---------------------------------------------------------------------------
-
-/**
- * Durable identity of one transcript entry: the daemon's `session_events`
- * rowid. Assigned by the insert, so it is stable across daemon restarts and
- * totally ordered within a session — which event timestamps are not, since a
- * burst shares one millisecond and a provider can report them out of order.
- * The same id rides the live {@link EventPush} and the {@link HistoryPage}
- * that carry the entry, so a client merges the two by identity rather than by
- * guessing from timestamps.
- */
+/** Durable session_events rowid; merges live/history entries across restarts. Timestamps are not unique or ordered. */
 export const transcriptIdSchema = z.int().positive();
 export type TranscriptId = z.infer<typeof transcriptIdSchema>;
 
@@ -134,10 +90,6 @@ export const historyPageSchema = z.object({
 });
 export type HistoryPage = z.infer<typeof historyPageSchema>;
 
-// ---------------------------------------------------------------------------
-// Cross-session search
-// ---------------------------------------------------------------------------
-
 /** Ranked matches. Session display metadata comes from the fleet snapshot. */
 export const searchResultSchema = z.object({
   query: z.string(),
@@ -145,11 +97,6 @@ export const searchResultSchema = z.object({
 });
 export type SearchResult = z.infer<typeof searchResultSchema>;
 
-// ---------------------------------------------------------------------------
-// Server -> client push stream
-// ---------------------------------------------------------------------------
-
-/** A normalized harness event, forwarded to every attached client. */
 export const eventPushSchema = z.object({
   kind: z.literal("push"),
   seq: z.number(),
@@ -157,13 +104,7 @@ export const eventPushSchema = z.object({
   epoch: z.string(),
   type: z.literal("event"),
   event: harnessEventSchema,
-  /**
-   * The entry's durable {@link TranscriptId} — the same id `session.events`
-   * returns for it, so a live frame and a history page dedupe against each
-   * other. Absent iff the daemon did not persist this event: status and
-   * compaction heartbeats have no durable row, and nothing downstream may
-   * manufacture one for them.
-   */
+  /** Same durable ID as history pages. Absent for unpersisted events; never synthesize one. */
   id: transcriptIdSchema.optional(),
 });
 export type EventPush = z.infer<typeof eventPushSchema>;
@@ -181,16 +122,7 @@ export const noticePushSchema = z.object({
 });
 export type NoticePush = z.infer<typeof noticePushSchema>;
 
-/**
- * The daemon's complete authoritative state. Every push carries the whole
- * thing and *replaces* the client's copy — there are no deltas, no versions and
- * no replay, so a client that has just attached and one that has been
- * connected for hours converge on exactly the same value.
- *
- * Deliberately outside the `seq`-stamped event stream: a
- * snapshot is only ever interesting when it's the current one, so buffering old
- * ones to replay after a reconnect would cost memory to deliver staleness.
- */
+/** Replace the client's whole fleet state. Snapshots bypass event sequencing/replay: only the latest matters. */
 export const statePushSchema = z.object({
   kind: z.literal("push"),
   type: z.literal("state"),
@@ -212,10 +144,6 @@ export const frameSchema = z.union([
   statePushSchema,
 ]);
 export type Frame = z.infer<typeof frameSchema>;
-
-// ---------------------------------------------------------------------------
-// Snapshots
-// ---------------------------------------------------------------------------
 
 /**
  * Where a new session works: its own `worktree` + branch, a `clone` (a VM's
@@ -260,7 +188,6 @@ export const daemonInfoSchema = z.object({
 });
 export type DaemonInfo = z.infer<typeof daemonInfoSchema>;
 
-/** Everything a client needs to render the fleet. See {@link StatePush}. */
 export const daemonSnapshotSchema = z.object({
   daemon: daemonInfoSchema,
   providers: z.array(z.lazy(() => providerInfoSchema)),
@@ -446,16 +373,7 @@ export const sessionSnapshotSchema = z.object({
 });
 export type SessionSnapshot = z.infer<typeof sessionSnapshotSchema>;
 
-// ---------------------------------------------------------------------------
-// cache / usage stats (`stats.models`)
-// ---------------------------------------------------------------------------
-
-/**
- * Token usage attributed to one provider+model. `SessionSnapshot.usage` is per
- * session and a session can change model mid-life, so its totals are a mixture;
- * these rows are the breakdown, and answer "is this model caching at all, and
- * for how long".
- */
+/** Per-provider/model breakdown; a session's totals may mix models. */
 export const modelUsageSchema = z.object({
   provider: z.string(),
   /** "" when the provider never reported one. */
@@ -484,10 +402,6 @@ export const modelUsageSchema = z.object({
 });
 export type ModelUsage = z.infer<typeof modelUsageSchema>;
 
-// ---------------------------------------------------------------------------
-// hello handshake
-// ---------------------------------------------------------------------------
-
 export const helloParamsSchema = z.object({
   protocolVersion: z.number(),
   /** Stable id for this client instance; used in change attribution. */
@@ -495,7 +409,6 @@ export const helloParamsSchema = z.object({
 });
 export type HelloParams = z.infer<typeof helloParamsSchema>;
 
-/** One row in the model picker; defined with the catalogue it belongs to. */
 export { modelChoiceSchema };
 export type { ModelChoice } from "./model-catalogue.ts";
 
@@ -577,10 +490,6 @@ export const providerInfoSchema = z.object({
     .optional(),
 });
 export type ProviderInfo = z.infer<typeof providerInfoSchema>;
-
-// ---------------------------------------------------------------------------
-// daemon.doctor — diagnostics
-// ---------------------------------------------------------------------------
 
 /** One connector package the daemon can load lazily, for `daemon.doctor`. */
 export const doctorConnectorSchema = z.object({

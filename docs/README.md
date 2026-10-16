@@ -16,12 +16,14 @@ Start with the guide for the task at hand:
 
 For contributors:
 
-- [Connector contract](connectors.md)
+- [Agent supervision](loom-agents.md)
+- [Message queue](message-queue.md)
+- [Connector contract and cost accounting](connectors.md)
 - [HTTP MCP OAuth internals](mcp-oauth.md)
-- [TUI state, ordering and request feedback](tui-state.md)
-- [Event-stream Markdown rendering](events-markdown.md)
+- [TUI state, ordering and rendering](tui-state.md)
 - [Remaining work](roadmap.md)
-- [Config cleanup proposal](config-cleanup-proposal.md)
 
-Keep current behavior in these guides and outstanding work in the roadmap.
-Completed plans, spikes and dated reviews belong in Git history.
+Document usage, contracts, design rationale, accepted trade-offs and unresolved
+issues. Keep each fact in one place. Omit implementation narration, completed
+plans and verification diaries; Git history and tests retain that evidence.
+Comments should explain constraints or why code exists, not restate it.

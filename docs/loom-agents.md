@@ -1,461 +1,149 @@
-# Loom agents: sessions that supervise sessions
+# Loom agents
 
-Status: design, agreed 2026-10-11; stage 1 implemented (see Stages).
-
-## Goal
-
-Let a session start and manage other sessions as its sub-agents, using
-reusable agent profiles, so a user-facing coordinator can hand implementation
-to a cheaper model and review to a sceptical one, while the user can still see,
-steer and interrupt every sub-agent. This replaces the providers' own sub-agents,
-whose worktrees under `<repo>/.claude/worktrees` currently trip Loom's
-writes-outside-the-workspace permission.
-
-Typical shape (flat, not deep chains):
-
-| Profile     | Example model    | Role                                                                   |
-| ----------- | ---------------- | ---------------------------------------------------------------------- |
-| coordinator | OpenAI Astra 6   | Talks to the user, plans, steers and reviews; does little work itself  |
-| implementer | Anthropic Sonnet | Cheap; given a specific, verifiable task                               |
-| verifier    | Anthropic Opus   | Sceptical review of a reported commit; reports pass/fail with findings |
-
-## Model
-
-- Terms: a sub-agent is a Loom session another session supervises, and that
-  session is its supervisor; a provider sub-agent is Claude's or Codex's own;
-  an agent, alone, is the AI agent working in a session.
-- A sub-agent is an ordinary session with a `supervisor_id`. This is
-  separate from `parent_id`, which records fork lineage. It keeps its own
-  transcript, status, queue, workspace and cost, and the user can message,
-  steer, interrupt or archive it like any session.
-- Provider sub-agents are disabled for every session, always: Claude
-  without its `Agent` tool; Codex without its `spawn_agent` tools (the exact
-  Codex switch is to be confirmed). Background shell tasks are unaffected.
-- Every session gets the Loom agents MCP server (`loom-agents`) unless its
-  profile's `mcp_servers` leaves it out, or it is already at `agents.max_depth` (default 2: a
-  supervisor and its sub-agents; configurable). A supervision cycle is refused.
-- Sub-agents follow their supervisor's isolation (local or VM) and workspace
-  kind; profiles have no isolation settings.
+A sub-agent is an ordinary Loom session with its own workspace, transcript,
+queue and cost. `supervisor_id` records supervision; `parent_id` records
+fork lineage. The user can message, interrupt or archive either session.
 
 ## Profiles
 
-Defined in the Loom user config, globally and per repository (`repos[]`),
-validated by the config schema and against the configured providers, skills
-and MCP servers:
+Define profiles globally or under `repos[]` in the user config:
 
 ```jsonc
-"agents": {
-  "max_depth": 2,
-  "profiles": {
-    "implementer": {
-      "description": "Cheap; give it a specific, verifiable task",
-      "provider": "claude:personal",
-      "model": "claude-sonnet-5-5",
-      "effort": "medium",
-      "mode": "auto",
-      "mcp_servers": { "deny": ["loom-agents"] },  // every session MCP server; it cannot spawn
-      "skills": [],
-      "prompt": "You implement exactly the task you are given…"
-    }
-  }
+{
+  "agents": {
+    "max_depth": 2,
+    "profiles": {
+      "implementer": {
+        "description": "Implement a specific task",
+        "provider": "claude:personal",
+        "model": "claude-sonnet-5-5",
+        "effort": "medium",
+        "mode": "auto",
+        "mcp_servers": { "deny": ["loom-agents"] },
+        "skills": [],
+        "prompt": "Implement the task and report how you verified it.",
+      },
+    },
+  },
 }
 ```
 
-Fields: `description` (what supervisors read when choosing), provider/profile,
-model, effort, mode, MCP server allow/deny lists (`mcp_servers`), skills, tool
-allow/deny lists (`tools`), and an inline `prompt` appended to the agent's own.
-A separate prompt file may come later. The new-session prompt lists the
-profiles under the providers (`⌥p`); no profile means today's settings.
+The built-in `self` profile inherits the supervisor's settings. Unset profile
+fields inherit where applicable; a child of a plan-mode supervisor defaults to
+normal mode. A profile changing provider uses that provider's model defaults.
 
-The CLI can start the same configured profiles with `loom run --profile NAME
-"prompt"`. The profile supplies its provider, model, mode, prompt, MCP servers,
-skills and tools; `--model`, `--mode`, and workspace/isolation flags override
-the corresponding session settings. A profile's provider cannot be overridden
-with a different `--provider`; a profile without a provider follows the chosen
-provider. `self` is only meaningful to a running supervisor and is not accepted
-by `loom run`.
+`mcp_servers` accepts `allow` and `deny` lists. Omitted means all session
+servers plus `loom-agents`, subject to `max_depth` (default 2).
+An allow list must name `loom-agents` to permit spawning; deny wins.
+`tools` filters built-ins; `skills` selects skills. Providers that cannot honor
+these restrictions reject the profile.
 
-`mcp_servers` is shaped like `session.provider_access`. Omitted, the agent gets
-every session MCP server and `loom-agents` (still subject to
-`agents.max_depth`). `{ "allow": [...] }` keeps only the servers it names,
-`loom-agents` included only if named; `{ "deny": [...] }` withholds the ones
-it names, after `allow`. Each name must be one of the session's MCP servers or
-`loom-agents`. A list (`"mcp_servers": ["tilth"]`) is rejected: write
-`{ "allow": ["tilth"] }`.
+Claude skills load from `<config_dir>/skills/<name>/SKILL.md`, even when
+`setting_sources` excludes user settings. Loom copies only selected skills
+into a session plugin (`loom:<name>`); missing skills fail startup.
 
-```jsonc
-"mcp_servers": { "allow": ["tilth", "loom-agents"] }  // tilth, and it may spawn
-"mcp_servers": { "deny": ["kagi"] }                    // everything but kagi
-```
+Profiles whose providers are excluded by repository `session.provider_access`
+are unavailable, including on resume. A repository-local profile naming a
+provider that repository denies is a configuration error.
 
-A built-in `self` profile is always offered: the spawning session's own
-provider, model, effort and mode, with no extra prompt. It is what a session
-uses when no profiles are configured, or when none fits.
-
-A profile is available in a repository only when `session.provider_access`
-there allows its provider — its own, or the spawner's when it names none. A
-global profile on a provider a repository does not allow is simply absent
-there: `agents_profiles` does not list it, `agent_start` refuses it, the
-new-session `⌥p` list does not offer it, and it is not checked against that
-provider. A session that already runs as such a profile is not resumed or
-switched to another provider: Loom refuses with the reason rather than run it
-without the profile's tool, MCP and prompt restrictions. A profile in a
-repository's own `repos[]` entry that names a provider the same repository
-disables contradicts itself and is a config error. `self` is always available.
+Use `loom run --profile NAME "task"` or the new-session `⌥p` picker.
+CLI model/mode/workspace/isolation flags override profile defaults; a profile's
+explicit provider cannot be overridden. `self` requires a running supervisor.
 
 ## Agent tools (MCP server `loom-agents`)
 
-| Tool                                          | Purpose                                                                                                                         |
-| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `agents_profiles`                             | List profiles with descriptions, to choose a sub-agent                                                                          |
-| `agent_start(profile, task, title, task_id?)` | Start a sub-agent; returns its id                                                                                               |
-| `agent_message(id, text, delivery)`           | Steer a sub-agent through its queue (next boundary or end of turn)                                                              |
-| `agent_status(id?)`                           | Status, last turn summary, diff stats, cost                                                                                     |
-| `agent_read(id, since?)`                      | A bounded transcript excerpt or the final message                                                                               |
-| `agent_interrupt(id)`, `agent_stop(id)`       | Stop a turn; archive the sub-agent                                                                                              |
-| `agent_wait(ids, until, timeout)`             | Optional blocking wait                                                                                                          |
-| `agent_merge(id)`                             | Bring a sub-agent's branch into the supervisor's branch (fast-forward/rebase); on conflict, report the files and change nothing |
-| `report(status, summary, commit?, verdict?)`  | Given to sub-agents: explicit hand-back to the supervisor                                                                       |
+| Tool                                          | Purpose                                                         |
+| --------------------------------------------- | --------------------------------------------------------------- |
+| `agents_profiles`                             | List available profiles                                         |
+| `agent_start(profile, task, title, task_id?)` | Start a child and return its ID                                 |
+| `agent_message(id, text, delivery)`           | Queue a message at the next boundary or end of turn             |
+| `agent_status(id?)`                           | Inspect state, Git changes and cost                             |
+| `agent_read(id, since?)`                      | Read the final message or a transcript page, bounded to 16 KB   |
+| `agent_interrupt(id)`                         | Stop the child's turn                                           |
+| `agent_stop(id, discard?)`                    | Archive; refuse uncommitted changes unless explicitly discarded |
+| `agent_wait(ids, until?, timeout?)`           | Wait for any/all children; default 60 s, maximum 600 s          |
 
-`task_id` groups the runs of one task (e.g. implementer then verifier rounds)
-for statistics.
+A supervisor may act only on its own children. `task_id` groups repeated runs
+of a task. Prefer starting children and ending the turn: notifications wake the
+supervisor without polling.
+
+Claude mounts an in-process MCP server, AISDK mounts plain tools, and Codex
+uses dynamic tools registered at thread creation. Calls park as `agent_call`
+events for the daemon to execute and answer.
 
 ## Workspaces
 
-A sub-agent always gets its own Loom workspace, with its supervisor's isolation:
+Children inherit isolation and get independent worktrees: from repository HEAD
+for an in-place supervisor, or from a worktree supervisor's branch.
+Uncommitted changes do not carry over; commit before spawning.
+Renaming the supervisor's branch updates child bases.
 
-| Supervisor | Sub-agent                                          |
-| ---------- | -------------------------------------------------- |
-| in-place   | worktree from the repository's current HEAD        |
-| worktree   | worktree from the supervisor's branch              |
-| clone (VM) | worktree off the supervisor's clone, in its own VM |
-
-A clone session's clone lives on the host under its session VM directory
-(`~/.local/state/loom/session-vms/<repo>/<id>/`) and is mounted into its VM; the
-host never runs Git against a clone, whose `.git` the guest controls. A clone
-sub-agent's VM mounts the supervisor's clone at the same guest path (Git worktrees
-record absolute paths) and creates its worktree with `git worktree add` inside
-the guest. The sub-agent gets no access to host `.git`, like its supervisor; it can
-reach the supervisor's clone, which shares its trust domain. Commits land in
-the supervisor's clone, so `agent_merge` is a local merge there and nothing is
-published to the host first. Two guests share that `.git` through Git's own
-locks, with one index per worktree.
-
-Sub-agents start from the supervisor's last commit; uncommitted supervisor
-changes do not carry over, so `agent_start` warns about them. A verifier gets
-its own read-only workspace at the commit the implementer reported, rather than
-a live view of the implementer's worktree. Each sub-agent has its own VM; running
-sub-agents inside the supervisor's VM is a later shared-VM feature.
+Private-clone supervisors cannot yet spawn children. Read-only verifier
+workspaces, shared VMs and automatic branch merging are also not implemented.
 
 ## Communication
 
-- Down: the supervisor's messages enter the sub-agent's queue (A9), labelled as
-  coming from the supervisor. The user can message a sub-agent directly too. A
-  sub-agent the user stopped stays stopped: the supervisor's message waits behind
-  the user's hold, and only the user's send or release lifts it. Any other
-  hold the supervisor's message lifts, going first as the user's send would:
-  one its own stop (`agent_interrupt`) set, and Loom's own (a crash, a
-  restart, a doubtful hand-over), reviving a cold sub-agent to recover it. The
-  hold records whose it is ([message-queue.md](message-queue.md#holds));
-  `agent_message`'s answer names the hold it found and whether the message
-  waits behind it.
-- Up: event-driven, never streamed output. The supervisor gets a short
-  notification when a sub-agent calls `report`, finishes a turn, or fails or is
-  interrupted — once per settled turn, identified by the turn rather than the
-  state it settled in, with that turn's own final message; a turn the sub-agent
-  has already moved on from is reported when the one it moved on to ends
-  (the sub-agent's queue machine decides both: `turn_settled` and
-  `report_ready` in [message-queue.md](message-queue.md#holds)). It reads:
+Supervisor messages enter the child's [queue](message-queue.md#holds).
+They lift supervisor/Loom holds and can revive a cold child, but wait behind
+a user's stop. Only the user's send or release lifts a user hold.
 
-  ```text
-  [from your sub-agent 7ea89088 "Title" (profile self)] It finished a turn.
-  Its workspace: 1 commit ahead of its base, nothing uncommitted.
-  Summary: <first line of the sub-agent's final message>
-  For full details: run `agent_read` with id `<full sub-agent id>`
-  ```
+A settled child turn produces one notification containing its outcome, Git
+status and the first non-empty line of its final message (at most 2 KB).
+Use `agent_read` for the rest. Reports identify the settled turn, so a delayed
+report cannot be mistaken for the outcome of a newer turn.
 
-  The first line names the event (`It failed: <message>.`,
-  `It was interrupted (user).`). The summary is the first non-empty line of the final
-  message, cut at 2 KB and labelled `Summary (truncated):` when longer, and
-  left out when there is no final message; Loom writes no summary of its own.
-  A sub-agent's instructions ask it to make that line a one-sentence summary of
-  the outcome, with the details after it. The notification is built from one structured value (`LoomMessage`,
-  `core/src/loom-message.ts`): its text and the `loomMessage` field stored with
-  the queue entry and the `user_message` event come from it. In the TUI, the `chat` log filter
-  shows the message, once taken up, as one dim line (`⤴ sub-agent finished · <title>`,
-  `failed` or `interrupted`) drawn from that field, and hides it while it is still
-  queued; the more detailed filters show it in full, as does any message recorded
-  without the field. The archive reminder is a `LoomMessage` too and is shortened
-  the same way (`⤴ 2 finished sub-agents not archived`).
+Notifications are end-of-turn queue entries: they wake an idle supervisor,
+wait behind busy work, and never lift any hold. Failed supervisor revival keeps
+the report queued for a later resume. A supervisor's own stop is not reported
+back to it; a user's stop and failures are.
 
-  It is queued as an end-of-turn entry labelled as coming from the sub-agent: a busy supervisor is not interrupted, an idle one is
-  woken (a cold one revived), and one the user stopped stays stopped. A user's
-  stop — an interrupt, an archive, a VM stop — always holds the supervisor's
-  queue, empty or not, before the close awaits anything
-  ([message-queue.md](message-queue.md#interrupt)), so the notification is
-  just an entry behind the hold: it revives nothing, starts no turn and
-  releases nothing. It waits behind any hold, a crashed supervisor's too.
-  Whether the queue is held is decided as the entry is
-  queued, so a stop that lands while a cold supervisor is coming back for it
-  still holds it. The user's send or release (`r`) revives a cold supervisor
-  and delivers. A supervisor that cannot be revived for it keeps it queued
-  (H5): it goes, once, when the supervisor next runs. A sub-agent waiting for
-  input (a permission or a question) is not notified: both go to the user, so
-  the supervisor could not act on it, and the fleet already shows the
-  sub-agent waiting, on its row and its supervisors'.
-  Waits stay unnotified until supervisor question handling is designed.
-
-- Nor is a stop the supervisor made itself (`agent_interrupt`, `agent_stop`)
-  notified: the tool's answer already says so. Who asked for a stop travels
-  with what it ends in: the sub-agent is `interrupted` by `supervisor` (not
-  `user`), and a failure its turn ends in after the supervisor's stop — a late
-  error from the adapter, a stream that breaks as `agent_stop` closes it — is
-  attributed to the supervisor too, until the sub-agent's next turn starts. A
-  user's stop is reported, including one that joins the supervisor's while
-  it is under way; so are crashes and failures.
-- A sub-agent gets no automatic commit reminder (`session.commit_reminder`) or
-  auto-rebase nudge (`session.auto_rebase`): its turn end is simply its turn end, so
-  a notification and `agent_wait` see it at once. A clean auto-rebase still
-  moves its branch; a dirty or conflicted one leaves it alone, unannounced.
-  Instead, the finished-turn notification says what the sub-agent's workspace
-  holds — commits ahead of and behind its base, and whether it has
-  uncommitted changes — and the supervisor decides whether to ask for a
-  commit or a rebase. Top-level sessions keep both nudges.
-- Recommended pattern: start sub-agents, end the turn, be woken by
-  notifications; `agent_wait` exists for short waits.
-- Questions and permissions: tool permissions always go to the user. Until a
-  dedicated design exists, a sub-agent's questions also go to the user. How a
-  supervisor receives and answers its sub-agents' questions, and which tools it
-  uses for that, needs its own design rather than reusing `ask_user`.
+Questions and permissions go to the user, not the supervisor. Sub-agents get
+no automatic commit reminder or conflicted-rebase nudge: the supervisor sees
+their Git status and decides what to request. Clean auto-rebase still applies.
 
 ## Lifecycle
 
-- Interrupting a supervisor leaves its sub-agents running; they are independent
-  sessions.
-- Archiving or deleting a supervisor asks whether to stop its sub-agents or
-  detach them.
-- A supervisor archives its sub-agents with `agent_stop` once their work is
-  merged or abandoned; `agent_start`, `agent_stop` and a nested supervisor's
-  own note say so. Since supervisors tend not to, Loom reminds them
-  (`[archive_reminder]`): when a supervisor's turn ends idle — top-level or
-  nested, at the same point as the commit reminder, and only on a turn end
-  that sent no rebase or commit nudge — it gets one Loom message (automated,
-  like the commit reminder) naming its sub-agents that have finished (idle,
-  failed or interrupted; not starting, running, working in the background,
-  waiting for the user, or archived) and that it has not been reminded of,
-  each with whether its branch is merged into the supervisor's, how many
-  commits are not, and whether it has uncommitted changes:
+Interrupting a supervisor leaves its children running. Archiving/deleting it
+requires choosing `children: stop | detach` (CLI `--children`, TUI confirm).
+Detach is the default.
 
-  ```text
-  [loom] You have 2 sub-agents that have finished and are not archived: 7ea89088 "Widget" (idle, branch merged); 1c0ffee5 "Gadget" (failed, 2 commits not merged into yours, uncommitted changes). Archive each with agent_stop once its work is merged or no longer needed, or keep it if you will message it again. You won't be reminded about these again.
-  ```
+Archive children once their work is merged or abandoned. Loom reminds an idle
+supervisor once per finished child, after pending reports have been consumed.
+The reminder waits while either queue has pending work and never bypasses a
+hold. Reminder state persists across daemon restarts.
 
-  Each sub-agent is named once (`archive_reminded` on its row, so a restart does
-  not repeat it). A sub-agent whose report the supervisor has not taken up yet —
-  still being made, or waiting in the supervisor's queue — waits for a later
-  turn end, as does one with messages waiting in its own queue. The reminder
-  goes straight to the session, not through its queue, so it never lifts or
-  passes a hold: while the supervisor's queue is held, or has entries
-  waiting (they start its next turn), nothing is sent and the next turn end
-  decides again. The decision is a pure function over the sub-agents' states
-  (`archiveReminder`, `backend/daemon/src/daemon/archive-reminder.ts`),
-  taken as the turn ends and again once the sub-agents' Git facts are read;
-  the message goes only if the supervisor is still idle in that turn's
-  spell. A session with no sub-agents is unaffected.
-
-- A daemon restart resumes supervisors and sub-agents like any session; queued
-  notifications persist with the A9 queue.
-- Notification hooks (`hooks` with `run`, e.g. a desktop toast) don't fire for
-  a sub-agent's turn ends or other events, which its supervisor handles, but do
-  fire on `waiting`: a sub-agent's permission prompts and questions come to the
-  user. Hooks get `LOOM_SESSION_SUPERVISOR` (empty for top-level sessions).
-
-## Reparenting
-
-- Supervise: on a running session A, choose a profile and write a prompt. Loom
-  starts B, makes A its sub-agent, and seeds B with the prompt, a summary of A (the
-  fork handoff's transcript-to-context path) and A's status. A keeps running;
-  from then on its notifications go to B.
-- Detach: the reverse.
+Sub-agent hooks fire for `waiting`, because the user must answer, but not
+for ordinary turn ends. Hooks receive `LOOM_SESSION_SUPERVISOR`.
 
 ## Fleet
 
-Sub-agents are listed nested under their supervisor, sorted like the fleet's
-own rows (status, then latest turn boundary), and reached like background
-tasks: `↑`/`↓` walk the top-level rows, `→` enters a session's tasks and
-then its sub-agents, `←`/`Esc` step back out. Selecting one gives the full
-session with all controls. Archived sub-agents stay hidden until the supervisor
-is entered, then follow the open ones, dimmed. The supervisor row's cost is
-`Σ` its own plus its sub-agents', as a display total only; the stored costs
-stay per session.
+`→` enters children, `↑↓` selects one, and `←` returns.
+Each child retains full session controls. Archived children appear dimmed
+after open children when the supervisor is expanded.
 
-A supervisor whose own turn has ended shows as background work while any
-sub-agent is running or working in the background. A sub-agent at any depth waiting
-on the user (a question or a permission prompt — these come to the user, not
-the supervisor) raises every supervisor above it into needs input, over its
-live turn or background work. A question, error or stop of the supervisor's
-own still shows as itself, and an archived one stays archived; the table is
-`SHOWN` in `frontend/tui/src/fleet-status.ts`. A sub-agent's failures show only
-on the sub-agent's row.
-
-The supervisor row marks sub-agents waiting on the user with `?N` (N counts
-every waiting descendant), apart from its own glyph, which is its own
-question:
-
-    ◆ 7021fd6c      Coordinate the review              ?2 Σ$1.40
-
-Its Detail names them, `? 2 sub-agents waiting on you: <id> <title>, …  → opens`;
-the question is answered on the sub-agent's own row.
-
-All of this is the fleet's reading only: the supervisor's state stays idle,
-which is what lets the queue hand it its sub-agents' reports while others
-still run, and the desktop `waiting` hook still fires for the sub-agent alone.
-
-## Data, not statistics UI
-
-No statistics views or export: the facts live in `loom.db` for later ad hoc
-queries. Each session records its `supervisor_id`, profile and `task_id`
-alongside the model, usage and cost it already has; `report` calls, supervisor
-messages, interrupts and outcomes are ordinary session events.
-
-## Stages
-
-1. Provider sub-agents disabled for all sessions; profiles in config with the
-   built-in `self`; profiles in the new-session prompt's `⌥p` list; `supervisor_id`,
-   depth limit and nested fleet; `agents_profiles`, `agent_start`,
-   `agent_message`, `agent_status`, `agent_read`, `agent_interrupt`,
-   `agent_stop`; supervisor notifications; lifecycle defaults. Sub-agents of
-   in-place and worktree supervisors (local or VM) get worktrees.
-2. Clone sub-agents (worktree off the supervisor's clone), the read-only verifier
-   workspace, `agent_merge`, reparenting.
-3. `report` outcomes as events; supervisor question handling once designed;
-   optional concurrency limits.
-
-### Stage 1 as built
-
-- Provider sub-agents: Claude runs with `disallowedTools` `Agent` and `Task`;
-  aisdk sessions lost their `task` tool; Codex app-servers start with
-  `-c features.multi_agent=false` and
-  `-c features.multi_agent_v2={enabled=false, max_concurrent_threads_per_session=1}`
-  (start, resume and fork alike), and their developer instructions say to use
-  the `loom-agents` tools for sub-agents, never Codex's own.
-- The tools are mounted in each provider (Claude: an in-process `loom-agents`
-  MCP server; aisdk: plain tools; Codex: dynamic tools, so only threads started
-  with them have them). A call parks in the adapter as an `agent_call` event;
-  the daemon runs it (`backend/daemon/src/daemon/agents.ts`) and answers with
-  `respondToAgentCall` (worker protocol v5). A caller acts only on sessions
-  whose `supervisor_id` is its own id. `agent_stop` takes `discard`, and
-  `agent_wait` takes `until: any | all` and a timeout (default 60 s, at most
-  600 s); `agent_read` returns at most 16 KB with a cursor.
-- A profile's unset provider, model, effort and mode follow the spawner (a
-  `plan` spawner's sub-agents run in `default`); `mcp_servers` filters the
-  session's MCP servers and `loom-agents`; `skills` and the tool lists apply to Claude
-  (`skills`, `tools`, `disallowedTools`) and aisdk (built-in tools), and are
-  refused for providers that cannot honour them. A sub-agent's system prompt gets a
-  note naming its supervisor before the profile's prompt.
-- A Claude profile's `skills` are loaded from the provider's config dir
-  (`<config_dir>/skills/<name>/SKILL.md`, default `~/.claude`) even when the
-  provider's `setting_sources` leave out `user`: the adapter copies just those
-  skills into a local plugin named `loom` for the session (`loom:<name>`; the
-  Skill tool also takes the bare name). A VM session gets the copies in its
-  profile directory first. A name with no `SKILL.md` fails the start, naming
-  the path it looked for.
-- A sub-agent's base is its supervisor's branch. When that branch is renamed
-  (auto-titling), the sub-agent's stored base follows, and a running sub-agent is told
-  the new name (`setBase`). A sub-agent in a private clone names it
-  `origin/<name>`, which its clone has only once a fetch has brought it: it is
-  told after its next sync, or once the checkout of its next start or resume
-  (which fetches the stored base) has run, and keeps the old name, which still
-  resolves, until then. Every base a sub-agent is given comes through that one
-  rule. A sub-agent whose row is being made reads its base once, before anything
-  awaits, so a rename meanwhile is never undone.
-- Closing a supervisor with open sub-agents needs a choice (`children: stop |
-detach` on `session.markDone` / `session.remove`, `--children` in the CLI,
-  `c` in the TUI confirm, detach by default). Stopping a sub-agent with
-  uncommitted changes keeps it, stopped.
-
-## Known issues
-
-- Live acceptance (2026-10-11, at `10e9622b`; `agents-claude`, `agents-codex`,
-  `queue-claude`, `queue-codex` in `scripts/test-live-daemon-acceptance.ts`):
-  all pass; nothing open from them.
-- Codex models with `multi_agent_version` v2 still list Codex's built-in
-  sub-agent tools (`spawn_agent`, `wait_agent`, …) with both feature flags
-  off; only the developer instructions keep the model from using them
-  (openai/codex#50880; see [Waiting on upstream](#waiting-on-upstream)).
-- Supervisor question handling is not designed: a sub-agent's question does not
-  reach its supervisor, which has no tool to answer or escalate it.
-- Clone sub-agents (a worktree off the supervisor's clone) are stage 2, not
-  built.
+Supervisor cost shows `Σ` of its own and descendant costs; storage remains
+per session. A settled supervisor displays background activity while children
+work, and `?N` when descendants need user input. This is presentation only:
+its actual idle state still allows queued reports to arrive.
+Answer questions on the child's row.
 
 ## Waiting on upstream
 
-Codex issues Loom is waiting on. On each Codex bump, run the listed live check
-(`scripts/test-live-daemon-acceptance.ts`) against a v2 model and update the
-entry.
+Codex v2 models still advertise native sub-agent tools despite both multi-agent
+feature flags being off:
+[openai/codex#50880](https://github.com/openai/codex/issues/50880).
+Loom also sets `max_concurrent_threads_per_session=1` and instructs models to
+use only Loom tools. Native spawn refusal has not been independently confirmed
+by Loom's live check; tool visibility is not evidence of enforcement.
 
-- **Native sub-agent tools on v2 models**:
-  [openai/codex#50880](https://github.com/openai/codex/issues/50880) (open;
-  0.160.0 too). On a model whose catalogue entry declares
-  `multi_agent_version` v2, Codex keeps listing `spawn_agent`,
-  `followup_task`, `send_message`, `wait_agent`, `interrupt_agent` and
-  `list_agents` with `features.multi_agent` and `features.multi_agent_v2`
-  both off, so a Codex session could start sub-agents Loom does not track.
-  Workaround: Loom passes
-  `features.multi_agent_v2={enabled=false, max_concurrent_threads_per_session=1}`
-  (the reporter found the cap refuses a spawn; the tools stay listed) and the
-  developer instructions rule the tools out
-  (`connectors/chatgpt/src/app-server.ts`, `NATIVE_SUBAGENT_FLAGS`). Live
-  (2026-10-11, Codex 0.153.2, `gpt-5.6-terra`): asked to call `spawn_agent`,
-  the model declined, citing its configuration, so whether Codex itself refuses
-  the spawn is unconfirmed. Untried: a `model_catalog_json` that pins
-  `multi_agent_version` to v1. Re-check: `codex-tools <v2 model>`; done when
-  no native sub-agent tool is listed (v1 models such as `gpt-5.6-luna` already
-  pass).
-
-## Codex v2 supervision: verified
-
-Codex v2 models can supervise Loom sub-agents through dynamic tools exposed
-inside `exec` Code Mode. Nesting does not make those tools unavailable.
-
-Live smoke tests on 2026-10-15 verified `self` child creation, readback of
-`LOOM_CHILD_OK`, archival and a completion notification:
-
-| Supervisor model | Supervisor session                     | Child session                          |
-| ---------------- | -------------------------------------- | -------------------------------------- |
-| `gpt-5.6-terra`  | `9d5254d3-5685-4df7-a950-e5fb4eeaa343` | `66e78395-251c-4a91-9710-39730afa9a0b` |
-| `gpt-6-luna`     | `b3ba6ca2-1915-4772-8771-44d2d8a83adf` | `b2c38f3b-0790-45d4-a32c-065655d80867` |
-| `gpt-6-luna`     | `0cefe9b4-7315-46bb-b4d5-d586713a42d9` | `ad593745-cc3d-4831-a52a-1b5fc0598852` |
-
-All used low effort and auto mode. The first two prompts supplied Code Mode
-call syntax. The third was a fresh session given only the task to start a
-`self` child, read its reply and archive it, without Code Mode hints. It
-succeeded with the existing instructions; no additional instruction text is
-justified by these results.
-
-The earlier 2026-10-12 `gpt-6-luna` run listed the nested tools, then reported
-that it could not call them. That observation did not establish a runtime
-restriction, and the cause of the difference remains unconfirmed. Its harness
-also failed on native tools still being listed, a separate upstream issue.
-
-Re-check Loom supervision with
-`scripts/test-live-daemon-acceptance.ts agents-codex gpt-6-luna` (or another
-explicit model). It checks tool registration and the child lifecycle without
-asking the supervisor to list tools or supplying Code Mode syntax. This check
-passed on 2026-10-15 with Codex 0.160.0 and `gpt-6-luna`: the child committed
-`child.txt`, its supervisor received the notification and archive reminder,
-archived it, and read its retained transcript. Native-tool
-visibility and the native spawn check remain in `codex-tools <model>`, under
-[Waiting on upstream](#waiting-on-upstream).
+On Codex upgrades, run
+`scripts/test-live-daemon-acceptance.ts codex-tools <v2 model>`.
+Separately, `agents-codex <model>` checks Loom child creation, notification,
+archive and retained transcript access. Loom supervision through Code Mode
+passed with Codex 0.160.0 and `gpt-6-luna`; nested tools are callable.
 
 ## Open
 
-- Codex's native sub-agents on v2 models: see
-  [Waiting on upstream](#waiting-on-upstream).
-- Shared VM for sub-agents (running inside the supervisor's VM).
-- Clone sub-agents while the supervisor's VM is stopped: the clone directory
-  persists on the host, so the sub-agent can still mount it; confirm nothing in the
-  supervisor's resume path assumes exclusive use of its clone.
-- Prompt files for long prompts.
-- Supervisor question handling: how sub-agents' questions reach a supervisor,
-  and its tools for answering or escalating.
+Clone children, read-only verifier workspaces, `agent_merge`, reparenting,
+explicit `report` outcomes, supervisor question handling, concurrency limits,
+shared VMs and prompt files remain proposals.

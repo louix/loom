@@ -122,9 +122,7 @@ affect later host Git commands. Secrets inside the repo are also accessible.
 
 ## Verification
 
-Ordinary tests cover config validation, launch policy, manifest authority,
-connector boundaries, real HTTP MCP client calls, cancellation and
-notifications. Run the opt-in VM acceptance test after preparation:
+Opt-in VM acceptance checks:
 
 ```sh
 deno run -A scripts/test-runtime-vm.ts tilth
@@ -135,19 +133,8 @@ deno run -A scripts/test-mcp-network-grants-vm.ts /path/to/session-runtime /path
 deno run -A scripts/test-host-command-relay-vm.ts /path/to/session-runtime /path/to/smolvm
 ```
 
-It uses only disposable files and checks tool discovery, read, hash edits, write
-and search through the daemon's launcher, plus normal close, daemon EOF,
-supervisor SIGKILL, and daemon EOF during boot. It also checks denial of
-unmounted host files and symlinks to them. The Git fixture checks root discovery,
-shared hooks/config, host-visible commits and guest dependency clones.
-
-Guest-root probes use the production mount/environment policy to verify the
-read-only runtime closure, its exact store inventory, and denial of host files
-and the Nix daemon socket. Network controls require a non-loopback host IPv4
-address reachable from a guest: a temporary HTTP fixture must be reachable with
-that IP explicitly allowed, then unreachable with the default network policy.
-Host firewall rules can make the positive control fail. Failed runs retain their
-fixture paths for diagnosis. These checks replace the removed tilth spike suite.
+Network checks need a reachable non-loopback host IPv4 address for their
+positive control; host firewalls can make it fail. Failed fixtures are retained.
 
 The MCP network-grant check needs internet access. It boots tool VMs with real
 grants: `github.com` must reach `github.com` but not `api.github.com`. A
@@ -173,8 +160,8 @@ closure is stored in a read-only EROFS image, preserving case-sensitive
 filenames even on default macOS filesystems. The guest mounts that image at
 `/nix/store`. An archive transports the image and launcher metadata while
 preserving executable permissions. The builder is stopped and deleted on
-completion or failure. Session VMs still receive only their prepared read-only
-store; they do not contain Nix or run a builder. No host Linux builder, Docker
+completion or failure. Session VMs receive the prepared store; project environments may add a private
+writable Nix layer for dependency installation. No host Linux builder, Docker
 installation, administrator artifact import or extra trusted Nix key is
 required. Intel macOS is not supported by the pinned package inputs.
 
@@ -191,14 +178,9 @@ When that builder runs depends on `packaging/macos/runtime-hashes.json`:
   Concurrent starts wait for one build; cancelling a start leaves the build
   running for the next, while stopping Loom stops it and deletes the builder VM.
   If Loom dies instead, the builder carries on: the next start waits for it and
-  adds its result rather than starting a second build. The builder's own
-  processes hold `built/.builder.lock`: a short `/usr/bin/perl` step takes it
-  on a descriptor they inherit, then (only once the Loom that spawned it
-  confirms) becomes the builder's shell, so the lock stays held until the last
-  builder process has exited, whichever of them or Loom is killed. A later Loom
-  tells a running build from a dead one by trying that lock, never by process
-  ids or start times; a build record it cannot read leaves the earlier build's
-  scratch output in place. Requests that start a
+  adds its result rather than starting a second build. A builder-inherited file lock prevents concurrent builds and survives
+  Loom's death; recovery checks the lock rather than trusting stored PIDs.
+  Requests that start a
   session (create, send, resume, fork) reply at once with the session starting;
   a message sent meanwhile waits in the session's queue.
   Expect 15–60 minutes, about 20 GB free

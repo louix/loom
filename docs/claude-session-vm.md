@@ -42,10 +42,6 @@ proxy request to `example.com:443` is denied. Failed Git fixtures are retained w
 the temporary credential copy. The normal test suite covers proxy denial cases
 without making API requests.
 
-Verified using smolvm 1.8.1 and native Claude 2.1.245: an existing OAuth token,
-only the allowed Anthropic API endpoint, and a host-visible commit. Fresh interactive login remains a host operation. Renewable authentication has
-a separate live acceptance check below.
-
 ## Extra hosts for worktree commands
 
 For automatic environment activation and dependency setup, see
@@ -90,19 +86,7 @@ hosts, ports and direct IP access.
 nix develop --command deno run -A scripts/test-claude-vm-egress.ts ~/dev/loom
 ```
 
-The connection limit has its own credential-free check: it fills the proxy with
-idle HTTPS tunnels, then checks that one more client is refused at once and
-reported, and that a released slot serves the next one
-([limit and fail-fast behaviour](session-environments.md#package-manager-networking)).
-
-```sh
-nix develop --command deno run -A scripts/test-egress-limit-vm.ts /path/to/session-runtime
-```
-
 ## Supervised lifecycle
-
-VM routing is opt-in. Without the configuration below, Claude uses the host
-worker. The Claude artifact is not pulled into the default Loom package.
 
 A session VM is an environment booted through the isolation coordinator
 (`backend/daemon/src/daemon/isolated-worker.ts`); the guest worker runs inside it
@@ -127,11 +111,6 @@ nix develop --command deno run -A scripts/test-claude-vm-lifecycle.ts \
   /tmp/loom-claude-session-artifact /path/to/smolvm
 ```
 
-These exercise normal close, startup EOF (including after Git startup), guest-exec,
-Git-worker and supervisor SIGKILL, and actual parent SIGKILL during startup and after
-worker initialization. Regression tests cover proxy cancellation/connection limits
-and credential revocation when VM cleanup fails.
-
 Further restriction of host infrastructure remains. The
 supervisor is trusted host infrastructure and currently runs with full Deno
 permissions. Standard daemon/TUI launch paths now grant only the daemon Unix
@@ -142,8 +121,7 @@ socket; networked provider, catalog and title work runs in children.
 A session VM launch accepts a shared `ClaudeAuthOwner` instead of static `auth`.
 This keeps refresh tokens in the host profile, renews before expiry, and
 distributes access-only snapshots to active sessions.
-The follow-up implementation is `ClaudeAuthOwner` in the daemon package. Callers
-share one owner per provider profile and pass it as `authOwner` to the
+Callers share one owner per provider profile and pass it as `authOwner` to the
 launcher. Close the owner when its provider shuts down. The VM launcher
 unsubscribes on exit and waits for an in-flight publication before fallback cleanup;
 publication cannot recreate a removed session directory.
@@ -183,21 +161,12 @@ provides margin for the measured guest propagation delay. An early provider 401
 requests one forced host refresh per mounted session. The error remains visible
 immediately; Loom never automatically replays the turn, which may have run tools.
 
-Real refresh and two-VM distribution have now been verified: Claude returned a
-fresh token with eight hours of validity, both VMs observed the updated snapshot,
-and the same native Claude process completed another turn. Run this acceptance
-check with the rebuilt artifact:
+Live renewal check (refreshes the host profile and consumes provider usage):
 
 ```sh
-deno run -A scripts/test-claude-auth-vm.ts \
+deno run -A scripts/test-claude-auth-vm.ts \\
   /path/to/claude-artifact /path/to/smolvm /path/to/host-claude
 ```
-
-Unlike replacement-only spikes, these commands **refresh the host Claude
-profile**. Run `deno run -A --deny-net scripts/spike-claude-refresh.ts /path/to/profile`
-to verify the direct exchange, access-only snapshot, and preservation of account
-configuration and unrelated credential metadata. The previous live two-VM check
-used CLI login-based renewal; repeat it with the updated artifact for VM acceptance.
 
 ## Daemon integration
 
@@ -240,8 +209,8 @@ or execution environment. See [isolation](isolation.md) and
 Configured HTTP MCP workers and packaged MCP runtimes are forwarded into the VM
 through individual Unix/vsock endpoints. Each relay connects only to its assigned
 host loopback port and preserves HTTP authentication. Guest IP networking stays
-disabled. Arbitrary host stdio commands are rejected for VM sessions; package them
-as a runtime first.
+disabled. Host commands require an explicit
+[`vm_sessions: "relay"`](tools.md#relaying-a-host-command-to-vm-sessions) grant.
 
 Live daemon acceptance (consumes Claude usage):
 
@@ -249,9 +218,6 @@ Live daemon acceptance (consumes Claude usage):
 nix develop --command deno run -A scripts/test-claude-vm-daemon.ts \
   /path/to/session-runtime /path/to/smolvm /path/to/claude
 ```
-
-This checks an MCP tool call, daemon restart, archive/resume at a different
-worktree path, and deletion of persistent history.
 
 ## Abandoned VM recovery
 
@@ -287,9 +253,6 @@ Credential-free acceptance test for a ready VM whose two owners are killed:
 nix develop --command deno run -A scripts/test-claude-vm-recovery.ts \
   /path/to/session-runtime /path/to/smolvm
 ```
-
-Unit tests cover blocked startup/missing-state cases, retryable cleanup, ownership
-substitution and locking.
 
 ## Project controls
 

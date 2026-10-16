@@ -10,7 +10,7 @@ permissions and plans come from the snapshot. Durable row IDs merge history with
 concurrent live output without duplicates. There is no transport replay or event
 ring buffer; transient notices and raw `loom tail` output while disconnected may
 be missed. Requests with uncertain outcomes fail explicitly and are never retried
-automatically. Protocol v5 requires matching client and daemon versions.
+automatically. Client and daemon protocol versions must match.
 
 Session startup and cold resume publish `starting` before launching a worker or
 VM. Submitting a new message closes the composer so the STARTING state is visible.
@@ -44,15 +44,13 @@ it unchanged reuses its entry id, so a send that did arrive is answered rather
 than queued twice. A late callback cannot consume a newer send. Disconnection
 retains unsent text while disabling daemon actions.
 
-See [keybindings](keybindings.md) for controls. Regression coverage lives in
-`test/tui-model.test.ts`, `test/tui-render.test.ts`, `test/session-manager.test.ts`
-and the client/daemon transport tests. Historical migration plans and benchmark
-reports are retained in Git history.
+See [keybindings](keybindings.md) for controls.
 
 ## Fleet ordering and focus
 
-Daemon and TUI share `core/src/session-order.ts`: status group, then creation
-time descending, then ID ascending. Activity does not reshuffle peers.
+Daemon and TUI share `core/src/session-order.ts`: status group, then latest
+completed user root turn (creation time before the first), then ID ascending.
+Streaming activity does not reshuffle peers.
 Rows can still move when groups change, children expand or the viewport scrolls.
 Search retains relevance ordering. Selection tracks a session ID, not a row index.
 
@@ -100,3 +98,26 @@ holds it.
 A fork that fails to start, or is cancelled while starting (`F` on the source,
 or interrupt on the STARTING row), leaves no row behind. Its worktree copy and
 branch are removed too.
+
+## Markdown rendering
+
+Assistant text, thinking, questions and plans render as Markdown; user messages,
+answers and tool output stay literal. Stored events and editor exports retain
+the original source. Raw HTML displays literally, links include destinations,
+and images show alt text plus URL.
+
+`TextFormatter` in `text-layout.ts` separates parser/layout from Ink.
+`markdown.ts` owns parser types; `StyledText` resolves semantic colors at draw
+time. Transcript measurement and painting use the same formatted rows.
+Narrow tables become labelled cells; wrapping preserves graphemes.
+
+Documents cache parsing, explicit-language highlighting and the latest width.
+A changed event gets a new document so later streaming text can reinterpret it.
+Only visible rows become React nodes; resizing recomputes retained event layouts.
+WeakMap caches release documents with their events.
+
+Unknown languages and code blocks over 20,000 UTF-16 code units stay plain.
+Events over 200,000 units bypass Markdown parsing; parser/layout errors fall
+back to literal text without truncation.
+See `test/markdown.test.ts`; benchmark with
+`deno bench -A test/markdown.bench.ts`.

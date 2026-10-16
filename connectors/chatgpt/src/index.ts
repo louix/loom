@@ -18,11 +18,7 @@ import type { PlanWindow } from "@loom/core/events";
 import { spawnCodex, type CodexLauncher } from "./launch.ts";
 import { localToolDispatcher, type ToolDispatcher } from "./tool-dispatch.ts";
 
-/** Model context-window enrichment is best-effort (see `listModels` below) —
- *  bound the *whole* operation explicitly, not just whatever internal timeout
- *  `ChatGPTCatalog` happens to use for its own network call — a credential
- *  read or a slow network hanging inside it must not stall model discovery
- *  indefinitely. */
+/** Bound credential reads and catalog enrichment together so discovery cannot hang. */
 const CATALOG_TIMEOUT_MS = 8_000;
 const withTimeout = <T>(p: Promise<T>, ms: number, label: string): Promise<T> =>
   Promise.race([
@@ -33,50 +29,16 @@ const withTimeout = <T>(p: Promise<T>, ms: number, label: string): Promise<T> =>
     }),
   ]);
 
-/**
- * Codex's own sub-agent tools are switched off at launch
- * (`NATIVE_SUBAGENT_FLAGS`), but a v2 model keeps them listed (only a spawn is
- * refused), so the instructions rule them out too. The `loom-agents` tools are
- * named only when this thread was given them.
- */
+/** V2 models still list native sub-agent tools with feature flags disabled. Also prohibit them in instructions. */
 export const subAgentInstructions = (agentTools: boolean): string =>
   (agentTools
     ? "For sub-agents, use only the `loom-agents` tools (`agent_start` and the other `agent_*` tools). "
     : "") +
   "Never use Codex's built-in sub-agent tools (`spawn_agent`, `followup_task`, `send_message`, `wait_agent`, `list_agents`, `interrupt_agent`, `send_input`, `close_agent`), even if they are listed.";
 
-/**
- * The dynamic tools `CodexAppServerSession` mounts (`commit`/`status`/
- * `ask_user`, see `app-server.ts`) are Loom's own; the daemon's
- * `systemPromptAppend` is written assuming Claude/aisdk's full loom-mcp/tool
- * set (a superset with different naming), so it would tell the model about
- * tools shaped differently than what's actually mounted here — recompute the
- * tool-steer for what's actually mounted instead of forwarding it verbatim.
- *
- * `repoInstructions` is the daemon's pre-resolved repository instructions
- * (`repoInstructionsFor` in `backend/daemon/src/daemon/prompt.ts`); null for
- * Codex today, which reads AGENTS.md itself. `workspaceRoot` is the
- * directory described to the model as "the workspace root" for tool-steer purposes;
- * kept distinct from the provider's own `cwd` (where Codex's process and
- * sandbox actually run), even though the daemon passes the same value for
- * both today.
- *
- * `askUserMounted` is deliberately **separate** from `mountsLoomTools`: a
- * resumed thread never gets its `dynamicTools` re-sent (no such field on
- * `thread/resume` — see `app-server.ts#resume`'s comment), so a thread
- * created before `ask_user` existed (pre-Phase-5) genuinely doesn't have it
- * registered. `commit`/`status` are safe to describe on every resumed
- * session (mounted unconditionally since Phase 4, and every currently-
- * resumable Codex thread postdates that); `ask_user` is not, so
- * `resumeSession` below always passes `askUserMounted: false` regardless of
- * `mountsLoomTools` — under-claiming a tool a newer thread might genuinely
- * have is safe, over-claiming one an older thread doesn't have is not (the
- * model's call would just error). A session that needs `ask_user` after a
- * daemon restart has to be started fresh; Phase 6's forced-restart-on-demand
- * is the eventual real fix. Older threads may still carry a registered
- * `exit_plan`; its only guidance is its own `description` (and the dispatcher
- * now redirects it to native Plan), so there is nothing here to over-claim.
- */
+/** Recompute guidance for Codex's mounted tools, not the larger Claude/AISDK set.
+ * Resume cannot register new dynamic tools; only advertise tools known to exist
+ * on that thread. workspaceRoot describes the workspace independently of cwd. */
 export const codeModeInstructions = (
   workspaceRoot: string,
   mountsLoomTools: boolean,

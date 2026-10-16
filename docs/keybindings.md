@@ -1,16 +1,8 @@
 # Loom TUI — keybindings
 
-A small, consistent grammar. Learn the five rules and the keys fall out of them.
-Press `Space` for the command palette: every command, fuzzy-searchable by
-name, one row each in aligned columns — its key, its name, what it does. A
-command that can't run right now is still listed, after the rest, dimmed, with
-the reason in place of the description; Enter on it does nothing. Pressing a key whose command can't run shows
-the same reason as a notice. The palette, the footer, the keys and clicks on
-the footer all read one description per command, so they never disagree.
-
-A palette pick acts on the session that was selected when the palette opened.
-If that session has gone or its state changed, the command is checked again and
-refused with the reason rather than applied to whatever is selected now.
+Press `Space` to search commands. Unavailable commands show why they cannot run.
+A palette action targets the session selected when it opened and rechecks its
+availability before running.
 
 **Prepare repo environment** in that palette runs `loom vm prepare`
 with live output in the terminal. It refreshes the base for future sessions and
@@ -33,22 +25,7 @@ when you launch `loom` outside a Git repository. Open a repository once with
 | **`Alt`+key**   | run an action _without leaving the prompt_ — "step out to a bigger tool"                                                           |
 | **`Space`**     | the command palette: every command with its key; one that can't run now says why                                                   |
 
-Consequences:
-
-- `Ctrl` never triggers an app action, so `⌃e` is line-end again (it used to be
-  stolen for "$EDITOR").
-- `Shift` is never a decorative "variant of" — it means the heavier sibling of
-  the lowercase, almost always _bigger blast radius_: `r`→`R` (restarts the
-  daemon), `x` (archive, reversible) →`X` (delete, permanent). `F` (fork) stands with them as a structural op;
-  the one label-only pair is `y`→`Y` — branch name → session id.
-- Rare actions don't need a memorised key — they're one `Space`, a few letters,
-  `Enter` away, and the palette teaches you the key for next time.
-- The footer only ever shows the few most pertinent verbs for the current state,
-  plus `␣ more`.
-- Three session-control keys work **both** in browse and inside a prompt, so
-  you can change your mind mid-message: `⇧⇥` cycles the permission mode, `⌥m`
-  swaps the model, `⌥t` its thinking-effort level. (`⌥m` / `⌥t` are the `Alt`
-  keys that also act from the fleet view.)
+`⇧⇥`, `⌥m` and `⌥t` change mode, model and effort in both browse and prompt views.
 
 ## Browse (the fleet view)
 
@@ -80,7 +57,7 @@ session pane; `Esc` snaps back. `→` / `←` are unchanged — they still only 
 into a session's children. Replying to a session jumps to the session pane so
 you can see what you type.
 
-Children have no verbs of their own. While one is selected, the session verbs
+Provider tasks have no session verbs of their own. Loom sub-agents are full sessions. While one is selected, the session verbs
 that would look like they act on the child — compose (`⏎`), interrupt (`i`),
 compact, mode / model / effort / provider, undo, fork, rename, comment, the
 queue (`q`, release, clear), archive, delete — are off the key bar and do nothing on their keys; the
@@ -201,28 +178,7 @@ resumes it. `PgUp`/`PgDn` and the mouse wheel scroll a long question.
 `⇧⏎` / `⌥⏎` insert a newline inline; `⌥e` hands the whole thing to `$EDITOR`
 for heavier multi-line editing.
 
-Holding a motion key (`⌃k`, `⌃w`, `⌃u`, `Backspace`, the arrows) repeats it —
-the app replays the run even when the terminal delivers the auto-repeat as one
-batched chunk.
-
 ### The new-session prompt
-
-Above the input, the prompt shows what the session will be, one current value
-each, with the key that changes it:
-
-```
- opus · claude personal / claude-opus-5-5 · high  ⌥p ⌥t change  [auto] ⇧⇥ change
-
- isolation: none ⌥i change   dir: worktree ⌥w change
- base: main ⌥b change
-```
-
-The first row is who runs it: the agent profile when one is chosen, the
-provider / model, the thinking-effort level when one is set and the model takes
-one, and the permission mode. Then where: isolation (`none` or `vm`), the
-workspace (`dir`: `worktree`, `clone` or `in-place`) and the base it
-branches from (a branch, or `detached <sha>`). A narrow terminal wraps the rows
-between settings; the keys stay in view.
 
 `⌥p` lists the providers and, under them, the repository's agent profiles
 (`agents.profiles`, as `session.provider_access` allows them), each group under
@@ -257,12 +213,7 @@ Ink parses as a meta keypress. If your terminal instead sends the high-bit form
 (`Meta sends 8-bit`), the `⌥` prompt actions won't register — switch it to
 "`Esc`+" / "meta sends escape".
 
-Clickable things underline under the mouse pointer: FLEET rows, the session
-tabs, the mode chips and the footer's key chips. A footer chip runs its command
-for the session the footer was drawn for, checked again first. Moving the mouse
-never runs anything, and a key press hides the underline until the mouse moves.
-The wheel scrolls whatever is being read: the plan review, the answer sheet,
-the active tab.
+The mouse wheel scrolls the active pane; clickable controls underline on hover.
 
 Compat mode is for mosh (for example from Termux). Turn it on with
 `tui.compat: true` in the Loom config or with `LOOM_TUI_COMPAT=1`; either one is
@@ -274,11 +225,3 @@ leaves no mouse reporting at all: swipes arrive as ↑/↓ and move the fleet
 selection, and taps open the soft keyboard. In compat mode Loom asks only for
 press/release reporting (`?1000`, SGR `?1006`, plus bracketed paste `?2004`).
 Clicks and the wheel work as usual, but nothing underlines under the pointer.
-
-The permission-mode chip also accepts mouse clicks in DETAIL and in the new-session
-and reply composers, using the same cycle as `⇧⇥`. It is disabled while a send is
-pending or its outcome needs review. Starting or resuming a session displays
-the session's STARTING state after closing the composer. Accepted startup/send
-errors appear in session events beside the attempted message. In an open composer,
-↑ recalls that session's latest user messages (at the first line of a multiline
-buffer), independent of transcript loading. New-session prompts use local history.

@@ -1,9 +1,4 @@
-/**
- * A session's message queue (spec: `docs/message-queue.md`). Every message a
- * user sends a root session is an entry here first; it reaches the chat log
- * only once the agent has taken it, and every client reads the same queue —
- * and the same "when will it go" hint — off the session snapshot.
- */
+/** Persist messages before handover; add them to the transcript only after consumption. */
 import { z } from "zod";
 import { loomMessageSchema } from "./loom-message.ts";
 
@@ -37,7 +32,6 @@ export type QueueHold = z.infer<typeof queueHoldSchema>;
 export const queueHoldBySchema = z.enum(["user", "supervisor"]);
 export type QueueHoldBy = z.infer<typeof queueHoldBySchema>;
 
-/** A hold and whose it is. */
 export interface QueueHoldCause {
   readonly reason: QueueHold;
   readonly by: QueueHoldBy | null;
@@ -48,7 +42,7 @@ export const queueEntrySchema = z.object({
   /** Client-chosen UUID: the idempotency key and the provider's input id. */
   id: z.string(),
   text: z.string(),
-  /** The submitting client's id. */
+
   author: z.string(),
   /** Set when Loom wrote the message; `text` is its {@link showLoomMessage}. */
   loomMessage: loomMessageSchema.optional(),
@@ -116,7 +110,7 @@ export const sessionQueueSchema = z.object({
 });
 export type SessionQueue = z.infer<typeof sessionQueueSchema>;
 
-/** Main-new's limits: live entries per session, bytes per entry and per session. */
+/** Live-entry and byte limits per session. */
 export const QUEUE_LIMITS = {
   entries: 100,
   entryBytes: 1024 * 1024,

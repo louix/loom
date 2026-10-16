@@ -1,12 +1,5 @@
-/**
- * A session's queue, hand-over, hold and supervision state as one value, and
- * the one transition over it: `step(machine, event, world) → { machine,
- * effects }` (docs/message-queue.md, "Holds"; docs/loom-agents.md,
- * "Communication"). Pure and total. `world` is what the machine reads but
- * does not own — the queue's live entries, without text, and what the run is
- * doing; the session manager reads it, steps, keeps the new machine and runs
- * the effects.
- */
+/** Pure queue/supervision state machine. SessionManager supplies live state and
+ * executes effects; policy belongs here. See docs/message-queue.md. */
 import { absurd } from "@loom/core/absurd";
 import { isAgentAuthor } from "@loom/core/agents";
 import type { QueueEntryState, QueueHold, QueueHoldCause } from "@loom/core/message-queue";
@@ -19,7 +12,6 @@ import {
 import type { QueueSlot } from "../store/message-queue.ts";
 import { nextAction, type DispatchView } from "./message-queue.ts";
 
-/** A hold: one row of the Holds table each. */
 export type Hold =
   | { readonly kind: "free" }
   /** The supervisor's stop: `agent_interrupt`, `agent_stop`, a compaction it stopped. */
@@ -27,13 +19,13 @@ export type Hold =
   /** Loom's own: a discard put back with no one's stop under way (`interrupt`),
    *  a crash, a restart, a doubtful hand-over. */
   | { readonly kind: "loom"; readonly reason: QueueHold }
-  /** The user's stop — or a hold the user's stop landed on, which keeps its reason (H1). */
+  /** The user's stop — or a hold the user's stop landed on, which keeps its reason. */
   | { readonly kind: "user"; readonly reason: QueueHold };
 
-/** Who a queued message is from (H2): a person, a Loom supervisor, a child's report. */
+/** Who a queued message is from: a person, a Loom supervisor, a child's report. */
 export type Sender = "user" | "supervisor" | "child";
 
-/** What undoes a hold change (H5, H6): the hold before it, and the write it was. */
+/** What undoes a hold change: the hold before it, and the write it was. */
 export interface HoldTicket {
   readonly prior: Hold;
   readonly write: number;
@@ -42,7 +34,7 @@ export interface HoldTicket {
 /** An entry that goes ahead of the ordinary rules. Runtime-only: a restart forgets it. */
 export type Push =
   | { readonly kind: "none" }
-  /** Goes next and alone whatever the hold (H3, H4): a message that lifted a
+  /** Goes next and alone whatever the hold: a message that lifted a
    *  hold, or send now on a settled or held session. `now`: sent now. */
   | { readonly kind: "forced"; readonly entryId: string; readonly now: boolean }
   /** Send now on a live, unheld turn: at the head, handed in marked `now`. */
@@ -67,7 +59,7 @@ export type Delivery =
  * The stops asked of this run. `by`: whom the current turn's end is
  * attributed to, until the next turn starts (the user over a supervisor).
  * `lifted`: the latest stop's hold was lifted and nothing has held since, so
- * a discard it reports late holds nothing (H1).
+ * a discard it reports late holds nothing.
  */
 export type Stop =
   | { readonly kind: "none" }
@@ -93,10 +85,10 @@ export interface QueueMachine {
   readonly write: number;
   readonly push: Push;
   readonly delivery: Delivery;
-  /** Gate trips so far. */
+
   readonly ops: number;
   readonly stop: Stop;
-  /** A clone's guest Git runs for the daemon (H7). */
+  /** A clone's guest Git runs for the daemon. */
   readonly busy: boolean;
   readonly spell: Spell;
   readonly report: Report;
@@ -158,7 +150,7 @@ export type QueueEvent =
       readonly created: boolean;
       readonly state: QueueEntryState;
     }
-  /** Its revival failed (H5): take the message back and restore the hold. */
+  /** Its revival failed: take the message back and restore the hold. */
   | {
       readonly kind: "message_withdrawn";
       readonly entryId: string;
@@ -177,7 +169,7 @@ export type QueueEvent =
       readonly scope: StopScope;
       readonly interrupt: boolean;
     }
-  /** The close or archive that stop was part of did not happen (H6). */
+  /** The close or archive that stop was part of did not happen. */
   | { readonly kind: "stop_undone"; readonly ticket: HoldTicket }
   /** The adapter confirmed the stop. */
   | { readonly kind: "interrupt_stopped" }
@@ -218,7 +210,7 @@ export type QueueEvent =
 export type QueueEffect =
   | { readonly kind: "persist_hold"; readonly hold: Hold }
   | { readonly kind: "publish" }
-  /** Bring the cold session back for the message just queued (H2). */
+  /** Bring the cold session back for the message just queued. */
   | { readonly kind: "revive" }
   | { readonly kind: "schedule_handover"; readonly op: number }
   | { readonly kind: "mark_delivering"; readonly ids: readonly string[] }
@@ -265,7 +257,7 @@ const FREE: Hold = { kind: "free" };
 const PUBLISH: QueueEffect = { kind: "publish" };
 
 /**
- * H2, decided once as a message is queued: does it wait behind the hold
+ * Decided once as a message is queued: does it wait behind the hold
  * (true) or lift it (false)? The user's send lifts any; a supervisor's
  * message any but the user's; a child's report none.
  */
@@ -316,7 +308,7 @@ const STOP_HOLD: Record<StopCause | "loom", Hold> = {
 };
 
 /**
- * H1. A stop by `by` (null: no one's, a requeued discard) on `hold`. On a free
+ * A stop by `by` (null: no one's, a requeued discard) on `hold`. On a free
  * queue it holds while entries wait, or `empty`, even without; a hold
  * already set keeps its reason, and only the user's stop changes anything
  * about it — it becomes the user's.
@@ -327,7 +319,7 @@ const stopOn = (hold: Hold, by: StopCause | null, holds: boolean): Hold => {
   return { kind: "user", reason: holdReason(hold) ?? "interrupt" };
 };
 
-/** H1: Loom's own hold sets a free queue, and never changes one already set. */
+/** Loom's own hold sets a free queue, and never changes one already set. */
 const loomOn = (hold: Hold, reason: Exclude<QueueHold, "interrupt">): Hold =>
   hold.kind === "free" ? { kind: "loom", reason } : hold;
 
@@ -352,9 +344,9 @@ const thenEvaluate = (machine: QueueMachine, effects: readonly QueueEffect[] = [
 /**
  * The one write of the hold. A write is a change — or `reasserted`, the
  * user's stop on the user's hold: either voids older tickets. Anything else
- * that leaves the hold as it was writes nothing (H6). A hold that is set
- * afterwards drops a forced entry not yet handed over, unless `keepForced`
- * (H3); a change lifts or re-holds the latest stop (H1).
+ * that leaves the hold as it was writes nothing. A hold that is set
+ * afterwards drops a forced entry not yet handed over, unless `keepForced`;
+ * a change lifts or re-holds the latest stop.
  */
 const writeHold = (
   m: QueueMachine,
@@ -375,7 +367,7 @@ const writeHold = (
   };
 };
 
-/** H3: a forced entry waits with the rest; sent now, it keeps its mark. */
+/** A forced entry waits with the rest; sent now, it keeps its mark. */
 const unforced = (p: Push): Push => {
   if (p.kind !== "forced") return p;
   return p.now ? { kind: "now", entryId: p.entryId } : { kind: "none" };
@@ -619,7 +611,7 @@ const transition = (m: QueueMachine, ev: QueueEvent, world: World): Draft => {
       const holds = (scope.userHoldsEmpty && ev.by === "user") || slots.length > 0;
       const held = writeHold(asked, stopOn(m.hold, ev.by, holds), {
         // The user's stop is a write even when it changes nothing: no older
-        // change is undone past it (H6).
+        // change is undone past it.
         reasserted: ev.by === "user",
         keepForced: false,
       });
@@ -705,9 +697,9 @@ const transition = (m: QueueMachine, ev: QueueEvent, world: World): Draft => {
       );
       if (back.length === 0) return done(m);
       const requeue: QueueEffect = { kind: "requeue", ids: back };
-      // No stop of its own (H1): it belongs to the latest stop. Reported
+      // No stop of its own: it belongs to the latest stop. Reported
       // after that stop's hold was lifted it holds nothing, and its entries
-      // go behind what lifted it; it never drops a forced entry (H3).
+      // go behind what lifted it; it never drops a forced entry.
       if (m.stop.kind === "lifted" || m.hold.kind !== "free")
         return thenEvaluate(m, [requeue, PUBLISH]);
       const by = m.stop.kind === "none" ? null : m.stop.by;
@@ -794,7 +786,7 @@ const retried = (d: Delivery): Delivery => (d.kind === "backoff" ? { kind: "read
 
 const forcedId = (p: Push): string | null => (p.kind === "forced" ? p.entryId : null);
 
-/** Dispatch rules 1–6 (docs/message-queue.md, "Dispatch") on the slots as the effects leave them. */
+/** Evaluate dispatch on the entries as pending effects leave them. */
 const evaluate = (d: Draft, world: World): Stepped => {
   const m = d.machine;
   if (!d.evaluate || m.delivery.kind !== "ready") return d;

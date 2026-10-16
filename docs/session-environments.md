@@ -375,11 +375,7 @@ Installed dependencies stay per worktree. Shared caches use the package
 manager's own concurrency support. Guest memory and CPU settings should leave
 room for preparation alongside active sessions.
 
-Bundled session runtimes use a pinned Debian guest image, supplied with the
-runtime. No Docker daemon or runtime image download is required. Linux
-validation uses real VMs; Apple Silicon additionally needs host validation.
-Its runtime hashes are optional: without them Loom builds the runtime on first
-use, as described in the packaging documentation.
+See [packaging](packaged-runtimes.md) for guest images and macOS builds.
 
 ## Network presets
 
@@ -423,9 +419,7 @@ as an upper layer. Closure registration and GC roots keep the runtime's
 dependencies valid while additional packages are downloaded/built privately.
 Build temporary files also use `/storage`, rather than guest RAM.
 
-Tests cover configuration scope, init failures, fork initialization, pending
-operations/interactions, and messages arriving during VM replacement. Real-VM
-checks are available without provider credentials:
+Credential-free VM checks:
 
 ```sh
 # Automatic Nix: cold startup, fresh exports, optional preparation and offline reuse.
@@ -437,8 +431,6 @@ deno run -A scripts/test-session-environment-vm.ts /path/to/aisdk-runtime /path/
 # Native addon compilation with Nix-provided pnpm and a mounted worktree.
 deno run -A scripts/test-pnpm-environment-vm.ts /path/to/session-runtime /path/to/smolvm
 ```
-
-Apple Silicon disk cloning needs validation on a Mac.
 
 ### Package-manager networking
 
@@ -486,8 +478,7 @@ the shell to return to your terminal. The agent can keep working while the shell
 is open.
 
 The VM must already be running; this command does not start or resume a session.
-VMs started before shell support need to be archived and resumed first. While a
-shell is open, archive, delete and provider changes are blocked, and automatic
+While a shell is open, archive, delete and provider changes are blocked, and automatic
 VM environment replacement waits for the shell to exit.
 
 On Linux, the credential-free terminal smoke check exercises both workspace

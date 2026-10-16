@@ -1,23 +1,9 @@
-/**
- * Text on its way into a session's queue: the `session.send` on the wire, and
- * one whose reply never came back.
- *
- * The queue itself is the daemon's (`docs/message-queue.md`): every message
- * enters it, every client reads it off the session snapshot, and the daemon
- * decides when the agent gets each one. What is left here is only what the
- * RPC is doing — so a send whose fate is unknown is not lost, and is not
- * queued twice when the user sends it again.
- */
+/** Client-side send recovery, not the daemon queue. Reuse entry IDs after uncertain replies to avoid duplicate delivery. */
 import { mkStore, type Store } from "./store.ts";
 import type { QueueDelivery } from "@loom/core/message-queue";
 import { isAmbiguousFailure } from "@loom/client";
 
-/**
- * One session's send in progress, if any.
- *
- * `entryId` is the queue entry's id, chosen here: the daemon answers a
- * re-sent id with the entry it already has rather than queueing it again.
- */
+/** Reuse entryId when retrying unchanged text; the daemon deduplicates it. */
 export type Outbox =
   | { t: "idle" }
   /** `session.send` is on the wire with `text`. */
@@ -48,7 +34,6 @@ export const entryIdFor = (b: Outbox, text: string): string =>
 
 // ---- the handle ------------------------------------------------------------
 
-/** What the daemon says about a queued message. */
 export interface SendReply {
   readonly entryId: string;
   /** `queued`, `delivering` or `consumed` — how far it got before the reply. */
