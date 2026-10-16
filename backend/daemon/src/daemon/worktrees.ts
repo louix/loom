@@ -325,6 +325,18 @@ export class WorktreeManager {
     } else {
       baseRef = this.#resolveBase();
     }
+    // HEAD can name an unborn branch in a freshly initialized repository.
+    // Keep its name as the base so later comparisons never resolve HEAD in
+    // the session worktree itself.
+    const unborn =
+      baseRef === "HEAD" &&
+      !this.#git(["rev-parse", "--verify", "--quiet", "HEAD"]).ok &&
+      this.#git(["symbolic-ref", "--quiet", "HEAD"]).ok;
+    if (unborn) {
+      const tooOld = this.#gitTooOld([2, 42]);
+      if (tooOld) throw new Error(tooOld);
+      baseRef = this.#gitRead(["symbolic-ref", "--quiet", "HEAD"]);
+    }
     const slug = this.#uniqueDir(id);
     const path = join(this.#treesDir, slug);
     const branch = this.#uniqueBranch(opts.branchPrefix, id);
@@ -341,7 +353,7 @@ export class WorktreeManager {
       path,
       "-b",
       branch,
-      baseRef,
+      ...(unborn ? ["--orphan"] : [baseRef]),
     ]);
     if (!add.ok) {
       // A partial checkout (disk full mid-`add`) leaves the dir behind — reclaim
@@ -1103,10 +1115,10 @@ export class WorktreeManager {
 
   /** Why this Git cannot make Loom's locked session trees, if it cannot. A
    *  clone session's branch needs no such tree. */
-  #gitTooOld(): string | null {
+  #gitTooOld(minimum: readonly [number, number] = MIN_GIT_VERSION): string | null {
     const version = this.#gitRead(["version"]);
     const [major = 0, minor = 0] = (/(\d+)\.(\d+)/.exec(version) ?? []).slice(1).map(Number);
-    const [needMajor, needMinor] = MIN_GIT_VERSION;
+    const [needMajor, needMinor] = minimum;
     return major < needMajor || (major === needMajor && minor < needMinor)
       ? `Loom needs Git ${needMajor}.${needMinor} or later for its session worktrees; found "${version || "no git"}"`
       : null;

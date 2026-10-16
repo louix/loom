@@ -1135,3 +1135,51 @@ test("host Git refuses to open a session clone, even one that redirects Git", as
     cleanup();
   }
 });
+
+for (const bare of [false, true]) {
+  test(`create supports an unborn ${bare ? "bare" : "ordinary"} repository`, () => {
+    const root = mkdtempSync(join(tmpdir(), "loom-unborn-"));
+    const git = (cwd: string, ...args: string[]) =>
+      execFileSync("git", ["-C", cwd, ...args], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      }).trim();
+    try {
+      git(root, "init", "-q", "-b", "main", ...(bare ? ["--bare"] : []));
+      git(root, "config", "user.name", "test");
+      git(root, "config", "user.email", "test@example.com");
+      git(root, "config", "commit.gpgsign", "false");
+      if (!bare) {
+        writeFileSync(join(root, "local.txt"), "keep me");
+        git(root, "add", "local.txt");
+      }
+      const m = mgr(root);
+      assert.throws(
+        () => m.create(fakeId("bad-base"), { ...LOOM, baseRef: "missing" }),
+        /does not resolve/,
+      );
+      const wt = m.create(fakeId("new-repo"), LOOM);
+      assert.equal(wt.baseRef, "refs/heads/main");
+      assert.equal(git(wt.path, "symbolic-ref", "--short", "HEAD"), wt.branch);
+      assert.throws(() => git(wt.path, "rev-parse", "--verify", "HEAD"));
+      assert.equal(
+        git(wt.path, "config", "--worktree", "core.hooksPath"),
+        Deno.realPathSync(join(root, ".loom", "hooks")),
+      );
+      assert.match(git(root, "worktree", "list", "--porcelain"), /locked/);
+      assert.throws(() => git(root, "rev-parse", "--verify", "HEAD"));
+      if (!bare) {
+        assert.equal(readFileSync(join(root, "local.txt"), "utf8"), "keep me");
+        assert.equal(git(root, "diff", "--cached", "--name-only"), "local.txt");
+        assert.equal(existsSync(join(wt.path, "local.txt")), false);
+      }
+      writeFileSync(join(wt.path, "first.txt"), "first");
+      git(wt.path, "add", "first.txt");
+      git(wt.path, "commit", "-qm", "first commit");
+      assert.equal(git(root, "rev-list", "--count", wt.branch), "1");
+      m.remove(wt.path, { force: true });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
