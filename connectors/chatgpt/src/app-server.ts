@@ -43,6 +43,7 @@ import { verifyChatGptAccount } from "./account.ts";
 import { rateLimitEvents } from "./rate-limits.ts";
 import { turnErrorReason } from "./turn-error.ts";
 import type { CodexHome } from "./codex-home.ts";
+import { skillConfig } from "./skills.ts";
 import { spawnCodex, type CodexLauncher } from "./launch.ts";
 import {
   localToolDispatcher,
@@ -434,6 +435,7 @@ export class CodexAppServerSession implements AgentSession {
     const s = new CodexAppServerSession(opts, proc, base, dispatch, networkAccess);
     try {
       await s.#initialize();
+      const skills = await skillConfig(s.#rpc, opts.cwd, codexHome.dir, opts.skills);
       // A fresh Plan session has no earlier reviewer to keep; it exits to Manual.
       const target = s.#requestedMode;
       const started = await s.#rpc.requestStartup("thread/start", {
@@ -463,7 +465,7 @@ export class CodexAppServerSession implements AgentSession {
               },
             }
           : {
-              config: { "sandbox_workspace_write.network_access": networkAccess },
+              config: { "sandbox_workspace_write.network_access": networkAccess, ...skills },
               ...(opts.systemPromptAppend
                 ? { developerInstructions: opts.systemPromptAppend }
                 : {}),
@@ -518,6 +520,7 @@ export class CodexAppServerSession implements AgentSession {
     const s = new CodexAppServerSession(opts, proc, base, dispatch, networkAccess);
     try {
       await s.#initialize();
+      const skills = await skillConfig(s.#rpc, ref.cwd, codexHome.dir, ref.skills);
       // A forked thread replays its copied cumulative usage like a resumed
       // one, so both seed the baseline from that replay rather than charge it.
       s.#usageBaseline = null;
@@ -534,7 +537,7 @@ export class CodexAppServerSession implements AgentSession {
           // execution choice a saved Plan session exits to.
           approvalPolicy: "on-request",
           sandbox: "workspace-write",
-          config: { "sandbox_workspace_write.network_access": networkAccess },
+          config: { "sandbox_workspace_write.network_access": networkAccess, ...skills },
           excludeTurns: true,
           ...(ref.systemPromptAppend ? { developerInstructions: ref.systemPromptAppend } : {}),
           // No `dynamicTools` here: the generated `ThreadResumeParams` binding

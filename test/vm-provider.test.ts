@@ -119,9 +119,15 @@ for (const kind of ["claude", "codex", "aisdk"] as const) {
       GIT_COMMITTER_NAME: "Committer",
       GIT_COMMITTER_EMAIL: "committer@example.com",
     };
+    if (kind !== "aisdk") {
+      await Deno.mkdir(join(root, "skills/pdf/references"), { recursive: true });
+      await Deno.writeTextFile(join(root, "skills/pdf/SKILL.md"), "pdf");
+      await Deno.writeTextFile(join(root, "skills/pdf/references/notes.md"), "notes");
+    }
     const options: CreateSessionOptions & SessionGitIdentity = {
       [sessionGitIdentity]: gitIdentity,
       sessionId: "session",
+      ...(kind !== "aisdk" ? { skills: ["pdf"] } : {}),
       cwd: join(root, "workspace/checkout"),
       workspaceRoot: join(root, "workspace/checkout"),
       systemPromptAppend: "Work in " + join(root, "workspace/checkout"),
@@ -152,6 +158,11 @@ for (const kind of ["claude", "codex", "aisdk"] as const) {
       assert.equal(launches.length, 0);
       const created = await provider.createSession(options);
       await created.close("idle_suspension");
+      if (kind !== "aisdk") {
+        const profile = join(sessionVmDirectory(root, "session"), "profile/skills/pdf");
+        assert.equal(await Deno.readTextFile(join(profile, "SKILL.md")), "pdf");
+        assert.equal(await Deno.readTextFile(join(profile, "references/notes.md")), "notes");
+      }
       assert.deepEqual(stopReasons, ["idle_suspension"]);
       assert.deepEqual(launches[0]!.mcpRelays, [{ port: 4567, guestPort: 3130 }]);
       assert.deepEqual(launches[0]!.clone, {

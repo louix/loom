@@ -416,7 +416,7 @@ export interface AgentProfileConfig {
   mode?: SessionMode;
   /** Session MCP servers by name, plus `loom-agents`. */
   mcpServers: NameAccess;
-  /** Claude skills to load from the provider's config dir; absent keeps the CLI's own. */
+  /** Skills to load from the provider's config dir; absent keeps the CLI's own. */
   skills?: string[];
   tools?: { allow?: string[]; deny?: string[] };
   /** Appended to the agent's own system prompt. */
@@ -986,8 +986,13 @@ const resolveAgents = (
           );
     // Checked only against a provider this repository allows.
     const provider = p.provider !== undefined && known.allowed(p.provider) ? p.provider : undefined;
-    if (provider !== undefined && !isClaudeId(provider) && p.skills !== undefined)
-      throw new Error(`${at}.skills: skills are only supported for Claude providers`);
+    if (
+      provider !== undefined &&
+      !isClaudeId(provider) &&
+      !known.codex(provider) &&
+      p.skills !== undefined
+    )
+      throw new Error(`${at}.skills: skills are only supported for Claude and Codex providers`);
     if (provider !== undefined && known.codex(provider) && p.tools !== undefined)
       throw new Error(`${at}.tools: tool allow/deny lists are not supported for Codex providers`);
     profiles[name] = {

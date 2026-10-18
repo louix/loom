@@ -55,7 +55,7 @@ const executable = async (name: string) => {
  */
 export const profileSkills = async (
   sessionDirectory: string,
-  claudeProfile: string,
+  providerProfile: string,
   input: CreateSessionOptions | SessionRef,
 ): Promise<string[]> => {
   const profile = join(sessionDirectory, "profile");
@@ -66,7 +66,7 @@ export const profileSkills = async (
     if (!(error instanceof Deno.errors.NotFound)) throw error;
   });
   if (!input.skills?.length) return [];
-  const copy = copyClaudeSkills(claudeProfile, input.skills, join(profile, "skills"));
+  const copy = copyClaudeSkills(providerProfile, input.skills, join(profile, "skills"));
   if (copy.kind === "invalid") throw new Error(copy.message);
   return copy.skipped;
 };
@@ -91,7 +91,7 @@ export const withVmSessions = async <T extends AgentProvider>(
   let providerHosts: string[] | undefined;
   let config: ConnectorConfig;
   let connector: WorkerProfile["connector"];
-  let claudeProfile: string | undefined;
+  let skillsProfile: string | undefined;
   if (kind === "aisdk") {
     const sdk = ctx.config.sdk;
     const defaultEndpoint = {
@@ -125,6 +125,7 @@ export const withVmSessions = async <T extends AgentProvider>(
   } else if (kind === "codex") {
     const cli = await executable(ctx.config.codexCliPath || "codex");
     const profile = ctx.config.configDir || Deno.env.get("CODEX_HOME") || join(homedir(), ".codex");
+    skillsProfile = profile;
     owner = new CodexAuthOwner({
       profile,
       cli,
@@ -143,7 +144,7 @@ export const withVmSessions = async <T extends AgentProvider>(
   } else {
     const profile =
       ctx.config.configDir || Deno.env.get("CLAUDE_CONFIG_DIR") || join(homedir(), ".claude");
-    claudeProfile = profile;
+    skillsProfile = profile;
     const apiKey = Deno.env.get("ANTHROPIC_API_KEY");
     const oauth = Deno.env.get("CLAUDE_CODE_OAUTH_TOKEN");
     owner =
@@ -177,8 +178,8 @@ export const withVmSessions = async <T extends AgentProvider>(
       });
       const sessionDirectory = sessionVmDirectory(vm.repoRoot, input.sessionId);
       await stoppedSessionVm(vm.repoRoot, input.sessionId);
-      if (claudeProfile !== undefined)
-        for (const skipped of await profileSkills(sessionDirectory, claudeProfile, input))
+      if (skillsProfile !== undefined)
+        for (const skipped of await profileSkills(sessionDirectory, skillsProfile, input))
           ctx.logger.warn("skill symlink not copied", { sessionId: input.sessionId, skipped });
       if (resume && kind !== "aisdk") {
         const ref = (input as SessionRef).providerRef;

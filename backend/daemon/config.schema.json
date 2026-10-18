@@ -1508,7 +1508,7 @@
                 "additionalProperties": false
               },
               "skills": {
-                "description": "Claude skills to load from the provider's <config_dir>/skills/<name>/SKILL.md, by name; omitted keeps the CLI's own.",
+                "description": "Claude or Codex skills to load from the provider's <config_dir>/skills/<name>/SKILL.md, by name; omitted keeps the CLI's own.",
                 "type": "array",
                 "items": {
                   "type": "string"
@@ -3063,7 +3063,7 @@
                       "additionalProperties": false
                     },
                     "skills": {
-                      "description": "Claude skills to load from the provider's <config_dir>/skills/<name>/SKILL.md, by name; omitted keeps the CLI's own.",
+                      "description": "Claude or Codex skills to load from the provider's <config_dir>/skills/<name>/SKILL.md, by name; omitted keeps the CLI's own.",
                       "type": "array",
                       "items": {
                         "type": "string"

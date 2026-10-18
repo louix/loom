@@ -121,7 +121,7 @@ const agentSessionFields = {
    *  appended to the agent's own system prompt — developer instructions for
    *  Codex, which builds its own. */
   agentPrompt: z.string().optional(),
-  /** Claude skills to load from the profile's `<config_dir>/skills`; absent keeps the CLI's own. */
+  /** Claude or Codex skills to load from the profile's `<config_dir>/skills`; absent keeps the CLI's own. */
   skills: z.array(z.string()).optional(),
   /** Built-in tools the agent may use; absent allows them all. */
   allowTools: z.array(z.string()).optional(),

@@ -42,6 +42,14 @@ Claude skills load from `<config_dir>/skills/<name>/SKILL.md`, even when
 `setting_sources` excludes user settings. Loom copies only selected skills
 into a session plugin (`loom:<name>`); missing skills fail startup.
 
+Codex profiles also accept `skills: ["name"]`, resolved from the provider's
+`<config_dir>/skills/<name>/SKILL.md` (`CODEX_HOME` or `~/.codex` by default).
+Loom selects these through native Codex per-thread settings on start, resume,
+and fork, without modifying the shared Codex config. An empty list disables
+all discovered skills; omitting `skills` preserves native discovery. Missing
+or invalid selected skills fail startup. VM sessions copy selected skills and
+their supporting files into the guest profile before launching Codex.
+
 Profiles whose providers are excluded by repository `session.provider_access`
 are unavailable, including on resume. A repository-local profile naming a
 provider that repository denies is a configuration error.

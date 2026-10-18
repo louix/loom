@@ -87,8 +87,8 @@ test("profiles are validated against the configured providers, MCP servers and s
     ],
     [{ implementer: { description: "x", mcp: [] } }, /Unknown setting.*mcp/],
     [
-      { implementer: { description: "x", provider: "codex", skills: ["pdf"] } },
-      /agents\.profiles\.implementer\.skills: skills are only supported for Claude providers/,
+      { implementer: { description: "x", provider: "fake", skills: ["pdf"] } },
+      /agents\.profiles\.implementer\.skills: skills are only supported for Claude and Codex providers/,
     ],
     [
       { implementer: { description: "x", provider: "codex", tools: { deny: ["shell"] } } },
@@ -148,7 +148,7 @@ test("a global profile on a provider a repository does not allow is unavailable 
       agents: {
         profiles: {
           opus: { description: "Opus", provider: "claude:personal", model: "claude-opus-5-5" },
-          // Skills are for Claude only; not checked where codex is not allowed.
+          // A profile on a disabled provider remains unavailable.
           coder: { description: "Codex", provider: "codex", skills: ["pdf"] },
           follower: { description: "Follows its spawner" },
         },
@@ -248,5 +248,15 @@ test("a repository's profiles merge over the global ones", () => {
     assert.equal(loadConfig(dir, user).agents.maxDepth, 2);
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Codex profiles accept explicit skill selections, including an empty list", () => {
+  for (const skills of [[], ["pdf"]]) {
+    const c = cfg({
+      providers: { codex: {} },
+      agents: { profiles: { coder: { description: "Codex", provider: "codex", skills } } },
+    });
+    assert.deepEqual(c.agents.profiles["coder"]?.skills, skills);
   }
 });

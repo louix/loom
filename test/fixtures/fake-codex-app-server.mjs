@@ -220,6 +220,21 @@ const handle = (req) => {
     });
     return;
   }
+  if (method === "skills/list") {
+    send({
+      id,
+      result: {
+        data: [
+          {
+            cwd: params.cwds[0],
+            skills: JSON.parse(process.env["LOOM_TEST_SKILLS"] || "[]"),
+            errors: [],
+          },
+        ],
+      },
+    });
+    return;
+  }
   if (method === "thread/start") {
     if (process.env["LOOM_TEST_START_PARAMS_FILE"])
       writeFileSync(
