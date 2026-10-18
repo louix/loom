@@ -4232,6 +4232,8 @@ export class Daemon {
    * fails and handed to `detachedFailed` (H5).
    */
   async #reviveForQueue(id: string, detachedFailed?: () => void): Promise<void> {
+    // The existing startup owns attachment; accept queued input immediately.
+    if (this.#startups.has(id) && this.#registry.mustGet(id).status.kind === "starting") return;
     try {
       // A start that first builds the VM runtime outlasts any client: then the
       // message waits in the queue and goes once the session runs.

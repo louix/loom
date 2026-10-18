@@ -12,8 +12,9 @@ this queue; discarded automated messages are not retried.
   boundary.
 - `end_of_turn` entries go one per idle turn, after background work finishes.
   Boundary entries take precedence.
-- Dispatch pauses during startup, restructuring, pending user input,
-  cancellation, clone Git operations, a hold, or an outstanding handover.
+- Messages can be queued during startup, before the adapter attaches. Dispatch
+  pauses during startup, restructuring, pending user input, cancellation,
+  clone Git operations, a hold, or an outstanding handover.
 - Persist `delivering` before provider I/O. Explicit rejection returns an
   entry to `queued`; an ambiguous outcome marks it uncertain and holds the
   queue. Never automatically retry a message that may have run tools.

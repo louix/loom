@@ -876,3 +876,50 @@ describe("holds", { concurrency: 4 }, () => {
     assert.equal((await holdOf(c, id)).hold, "interrupt");
   });
 });
+
+test("messages queue before startup attaches and follow normal delivery rules", async ({
+  h,
+  c,
+  provider,
+  frames,
+}) => {
+  const release = provider.blockCreate();
+  const creating = c.request<SessionSnapshot>("session.create", {
+    prompt: "start",
+    provider: "fake",
+  });
+  try {
+    await waitFor(() => provider.creates.length === 1);
+    const id = provider.creates[0]!.sessionId;
+    const fs = provider.session(id)!;
+    assert.equal(h.daemon.sessions.has(id), false);
+    assert.equal(await status(c, id), "starting");
+    const boundary = await send(c, id, "during startup");
+    const later = await send(c, id, "after the turn", "end_of_turn");
+    assert.equal(boundary.state, "queued");
+    assert.equal(later.state, "queued");
+    assert.equal((await entries(c, id)).length, 2);
+    assert.deepEqual(fs.sends, []);
+    assert.equal(provider.resumes.length, 0);
+    assert.deepEqual(
+      userMessages(frames).map((m) => m.text),
+      ["start"],
+    );
+
+    release();
+    await creating;
+    assert.deepEqual(fs.sends, []);
+    fs.emit({ type: "tool_call", id: "first-tool", name: "Bash", input: {} });
+    await waitFor(() => fs.sends.length === 1);
+    assert.deepEqual(fs.sends, ["during startup"]);
+    assert.equal(fs.sendOptions[0]?.midTurn, true);
+    fs.emit({ type: "tool_result", id: "first-tool", ok: true, output: "" });
+    fs.finishTurn();
+    await waitFor(() => fs.sends.length === 2);
+    assert.deepEqual(fs.sends, ["during startup", "after the turn"]);
+    assert.equal(fs.sendOptions[1]?.midTurn, false);
+  } finally {
+    release();
+    await creating;
+  }
+});
