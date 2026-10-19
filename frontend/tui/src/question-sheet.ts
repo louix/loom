@@ -17,7 +17,7 @@
  */
 import { applyKey, buffer, layoutWrapped, type Buffer, type KeyLike } from "./editor.ts";
 import type { AskUserQuestionItem } from "./interactions.ts";
-import { markdownText, plainText } from "./markdown.ts";
+import { questionText, plainText } from "./markdown.ts";
 import type { TextRow } from "./text-layout.ts";
 
 /**
@@ -157,7 +157,7 @@ export const sheetLayout = (
   const choiceRows: number[] = [];
   const position = (n: number): string => (qs.length > 1 ? ` ${n + 1}/${qs.length}` : "");
   if (q) {
-    lines.push(...markdownText(q.question).layout(w));
+    lines.push(...questionText(q.question).layout(w));
     if (q.freeText)
       return {
         lines,
@@ -188,7 +188,7 @@ export const sheetLayout = (
       if (option.description) {
         // Under the label, past `> 1: [ ] `.
         const pad = Math.min(9, Math.max(0, w - 1));
-        lines.push(...indent(markdownText(option.description).layout(Math.max(1, w - pad)), pad));
+        lines.push(...indent(questionText(option.description).layout(Math.max(1, w - pad)), pad));
       }
     });
     const text = draftText(nav, nav.idx);

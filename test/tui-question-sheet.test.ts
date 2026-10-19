@@ -13,6 +13,7 @@ import {
 } from "@loom/tui/interactions";
 import { initialState, reduce } from "@loom/tui/model";
 import { QuestionSheetPane } from "@loom/tui/question-pane";
+import { buffer } from "@loom/tui/editor";
 import {
   qnav,
   sheetAnswers,
@@ -352,4 +353,39 @@ test("an open free-text sheet goes when its question is resolved elsewhere", () 
   assert.equal(s.overlay.t, "browse");
   assert.equal(s.qnav, null, "the draft for the resolved question goes with it");
   assert.match(s.notice?.text ?? "", /resolved elsewhere/);
+});
+
+test("answer modal renders escaped prose newlines without changing code or answer keys", () => {
+  const question = "Choose **one**:\\n(A) Charts only\\r\\n(B) Everywhere";
+  const questions = sheetQuestions({
+    ...ask,
+    question,
+    context:
+      "First line\\nSecond line\n\nUse `\\\\n` literally.\n\n```js\nconst newline = '\\n';\n```",
+  })!;
+  const nav = qnav("s1", "u1");
+  const rows = sheetLayout(questions, nav, 100, 40).lines.map((r) => r.text.trimEnd());
+  assert.deepEqual(rows.slice(0, 3), ["Choose one:", "(A) Charts only", "(B) Everywhere"]);
+  assert.ok(rows.includes("First line"));
+  assert.ok(rows.includes("Second line"));
+  assert.ok(rows.includes("Use \\\\n literally."));
+  assert.ok(rows.includes("const newline = '\\n';"));
+  assert.equal(questions[0]!.question.startsWith(question), true);
+  const answered = { ...nav, drafts: { 0: buffer("Charts only") } };
+  assert.deepEqual(sheetAnswers(questions, answered), {
+    [questions[0]!.question]: "Charts only",
+  });
+});
+
+test("answer modal renders escaped newlines in choice descriptions", () => {
+  const questions = [
+    {
+      question: "Choose",
+      header: "",
+      options: [{ label: "Charts", description: "Narrow scope\\nCards stay unchanged" }],
+    },
+  ];
+  const rows = sheetLayout(questions, qnav("s1", "q1"), 80, 24).lines.map((r) => r.text.trim());
+  assert.ok(rows.includes("Narrow scope"));
+  assert.ok(rows.includes("Cards stay unchanged"));
 });

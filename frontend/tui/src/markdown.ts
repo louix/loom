@@ -393,10 +393,26 @@ export const plainText: TextFormatter = (source) =>
 
 // Bound parser work on unusually large events; retain all text in the fallback.
 const MAX_MARKDOWN_LENGTH = 200_000;
-export const markdownText: TextFormatter = (source) => {
+const prepareMarkdown = (source: string, escapedNewlines = false): TextDocument => {
   if (source.length > MAX_MARKDOWN_LENGTH) return plainText(source);
   try {
     const tokens = parser.lexer(clean(source));
+    // Repair double-escaped prose only in question modals. Code and link
+    // destinations keep their literal escapes; the source remains untouched.
+    if (escapedNewlines) {
+      parser.walkTokens(tokens, (token) => {
+        if (token.type !== "text") return;
+        const text = token as Tokens.Text;
+        if (text.tokens || !text.text.includes("\\n")) return;
+        text.tokens = text.text
+          .split(/(\\r\\n|\\n)/)
+          .map((part): Token =>
+            part === "\\n" || part === "\\r\\n"
+              ? { type: "br", raw: part }
+              : { type: "text", raw: part, text: part },
+          );
+      });
+    }
     return document((width) => {
       try {
         const rows = blocks(tokens, width);
@@ -409,3 +425,6 @@ export const markdownText: TextFormatter = (source) => {
     return plainText(source);
   }
 };
+
+export const markdownText: TextFormatter = (source) => prepareMarkdown(source);
+export const questionText: TextFormatter = (source) => prepareMarkdown(source, true);
