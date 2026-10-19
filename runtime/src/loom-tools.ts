@@ -25,9 +25,13 @@ export interface LoomToolDeps {
 }
 
 export const ASK_USER_DESC =
-  "Ask the human supervising this session a question and wait for their answer. " +
-  "Use this when you are blocked on a decision only they can make — do not guess " +
-  "when you could ask. The call returns their reply as text.";
+  "Ask the human supervising this session an open-ended question and wait for their answer. " +
+  "For a choice between options, prefer the available structured question tool (such as " +
+  "AskUserQuestion) instead: supply its options field so the user can select an answer. " +
+  "Use this free-text tool for choices only when no structured question tool is available " +
+  "in the current mode. Do not embed option menus here when a structured tool is available. " +
+  "Keep the question and context concise; use real newlines, not literal backslash-n text. " +
+  "Use this when you need a decision only the user can make. The call returns their reply as text.";
 
 export const COMMIT_DESC =
   "Commit the current changes in this session's git worktree. Stages every change " +
@@ -45,7 +49,9 @@ export const askUserShape = {
   context: z
     .string()
     .optional()
-    .describe("Optional background: what you were doing, why you're blocked, the options you see."),
+    .describe(
+      "Brief background needed to answer the question; do not duplicate the question or list options.",
+    ),
 };
 
 export const commitShape = {

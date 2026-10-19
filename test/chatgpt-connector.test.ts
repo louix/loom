@@ -136,12 +136,13 @@ test("codeModeInstructions only mentions the loom tools actually mounted", async
     const mounted = codeModeInstructions(dir, true, true, null);
     assert.match(mounted, /call the `commit` tool/);
     assert.match(mounted, /`status` tool reprints this root/);
-    assert.match(mounted, /call `ask_user`/);
+    assert.match(mounted, /prefer the available structured question tool/);
+    assert.match(mounted, /Use `ask_user` for open-ended questions/);
 
     const unmounted = codeModeInstructions(dir, false, false, null);
     assert.doesNotMatch(unmounted, /call the `commit` tool/);
     assert.doesNotMatch(unmounted, /`status` tool reprints this root/);
-    assert.doesNotMatch(unmounted, /call `ask_user`/);
+    assert.doesNotMatch(unmounted, /ask_user/);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -157,7 +158,7 @@ test("codeModeInstructions never mentions ask_user when askUserMounted is false,
     const resumed = codeModeInstructions(dir, true, false, null);
     assert.match(resumed, /call the `commit` tool/);
     assert.match(resumed, /`status` tool reprints this root/);
-    assert.doesNotMatch(resumed, /call `ask_user`/);
+    assert.doesNotMatch(resumed, /ask_user/);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

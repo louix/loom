@@ -47,7 +47,7 @@ export const toolSteer = (cwd: string, mounted: MountedLoomTools): string =>
       : []),
     ...(mounted.askUser
       ? [
-          "- If you are blocked on a decision only the user can make, call `ask_user` rather than guessing or stopping. Avoid a plain chat text question because it will show the session as idle/done instead of waiting on the user.",
+          "- When you need a decision from the user, use a question tool so the session waits for their answer; do not end with a plain chat question. For choices, prefer the available structured question tool (such as `AskUserQuestion`) over `ask_user`: put each choice in its options field, with a short label and a concise description, instead of an A/B/C menu in free text. Use single-select for mutually exclusive alternatives and multi-select only when several choices can apply. Use `ask_user` for open-ended questions or when no structured question tool is available in the current mode. Keep the question and context brief, and use real newlines rather than literal backslash-n text.",
         ]
       : []),
   ].join("\n");

@@ -47,10 +47,14 @@ test("toolSteer only mentions loom tools that are actually mounted", () => {
   const full = toolSteer("/tmp/work", { askUser: true, commit: true, status: true });
   assert.match(full, /`status` tool reprints this root/);
   assert.match(full, /call the `commit` tool/);
-  assert.match(full, /call `ask_user`/);
+  assert.match(full, /prefer the available structured question tool/);
+  assert.match(
+    full,
+    /Use `ask_user` for open-ended questions or when no structured question tool is available/,
+  );
 
   const commitOnly = toolSteer("/tmp/work", { askUser: false, commit: true, status: false });
   assert.doesNotMatch(commitOnly, /`status` tool reprints this root/);
   assert.match(commitOnly, /call the `commit` tool/);
-  assert.doesNotMatch(commitOnly, /call `ask_user`/);
+  assert.doesNotMatch(commitOnly, /ask_user|AskUserQuestion/);
 });
