@@ -67,6 +67,18 @@ export const startupMessage = (stage: StartupStage, elapsedSeconds?: number, hos
   (stage === "networkBlocked" && host
     ? `VM network policy blocked a request to ${host}; check network presets and allowed hosts.`
     : startupStages[stage]) + (elapsedSeconds === undefined ? "" : ` (${elapsedSeconds}s elapsed)`);
+/** Admit stage changes, and within one stage at most one elapsed heartbeat per interval. */
+export const startupLogThrottle = (intervalMs = 60_000) => {
+  const last = new Map<string, { stage: string; at: number }>();
+  return (key: string, message: string, done = false, now = Date.now()): boolean => {
+    const stage = message.replace(/ \(\d+s elapsed\)$/, "");
+    const previous = last.get(key);
+    const admit = previous?.stage !== stage || now - previous.at >= intervalMs;
+    if (done || stage === startupStages.ready) last.delete(key);
+    else if (admit) last.set(key, { stage, at: now });
+    return admit;
+  };
+};
 export const reportStartup = (stage: StartupStage, elapsedSeconds?: number, host?: string) =>
   console.error(
     Deno.env.get("LOOM_PREPARATION_ONLY") === "1"

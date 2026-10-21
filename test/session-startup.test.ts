@@ -7,6 +7,7 @@ import {
   readStartupProgress,
   classifyStartupFailure,
   startupFailures,
+  startupLogThrottle,
   startupMessage,
 } from "../runtime/src/session-vm/progress.ts";
 import { discardSessionDisks } from "../runtime/src/session-vm/disks.ts";
@@ -230,6 +231,37 @@ test("blocked-network progress names the host only when it is sanitized", async 
     startupMessage("networkBlocked"),
     startupMessage("boot"),
   ]);
+});
+
+test("startup logs admit stage changes and one heartbeat a minute per session", () => {
+  const admit = startupLogThrottle();
+  const log = (key: string, message: string, at: number, done = false) =>
+    admit(key, message, done, at) ? [message] : [];
+  const flake = (seconds: number) => startupMessage("flake", seconds);
+  assert.deepEqual(
+    [
+      ...log("a", startupMessage("flake"), 0),
+      ...log("a", flake(15), 15_000),
+      ...log("b", flake(15), 15_000),
+      ...log("a", flake(45), 45_000),
+      ...log("a", flake(60), 60_000),
+      ...log("a", startupMessage("provider"), 61_000),
+      ...log("a", startupMessage("ready"), 62_000),
+      ...log("a", startupMessage("ready"), 63_000),
+      ...log("b", "VM stopped", 64_000, true),
+      ...log("b", "VM stopped", 65_000, true),
+    ],
+    [
+      startupMessage("flake"),
+      flake(15),
+      flake(60),
+      startupMessage("provider"),
+      startupMessage("ready"),
+      startupMessage("ready"),
+      "VM stopped",
+      "VM stopped",
+    ],
+  );
 });
 
 test("discarding legacy guest disks preserves host profiles and worktree changes", async () => {

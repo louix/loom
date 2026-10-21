@@ -5,7 +5,7 @@ import {
 import { WorkerDiagnostic } from "../../../core/src/worker.ts";
 import { fileURLToPath } from "node:url";
 import { detectNixActivation, nixActivationCommand } from "../../../core/src/nix-activation.ts";
-import { readStartupProgress, reportStartup } from "./progress.ts";
+import { readStartupProgress, reportStartup, type StartupStage } from "./progress.ts";
 
 /** Debian login shells reset PATH before sourcing /etc/profile.d. */
 export const guestPathProfile = (path: string): string =>
@@ -40,8 +40,22 @@ export const prepareEnvironment = async (
       /* exited */
     }
   }, config!.timeoutMs);
+  // A cold Nix build can stay silent for the whole timeout; repeat the stage so it reads as waiting.
+  let stage: StartupStage = "nix";
+  let stageStarted = Date.now();
+  const enter = (next: StartupStage, elapsedSeconds?: number) => {
+    if (next !== stage) stageStarted = Date.now();
+    stage = next;
+    reportStartup(next, elapsedSeconds);
+  };
+  const heartbeat = options.output
+    ? undefined
+    : setInterval(
+        () => reportStartup(stage, Math.floor((Date.now() - stageStarted) / 1000)),
+        15_000,
+      );
   try {
-    reportStartup("nix");
+    enter("nix");
     await options.initializeNix?.(stop.signal);
     if (timedOut) {
       throw new WorkerDiagnostic(activation ? "sessionNixTimeout" : "sessionEnvironmentTimeout");
@@ -68,7 +82,7 @@ export const prepareEnvironment = async (
     if (config!.commandPrefix.length) {
       argv = [...config!.commandPrefix, ...command];
     } else if (activation) argv = nixActivationCommand(activation, command);
-    reportStartup(activation?.kind ?? "activate");
+    enter(activation?.kind ?? "activate");
     child = new Deno.Command(argv[0]!, {
       args: argv.slice(1),
       ...(options.cwd ? { cwd: options.cwd } : {}),
@@ -78,7 +92,7 @@ export const prepareEnvironment = async (
     }).spawn();
     const diagnostics = options.output
       ? undefined
-      : readStartupProgress(child.stderr, (stage, elapsed) => reportStartup(stage, elapsed));
+      : readStartupProgress(child.stderr, (next, elapsed) => enter(next, elapsed));
     const result = await child.status;
     await diagnostics;
     if (timedOut)
@@ -115,6 +129,7 @@ export const prepareEnvironment = async (
     throw new WorkerDiagnostic(timedOut ? "sessionEnvironmentTimeout" : "sessionEnvironmentFailed");
   } finally {
     clearTimeout(timer);
+    clearInterval(heartbeat);
     await Deno.remove(directory, { recursive: true });
   }
 };

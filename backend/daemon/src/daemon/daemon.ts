@@ -34,6 +34,7 @@ import { workspaceMount } from "../../../../runtime/src/session-vm/workspace.ts"
 import { sessionCheckoutPath, writeGitPolicy } from "../../../../runtime/src/session-vm/clone.ts";
 import { readRecovery } from "../../../../runtime/src/session-vm/recovery.ts";
 import { writeRecoveryFile } from "../../../../runtime/src/session-vm/persistence.ts";
+import { startupLogThrottle } from "../../../../runtime/src/session-vm/progress.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, rmSync, watchFile, unwatchFile } from "node:fs";
 import { join, resolve } from "node:path";
@@ -376,6 +377,7 @@ export class Daemon {
   #standalone: boolean;
   #hygiene: HygieneReport | null = null;
   readonly #vmGenerations = new Map<string, string>();
+  readonly #startupLog = startupLogThrottle();
   readonly #shells = new SessionShells();
   /** Removed settings already reported: each is logged once per daemon. */
   readonly #removedWarned = new Set<string>();
@@ -478,14 +480,17 @@ export class Daemon {
       this.#pmsgs,
       opts.connectors,
       opts.repoRoot,
-      (sessionId, message, termination) =>
+      (sessionId, message, termination) => {
+        if (this.#startupLog(sessionId, message, !!termination))
+          this.#log.info("startup progress", { sessionId, message });
         this.emitEvent({
           type: "startup_progress",
           sessionId,
           ts: Date.now(),
           message,
           ...(termination ? { termination } : {}),
-        }),
+        });
+      },
       (id, generation) => this.#vmGenerations.set(id, generation),
       {
         activity: (id) => this.#registry.get(id)?.status.kind ?? "starting",
