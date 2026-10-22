@@ -106,7 +106,8 @@ const startChild = async (
   });
   assert.equal(res.ok, true, res.text);
   const id = idOf(res.text);
-  await waitFor(() => env.provider.session(id) !== undefined);
+  // agent_start answers before the daemon attaches the adapter.
+  await waitFor(() => env.provider.session(id) !== undefined && env.h.daemon.sessions.has(id));
   return { id, fs: env.provider.session(id)!, text: res.text };
 };
 
@@ -1099,6 +1100,44 @@ describe("loom agents", { concurrency: 4 }, () => {
     assert.match(notes()[0]!, /It was interrupted \(user\)\./);
     release();
     await started;
+    await delay(50);
+    assert.equal(notes().length, 1, "told once");
+  });
+
+  test("agent_start answers once the child has a worktree, not once its provider is up", async (env) => {
+    const lead = await idleSession(env);
+    const release = env.provider.blockCreate();
+    const res = await lead.fs.callAgentTool("agent_start", {
+      profile: "implementer",
+      task: "add the widget",
+      title: "Widget",
+    });
+    assert.equal(res.ok, true, res.text);
+    const id = idOf(res.text);
+    const row = await get(env.c, id);
+    assert.equal(row.status.kind, "starting");
+    assert.ok(row.worktree);
+    assert.match(res.text, new RegExp(`It works on branch ${row.branch} in ${row.worktree}`));
+    release();
+    await waitFor(() => env.provider.session(id) !== undefined);
+    env.provider.session(id)!.emit({ type: "assistant_text", text: "on it" });
+    await waitFor(async () => (await get(env.c, id)).status.kind === "running");
+  });
+
+  test("a child that fails to start after agent_start answered tells its supervisor", async (env) => {
+    const lead = await idleSession(env);
+    const release = env.provider.blockCreate();
+    env.provider.failNextCreate = new Error("nix activation failed");
+    const res = await lead.fs.callAgentTool("agent_start", {
+      profile: "implementer",
+      task: "add the widget",
+      title: "Widget",
+    });
+    assert.equal(res.ok, true, res.text);
+    release();
+    const notes = () => lead.fs.sends.filter((s) => s.startsWith("[from your sub-agent"));
+    await waitFor(() => notes().length > 0);
+    assert.match(notes()[0]!, /nix activation failed/);
     await delay(50);
     assert.equal(notes().length, 1, "told once");
   });

@@ -2263,6 +2263,13 @@ export class Daemon {
     const detached = await this.#runtimeBuildPending(o.providerId, isolation);
     let registered = () => {};
     const created = new Promise<void>((resolve) => (registered = resolve));
+    // A Loom agent's supervisor is answered once its child has a checkout, not
+    // when the provider is up: its environment can take a minute to activate,
+    // and the supervisor's tool calls run one at a time, so waiting would start
+    // its children one after another. A later failure reaches it as a notice.
+    let placed = () => {};
+    const checkedOut = new Promise<void>((resolve) => (placed = resolve));
+    let answered = false;
     // The row and the adapter are created under one hold on the session queue.
     // Between them the session is in the registry but has no run attached, so a
     // `session.setMode` landing in that window would take the inactive path and
@@ -2374,6 +2381,10 @@ export class Daemon {
           });
           this.#publishState(id);
         }
+        if (o.supervisorId) {
+          answered = true;
+          placed();
+        }
         const cwd = wt ? wt.path : (clonePath ?? this.repoRoot);
         const isClaude = isClaudeId(o.providerId);
         const isAisdk = aisdkProfile !== undefined;
@@ -2440,9 +2451,10 @@ export class Daemon {
         }
         const failure = `could not start session: ${message}`;
         const failed = this.#registry.setStatus(id, stateError(failure));
-        // Detached, the failure reaches no caller: a Loom agent's supervisor
-        // (already told the agent started) hears of it like any other.
-        if (detached) this.#notifySupervisor(failed, failed.status);
+        // Detached or answered early, the failure reaches no caller: a Loom
+        // agent's supervisor (already told the agent started) hears of it like
+        // any other.
+        if (detached || answered) this.#notifySupervisor(failed, failed.status);
         this.emitEvent({
           type: "error",
           sessionId: id,
@@ -2459,10 +2471,10 @@ export class Daemon {
         this.#startups.delete(id);
       }
     });
-    if (detached) {
+    if (detached || o.supervisorId) {
       // A failure is already on the session as its error and event.
       starting.catch(() => {});
-      await Promise.race([created, starting]);
+      await Promise.race([detached ? created : checkedOut, starting]);
     } else await starting;
 
     const snap = this.#registry.mustGet(id);

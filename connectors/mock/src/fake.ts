@@ -372,8 +372,16 @@ export class FakeProvider implements AgentProvider {
     }
     this.#sessions.set(s.id, s);
     if (this.#createGate) await this.#createGate;
+    const failure = this.failNextCreate;
+    if (failure) {
+      this.failNextCreate = null;
+      throw failure;
+    }
     return s;
   }
+
+  /** Make the next `createSession()` throw this once its gate opens. */
+  failNextCreate: Error | null = null;
 
   /** Park the next `resumeSession()` until the returned fn is called — a test
    *  holds a revive open to drive RPCs against a session whose adapter is
