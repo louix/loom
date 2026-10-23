@@ -355,6 +355,9 @@ test("local hooks, fresh workers, resume and shell targets share activation", as
     assert.equal(await Deno.readTextFile(join(cwd, "worker-environment")), "session");
     assert.equal(await Deno.readTextFile(join(cwd, "worker-private")), f.root);
     const shell = await registry.shellEnvironment("activated", cwd, signal());
+    const projectDir = shell.set.LOOM_PROJECT_DIR!;
+    assert.ok(!projectDir.startsWith(cwd + "/"));
+    assert.equal(await Deno.readTextFile(join(projectDir, "worker-report")), "session");
     const result = await new Deno.Command("project-tool", {
       cwd,
       clearEnv: true,
@@ -373,6 +376,7 @@ test("local hooks, fresh workers, resume and shell targets share activation", as
       }),
     );
     assert.equal(await Deno.readTextFile(join(cwd, "worker-environment")), "resumed");
+    assert.equal(await Deno.readTextFile(join(projectDir, "worker-report")), "sessionresumed");
     assert.equal(await Deno.readTextFile(join(cwd, "init-count")), "xx");
     await check("resumed");
     assert.equal(

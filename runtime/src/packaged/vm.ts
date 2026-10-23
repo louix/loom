@@ -10,6 +10,8 @@ export interface VmBinding {
   smolvm: string;
   manifest: RuntimeManifest;
   workspace: string;
+  /** Shared repository project files, independent of checkout/private clone mounts. */
+  projectDir?: string;
   /** One private host workspace mapped to stable paths in every guest. */
   privateWorkspace?: string;
   state: string;
@@ -172,7 +174,11 @@ export const vmArguments = (b: VmBinding) => {
     )
       throw new Error("Invalid private workspace mount");
   }
-  for (const path of [...(b.mounts ?? [b.workspace]), ...(b.readOnlyMounts ?? [])]) {
+  for (const path of [
+    ...(b.mounts ?? [b.workspace]),
+    ...(b.readOnlyMounts ?? []),
+    ...(b.projectDir ? [b.projectDir] : []),
+  ]) {
     if (!isAbsolute(path) || path === "/" || /[:,;|\n\0]/.test(path))
       throw new Error("Unsupported repository mount path");
     if (
@@ -232,6 +238,14 @@ export const vmArguments = (b: VmBinding) => {
         ]),
     ...(b.manifest.environmentCompatibility ? ["-v", `${b.artifact}:/run/loom/code:ro`] : []),
     ...workspaceVolumes,
+    ...(b.projectDir && grants?.workspace !== "none"
+      ? [
+          "-v",
+          `${b.projectDir}:${b.projectDir}${mountMode}`,
+          "-e",
+          `LOOM_PROJECT_DIR=${b.projectDir}`,
+        ]
+      : []),
     // Not `--allow-host`, which also admits every subdomain of the name; the
     // grants hold exact names only, so each pattern matches just its host.
     ...(grants?.network ?? []).flatMap((host) => ["--allow-host-pattern", host]),

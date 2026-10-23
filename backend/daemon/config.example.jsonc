@@ -52,6 +52,9 @@
     // },
   },
   "session": {
+    // Persistent shared files outside the checkout; Loom appends the repository key.
+    // "project_files_dir": "~/loom-project-files",
+    // "project_files_instructions": "Record the tested commit and reproduction steps.",
     // Allow project shell activation (devenv, flake.nix, shell.nix, default.nix).
     "environment": { "auto_nix": false }, // opt in globally or for individual repos
     // What new sessions get unless they choose: isolation none or vm;
@@ -134,6 +137,9 @@
     //   "path": "~/dev/my-project",
     //   "git": { "author": { "email": "me@work.example" } },
     //   "session": {
+    // Persistent shared files outside the checkout; Loom appends the repository key.
+    // "project_files_dir": "~/loom-project-files",
+    // "project_files_instructions": "Record the tested commit and reproduction steps.",
     //     "worktree_dir": "/mnt/fast-drive/loom/my-project",
     //     "environment": { "auto_nix": true },
     //     "defaults": { "isolation": "vm" },

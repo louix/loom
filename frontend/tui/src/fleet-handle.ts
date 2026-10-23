@@ -49,7 +49,7 @@ import type {
   SessionSnapshot,
 } from "@loom/core/wire";
 import { LOOM_VERSION } from "@loom/core/version";
-import { spawnEditor, type EditorHandoff } from "./editor-handoff.ts";
+import { spawnDirectoryEditor, spawnEditor, type EditorHandoff } from "./editor-handoff.ts";
 import { applyKey, buffer } from "./editor.ts";
 import { mouseReport, terminalModes } from "./mouse.ts";
 import { setThemeMode, shortId, truncate, modeChipText } from "./theme.ts";
@@ -367,6 +367,7 @@ export interface MkFleetHandleInput {
   /** Compat mode (`tuiCompat` in run.tsx): handoffs restore the mouse modes
    *  without any-motion tracking, and nothing is hovered. Default false. */
   readonly compat?: boolean;
+  readonly projectFiles?: () => string;
   readonly openShell?: (id: string) => Promise<number>;
   readonly prepareEnvironment?: () => Promise<number>;
   readonly repositories?: () => string[];
@@ -607,6 +608,7 @@ export const mkFleetHandle = ({
   includeEventLogInEditor = false,
   compat = false,
   openShell,
+  projectFiles,
   prepareEnvironment,
   repositories,
   switchRepository,
@@ -851,6 +853,7 @@ export const mkFleetHandle = ({
     ...s,
     features: {
       logs: logs !== undefined,
+      projectFiles: projectFiles !== undefined,
       shell: openShell !== undefined,
       prepareEnvironment: prepareEnvironment !== undefined,
       switchRepository: repositories !== undefined && switchRepository !== undefined,
@@ -1441,6 +1444,20 @@ export const mkFleetHandle = ({
     switch (name) {
       case "viewlog":
         return void viewInEditor();
+      case "projectFiles":
+        return void (async () => {
+          try {
+            await term.suspendTerminal(async () => {
+              if (term.isTTY) term.write(terminal.off);
+              spawnDirectoryEditor(projectFiles!());
+            });
+          } catch (error) {
+            note(error instanceof Error ? error.message : String(error), "bad");
+          } finally {
+            pointer = null;
+            if (term.isTTY) term.write(terminal.on);
+          }
+        })();
       case "logs":
         return void viewLogs();
       case "doctor":

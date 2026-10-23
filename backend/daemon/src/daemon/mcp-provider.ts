@@ -60,10 +60,16 @@ export const withExternalMcp = async (
       const mount = async (handle: McpServerHandle): Promise<McpServerHandle> => {
         const repo = repoRoot ?? context.config.sessionVm?.repoRoot;
         if (handle.spec.transport === "stdio") {
-          // A host session's connector runs it; a VM session gets it relayed (vetted above).
-          if (!context.config.sessionVm) return handle;
-          const worker = await startHostCommand(handle.name, {
+          const spec = {
             ...handle.spec,
+            ...(input.projectDir
+              ? { env: { ...handle.spec.env, LOOM_PROJECT_DIR: input.projectDir } }
+              : {}),
+          };
+          // A host session's connector runs it; a VM session gets it relayed (vetted above).
+          if (!context.config.sessionVm) return { ...handle, spec };
+          const worker = await startHostCommand(handle.name, {
+            ...spec,
             ...(handle.requestTimeoutMs ? { requestTimeoutMs: handle.requestTimeoutMs } : {}),
           });
           workers.push(worker);
@@ -79,6 +85,7 @@ export const withExternalMcp = async (
             sessionId: input.sessionId,
             provider: context.id,
             repo,
+            ...(input.projectDir ? { projectDir: input.projectDir } : {}),
             ...(handle.spec.grants ? { grants: handle.spec.grants } : {}),
             ...(handle.requestTimeoutMs ? { requestTimeoutMs: handle.requestTimeoutMs } : {}),
           });

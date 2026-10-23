@@ -66,6 +66,8 @@ test("loom repo move carries state, session paths, worktree links and hooks to t
     const old = loomPaths(from);
     cleanup.push(...loomDirectories(old));
     ensureLoomDirectories(old);
+    write(join(old.projects, "investigation", "report.md"), "keep this report");
+    cleanup.push(old.projects, loomPaths(to).projects);
     const trees = worktreeDirectory(from);
     const tree = new WorktreeManager({
       repoRoot: from,
@@ -92,6 +94,11 @@ test("loom repo move carries state, session paths, worktree links and hooks to t
     const moved = loomPaths(to);
     cleanup.push(...loomDirectories(moved));
 
+    assert.equal(
+      readFileSync(join(moved.projects, "investigation", "report.md"), "utf8"),
+      "keep this report",
+    );
+    assert.equal(existsSync(old.projects), false);
     assert.equal(report.from, from);
     assert.equal(report.to, to);
     assert.equal(report.sessionsUpdated, 1);
@@ -181,6 +188,8 @@ test("loom repo move finds the old state when the old path now leads into the ne
   try {
     execFileSync("git", ["init", "-q", "-b", "main", from]);
     ensureLoomDirectories(old);
+    write(join(old.projects, "investigation", "report.md"), "keep this report");
+    cleanup.push(old.projects, loomPaths(to).projects);
     const db = openDb(old.db);
     db.prepare(
       "INSERT INTO sessions (id, provider, created_at, updated_at) VALUES ('s1', 'fake', 0, 0)",
@@ -196,6 +205,11 @@ test("loom repo move finds the old state when the old path now leads into the ne
     const report = await moveRepository(from, to);
 
     // then
+    assert.equal(
+      readFileSync(join(moved.projects, "investigation", "report.md"), "utf8"),
+      "keep this report",
+    );
+    assert.equal(existsSync(old.projects), false);
     assert.equal(report.from, from);
     assert.ok(report.moved.includes(`${old.state} -> ${moved.state}`));
     assert.equal(existsSync(old.state), false);
@@ -228,6 +242,8 @@ test("loom repo move skips the new checkout's own state that a symlinked old pat
   try {
     execFileSync("git", ["init", "-q", "-b", "main", from]);
     ensureLoomDirectories(old);
+    write(join(old.projects, "investigation", "report.md"), "keep this report");
+    cleanup.push(old.projects, loomPaths(to).projects);
     renameSync(join(root, "a"), join(root, "b"));
     symlinkSync(join(root, "b"), join(root, "a"));
     const moved = loomPaths(to);
@@ -239,6 +255,11 @@ test("loom repo move skips the new checkout's own state that a symlinked old pat
     const report = await moveRepository(from, to);
 
     // then
+    assert.equal(
+      readFileSync(join(moved.projects, "investigation", "report.md"), "utf8"),
+      "keep this report",
+    );
+    assert.equal(existsSync(old.projects), false);
     assert.equal(report.from, from);
     assert.ok(report.moved.includes(`${old.state} -> ${moved.state}`));
     assert.equal(existsSync(old.state), false);
@@ -259,6 +280,8 @@ test("loom repo move finds the old state through a symlink in the old path", asy
   try {
     execFileSync("git", ["init", "-q", "-b", "main", from]);
     ensureLoomDirectories(old);
+    write(join(old.projects, "investigation", "report.md"), "keep this report");
+    cleanup.push(old.projects, loomPaths(to).projects);
     symlinkSync(join(root, "real"), join(root, "link"));
     mkdirSync(join(root, "new"));
     renameSync(from, to);
@@ -269,6 +292,11 @@ test("loom repo move finds the old state through a symlink in the old path", asy
     const report = await moveRepository(join(root, "link", "repo"), to);
 
     // then
+    assert.equal(
+      readFileSync(join(moved.projects, "investigation", "report.md"), "utf8"),
+      "keep this report",
+    );
+    assert.equal(existsSync(old.projects), false);
     assert.equal(report.from, from);
     assert.ok(report.moved.includes(`${old.state} -> ${moved.state}`));
     assert.equal(readRepoRecord(moved.record), to);
@@ -296,6 +324,29 @@ test("loom repo move refuses a new path that already has sessions", async () => 
     assert.ok(existsSync(source.state));
   } finally {
     for (const paths of [source, target]) removeLoomDirectories(paths);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("loom repo move refuses occupied project files without changing either repository", async () => {
+  const root = mkRoot();
+  const from = join(root, "old");
+  const to = join(root, "new");
+  const [source, target] = [loomPaths(from), loomPaths(to)];
+  try {
+    for (const repo of [from, to]) execFileSync("git", ["init", "-q", repo]);
+    ensureLoomDirectories(source);
+    write(join(source.projects, "source.md"), "source");
+    write(join(target.projects, "target.md"), "target");
+    await assert.rejects(moveRepository(from, to), /already exists/);
+    assert.equal(readRepoRecord(source.record), from);
+    assert.equal(readFileSync(join(source.projects, "source.md"), "utf8"), "source");
+    assert.equal(readFileSync(join(target.projects, "target.md"), "utf8"), "target");
+  } finally {
+    for (const paths of [source, target]) {
+      removeLoomDirectories(paths);
+      rmSync(paths.projects, { recursive: true, force: true });
+    }
     rmSync(root, { recursive: true, force: true });
   }
 });

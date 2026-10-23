@@ -356,6 +356,7 @@ export class CodexAppServerSession implements AgentSession {
   /** A completed planning turn held open on the user's review. */
   #planReview: PlanReview | null = null;
   #cwd: string;
+  #projectDir: string | undefined;
   #base: string | undefined;
   readonly #dispatch: ToolDispatcher;
   #closing = false;
@@ -386,6 +387,7 @@ export class CodexAppServerSession implements AgentSession {
     this.#effort = opts.effort ?? null;
     this.#requestedMode = codexAgentMode(opts.mode);
     this.#cwd = opts.cwd;
+    this.#projectDir = opts.oneShot ? undefined : opts.projectDir;
     this.#base = base;
     this.#dispatch = dispatch;
     this.#rpc = new CodexRpcClient(proc);
@@ -465,7 +467,11 @@ export class CodexAppServerSession implements AgentSession {
               },
             }
           : {
-              config: { "sandbox_workspace_write.network_access": networkAccess, ...skills },
+              config: {
+                "sandbox_workspace_write.network_access": networkAccess,
+                "sandbox_workspace_write.writable_roots": s.#projectDir ? [s.#projectDir] : [],
+                ...skills,
+              },
               ...(opts.systemPromptAppend
                 ? { developerInstructions: opts.systemPromptAppend }
                 : {}),
@@ -508,6 +514,7 @@ export class CodexAppServerSession implements AgentSession {
     const opts: CreateSessionOptions = {
       sessionId: ref.sessionId,
       cwd: ref.cwd,
+      ...(ref.projectDir ? { projectDir: ref.projectDir } : {}),
       prompt: "",
       mode: ref.mode ?? "default",
       mcpServers: ref.mcpServers ?? [],
@@ -537,7 +544,11 @@ export class CodexAppServerSession implements AgentSession {
           // execution choice a saved Plan session exits to.
           approvalPolicy: "on-request",
           sandbox: "workspace-write",
-          config: { "sandbox_workspace_write.network_access": networkAccess, ...skills },
+          config: {
+            "sandbox_workspace_write.network_access": networkAccess,
+            "sandbox_workspace_write.writable_roots": s.#projectDir ? [s.#projectDir] : [],
+            ...skills,
+          },
           excludeTurns: true,
           ...(ref.systemPromptAppend ? { developerInstructions: ref.systemPromptAppend } : {}),
           // No `dynamicTools` here: the generated `ThreadResumeParams` binding
@@ -1074,7 +1085,7 @@ export class CodexAppServerSession implements AgentSession {
     if (this.#oneShot) return { type: "readOnly", networkAccess: false };
     return {
       type: "workspaceWrite",
-      writableRoots: [this.#cwd],
+      writableRoots: [this.#cwd, ...(this.#projectDir ? [this.#projectDir] : [])],
       networkAccess: this.#networkAccess,
       excludeTmpdirEnvVar: false,
       excludeSlashTmp: false,

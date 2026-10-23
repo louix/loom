@@ -249,6 +249,7 @@ export const withVmSessions = async <T extends AgentProvider>(
           onProgress: (message, termination) =>
             ctx.onStartupProgress?.(input.sessionId, message, termination),
           workspace: input.cwd,
+          ...(input.projectDir ? { projectDir: input.projectDir } : {}),
           sessionId: input.sessionId,
           provider: ctx.id,
           ...(ctx.vmLifecycle

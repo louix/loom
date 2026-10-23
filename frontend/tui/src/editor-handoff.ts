@@ -59,3 +59,12 @@ export const spawnEditor = (text: string, opts: EditorOpts = {}): string | null 
     rmSync(dir, { recursive: true, force: true });
   }
 };
+
+/** Open persistent files directly, using the same editor convention as text handoffs. */
+export const spawnDirectoryEditor = (path: string): void => {
+  const editor = Deno.env.get("VISUAL") || Deno.env.get("EDITOR") || "vi";
+  const [cmd, ...args] = editor.split(/\s+/).filter(Boolean);
+  const result = spawnSync(cmd ?? "vi", [...args, path], { stdio: "inherit" });
+  if (result.error) throw new Error("Could not launch " + editor + ": " + result.error.message);
+  if (result.status !== 0) throw new Error("Editor exited without success");
+};

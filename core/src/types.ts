@@ -185,6 +185,8 @@ export const createSessionOptionsSchema = z.object({
    *  tool-steer text), kept distinct from `cwd` (where the provider's own
    *  process/tooling actually runs). Defaults to `cwd` when omitted. */
   workspaceRoot: z.string().optional(),
+  /** Repository-scoped shared storage, outside the checkout. */
+  projectDir: z.string().optional(),
   /**
    * The session's own base, as a ref its checkout resolves (`origin/<branch>`
    * in a private clone; a branch or commit otherwise) — what the `status` tool
@@ -229,6 +231,8 @@ export const sessionRefSchema = z.object({
   repoInstructions: z.union([z.string(), z.null()]).optional(),
   /** See {@link CreateSessionOptions.workspaceRoot}. */
   workspaceRoot: z.string().optional(),
+  /** Repository-scoped shared storage, outside the checkout. */
+  projectDir: z.string().optional(),
   /** See {@link CreateSessionOptions.base}. */
   base: z.string().optional(),
   ...agentSessionFields,

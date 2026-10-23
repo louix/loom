@@ -36,6 +36,7 @@ commands:
   runtime prepare|status|update|prune [runtime]  manage packaged VM and MCP runtimes
   vm                     prepare, inspect and manage VM lifecycles
   relink-provider <old> <new>  repoint sessions stuck on a renamed/removed provider id
+  project-files          print the repository project-files directory
   repo move <old> <new>  carry Loom's state to a checkout's new path, after moving it
   ping                   round-trip latency to the daemon
   tail                   stream the live event feed (Ctrl-C to stop)
@@ -68,11 +69,16 @@ Run 'loom <command> --help' for detail on one command.`;
 /** Longer per-command help, shown by `loom <cmd> --help`. Commands not listed
  *  here fall back to the top-level HELP. */
 const USAGE: Record<string, string> = {
+  "project-files": `loom [--repo <path>] project-files [--json]
+
+  Print (and create if needed) this repository's persistent shared project-files directory.
+  No daemon is started. See docs/project-files.md for configuration and script usage.`,
   repo: `loom repo move <old> <new> [--json]  — after moving a checkout from <old> to <new>
 
   Loom keeps a repository's state under keys derived from its path: the database,
   logs and session hooks in $XDG_STATE_HOME/loom/repos/, the VM package cache in
-  $XDG_CACHE_HOME/loom/, session VM state and prepared environments. This moves
+  $XDG_CACHE_HOME/loom/, session VM state, prepared environments, and default project
+  files in $XDG_DATA_HOME/loom/projects/. This moves
   them to <new>'s keys, updates session paths that named <old>, repairs Git's
   worktree links and repoints every session worktree's hooks. Stop the daemon
   for both paths first. Session worktrees stay where they are.`,
@@ -325,6 +331,15 @@ const main = async (): Promise<void> => {
     Deno.exitCode = await launchRepositoryTui(fileURLToPath(import.meta.url), repoRoot);
     return;
   }
+  if (cmd === "project-files") {
+    const { loadConfig } = await import("@loom/daemon/config/config");
+    const { ensureProjectDirectory } =
+      await import("../../backend/daemon/src/daemon/project-files.ts");
+    const path = ensureProjectDirectory(repoRoot, loadConfig(repoRoot).projectFilesDir);
+    ensureLoomDirectories(loomPaths(repoRoot));
+    writeOut(values.json ? JSON.stringify({ path }) + "\n" : path + "\n");
+    return;
+  }
   const repoPaths = loomPaths(repoRoot);
   const endpoint = daemonEndpoint(repoPaths);
   await relaunchForIpc(
@@ -407,6 +422,8 @@ const main = async (): Promise<void> => {
     const { runTui } = await import("@loom/tui/run");
     const { loadConfig } = await import("@loom/daemon/config/config");
     rememberRepository(logRoot);
+    const { ensureProjectDirectory: ensureProjectFiles } =
+      await import("../../backend/daemon/src/daemon/project-files.ts");
     const tui = loadConfig(logRoot).tui;
     const nextRepository = await runTui(client, {
       repositories: availableRepositories,
@@ -414,6 +431,10 @@ const main = async (): Promise<void> => {
       compat: tui.compat,
       logs: { daemon: paths.log, tui: paths.tuiLog },
       themeState: paths.tuiState,
+      projectFiles: () => {
+        const { projectFilesDir } = loadConfig(logRoot);
+        return ensureProjectFiles(logRoot, projectFilesDir);
+      },
       openShell: async (id) => {
         const { openSessionShell } = await import("./shell.ts");
         const { stdin } = await import("node:process");
@@ -829,6 +850,7 @@ const printQueue = (s: SessionSnapshot, clientId: string): string => {
 
 const ID_CMDS = new Set([
   "shell",
+  "project-files",
   "get",
   "history",
   "send",

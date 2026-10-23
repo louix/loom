@@ -13,6 +13,8 @@
 import {
   existsSync,
   mkdirSync,
+  lstatSync,
+  rmdirSync,
   readdirSync,
   readFileSync,
   realpathSync,
@@ -143,7 +145,17 @@ export const moveRepository = async (oldArg: string, newArg: string): Promise<Re
     [dirname(oldPaths.packageCache), dirname(newPaths.packageCache)],
     [sessionCloneRoot(from), sessionCloneRoot(to)],
     [repoBaseDirectory(from), repoBaseDirectory(to)],
+    [oldPaths.projects, newPaths.projects],
   ];
+  // Project files are user data: reject symlinks and occupied destinations before moving anything.
+  for (const path of [oldPaths.projects, newPaths.projects]) {
+    try {
+      if (!lstatSync(path).isDirectory())
+        throw new Error("Project files path is not a directory: " + path);
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+    }
+  }
   for (const [source, target] of moves.slice(2))
     if (existsSync(source) && existsSync(target) && readdirSync(target).length > 0)
       throw new Error(`${target} already exists; move or remove it first`);
@@ -154,7 +166,9 @@ export const moveRepository = async (oldArg: string, newArg: string): Promise<Re
   const moved: string[] = [];
   for (const [source, target] of moves) {
     if (!existsSync(source)) continue;
-    rmSync(target, { recursive: true, force: true });
+    if (source === oldPaths.projects) {
+      if (existsSync(target)) rmdirSync(target);
+    } else rmSync(target, { recursive: true, force: true });
     mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
     renameSync(source, target);
     moved.push(`${source} -> ${target}`);

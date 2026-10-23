@@ -105,6 +105,8 @@ export interface LoomPaths {
   packageCache: string;
   /** Directory holding one git worktree per session. */
   trees: string;
+  /** Persistent shared project files; never removed with session state. */
+  projects: string;
   /** `<repoRoot>/.loom`, where Loom kept all of this before the XDG layout. */
   legacy: { dir: string; sock: string; pid: string };
 }
@@ -141,6 +143,18 @@ export const worktreeDirectory = (
     return resolve(repoRoot, configured);
   }
   return join(userDirectory("data", env), "loom", "worktrees", repoKey(repoRoot));
+};
+
+/** Configured storage base always contains a repository key, including global overrides. */
+export const projectDirectory = (
+  repoRoot: string,
+  configured = "",
+  env: Record<string, string | undefined> = Deno.env.toObject(),
+): string => {
+  const base = configured
+    ? worktreeDirectory(repoRoot, configured, env)
+    : join(userDirectory("data", env), "loom", "projects");
+  return join(base, repoKey(repoRoot));
 };
 
 export const repoStateDirectory = (
@@ -212,6 +226,7 @@ const keyedPaths = (
     hooks: join(state, "hooks"),
     packageCache: join(keyedCacheDirectory(key, env), "package-cache"),
     trees,
+    projects: join(userDirectory("data", env), "loom", "projects", key),
     legacy: { dir: legacy, sock: join(legacy, "daemon.sock"), pid: join(legacy, "daemon.pid") },
   };
 };

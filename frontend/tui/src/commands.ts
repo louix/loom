@@ -375,6 +375,12 @@ const COMMANDS = {
     label: "Switch repository",
     description: "Open a recently used repository; sessions here keep running.",
   },
+  projectFiles: {
+    scope: "app",
+    keys: "",
+    label: "Open project files",
+    description: "Open this repository's shared project-files directory in $EDITOR.",
+  },
   logs: {
     scope: "app",
     keys: "",
@@ -407,6 +413,7 @@ const ORDER = Object.keys(COMMANDS) as ActName[];
 /** Client capabilities some commands need; omitted ones count as available. */
 export interface CommandFeatures {
   readonly logs: boolean;
+  readonly projectFiles?: boolean;
   readonly shell: boolean;
   readonly prepareEnvironment: boolean;
   readonly switchRepository: boolean;
@@ -891,6 +898,12 @@ const otherAvailability = (
       return {
         disabled:
           features.switchRepository === false ? "Repository switching is unavailable" : undefined,
+      };
+    case "projectFiles":
+      return {
+        disabled: features.projectFiles
+          ? undefined
+          : "Project files are unavailable in this client",
       };
     case "logs":
       return {

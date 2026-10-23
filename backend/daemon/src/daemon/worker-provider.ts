@@ -518,6 +518,11 @@ export class WorkerProvider implements AgentProvider {
           spec,
           (opts as LocalSessionEnvironment)[localSessionEnvironment],
         );
+        if (opts.projectDir) {
+          spec.env.LOOM_PROJECT_DIR = opts.projectDir;
+          spec.permissions.read.push(opts.projectDir);
+          spec.permissions.write.push(opts.projectDir);
+        }
         // Applied last: an explicit Loom identity outranks any project shell's exports.
         Object.assign(spec.env, (opts as SessionGitIdentity)[sessionGitIdentity]);
       }

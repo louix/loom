@@ -728,7 +728,10 @@ class ClaudeSession implements AgentSession {
     // `permission_request`. Self-gates on the *live* mode — every other mode
     // already prompts, so the guard would only double up.
     const worktreeRoot = opts.cwd;
-    const writableOutsideTree = allowedWriteRoots(configDir);
+    const writableOutsideTree = [
+      ...allowedWriteRoots(configDir),
+      ...(opts.projectDir ? [opts.projectDir] : []),
+    ];
     const guardOutOfTreeWrites: HookCallback = (input) => {
       if (input.hook_event_name !== "PreToolUse") return Promise.resolve({});
       // Auto-approved tools bypass canUseTool. A queued turn that survives
@@ -792,6 +795,7 @@ class ClaudeSession implements AgentSession {
       },
       cwd: opts.cwd,
       permissionMode: toPermissionMode(opts.mode),
+      ...(opts.projectDir ? { additionalDirectories: [opts.projectDir] } : {}),
       canUseTool,
       hooks: { PreToolUse: [{ hooks: [guardOutOfTreeWrites] }] },
       includePartialMessages: false,
@@ -2021,6 +2025,7 @@ export class ClaudeProvider implements AgentProvider {
     const opts: CreateSessionOptions = {
       sessionId: ref.sessionId,
       cwd: ref.cwd,
+      ...(ref.projectDir ? { projectDir: ref.projectDir } : {}),
       ...(ref.initHooks ? { initHooks: ref.initHooks } : {}),
       prompt: "", // resume replays in-flight state; the next real turn comes via send()
       mode: ref.mode ?? "default",

@@ -41,6 +41,13 @@ Deno.test("clone sessions mount the clone and the relay socket, never the reposi
     "--mount-socket",
     "/tmp/loom-session-vm-test/git.sock:/run/loom/git.sock",
   ]);
+  const projectDir = "/home/test/.local/share/loom/projects/repo-key";
+  const shared = vmCreateArguments({ ...b, projectDir });
+  assert.ok(shared.includes(projectDir + ":" + projectDir));
+  assert.ok(shared.includes("LOOM_PROJECT_DIR=" + projectDir));
+  assert.ok(!shared.some((arg) => arg.includes("/home/test/repo")));
+  for (const projectDir of ["/", "/etc/files", b.state, "/tmp/a:b"])
+    assert.throws(() => vmCreateArguments({ ...b, projectDir }));
   const create = [...vmCreateArguments(b), ...vmGitArguments(b)];
   assert.ok(
     !create.some((arg) => arg.includes("/home/test/repo")),

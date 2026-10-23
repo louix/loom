@@ -125,6 +125,7 @@ for (const kind of ["claude", "codex", "aisdk"] as const) {
       await Deno.writeTextFile(join(root, "skills/pdf/references/notes.md"), "notes");
     }
     const options: CreateSessionOptions & SessionGitIdentity = {
+      projectDir: join(root, "shared-project-files"),
       [sessionGitIdentity]: gitIdentity,
       sessionId: "session",
       ...(kind !== "aisdk" ? { skills: ["pdf"] } : {}),
@@ -170,6 +171,7 @@ for (const kind of ["claude", "codex", "aisdk"] as const) {
         identity: { name: "Loom (test)", email: "author@example.com" },
       });
       assert.deepEqual(launches[0]!.gitIdentity, gitIdentity);
+      assert.equal(launches[0]!.projectDir, options.projectDir);
       assert.ok(!requests.join("").includes("committer@example.com"), "identity stays host-side");
       assert.deepEqual(launches[0]!.extraAllowedHosts, ["registry.npmjs.org"]);
       assert.equal(

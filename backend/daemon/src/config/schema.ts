@@ -417,6 +417,12 @@ export const createConfigSchema = (d: LoomConfig, events: readonly HookEvent[]) 
             "The repository's default branch for new sessions: the alternative the new-session prompt's base toggle (Alt+B) offers to the checked-out branch, and the base of sessions created without one (loom run). Unset: the toggle offers the remote's default branch, else init.defaultBranch, else main, and a session created without a base starts from the checked-out branch (HEAD's commit when detached). Each session keeps the base it was created with. Restart to apply.",
           ),
         }),
+        project_files_dir: optionalText().describe(
+          "Storage base for shared project files; Loom appends the repository key. Absolute, ~/ or relative to the repository. Omitted: $XDG_DATA_HOME/loom/projects. Restart to apply; changing this does not move existing files.",
+        ),
+        project_files_instructions: optionalText().describe(
+          "Optional freeform instructions for using project files. Inherited globally and overridden by matching repos entries. File contents are never automatically loaded.",
+        ),
         worktree_dir: optionalText().describe(
           "Exact worktree directory (absolute, ~/ or relative to the repository). Omitted: $XDG_DATA_HOME/loom/worktrees/<repo>-<hash>, defaulting to ~/.local/share. Existing sessions keep their paths. Restart to apply.",
         ),

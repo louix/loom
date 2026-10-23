@@ -160,7 +160,8 @@ const binding: VmBinding = {
 test("VM grants enforce no mounts, read-only mounts, and independent network", () => {
   for (const workspace of ["none", "read-only", "read-write"] as const) {
     for (const network of [[], ["example.com", "files.example.com"]]) {
-      const b = { ...binding, mcpGrants: { workspace, network } };
+      const projectDir = "/home/test/projects/repo-key";
+      const b = { ...binding, projectDir, mcpGrants: { workspace, network } };
       const args = vmCreateArguments(b);
       assert.equal(args.includes("--net"), false);
       // smolvm's `--allow-host` would also admit every subdomain of an exact grant.
@@ -169,7 +170,8 @@ test("VM grants enforce no mounts, read-only mounts, and independent network", (
         args.flatMap((arg, i) => (arg === "--allow-host-pattern" ? [args[i + 1]] : [])),
         network,
       );
-      for (const mount of binding.mounts!) {
+      assert.equal(args.includes("LOOM_PROJECT_DIR=" + projectDir), workspace !== "none");
+      for (const mount of [...binding.mounts!, projectDir]) {
         assert.equal(args.includes(mount + ":" + mount), workspace === "read-write");
         assert.equal(args.includes(mount + ":" + mount + ":ro"), workspace === "read-only");
       }

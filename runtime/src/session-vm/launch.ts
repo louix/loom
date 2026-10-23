@@ -44,6 +44,7 @@ export interface SessionVmOptions {
   activity?: () => string;
   onProgress?: (message: string, termination?: VmTermination) => void;
   workspace: string;
+  projectDir?: string;
   artifact: string;
   smolvm: string;
   auth?: SessionAuth;
@@ -230,6 +231,7 @@ const launchSessionVmOwned = async (
     token: crypto.randomUUID(),
     ...(environmentEnabled(options.environment) ? { writableNix: true } : {}),
     mounts,
+    ...(options.projectDir ? { projectDir: options.projectDir } : {}),
     ...(readOnlyMounts.length ? { readOnlyMounts } : {}),
     ...(packageCache ? { packageCache } : {}),
     ...(sessionDirectory ? { sessionDirectory } : {}),

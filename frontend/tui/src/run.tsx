@@ -50,6 +50,7 @@ export const runTui = async (
     /** The config's `tui.compat`; `LOOM_TUI_COMPAT=1` turns compat on too. */
     compat?: boolean;
     openShell?: (id: string) => Promise<number>;
+    projectFiles?: () => string;
     prepareEnvironment?: () => Promise<number>;
     repositories?: () => string[];
     checkEnvironment?: () => Promise<string | null>;
@@ -76,6 +77,7 @@ export const runTui = async (
         {...(opts.checkEnvironment ? { checkEnvironment: opts.checkEnvironment } : {})}
         {...(opts.logs ? { logs: opts.logs } : {})}
         {...(opts.themeState ? { themeState: opts.themeState } : {})}
+        {...(opts.projectFiles ? { projectFiles: opts.projectFiles } : {})}
         {...(opts.openShell ? { openShell: opts.openShell } : {})}
         {...(opts.prepareEnvironment ? { prepareEnvironment: opts.prepareEnvironment } : {})}
         {...(opts.repositories ? { repositories: opts.repositories } : {})}

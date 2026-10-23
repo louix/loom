@@ -1786,6 +1786,7 @@ test("Codex VM network access survives turns, mode changes and resume; host stay
       });
       const opts = {
         sessionId: "network",
+        projectDir: join(root, "shared-project"),
         cwd: root,
         prompt: "",
         mode: "default" as const,
@@ -1802,7 +1803,12 @@ test("Codex VM network access survives turns, mode changes and resume; host stay
       } finally {
         await session.close();
       }
-      session = await provider.resumeSession({ sessionId: opts.sessionId, cwd: root, providerRef });
+      session = await provider.resumeSession({
+        sessionId: opts.sessionId,
+        cwd: root,
+        providerRef,
+        projectDir: opts.projectDir,
+      });
       try {
         await session.send("resumed");
         for await (const event of session.events()) if (event.type === "result") break;
@@ -1818,6 +1824,10 @@ test("Codex VM network access survives turns, mode changes and resume; host stay
       assert.equal(starts.length, 2);
       for (const { params } of starts)
         assert.equal(params.config["sandbox_workspace_write.network_access"], allowed);
+      for (const { params } of starts)
+        assert.deepEqual(params.config["sandbox_workspace_write.writable_roots"], [
+          opts.projectDir,
+        ]);
       // Every turn restates the same writable sandbox, Plan included; mode
       // changes are collaboration/reviewer settings and never touch it.
       const turns = requests.filter((r) => r.method === "turn/start");
@@ -1825,7 +1835,7 @@ test("Codex VM network access survives turns, mode changes and resume; host stay
       for (const { params } of turns) {
         assert.equal(params.sandboxPolicy.networkAccess, allowed);
         assert.equal(params.sandboxPolicy.type, "workspaceWrite");
-        assert.deepEqual(params.sandboxPolicy.writableRoots, [root]);
+        assert.deepEqual(params.sandboxPolicy.writableRoots, [root, opts.projectDir]);
       }
       // Plan, Manual (for acceptEdits), Auto, Manual; resuming in Manual is a no-op.
       const updates = requests.filter((r) => r.method === "thread/settings/update");

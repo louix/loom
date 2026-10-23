@@ -1,3 +1,4 @@
+import { ensureProjectDirectory, projectFilesInstructions } from "./project-files.ts";
 import { signalOf } from "./startup.ts";
 import { runSessionInit } from "../../../../core/src/session-init.ts";
 import {
@@ -76,10 +77,21 @@ export class ProviderRegistry {
     return this.#localEnvironments.get(sessionId);
   }
 
-  async shellEnvironment(sessionId: string, cwd: string, signal: AbortSignal) {
-    return this.#localEnvironments.has(sessionId)
+  async shellEnvironment(
+    sessionId: string,
+    cwd: string,
+    signal: AbortSignal,
+  ): Promise<EnvironmentChanges> {
+    const environment = this.#localEnvironments.has(sessionId)
       ? this.#localEnvironments.get(sessionId)
       : await activateLocalEnvironment(cwd, this.#config.autoNix, signal);
+    return {
+      set: {
+        ...environment?.set,
+        LOOM_PROJECT_DIR: ensureProjectDirectory(this.#repoRoot, this.#config.projectFilesDir),
+      },
+      unset: (environment?.unset ?? []).filter((key) => key !== "LOOM_PROJECT_DIR"),
+    };
   }
   constructor(
     config: LoomConfig,
@@ -303,7 +315,7 @@ export class ProviderRegistry {
                   ...(options.model ? { model: options.model } : {}),
                   profile: id,
                 });
-            const environment =
+            let environment =
               !context.config.sessionVm && !oneShot
                 ? await activateLocalEnvironment(
                     options.cwd,
@@ -312,10 +324,35 @@ export class ProviderRegistry {
                     progress,
                   )
                 : undefined;
+            // The project path alone must not switch native shell-profile behavior.
+            const workerEnvironment = environment;
+            const projectDir = oneShot
+              ? undefined
+              : ensureProjectDirectory(this.#repoRoot, this.#config.projectFilesDir);
+            if (projectDir) {
+              environment = {
+                set: { ...environment?.set, LOOM_PROJECT_DIR: projectDir },
+                unset: (environment?.unset ?? []).filter((key) => key !== "LOOM_PROJECT_DIR"),
+              };
+              const instructions = projectFilesInstructions(
+                projectDir,
+                this.#config.projectFilesInstructions,
+              );
+              options = {
+                ...options,
+                projectDir,
+                systemPromptAppend: [options.systemPromptAppend, instructions]
+                  .filter(Boolean)
+                  .join("\n\n"),
+                repoInstructions: [options.repoInstructions, instructions]
+                  .filter(Boolean)
+                  .join("\n\n"),
+              };
+            }
             signal?.throwIfAborted();
             options = {
               ...options,
-              ...(environment ? { [localSessionEnvironment]: environment } : {}),
+              ...(workerEnvironment ? { [localSessionEnvironment]: workerEnvironment } : {}),
               ...(gitIdentity ? { [sessionGitIdentity]: gitIdentity } : {}),
             };
             const hooks =

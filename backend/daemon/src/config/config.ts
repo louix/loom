@@ -267,6 +267,8 @@ export interface LoomConfig {
    */
   baseBranch?: string;
   worktreeDir: string;
+  projectFilesDir: string;
+  projectFilesInstructions: string;
   /** `session.branch_prefix`: what new sessions' branches are named under. */
   branchPrefix: BranchPrefix;
   /**
@@ -464,6 +466,8 @@ export const DEFAULT_CONFIG: LoomConfig = {
   autoNix: false,
   tui: { includeEventLogInEditor: false, compat: false },
   worktreeDir: "",
+  projectFilesDir: "",
+  projectFilesInstructions: "",
   branchPrefix: ["loom"],
   providerAccess: { deny: [] },
   defaults: { isolation: "none", workspace: "worktree" },
@@ -874,6 +878,8 @@ export const normalizeConfig = (
       ? { baseBranch: settings.session.defaults.base_branch }
       : {}),
     worktreeDir: settings.session.worktree_dir ?? "",
+    projectFilesDir: settings.session.project_files_dir ?? "",
+    projectFilesInstructions: settings.session.project_files_instructions ?? "",
     branchPrefix: settings.session.branch_prefix,
     providerAccess,
     isolation: {

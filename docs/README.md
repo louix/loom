@@ -5,6 +5,7 @@ Start with the guide for the task at hand:
 | Task                                                     | Guide                                                                                       |
 | -------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
 | Use the terminal UI                                      | [Keybindings](keybindings.md)                                                               |
+| Share reports and scripts across sessions                | [Project files](project-files.md)                                                           |
 | Configure MCP servers and authentication                 | [Tools](tools.md)                                                                           |
 | Choose local or VM execution                             | [Isolation](isolation.md)                                                                   |
 | Understand worktrees, private clones and Git             | [Repository access](repository-mounts.md)                                                   |

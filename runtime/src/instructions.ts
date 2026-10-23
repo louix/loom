@@ -39,7 +39,7 @@ export const AISDK_SYSTEM = [
 export const toolSteer = (cwd: string, mounted: MountedLoomTools): string =>
   [
     "This session runs under Loom:",
-    `- All of this session's work stays inside the worktree at ${cwd}. Build every file path — Read, Edit, Write, MCP root arguments, \`cd\` targets — from there, not from memory of where the repo "usually" lives. A path outside it, such as a parent checkout of the same repo, is a *different* working tree: reads come back stale and writes never reach your branch.${mounted.status ? " The `status` tool reprints this root." : ""}`,
+    `- Repository work stays inside the worktree at ${cwd}. Use LOOM_PROJECT_DIR for shared project files when provided. Build every checkout file path — Read, Edit, Write, MCP root arguments, \`cd\` targets — from there, not from memory of where the repo "usually" lives. A path outside it, such as a parent checkout of the same repo, is a *different* working tree: reads come back stale and writes never reach your branch.${mounted.status ? " The `status` tool reprints this root." : ""}`,
     ...(mounted.commit
       ? [
           "- When you have a coherent set of changes, call the `commit` tool to record them; don't shell out to git.",

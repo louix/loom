@@ -337,3 +337,17 @@ test("prepared detail and doctor resolve every theme without changing their geom
     assert.ok(stripVTControlCharacters(doctor).includes("✓ tilth"));
   }
 });
+
+test("project files palette action is available without a selected session when wired", () => {
+  const state = reduce(initialState(), fleet([]));
+  const action = describeCommands({ ...state, features: { projectFiles: true } }).find(
+    (a) => a.id === "projectFiles",
+  );
+  assert.equal(action?.label, "Open project files");
+  assert.equal(action?.disabled, undefined);
+  assert.ok(
+    describeCommands({ ...state, features: { projectFiles: false } }).find(
+      (a) => a.id === "projectFiles",
+    )?.disabled,
+  );
+});

@@ -364,6 +364,14 @@
           },
           "additionalProperties": false
         },
+        "project_files_dir": {
+          "description": "Storage base for shared project files; Loom appends the repository key. Absolute, ~/ or relative to the repository. Omitted: $XDG_DATA_HOME/loom/projects. Restart to apply; changing this does not move existing files.",
+          "type": "string"
+        },
+        "project_files_instructions": {
+          "description": "Optional freeform instructions for using project files. Inherited globally and overridden by matching repos entries. File contents are never automatically loaded.",
+          "type": "string"
+        },
         "worktree_dir": {
           "description": "Exact worktree directory (absolute, ~/ or relative to the repository). Omitted: $XDG_DATA_HOME/loom/worktrees/<repo>-<hash>, defaulting to ~/.local/share. Existing sessions keep their paths. Restart to apply.",
           "type": "string"
@@ -1918,6 +1926,14 @@
                   }
                 },
                 "additionalProperties": false
+              },
+              "project_files_dir": {
+                "description": "Storage base for shared project files; Loom appends the repository key. Absolute, ~/ or relative to the repository. Omitted: $XDG_DATA_HOME/loom/projects. Restart to apply; changing this does not move existing files.",
+                "type": "string"
+              },
+              "project_files_instructions": {
+                "description": "Optional freeform instructions for using project files. Inherited globally and overridden by matching repos entries. File contents are never automatically loaded.",
+                "type": "string"
               },
               "worktree_dir": {
                 "description": "Exact worktree directory (absolute, ~/ or relative to the repository). Omitted: $XDG_DATA_HOME/loom/worktrees/<repo>-<hash>, defaulting to ~/.local/share. Existing sessions keep their paths. Restart to apply.",

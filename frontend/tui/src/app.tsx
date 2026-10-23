@@ -55,6 +55,7 @@ export const App = ({
   includeEventLogInEditor = false,
   compat = false,
   openShell,
+  projectFiles,
   prepareEnvironment,
   repositories,
   switchRepository,
@@ -73,6 +74,7 @@ export const App = ({
   /** Compat mode (see `tuiCompat` in run.tsx): no any-motion tracking, no hover. */
   compat?: boolean;
   openShell?: (id: string) => Promise<number>;
+  projectFiles?: () => string;
   prepareEnvironment?: () => Promise<number>;
   repositories?: () => string[];
   switchRepository?: (path: string) => void;
@@ -111,6 +113,7 @@ export const App = ({
       includeEventLogInEditor,
       compat,
       ...(logs ? { logs } : {}),
+      ...(projectFiles ? { projectFiles } : {}),
       ...(openShell ? { openShell } : {}),
       ...(prepareEnvironment ? { prepareEnvironment } : {}),
       ...(repositories ? { repositories } : {}),

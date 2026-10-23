@@ -22,6 +22,7 @@ export interface McpVmIdentity {
   sessionId: string;
   provider: string;
   repo?: string | undefined;
+  projectDir?: string;
   grants?: McpGrants;
   requestTimeoutMs?: number;
 }
@@ -62,6 +63,9 @@ const startRuntimeMcpOwned = async (
     smolvm: lock.smolvm,
     manifest,
     workspace: cwd,
+    ...(identity?.projectDir && grants?.workspace !== "none"
+      ? { projectDir: identity.projectDir }
+      : {}),
     mounts: privateWorkspace ? [] : mounts,
     ...(privateWorkspace ? { privateWorkspace } : {}),
     state,
@@ -121,6 +125,7 @@ const startRuntimeMcpOwned = async (
         read: [
           state,
           lock.artifact,
+          ...(binding.projectDir ? [binding.projectDir] : []),
           ...(privateWorkspace ? [privateWorkspace] : (binding.mounts ?? [cwd])),
         ],
         write: [state],
