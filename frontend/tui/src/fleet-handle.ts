@@ -769,7 +769,8 @@ export const mkFleetHandle = ({
       state.sessionTab !== "chat" ||
       (body !== "split" && body !== "sessionPane") ||
       child?.source !== "bg" ||
-      child.taskKind === "subagent"
+      child.taskKind === "subagent" ||
+      child.outputSource === "events"
     )
       return null;
     return { sessionId: state.selectedId, taskId: child.id };

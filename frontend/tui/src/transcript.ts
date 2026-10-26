@@ -266,9 +266,14 @@ export const formatEvent = (ev: HarnessEvent, toolName?: string): EventFormat =>
       // the content into the log a second time.
       const terse = ev.ok && toolName !== undefined && isReadTool(toolName);
       const full = ev.ok ? (formatAskUserQuestionResult(out) ?? out) : `error\n${out}`;
+      const cell =
+        toolName === "exec" || toolName === "wait"
+          ? /^Script running with cell ID (\S+)\n/.exec(out)?.[1]
+          : undefined;
+      const resultText = ev.ok ? "ok" : `error ${oneLine(out || String(raw), 120)}`;
       return {
         glyph: "↳",
-        text: ev.ok ? "ok" : `error ${oneLine(out || String(raw), 120)}`,
+        text: cell ? `running · cell ${cell}` : resultText,
         ...(out && !terse ? { full } : {}),
         tone: ev.ok ? "good" : "bad",
       };
@@ -517,6 +522,7 @@ const toolDescriptionOf = (input: unknown): string | undefined => {
  * under their key), anything else as compact JSON. Readable, not a raw dump.
  */
 const toolCallFull = (name: string, input: unknown): string => {
+  if (typeof input === "string") return `${name}\n${body(input)}`;
   if (input == null || typeof input !== "object") return name;
   const o = input as Record<string, unknown>;
   if (isEditTool(name)) {

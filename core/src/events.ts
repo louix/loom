@@ -239,6 +239,8 @@ export const backgroundTaskInfoSchema = z.object({
   kind: backgroundTaskKindSchema,
   /** A one-line human label (task description, or the shell command). */
   title: z.string(),
+  /** Output arrives as child events; do not poll a provider task-output file. */
+  outputSource: z.literal("events").optional(),
 });
 export type BackgroundTaskInfo = z.infer<typeof backgroundTaskInfoSchema>;
 

@@ -601,6 +601,7 @@ export interface FleetChild {
   label: string;
   /** Background-task kind (for the glyph); absent for foreground sub-agents. */
   taskKind?: BackgroundTaskKind;
+  outputSource?: "events";
 }
 
 /**
@@ -618,6 +619,7 @@ export const childrenOf = (s: SessionSnapshot): FleetChild[] => {
       id: t.id,
       label: t.title,
       taskKind: t.kind,
+      ...(t.outputSource ? { outputSource: t.outputSource } : {}),
     })),
     ...(s.subagents ?? [])
       .filter((a) => a.active)

@@ -42,6 +42,8 @@ import {
 import { verifyChatGptAccount } from "./account.ts";
 import { rateLimitEvents } from "./rate-limits.ts";
 import { turnErrorReason } from "./turn-error.ts";
+import { CodeCells } from "./code-cells.ts";
+import { RolloutTail } from "./rollout-tail.ts";
 import { deniedReview, type DeniedReview } from "./auto-review.ts";
 import type { CodexHome } from "./codex-home.ts";
 import { skillConfig } from "./skills.ts";
@@ -261,6 +263,8 @@ export class CodexAppServerSession implements AgentSession {
   readonly #networkAccess: boolean;
   readonly #rpc: CodexRpcClient;
   #events = new AsyncChannel<HarnessEvent>();
+  readonly #codeCells: CodeCells;
+  #rollout: RolloutTail | undefined;
   readonly #pending = new PendingInteractions<PermissionDecision, PlanDecision>();
   readonly #agentCalls = new AgentCalls();
   // Dispatch owns both execution and transcript state for locally handled tools.
@@ -385,6 +389,7 @@ export class CodexAppServerSession implements AgentSession {
   ) {
     this.#oneShot = opts.oneShot === true;
     this.id = opts.sessionId;
+    this.#codeCells = new CodeCells(this.id, (event) => this.#events.push(event));
     this.#networkAccess = networkAccess;
     this.#model = opts.model ?? "";
     this.#effort = opts.effort ?? null;
@@ -397,6 +402,9 @@ export class CodexAppServerSession implements AgentSession {
     this.#rpc.onServerRequest((method, params, id) => this.#serverRequest(method, params, id));
     this.#rpc.onNotification((method, params) => this.#notification(method, params));
     this.#rpc.onClose((err) => {
+      this.#rollout?.flush();
+      this.#rollout?.close();
+      this.#codeCells.close(now());
       this.#turnAbort.abort();
       this.#modes.close(
         new Error("the provider connection closed before Codex reported the agent mode"),
@@ -446,6 +454,7 @@ export class CodexAppServerSession implements AgentSession {
       const started = await s.#rpc.requestStartup("thread/start", {
         ...(opts.model ? { model: opts.model } : {}),
         cwd: opts.cwd,
+        experimentalRawEvents: !opts.oneShot,
         approvalPolicy: opts.oneShot ? "never" : "on-request",
         ...(opts.oneShot
           ? {}
@@ -490,6 +499,7 @@ export class CodexAppServerSession implements AgentSession {
       });
       s.#threadId = (started as any)?.thread?.id ?? null;
       if (!s.#threadId) throw new Error("codex app-server did not return a thread id");
+      if (!opts.oneShot) s.#followRollout((started as any)?.thread?.path);
       if (!opts.oneShot) await s.#establishMode(started, true);
       if (opts.prompt) await s.#startTurn(opts.prompt);
       else s.#idle();
@@ -579,6 +589,7 @@ export class CodexAppServerSession implements AgentSession {
       if (ref.forkHistory && (typeof threadId !== "string" || threadId === ref.providerRef))
         throw new Error("codex app-server did not return a new thread id for the fork");
       s.#threadId = threadId ?? ref.providerRef;
+      s.#followRollout((resumed as any)?.thread?.path);
       await s.#establishMode(resumed, false);
       s.#idle();
       return s;
@@ -1363,7 +1374,36 @@ export class CodexAppServerSession implements AgentSession {
     }
   }
 
+  #followRollout(path: unknown): void {
+    if (typeof path !== "string" || !path) return;
+    try {
+      this.#rollout = new RolloutTail(
+        path,
+        (item, ts) => this.#codeCells.accept(item, ts),
+        (error) => this.#diagnose(`Code Mode history unavailable: ${String(error)}`),
+      );
+    } catch (error) {
+      this.#diagnose(`Code Mode history unavailable: ${String(error)}`);
+    }
+  }
+
   #notification(method: string, p: Record<string, unknown>): void {
+    // Flush the fallback before final text/result so resumed calls keep their
+    // place in history and background membership precedes turn completion.
+    this.#rollout?.flush();
+    if (method === "rawResponseItem/completed") {
+      if (this.#closing || p["threadId"] !== this.#threadId) return;
+      const item = p["item"] as Record<string, unknown> | undefined;
+      const metadata = item?.["internal_chat_message_metadata_passthrough"] as
+        | Record<string, unknown>
+        | undefined;
+      const created = metadata?.["create_time"];
+      this.#codeCells.accept(
+        item,
+        typeof created === "number" && Number.isFinite(created) ? created * 1000 : now(),
+      );
+      return;
+    }
     if (method === "item/autoApprovalReview/completed") {
       if (this.#oneShot || this.#closing || p["threadId"] !== this.#threadId) return;
       const review = deniedReview(p);

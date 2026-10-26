@@ -205,6 +205,27 @@ Run it with `loom run --provider codex "…"`, or set
 Sessions run through `codex app-server`, including Code Mode models. Install
 `codex` and run `codex login` before using the connector.
 
+Code Mode's outer `exec` and `wait` calls appear in tool history, including
+the script and output in the `o` transcript. When a result reports a running
+cell, it also appears as a nested background task. Select its row with → to
+inspect the script, first-observed time, and reported output. The row survives
+the agent's final reply and disappears when a subsequent tool result reports
+completion, failure, or termination.
+
+Cell rows say **last reported running**: Codex 0.160 has no client API to query
+or cancel Code Mode cells. A cell may finish before the agent reads its result.
+Ask the agent to check it with `wait`, or stop it with `wait` and
+`terminate: true`; Loom does not offer a direct cancel button. On provider
+disconnect, Loom drops the live rows without claiming the cells completed.
+This is task visibility, not a persistent scheduler.
+
+New threads opt into raw provider events. A read-only tail of the
+provider-returned rollout path fills the same gap for resumed and forked
+threads, whose protocol has no raw-event opt-in. Only newly appended records
+are read; existing history is not backfilled or treated as live work. A
+missing/unreadable rollout is reported, and ordinary session operation
+continues.
+
 Set `cli_path` in `providers.codex` or one of its profiles
 when `codex` is not on `PATH`:
 

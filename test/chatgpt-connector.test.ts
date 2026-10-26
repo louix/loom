@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { setTimeout as delay } from "node:timers/promises";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -2300,6 +2300,127 @@ const eventsUntil = async (
   throw new Error(`events ended without a match: ${seen.map((ev) => ev.type).join(", ")}`);
 };
 const inputText = (r: Logged): string => r.params.input?.[0]?.text ?? "";
+
+test("Code Mode calls reach history and nested tasks through RPC and resumed rollout fallback", async () => {
+  for (const how of ["start", "resume", "fork"] as const) {
+    await withFakeCodex(
+      (dir) => ({ LOOM_TEST_ROLLOUT_PATH: join(dir, "rollout.jsonl") }),
+      async (requests, dir) => {
+        const path = join(dir, "rollout.jsonl");
+        const call = {
+          type: "custom_tool_call",
+          name: "exec",
+          call_id: "cell-call",
+          input: "await new Promise(resolve => setTimeout(resolve, 6000000));",
+        };
+        const result = {
+          type: "custom_tool_call_output",
+          call_id: "cell-call",
+          output: [
+            {
+              type: "input_text",
+              text: "Script running with cell ID 577\nWall time 1.0 seconds\nOutput:\n",
+            },
+          ],
+        };
+        const row = (payload: unknown) =>
+          JSON.stringify({
+            type: "response_item",
+            timestamp: "2026-10-26T23:22:57.474Z",
+            payload,
+          }) + "\n";
+        await writeFile(path, row({ ...call, call_id: "historical" }));
+        let s: CodexAppServerSession | undefined;
+        try {
+          s =
+            how === "start"
+              ? await startCodex("default")
+              : await CodexAppServerSession.resume(
+                  {
+                    sessionId: "s1",
+                    cwd: "/tmp",
+                    providerRef: "fake-thread-1",
+                    ...(how === "fork" ? { forkHistory: true } : {}),
+                  },
+                  modesHome,
+                  FAKE_CODEX,
+                );
+          // Starts use raw notifications; resume/fork lack that opt-in and
+          // receive only new rows in the provider-returned rollout.
+          if (how !== "start") await appendFile(path, row(call) + row(result));
+          await s.send("go");
+          const first = await eventsUntil(s, (e) => e.type === "result");
+          if (how !== "start") {
+            assert.equal(first.filter((e) => e.type === "tool_call").length, 1);
+            assert.equal(first.find((e) => e.type === "tool_call")?.id, "cell-call");
+            assert.equal(
+              first.find((e) => e.type === "background_tasks")?.tasks[0]?.id,
+              "codex-cell:577",
+            );
+            assert.ok(
+              first.findIndex((e) => e.type === "background_tasks") <
+                first.findIndex((e) => e.type === "result"),
+            );
+          }
+          const method = `thread/${how}`;
+          const request = (await requests(method))[0]!;
+          assert.equal(request.params.experimentalRawEvents, how === "start" ? true : undefined);
+          // A raw-only stream is tested separately below. File polling works
+          // for a fresh thread too, and stays active after a settled turn.
+          if (how === "start") {
+            await appendFile(path, row(call) + row(result));
+            const later = await eventsUntil(s, (e) => e.type === "background_tasks");
+            assert.equal(later.find((e) => e.type === "tool_call")?.id, "cell-call");
+          }
+        } finally {
+          await s?.close();
+        }
+      },
+    );
+  }
+});
+
+test("raw Code Mode notifications are correlated, de-duplicated, and scoped to the owning thread", async () => {
+  const call = { type: "custom_tool_call", name: "exec", call_id: "exec-cell", input: "text(1)" };
+  const result = {
+    type: "custom_tool_call_output",
+    call_id: "exec-cell",
+    output: "Script running with cell ID 577\nWall time 1.0 seconds\nOutput:\n",
+  };
+  await withFakeCodex(
+    {
+      LOOM_TEST_TURN_ITEMS: JSON.stringify([
+        {
+          method: "rawResponseItem/completed",
+          params: { threadId: "wrong", item: { ...call, call_id: "wrong" } },
+        },
+        ...[call, result, call, result].map((item) => ({
+          method: "rawResponseItem/completed",
+          params: { item },
+        })),
+      ]),
+    },
+    async () => {
+      const s = await startCodex("default", "go");
+      try {
+        const events = await eventsUntil(s, (e) => e.type === "result");
+        assert.equal(events.filter((e) => e.type === "tool_call").length, 1);
+        assert.equal(events.filter((e) => e.type === "tool_result").length, 1);
+        assert.equal(events.filter((e) => e.type === "background_tasks").length, 1);
+        assert.equal(
+          events.find((e) => e.type === "background_tasks")?.tasks[0]?.id,
+          "codex-cell:577",
+        );
+        // Subsequent replies must not clear the background cell.
+        await s.send("status?");
+        const next = await eventsUntil(s, (e) => e.type === "result");
+        assert.equal(next.filter((e) => e.type === "background_tasks").length, 0);
+      } finally {
+        await s.close();
+      }
+    },
+  );
+});
 
 test("CodexNativeModes reports only what Codex reports; an acknowledgement alone never settles a change", async () => {
   const modes = new CodexNativeModes(20);

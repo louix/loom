@@ -250,6 +250,8 @@ const handle = (req) => {
       return;
     }
     const started = fixture("thread-start");
+    if (process.env.LOOM_TEST_ROLLOUT_PATH)
+      started.thread.path = process.env.LOOM_TEST_ROLLOUT_PATH;
     startedThreadId = started.thread.id;
     updateSettings({
       approvalPolicy: params?.approvalPolicy,
@@ -388,7 +390,7 @@ const handle = (req) => {
       jsonrpc: "2.0",
       id,
       result: {
-        thread: { id: id_ },
+        thread: { id: id_, path: process.env.LOOM_TEST_ROLLOUT_PATH ?? null },
         ...settingsReply(),
         ...(saved.collaborationMode === null
           ? {}

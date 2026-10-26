@@ -5554,6 +5554,7 @@ test("a focused shell task's output is read while its chat pane shows, and not o
         backgroundTasks: [
           { id: "bash-1", kind: "shell", title: "sleep loop" },
           { id: "agent-1", kind: "subagent", title: "audit" },
+          { id: "codex-cell:577", kind: "other", title: "Code cell 577", outputSource: "events" },
         ],
       }),
     ),
@@ -5580,6 +5581,15 @@ test("a focused shell task's output is read while its chat pane shows, and not o
     press("", { downArrow: true });
     assert.equal(handle.getView().ui.selectedChild, "bg:agent-1");
     assert.equal(handle.taskTail.get(), null, "an agent task shows its own events instead");
+    press("", { downArrow: true });
+    assert.equal(handle.getView().ui.selectedChild, "bg:codex-cell:577");
+    assert.equal(
+      handle.taskTail.get(),
+      null,
+      "a code cell shows child events, not a task-output file",
+    );
+    assert.equal(reads().length, 2, "no unsupported output polling for a code cell");
+    press("", { upArrow: true });
     press("", { upArrow: true });
     assert.equal(reads().length, 3, "focused again, read again");
     press("", { leftArrow: true });

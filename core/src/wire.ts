@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { opaqueSchema } from "./schema.ts";
-import { backgroundTaskKindSchema, harnessEventSchema, tokenUsageSchema } from "./events.ts";
+import { backgroundTaskInfoSchema, harnessEventSchema, tokenUsageSchema } from "./events.ts";
 import { sessionStateSchema } from "./session-state.ts";
 import { sessionInteractionSchema } from "./interaction.ts";
 import { sessionModeSchema } from "./types.ts";
@@ -275,13 +275,7 @@ export const sessionSnapshotSchema = z.object({
    * shells, workflows. Non-empty implies `status.kind === "working_background"`
    * (or a live state that will settle there). Runtime-only, not persisted.
    */
-  backgroundTasks: z.array(
-    z.object({
-      id: z.string(),
-      kind: backgroundTaskKindSchema,
-      title: z.string(),
-    }),
-  ),
+  backgroundTasks: z.array(backgroundTaskInfoSchema),
   /**
    * The provider's account-plan usage windows (Claude: `five_hour` / `seven_day`),
    * keyed by window name. Empty for API-key sessions, which have no such plan.
