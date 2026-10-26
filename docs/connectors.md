@@ -225,6 +225,16 @@ back through Loom's existing permission UI. HTTP MCP mounts use session relays;
 the native client receives a local access token rather than the upstream key.
 Set `"builtin_web_search": true` to also expose Codex's native web search.
 
+Automatic classifier denials offer manual review with the denied action and
+the classifier's reason. Codex collects these reviews at the end of the turn;
+approving records the native denied-action approval and starts a retry turn.
+Claude pauses in its `PermissionDenied` hook and grants one matching retry
+after approval (same tool, arguments, working directory, session and agent).
+Unused Claude grants expire after the retry turn or when the user sends new
+input, changes mode, interrupts, or closes the session. Auto mode stays selected.
+This uses Codex 0.160's review protocol and Claude's `PermissionDenied` hook;
+older CLIs without those events cannot offer this fallback.
+
 The native app-server protocol and authenticated model catalogue can change
 independently of Loom; discovery avoids hard-coded model IDs.
 

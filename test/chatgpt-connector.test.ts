@@ -3203,3 +3203,134 @@ test("Codex gets a server's request bound as its tool-call timeout", () => {
     '{ "host" = { command = "tool", tool_timeout_sec = 1.5 }, "aws" = { url = "https://aws.example/mcp", tool_timeout_sec = 120 } }',
   );
 });
+
+for (const outcome of ["allow", "deny", "interrupt", "close", "rpc-error"] as const) {
+  test(`auto-review denial offers manual approval with rationale: ${outcome}`, async () => {
+    const dir = await mkdtemp(join(tmpdir(), "loom-auto-review-"));
+    const log = join(dir, "requests.jsonl");
+    const review = {
+      method: "item/autoApprovalReview/completed",
+      params: {
+        reviewId: "review-1",
+        targetItemId: "command-1",
+        startedAtMs: 10,
+        completedAtMs: 20,
+        decisionSource: "agent",
+        action: { type: "command", source: "unifiedExec", command: "git push", cwd: "/tmp" },
+        review: {
+          status: "denied",
+          rationale: "Publishing was not authorized.",
+          riskLevel: "high",
+        },
+      },
+    };
+    Deno.env.set("LOOM_TEST_REQUEST_LOG", log);
+    // Duplicate notifications must not create duplicate prompts or approvals.
+    Deno.env.set("LOOM_TEST_TURN_ITEMS", JSON.stringify([review, review]));
+    Deno.env.set("LOOM_TEST_TURN_COMPLETION", JSON.stringify({ status: "interrupted" }));
+    if (outcome === "rpc-error") Deno.env.set("LOOM_TEST_FAIL_DENIAL_APPROVAL", "1");
+    let session: CodexAppServerSession | undefined;
+    try {
+      session = await CodexAppServerSession.start(
+        { sessionId: "review", cwd: "/tmp", prompt: "go", mode: "auto", mcpServers: [] },
+        { dir, authJsonPath: join(dir, "auth.json") },
+        FAKE_CODEX,
+      );
+      let prompts = 0;
+      let errors = 0;
+      for await (const ev of session.events()) {
+        if (ev.type === "permission_request") {
+          prompts++;
+          assert.equal(ev.tool, "AutoApprovalReview");
+          assert.match((ev.input as { reason: string }).reason, /Publishing was not authorized/);
+          if (outcome === "interrupt") {
+            await session.interrupt();
+            break;
+          }
+          if (outcome === "close") {
+            await session.close();
+            break;
+          }
+          await session.respondToPermission(ev.id, {
+            behavior: outcome === "deny" ? "deny" : "allow",
+          });
+        }
+        if (ev.type === "error") {
+          errors++;
+          assert.match(ev.message, /manual retry unavailable/);
+        }
+        if (ev.type === "result") break;
+      }
+      assert.equal(prompts, 1);
+      assert.equal(errors, outcome === "rpc-error" ? 1 : 0);
+      const requests = (await readFile(log, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      const approvals = requests.filter((r) => r.method === "thread/approveGuardianDeniedAction");
+      assert.equal(approvals.length, outcome === "allow" || outcome === "rpc-error" ? 1 : 0);
+      if (approvals.length) {
+        assert.equal(approvals[0].params.event.action.source, "unified_exec");
+        assert.equal(approvals[0].params.event.rationale, "Publishing was not authorized.");
+        assert.equal(approvals[0].params.event.status, "denied");
+      }
+      assert.equal(
+        requests.filter((r) => r.method === "turn/start").length,
+        outcome === "allow" ? 2 : 1,
+      );
+      assert.equal(session.snapshot().mode, "auto");
+    } finally {
+      await session?.close();
+      for (const key of [
+        "LOOM_TEST_REQUEST_LOG",
+        "LOOM_TEST_TURN_ITEMS",
+        "LOOM_TEST_TURN_COMPLETION",
+        "LOOM_TEST_FAIL_DENIAL_APPROVAL",
+      ])
+        Deno.env.delete(key);
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+}
+
+test("auto-review ignores another thread's denial and non-denied reviews", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "loom-review-ignore-"));
+  Deno.env.set(
+    "LOOM_TEST_TURN_ITEMS",
+    JSON.stringify([
+      {
+        method: "item/autoApprovalReview/completed",
+        params: {
+          threadId: "other",
+          reviewId: "r-other",
+          review: { status: "denied" },
+          action: { type: "command", source: "shell", command: "pwd", cwd: "/tmp" },
+        },
+      },
+      {
+        method: "item/autoApprovalReview/completed",
+        params: {
+          reviewId: "r-approved",
+          review: { status: "approved" },
+          action: { type: "command", source: "shell", command: "pwd", cwd: "/tmp" },
+        },
+      },
+    ]),
+  );
+  let session: CodexAppServerSession | undefined;
+  try {
+    session = await CodexAppServerSession.start(
+      { sessionId: "ignore", cwd: "/tmp", prompt: "go", mode: "auto", mcpServers: [] },
+      { dir, authJsonPath: join(dir, "auth.json") },
+      FAKE_CODEX,
+    );
+    for await (const ev of session.events()) {
+      assert.notEqual(ev.type, "permission_request");
+      if (ev.type === "result") break;
+    }
+  } finally {
+    await session?.close();
+    Deno.env.delete("LOOM_TEST_TURN_ITEMS");
+    await rm(dir, { recursive: true, force: true });
+  }
+});

@@ -9,12 +9,14 @@
  */
 import { claudeInitHooks } from "./init-hooks.ts";
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { homedir, tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve as resolvePath } from "node:path";
 import { forkSession as sdkForkSession, query as sdkQuery } from "@anthropic-ai/claude-agent-sdk";
 import type {
   CanUseTool,
   HookCallback,
+  PermissionDeniedHookInput,
   McpServerConfig,
   Options,
   PermissionMode,
@@ -517,6 +519,9 @@ class ClaudeSession implements AgentSession {
   #mapper: ClaudeEventMapper;
   #log: Logger;
   #mode: SessionMode;
+  #approvedRetries: PermissionDeniedHookInput[] = [];
+  #approvalGeneration = 0;
+  #retryContinued = false;
   #effort: EffortLevel | null;
   /** The model currently in force — `opts.model` at start, updated by
    *  `setModel()`. `rewind()` composes the resumed query from this (and the
@@ -676,6 +681,8 @@ class ClaudeSession implements AgentSession {
     if (opts.prompt)
       this.#enqueueInput(opts.prompt, "message", opts.promptByHuman ? { human: true } : {});
 
+    this.#approvedRetries = [];
+    this.#approvalGeneration++;
     const canUseTool: CanUseTool = (toolName, input, ctx) => {
       // C6: a turn already sitting in the SDK's own command queue when the user
       // interrupted still calls `canUseTool` as it unwinds. Deny outright — do
@@ -718,6 +725,61 @@ class ClaudeSession implements AgentSession {
       return decision;
     };
 
+    // Claude invokes this hook only for auto-mode classifier denials, not
+    // permission rules or user rejections. The original call stays denied;
+    // retry:true asks the model to retry, with a single exact grant below.
+    const reviewClassifierDenial: HookCallback = async (input, _id, { signal }) => {
+      if (
+        input.hook_event_name !== "PermissionDenied" ||
+        opts.oneShot ||
+        this.#mode !== "auto" ||
+        this.#interrupted ||
+        this.#closing ||
+        signal.aborted
+      )
+        return {};
+      const generation = this.#approvalGeneration;
+      const grant = structuredClone(input);
+      const reqId = `auto-review:${input.tool_use_id}`;
+      const decision = this.#pending.requestPermission(reqId);
+      const abort = () =>
+        this.#pending.resolvePermission(reqId, {
+          behavior: "deny",
+          message: "the approval request was cancelled",
+        });
+      signal.addEventListener("abort", abort, { once: true });
+      this.#outbox.push({
+        type: "permission_request",
+        sessionId: this.id,
+        ts: Date.now(),
+        id: reqId,
+        tool: "AutoApprovalReview",
+        input: {
+          tool: input.tool_name,
+          arguments: input.tool_input,
+          cwd: input.cwd,
+          reason: `Automatic approval review denied this action: ${input.reason || "No reason was provided."}\nApprove one retry?`,
+        },
+        ...(input.agent_id ? { agentId: input.agent_id } : {}),
+      });
+      try {
+        const answer = await decision;
+        if (
+          answer?.behavior !== "allow" ||
+          signal.aborted ||
+          this.#interrupted ||
+          this.#closing ||
+          generation !== this.#approvalGeneration
+        )
+          return {};
+        this.#approvedRetries.push(grant);
+        this.#retryContinued = false;
+        return { hookSpecificOutput: { hookEventName: "PermissionDenied", retry: true } };
+      } finally {
+        signal.removeEventListener("abort", abort);
+      }
+    };
+
     // `auto` mode lets the CLI auto-approve edits without ever calling
     // `canUseTool`, so an agent that builds an absolute path off the wrong repo
     // root (the main checkout instead of `.loom/trees/<id>`) writes there
@@ -736,7 +798,7 @@ class ClaudeSession implements AgentSession {
       if (input.hook_event_name !== "PreToolUse") return Promise.resolve({});
       // Auto-approved tools bypass canUseTool. A queued turn that survives
       // the native interrupt must still be unable to perform more work.
-      if (this.#interrupted)
+      if (this.#interrupted || this.#closing)
         return Promise.resolve({
           hookSpecificOutput: {
             hookEventName: "PreToolUse",
@@ -745,6 +807,25 @@ class ClaudeSession implements AgentSession {
           },
         });
       if (this.#mode !== "auto") return Promise.resolve({});
+      const approved = this.#approvedRetries.findIndex(
+        (grant) =>
+          grant.tool_name === input.tool_name &&
+          grant.cwd === input.cwd &&
+          grant.session_id === input.session_id &&
+          grant.agent_id === input.agent_id &&
+          isDeepStrictEqual(grant.tool_input, input.tool_input),
+      );
+      if (approved !== -1) {
+        this.#approvedRetries.splice(approved, 1);
+        return Promise.resolve({
+          hookSpecificOutput: {
+            hookEventName: "PreToolUse",
+            permissionDecision: "allow",
+            permissionDecisionReason:
+              "The user explicitly approved one retry after automatic review denied this action.",
+          },
+        });
+      }
       const reason = outOfTreeWriteReason(
         worktreeRoot,
         input.cwd,
@@ -797,7 +878,10 @@ class ClaudeSession implements AgentSession {
       permissionMode: toPermissionMode(opts.mode),
       ...(opts.projectDir ? { additionalDirectories: [opts.projectDir] } : {}),
       canUseTool,
-      hooks: { PreToolUse: [{ hooks: [guardOutOfTreeWrites] }] },
+      hooks: {
+        PreToolUse: [{ hooks: [guardOutOfTreeWrites] }],
+        PermissionDenied: [{ hooks: [reviewClassifierDenial], timeout: 86_400 }],
+      },
       includePartialMessages: false,
       mcpServers,
       stderr: (data) => this.#log.debug("cli stderr", { data: data.slice(0, 500) }),
@@ -1073,6 +1157,25 @@ class ClaudeSession implements AgentSession {
               this.#outbox.push(ev);
           continue;
         }
+        // A classifier can end the turn even after PermissionDenied returned
+        // retry:true. Give an unused human approval one continuation, retaining
+        // accounting but deferring the terminal result until that retry ends.
+        if (
+          msg.type === "result" &&
+          this.#approvedRetries.length &&
+          !this.#retryContinued &&
+          !this.#closing
+        ) {
+          this.#retryContinued = true;
+          this.#enqueueInput(
+            "Retry the exact tool calls I approved through manual review, then continue the task. Other denied actions remain denied.",
+            "message",
+          );
+          for (const ev of events)
+            if (ev.type !== "result" && ev.type !== "status_changed") this.#outbox.push(ev);
+          continue;
+        }
+        if (msg.type === "result") this.#approvedRetries = [];
         for (const ev of events) this.#outbox.push(ev);
         // A completed turn may have moved the plan windows — refresh, throttled.
         if (
@@ -1110,6 +1213,8 @@ class ClaudeSession implements AgentSession {
 
   /** Resolve every outstanding permission / question / plan promise. */
   #rejectPending(reason: string): void {
+    this.#approvedRetries = [];
+    this.#approvalGeneration++;
     this.#plans.clear();
     this.#pending.failAll({ behavior: "deny", message: reason }, `(${reason})`, {
       behavior: "deny",
@@ -1127,6 +1232,8 @@ class ClaudeSession implements AgentSession {
   }
 
   send(input: UserInput, opts: SendOptions = {}): Promise<void> {
+    this.#approvedRetries = [];
+    this.#approvalGeneration++;
     return this.#submit(input, "message", opts);
   }
 
@@ -1867,6 +1974,8 @@ class ClaudeSession implements AgentSession {
     try {
       await this.#query?.setPermissionMode(toPermissionMode(mode));
       this.#mode = mode;
+      this.#approvedRetries = [];
+      this.#approvalGeneration++;
     } catch (err) {
       // Keep the old mode and give the caller a readable reason.
       const raw = err instanceof Error ? err.message : String(err);

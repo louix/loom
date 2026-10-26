@@ -1,5 +1,7 @@
 // test-run: own-process — empties PATH, which every subprocess launch in the process reads.
 import assert from "node:assert/strict";
+import type { HookCallback, Options } from "@anthropic-ai/claude-agent-sdk";
+
 import { test, type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { homedir, tmpdir } from "node:os";
@@ -48,6 +50,7 @@ test("model discovery explains a bundled CLI launch failure without exposing SDK
 // Structural stand-in for the SDK's `CanUseTool` — the real type isn't a root
 // dependency, and only its shape matters here.
 type PermissionResult = { behavior: "allow" | "deny"; message?: string } | null;
+
 type FakeCanUseTool = (
   toolName: string,
   input: Record<string, unknown>,
@@ -1754,4 +1757,147 @@ test("mcpConfig gives Claude a server's request bound as its tool-call timeout",
     timeout: 120_000,
   });
   assert.deepEqual(config["plain"], { type: "http", url: "https://plain.example/mcp" });
+});
+
+for (const outcome of ["allow", "deny", "abort", "interrupt", "close"] as const) {
+  test(`Claude classifier denial offers manual approval: ${outcome}`, async () => {
+    let options!: Options;
+    __setClaudeSdk({
+      query: (args: unknown) => {
+        options = (args as { options: Options }).options;
+        return fakeQuery() as never;
+      },
+    });
+    const session = await new ClaudeProvider().createSession({
+      sessionId: "review",
+      cwd: "/tmp",
+      prompt: "go",
+      mode: "auto",
+      mcpServers: [],
+      loomServer: false,
+    });
+    const denied = options.hooks?.PermissionDenied?.[0]?.hooks[0] as HookCallback;
+    const pre = options.hooks?.PreToolUse?.[0]?.hooks[0] as HookCallback;
+    assert.ok(denied);
+    const input = {
+      hook_event_name: "PermissionDenied" as const,
+      session_id: "native",
+      transcript_path: "/tmp/transcript",
+      cwd: "/tmp",
+      agent_id: "worker",
+      tool_name: "Bash",
+      tool_use_id: "tool-1",
+      tool_input: { command: "git push" },
+      reason: "Publishing was not authorized.",
+    };
+    const controller = new AbortController();
+    try {
+      const pending = denied(input, "tool-1", { signal: controller.signal });
+      for await (const event of session.events()) {
+        if (event.type !== "permission_request") continue;
+        assert.equal(event.tool, "AutoApprovalReview");
+        assert.equal(event.agentId, "worker");
+        assert.match((event.input as { reason: string }).reason, /Publishing was not authorized/);
+        if (outcome === "abort") controller.abort();
+        else if (outcome === "interrupt") await session.interrupt();
+        else if (outcome === "close") await session.close();
+        else await session.respondToPermission(event.id, { behavior: outcome });
+        break;
+      }
+      const result = await pending;
+      if (outcome === "allow") {
+        assert.deepEqual(result, {
+          hookSpecificOutput: { hookEventName: "PermissionDenied", retry: true },
+        });
+        const retry = { ...input, hook_event_name: "PreToolUse" as const, tool_use_id: "retry-1" };
+        const context = { signal: new AbortController().signal };
+        // An approval cannot be borrowed by another agent, cwd, tool or input.
+        for (const change of [
+          { agent_id: "other" },
+          { cwd: "/other" },
+          { session_id: "other" },
+          { tool_name: "Read" },
+          { tool_input: { command: "git push --force" } },
+        ])
+          assert.deepEqual(await pre({ ...retry, ...change }, "retry-1", context), {});
+        const allowed = await pre(retry, "retry-1", context);
+        assert.ok("hookSpecificOutput" in allowed);
+        assert.equal(
+          (allowed.hookSpecificOutput as { permissionDecision: string }).permissionDecision,
+          "allow",
+        );
+        assert.deepEqual(await pre(retry, "retry-2", context), {}, "approval is consumed once");
+      } else {
+        assert.deepEqual(result, {});
+      }
+    } finally {
+      await session.close();
+    }
+  });
+}
+
+test("Claude continues an approved classifier-stopped turn once and expires unused grants", async () => {
+  let options!: Options;
+  let prompt!: AsyncIterator<unknown>;
+  const q = fakeLiveQuery();
+  __setClaudeSdk({
+    query: (args: unknown) => {
+      const a = args as { options: Options; prompt: AsyncIterable<unknown> };
+      options = a.options;
+      prompt = a.prompt[Symbol.asyncIterator]();
+      return q as never;
+    },
+  });
+  const session = await new ClaudeProvider().createSession({
+    sessionId: "continue-review",
+    cwd: "/tmp",
+    prompt: "go",
+    mode: "auto",
+    mcpServers: [],
+    loomServer: false,
+  });
+  const denied = options.hooks!.PermissionDenied![0]!.hooks[0]!;
+  const pre = options.hooks!.PreToolUse![0]!.hooks[0]!;
+  const input = {
+    hook_event_name: "PermissionDenied" as const,
+    session_id: "native",
+    transcript_path: "/tmp/transcript",
+    cwd: "/tmp",
+    tool_name: "Bash",
+    tool_use_id: "denial",
+    tool_input: { command: "git push" },
+    reason: "Needs consent",
+  };
+  const context = { signal: new AbortController().signal };
+  const seen: HarnessEvent[] = [];
+  const reader = (async () => {
+    for await (const ev of session.events()) {
+      seen.push(ev);
+      if (ev.type === "permission_request")
+        await session.respondToPermission(ev.id, { behavior: "allow" });
+    }
+  })();
+  try {
+    await prompt.next(); // original input
+    await denied(input, "denial", context);
+    const result = {
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      num_turns: 1,
+      modelUsage: {},
+    };
+    q.push(result);
+    const next = await Promise.race([prompt.next(), delay(1000).then(() => null)]);
+    assert.ok(next && !next.done, "the approval gets a continuation");
+    assert.equal(seen.filter((e) => e.type === "result").length, 0);
+    // No matching retry occurs: the next result must settle, not loop forever.
+    q.push(result);
+    for (let i = 0; i < 100 && !seen.some((e) => e.type === "result"); i++) await delay(5);
+    assert.equal(seen.filter((e) => e.type === "result").length, 1);
+    assert.deepEqual(await pre({ ...input, hook_event_name: "PreToolUse" }, "retry", context), {});
+  } finally {
+    await session.close();
+    await reader;
+  }
 });

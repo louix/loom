@@ -404,6 +404,12 @@ const handle = (req) => {
       });
     return;
   }
+  if (method === "thread/approveGuardianDeniedAction") {
+    if (process.env.LOOM_TEST_FAIL_DENIAL_APPROVAL)
+      send({ jsonrpc: "2.0", id, error: { code: -32000, message: "manual retry unavailable" } });
+    else send({ jsonrpc: "2.0", id, result: {} });
+    return;
+  }
   if (method === "turn/start") {
     turnStartCount++;
     // A turn runs under the collaboration mode in effect when it starts.

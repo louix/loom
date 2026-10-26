@@ -42,6 +42,7 @@ import {
 import { verifyChatGptAccount } from "./account.ts";
 import { rateLimitEvents } from "./rate-limits.ts";
 import { turnErrorReason } from "./turn-error.ts";
+import { deniedReview, type DeniedReview } from "./auto-review.ts";
 import type { CodexHome } from "./codex-home.ts";
 import { skillConfig } from "./skills.ts";
 import { spawnCodex, type CodexLauncher } from "./launch.ts";
@@ -290,6 +291,8 @@ export class CodexAppServerSession implements AgentSession {
    *  run — is never mistaken for stale just because `this.#turnId` isn't set
    *  yet. */
   #staleTurnIds = new Set<string>();
+  #deniedReviews = new Map<string, DeniedReview>();
+  #seenReviews = new Set<string>();
   /**
    * Aborted whenever the current turn ends — `interrupt()`, `close()`, or a
    * natural `turn/completed` — and replaced with a fresh one the next time a
@@ -904,6 +907,7 @@ export class CodexAppServerSession implements AgentSession {
     this.#turnMode = null;
     this.#proposedPlan = null;
     this.#planReview = null;
+    this.#deniedReviews.clear();
     if (turnId) this.#staleTurnIds.add(turnId);
     this.#turnAbort.abort();
     try {
@@ -1318,7 +1322,57 @@ export class CodexAppServerSession implements AgentSession {
       (err: unknown) => respond(err instanceof Error ? err.message : String(err), false),
     );
   }
+  async #reviewDeniedActions(reviews: DeniedReview[], finish: () => void): Promise<void> {
+    const generation = this.#interruptGeneration;
+    const current = () => !this.#closing && generation === this.#interruptGeneration;
+    let approved = false;
+    try {
+      for (const review of reviews) {
+        if (!current()) return;
+        const decision = await this.#requestApproval(
+          "AutoApprovalReview",
+          review.input,
+          `auto-review:${review.id}`,
+          undefined,
+        );
+        if (!current()) return;
+        if (decision.behavior !== "allow") continue;
+        await this.#rpc.request("thread/approveGuardianDeniedAction", {
+          threadId: this.#threadId,
+          event: review.event,
+        });
+        approved = true;
+      }
+      if (!current()) return;
+      if (approved) {
+        await this.send(
+          "Retry the actions I just explicitly approved through manual review, then continue the task. Actions I declined remain denied.",
+        );
+        if (!current() && this.#turnId) await this.#endTurn();
+      } else finish();
+    } catch (err) {
+      if (!current()) return;
+      this.#events.push({
+        type: "error",
+        sessionId: this.id,
+        ts: now(),
+        fatal: false,
+        message: `Could not retry the manually approved action: ${err instanceof Error ? err.message : String(err)}`,
+      });
+      finish();
+    }
+  }
+
   #notification(method: string, p: Record<string, unknown>): void {
+    if (method === "item/autoApprovalReview/completed") {
+      if (this.#oneShot || this.#closing || p["threadId"] !== this.#threadId) return;
+      const review = deniedReview(p);
+      if (!review || this.#staleTurnIds.has(review.turnId) || this.#seenReviews.has(review.id))
+        return;
+      this.#seenReviews.add(review.id);
+      this.#deniedReviews.set(review.id, review);
+      return;
+    }
     if (method === "account/rateLimits/updated") {
       for (const event of rateLimitEvents(p, this.id, now(), "update")) this.#events.push(event);
       return;
@@ -1459,32 +1513,38 @@ export class CodexAppServerSession implements AgentSession {
       );
       this.#agentCalls.failAll("(the turn ended before this was answered)");
       this.#turns++;
-      const { reason, message } = turnErrorReason(turn?.error);
-      if (turn?.status === "failed")
-        this.#events.push({
-          type: "error",
-          sessionId: this.id,
-          ts: now(),
-          message:
-            reason && message
-              ? `${reason}: ${message}`
-              : (reason ?? message ?? "Codex turn failed"),
-          fatal: true,
-        });
-      // Codex stopped the turn itself (Loom's own interrupt cleared `#turnId`
-      // and never gets here): e.g. its auto-review denied too many requests.
-      else if (turn?.status === "interrupted")
-        this.#events.push({
-          type: "result",
-          sessionId: this.id,
-          ts: now(),
-          kind: "interrupted",
-          ...(reason ? { reason } : {}),
-          ...(message ? { message } : {}),
-        });
-      else if (plan) return this.#offerPlan(plan);
-      else this.#events.push({ type: "result", sessionId: this.id, ts: now(), kind: "ok" });
-      this.#idle();
+      const finish = () => {
+        const { reason, message } = turnErrorReason(turn?.error);
+        if (turn?.status === "failed")
+          this.#events.push({
+            type: "error",
+            sessionId: this.id,
+            ts: now(),
+            message:
+              reason && message
+                ? `${reason}: ${message}`
+                : (reason ?? message ?? "Codex turn failed"),
+            fatal: true,
+          });
+        // Codex stopped the turn itself (Loom's own interrupt cleared `#turnId`
+        // and never gets here): e.g. its auto-review denied too many requests.
+        else if (turn?.status === "interrupted")
+          this.#events.push({
+            type: "result",
+            sessionId: this.id,
+            ts: now(),
+            kind: "interrupted",
+            ...(reason ? { reason } : {}),
+            ...(message ? { message } : {}),
+          });
+        else if (plan) return this.#offerPlan(plan);
+        else this.#events.push({ type: "result", sessionId: this.id, ts: now(), kind: "ok" });
+        this.#idle();
+      };
+      const reviews = [...this.#deniedReviews.values()].filter((r) => r.turnId === completedId);
+      this.#deniedReviews.clear();
+      if (reviews.length) void this.#reviewDeniedActions(reviews, finish);
+      else finish();
     }
   }
   /**
