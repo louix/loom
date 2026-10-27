@@ -615,12 +615,7 @@ const sessionAvailability = (
       if (id === "send") label = busy ? "queue · next tool boundary" : "send";
       return {
         label,
-        disabled: first(
-          onChild("talk to the session"),
-          settled,
-          kind === "starting" && "The session is still starting.",
-          readOnly,
-        ),
+        disabled: first(onChild("talk to the session"), settled, readOnly),
         bar: true,
       };
     }

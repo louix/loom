@@ -1508,6 +1508,19 @@ test("the command model enables the right verbs per session state", () => {
   assert.ok(!none.some((a) => (a.id as string) === "help"), "the ? help view is gone");
 });
 
+test("startup allows opening the composer and queuing either delivery mode", () => {
+  const ctx = ctxFor(snap({ id: "a", status: "starting" }));
+  const send = describeCommands(ctx).find((a) => a.id === "send");
+  assert.ok(send);
+  assert.equal(send.disabled, undefined);
+  assert.equal(send.label, "queue · next tool boundary");
+  const queued = describeCommands(ctx, { target: "a", surface: "composer" }).find(
+    (a) => a.id === "enqueueEndOfTurn",
+  );
+  assert.ok(queued);
+  assert.equal(queued.disabled, undefined);
+});
+
 test("fork waits for a settled turn, and turns into a cancel while a fork starts", () => {
   const forkOf = (state: TuiState) => describeCommands(state).find((a) => a.id === "fork");
   const running = snap({ id: "src", status: "running", model: "m1" });
@@ -1784,6 +1797,7 @@ test("the send composer offers the session's commands with the fleet's availabil
   for (const s of [
     snap({ id: "a", status: "idle", model: "m1" }),
     snap({ id: "a", status: "running", model: "m2" }),
+    snap({ id: "a", status: "starting", model: "m1" }),
     snap({ id: "a", status: "awaiting_input", awaitReason: "permission", model: "m1" }),
     snap({ id: "a", status: "idle", provider: "other" }),
   ]) {
