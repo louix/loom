@@ -264,6 +264,7 @@ export const withVmSessions = async <T extends AgentProvider>(
           sessionDirectory,
           repoRoot: vm.repoRoot,
           mcpRelays: relays,
+          hostPorts: vm.hostPorts ?? [],
           ...(clone ? { clone } : {}),
           ...(gitIdentity ? { gitIdentity } : {}),
           ...(vm.extraAllowedHosts ? { extraAllowedHosts: vm.extraAllowedHosts } : {}),

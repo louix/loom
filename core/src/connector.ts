@@ -87,6 +87,7 @@ export interface ConnectorConfig extends ConnectorWireConfig {
     smolvm: string;
     repoRoot: string;
     extraAllowedHosts?: string[];
+    hostPorts?: number[];
     environment?: SessionEnvironment;
   };
 }

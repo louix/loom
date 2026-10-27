@@ -44,6 +44,7 @@ type InspectionStartOptions = Pick<
   mcpRelays?: never;
   providerHosts?: never;
   extraAllowedHosts?: never;
+  hostPorts?: never;
   gitIdentity?: never;
   startHooks?: never;
 };
@@ -72,6 +73,7 @@ export const createVmEnvironmentLauncher =
       options.mcpRelays?.length ||
       options.providerHosts?.length ||
       options.extraAllowedHosts?.length ||
+      options.hostPorts?.length ||
       startHooks.length ||
       environmentEnabled(options.environment);
     if (mode === "inspection" && (!options.clone || inspectionGrants))

@@ -253,6 +253,7 @@ export const prepareRuntimeEnvironment = async (
       providerHosts: [],
       ...(config.isolation.environment ? { environment: config.isolation.environment } : {}),
       extraAllowedHosts: config.isolation.extraAllowedHosts,
+      hostPorts: config.isolation.hostPorts ?? [],
     });
     vmStopped = false;
     if (cancelled.signal.aborted) worker.terminate();

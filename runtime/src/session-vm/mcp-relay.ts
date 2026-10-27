@@ -1,4 +1,4 @@
-/** Fixed loopback MCP capability. No guest-selected host, port, or DNS input. */
+/** Fixed loopback TCP capability. No guest-selected host, port, or DNS input. */
 import { createConnection } from "node:net";
 import { Readable, Writable } from "node:stream";
 import { MCP_CONNECTION_LIMIT } from "./relay-limits.ts";
@@ -6,8 +6,9 @@ export interface McpRelay {
   port: number;
   guestPort: number;
 }
-export const startMcpRelay = (path: string, port: number) => {
-  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Invalid MCP port");
+export const startLoopbackRelay = (path: string, port: number) => {
+  if (!Number.isInteger(port) || port < 1 || port > 65535)
+    throw new Error("Invalid loopback TCP port");
   const listener = Deno.listen({ transport: "unix", path });
   const active = new Map<Deno.Conn, () => void>();
   const tasks = new Set<Promise<void>>();
@@ -78,3 +79,6 @@ export const startMcpRelay = (path: string, port: number) => {
       })()),
   };
 };
+
+/** MCP uses the same fixed TCP transport. */
+export const startMcpRelay = startLoopbackRelay;

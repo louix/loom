@@ -188,3 +188,28 @@ together. Converted start hooks fail startup on error, whereas Loom reports a
 failing `workspace_start` hook to the agent; the report notes this. Old
 providers map to no launch profile: their semantics (Loom workers, credentials,
 models) do not match a plain entrypoint.
+
+## Host TCP ports
+
+The trusted `environment.jsonc` file supports `access.network.host_ports: [5037]`
+globally and under each `repos[]` entry. A repo list replaces the global list;
+an empty list disables inherited forwards. Project `loom.json` files cannot
+request or grant host ports.
+
+```json
+{
+  "version": 1,
+  "repos": [
+    {
+      "path": "/absolute/path/to/android-project",
+      "access": { "network": { "host_ports": [5037] } }
+    }
+  ]
+}
+```
+
+Each port forwards guest IPv4 loopback to the same port on host IPv4 loopback.
+This works for raw TCP clients such as ADB without an HTTP proxy adapter.
+See [host TCP forwarding](session-environments.md#forwarding-host-tcp-ports)
+for ADB setup, reserved ports and runtime requirements. `loom config convert`
+preserves these settings when converting from Loom's `config.jsonc`.

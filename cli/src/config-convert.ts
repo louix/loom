@@ -68,6 +68,7 @@ const CONVERTED: Record<string, string> = {
   "session.environment.cpus": "environment.resources.cpus",
   "session.environment.memory_mib": "environment.resources.memory_mib",
   "session.isolation.network.allowed_hosts": "access.network.allowed_hosts",
+  "session.isolation.network.host_ports": "access.network.host_ports",
   "session.isolation.network.presets": "access.network.presets",
   "session.defaults.isolation": "lifecycle.execution",
   "session.defaults.workspace": "lifecycle.workspace",
@@ -114,6 +115,7 @@ const effective = (settings: Settings) => {
     },
     network: {
       presets: isolation.network.presets,
+      host_ports: isolation.network.host_ports,
       allowed_hosts: normalizeExtraHosts(isolation.network.allowed_hosts),
     },
     lifecycle: {
@@ -260,6 +262,7 @@ export const convertLoomConfig = (raw: Raw, source: string): ConversionReport =>
   const network: Raw = {};
   if (global.network.presets.length) network.presets = global.network.presets;
   if (global.network.allowed_hosts.length) network.allowed_hosts = global.network.allowed_hosts;
+  if (global.network.host_ports.length) network.host_ports = global.network.host_ports;
   if (Object.keys(network).length) user.access = { network };
   // Always explicit: other consumers default to worktree + VM, Loom to local.
   user.lifecycle = global.lifecycle;
@@ -286,7 +289,7 @@ export const convertLoomConfig = (raw: Raw, source: string): ConversionReport =>
     );
     if (environment) entry.environment = environment;
     const network: Raw = {};
-    for (const key of ["presets", "allowed_hosts"] as const)
+    for (const key of ["presets", "allowed_hosts", "host_ports"] as const)
       if (!same(repo.network[key], global.network[key])) network[key] = repo.network[key];
     if (Object.keys(network).length) entry.access = { network };
     const lifecycle = Object.fromEntries(

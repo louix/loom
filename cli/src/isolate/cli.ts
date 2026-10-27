@@ -291,6 +291,7 @@ const withEnvironment = async (
           smolvm: runtime.smolvm,
           activity: () => options.activity,
           environment: config.environment,
+          hostPorts: config.hostPorts,
           ...(options.startHooks && config.start.length ? { startHooks: config.start } : {}),
           ...(options.extraAllowedHosts?.length
             ? { extraAllowedHosts: options.extraAllowedHosts }

@@ -12,6 +12,7 @@
  * authority. Resolution never changes the user configuration it reads.
  */
 import { parse, type ParseError } from "jsonc-parser";
+import { normalizeHostPorts } from "../../core/src/host-ports.ts";
 import type { z } from "zod";
 import { assertNoDuplicateJsoncKeys } from "../../core/src/jsonc.ts";
 import type { InitHook } from "../../core/src/init-hook.ts";
@@ -107,6 +108,7 @@ export interface ResolvedEnvironmentConfig {
   start: InitHook[];
   /** Every allowed HTTPS destination, host-applied first. */
   extraAllowedHosts: string[];
+  hostPorts: number[];
   network: Array<{ host: string; source: ConfigLayer }>;
   lifecycle: NonNullable<EnvironmentUserConfig["lifecycle"]>;
   /** Project requests no consumer satisfies yet; ignoring them grants nothing. */
@@ -232,6 +234,9 @@ export const resolveEnvironmentConfig = (
     prepare: hooks("prepare", intent.prepare),
     start: hooks("start", intent.start),
     extraAllowedHosts: network.map((entry) => entry.host),
+    hostPorts: normalizeHostPorts(
+      repo?.access?.network?.host_ports ?? user.access?.network?.host_ports,
+    ),
     network,
     lifecycle: { ...user.lifecycle, ...repo?.lifecycle },
     unsupported,

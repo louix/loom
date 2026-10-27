@@ -32,6 +32,7 @@ export interface VmBinding {
   mcpRequestTimeoutMs?: number;
   sessionDirectory?: string;
   mcpRelays?: Array<{ port: number; guestPort: number }>;
+  hostPorts?: number[];
   /** Clone sessions: the guest's only Git remote and the clone it prepares. */
   git?: {
     /** The host repository's common Git directory. Never mounted. */

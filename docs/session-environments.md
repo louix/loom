@@ -487,3 +487,49 @@ layouts locally and in a real VM:
 ```sh
 deno run -A scripts/test-session-shell-vm.ts /path/to/session-runtime /path/to/smolvm
 ```
+
+## Forwarding host TCP ports
+
+Set `session.isolation.network.host_ports` in your trusted Loom `config.jsonc` to expose
+host loopback services inside session VMs. Each integer forwards guest
+`127.0.0.1:port` to host `127.0.0.1:port`, using raw TCP:
+
+```json
+{
+  "repos": [
+    {
+      "path": "/absolute/path/to/android-project",
+      "session": { "isolation": { "network": { "host_ports": [5037] } } }
+    }
+  ]
+}
+```
+
+Put the same `session.isolation.network.host_ports` setting at the top level for all
+repositories. Repo lists replace the global list; `[]` disables inherited
+forwards. The default is empty. Ports must be integers from 1 to 65535; Loom's
+proxy (3128), Git relay (3129), and selected MCP listener ports cannot be forwarded.
+This is separate from `network.allowed_hosts`, which still grants exact HTTPS
+destinations on port 443.
+
+For ADB, run `adb start-server` on the host first. With port 5037 forwarded,
+run `adb -H 127.0.0.1 -P 5037 devices` inside the VM using an installed,
+compatible ADB client. The bridge gives access to the host ADB server and its
+connected devices; it does not forward USB devices or ADB's additional reverse/
+forward ports. Do not run `adb kill-server` unless you intend to stop the host
+server.
+
+Forwards are available during preparation, setup and session commands, and close
+when the VM stops. They bind only IPv4 loopback on both sides and are TCP-only.
+After changing configuration, start a new VM. A runtime built with this feature
+is required; rebuild with `loom runtime update` if Loom reports an older runtime.
+
+Verify the transport in a real VM with a runtime built from this checkout:
+
+```sh
+deno run -A scripts/test-host-ports-vm.ts /path/to/session-runtime /path/to/smolvm
+```
+
+The test uses a temporary loopback server speaking ADB framing, checks an
+ungranted port is refused, then checks that a new VM without the grant cannot
+reach the forwarded port. It does not require an Android device or ADB server.

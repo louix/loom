@@ -526,6 +526,17 @@
             "network": {
               "type": "object",
               "properties": {
+                "host_ports": {
+                  "default": [],
+                  "description": "TCP ports forwarded from guest 127.0.0.1 to the same port on host 127.0.0.1. Repo lists replace global lists.",
+                  "maxItems": 64,
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 65535
+                  }
+                },
                 "allowed_hosts": {
                   "default": [],
                   "description": "Exact DNS names VM sessions may reach over HTTPS (port 443); no URLs, IPs or wildcards.",
@@ -2094,6 +2105,17 @@
                   "network": {
                     "type": "object",
                     "properties": {
+                      "host_ports": {
+                        "default": [],
+                        "description": "TCP ports forwarded from guest 127.0.0.1 to the same port on host 127.0.0.1. Repo lists replace global lists.",
+                        "maxItems": 64,
+                        "type": "array",
+                        "items": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 65535
+                        }
+                      },
                       "allowed_hosts": {
                         "default": [],
                         "description": "Exact DNS names VM sessions may reach over HTTPS (port 443); no URLs, IPs or wildcards.",

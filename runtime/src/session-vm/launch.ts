@@ -1,3 +1,4 @@
+import { normalizeHostPorts } from "../../../core/src/host-ports.ts";
 import {
   environmentEnabled,
   type SessionEnvironment,
@@ -57,6 +58,7 @@ export interface SessionVmOptions {
     ): Promise<() => Promise<void>>;
   };
   extraAllowedHosts?: string[];
+  hostPorts?: number[];
   environment?: SessionEnvironment;
   providerHosts?: string[];
   sessionDirectory?: string;
@@ -91,6 +93,7 @@ export const defaultProviderHosts = ["api.anthropic.com"];
 /**
  * Standalone environment protocol of a session runtime; 0 when absent.
  * 1: environment guests report readiness. 2: they also run guest-worker.ts executions.
+ * 3: guest loopback listeners for explicit host TCP port forwards.
  */
 export const environmentRuntimeVersion = async (artifact: string): Promise<number> => {
   try {
@@ -114,6 +117,10 @@ const launchSessionVmOwned = async (
   }
 > => {
   const extraAllowedHosts = normalizeExtraHosts(options.extraAllowedHosts);
+  const hostPorts = normalizeHostPorts(
+    options.hostPorts,
+    options.mcpRelays?.map((r) => r.guestPort),
+  );
   if (
     options.preparationOnly &&
     (options.authOwner || Object.keys(options.auth ?? {}).length || options.mcpRelays?.length)
@@ -128,6 +135,10 @@ const launchSessionVmOwned = async (
     throw new Error("Session VMs launch an environment or repo preparation");
   const artifact = await Deno.realPath(options.artifact);
   const smolvm = await Deno.realPath(options.smolvm);
+  if (hostPorts.length && (await environmentRuntimeVersion(artifact)) < 3)
+    throw new Error(
+      "Host port forwarding requires a rebuilt session runtime; run loom runtime update",
+    );
   const auth = sessionAuth(
     options.authOwner ? await options.authOwner.current() : (options.auth ?? {}),
   );
@@ -236,6 +247,7 @@ const launchSessionVmOwned = async (
     ...(packageCache ? { packageCache } : {}),
     ...(sessionDirectory ? { sessionDirectory } : {}),
     ...(options.mcpRelays ? { mcpRelays: options.mcpRelays } : {}),
+    ...(hostPorts.length ? { hostPorts } : {}),
     ...(git ? { git } : {}),
     ...(options.gitIdentity && !options.preparationOnly
       ? { gitIdentity: options.gitIdentity }

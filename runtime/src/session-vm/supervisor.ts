@@ -27,7 +27,8 @@ import {
   removeSessionRuntimeState,
 } from "./persistence.ts";
 import type { RecoverableBinding } from "./recovery.ts";
-import { startMcpRelay } from "./mcp-relay.ts";
+import { startMcpRelay, startLoopbackRelay } from "./mcp-relay.ts";
+import { normalizeHostPorts } from "../../../core/src/host-ports.ts";
 import type { RelayDiagnostic } from "../../../core/src/relay-diagnostic.ts";
 import { startGitRelay } from "./git-relay.ts";
 import { readFrames } from "../framing.ts";
@@ -259,6 +260,19 @@ try {
     );
   if (binding.privateWorkspace)
     await Deno.writeTextFile(join(binding.state, "private/workspace"), "/workspace");
+  const hostPorts = normalizeHostPorts(
+    binding.hostPorts,
+    binding.mcpRelays?.map((r) => r.guestPort),
+  );
+  for (const port of hostPorts) {
+    const socket = join(binding.state, `host-port-${port}.sock`);
+    relays.push(startLoopbackRelay(socket, port));
+    create.push("--mount-socket", `${socket}:/run/loom/host-port-${port}.sock`);
+  }
+  await Deno.writeTextFile(
+    join(binding.state, "private/host-ports.json"),
+    JSON.stringify(hostPorts),
+  );
   for (const [index, relay] of (binding.mcpRelays ?? []).entries()) {
     const socket = join(binding.state, `mcp-${index}.sock`);
     relays.push(startMcpRelay(socket, relay.port));

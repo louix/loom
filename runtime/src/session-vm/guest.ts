@@ -102,6 +102,19 @@ const listener = Deno.listen({ hostname: "127.0.0.1", port: 3128 });
 void startGuestRelay(listener, "/run/loom/egress.sock", EGRESS_CONNECTION_LIMIT, {
   kind: "egress",
 }).finished;
+const hostPorts: number[] = JSON.parse(
+  await Deno.readTextFile("/run/loom/private/host-ports.json").catch((error) => {
+    if (error instanceof Deno.errors.NotFound) return "[]";
+    throw error;
+  }),
+);
+for (const port of hostPorts) {
+  const endpoint = Deno.listen({ hostname: "127.0.0.1", port });
+  void startGuestRelay(endpoint, `/run/loom/host-port-${port}.sock`, MCP_CONNECTION_LIMIT, {
+    kind: "host_port",
+    index: port,
+  }).finished;
+}
 const mcp: Array<{ guestPort: number }> = JSON.parse(
   await Deno.readTextFile("/run/loom/private/mcp.json"),
 );
