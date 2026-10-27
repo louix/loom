@@ -78,12 +78,19 @@ test("image geometry agrees for full windows, clipped windows, and disabled grap
       images: [image],
     },
   ];
-  for (const enabled of [true, false]) {
-    const ctx = logContext(lines, 80, enabled);
-    const all = windowRows(ctx, 0, totalRows(ctx));
-    assert.equal(all.length, totalRows(ctx));
-    assert.equal(all.filter((row) => row.image).length, enabled ? 8 : 1);
-    for (let i = 0; i < all.length; i++)
-      assert.deepEqual(windowRows(ctx, i, i + 3), all.slice(i, i + 3));
+  for (const [height, imageHeight] of [
+    [1, 1],
+    [6, 5],
+    [24, 18],
+    [64, 48],
+  ] as const) {
+    for (const enabled of [true, false]) {
+      const ctx = logContext(lines, 80, enabled, height);
+      const all = windowRows(ctx, 0, totalRows(ctx));
+      assert.equal(all.length, totalRows(ctx));
+      assert.equal(all.filter((row) => row.image).length, enabled ? imageHeight : 1);
+      for (let i = 0; i < all.length; i++)
+        assert.deepEqual(windowRows(ctx, i, i + 3), all.slice(i, i + 3));
+    }
   }
 });

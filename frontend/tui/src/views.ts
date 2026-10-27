@@ -175,6 +175,7 @@ export const logView = (
     ],
     width,
     images,
+    capacity,
   );
   const total = totalRows(ctx);
   const off = Math.min(scroll, Math.max(0, total - capacity));

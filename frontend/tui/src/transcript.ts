@@ -1424,6 +1424,7 @@ const lineLayout = (
  *  lines the filter kept, and the pane's inner width. */
 export interface LogContext {
   images?: boolean;
+  pageRows?: number;
   lines: readonly LogLine[];
   iw: number;
 }
@@ -1432,11 +1433,20 @@ export const logContext = (
   lines: readonly LogLine[],
   width: number,
   images = true,
+  pageRows = 24,
 ): LogContext => ({
   images,
+  pageRows,
   lines,
   iw: inside(width),
 });
+
+/** Leave room for a caption and surrounding chat, even in a short pane. */
+const imageRows = (ctx: LogContext): number => {
+  if (ctx.images === false) return 1;
+  const available = Math.max(1, ctx.pageRows ?? 24);
+  return Math.max(1, Math.min(available - 1, Math.max(8, Math.floor(available * 0.75))));
+};
 
 /** Wrapped-row total for the visible log — O(lines) per call, with per-line
  *  geometry memoised in `layoutCache`, so re-measuring a grown log re-wraps
@@ -1447,8 +1457,7 @@ export const logContext = (
 export const totalRows = (ctx: LogContext): number => {
   let total = 0;
   for (const l of ctx.lines)
-    total +=
-      lineLayout(l, ctx.iw).segs.length + (l.images?.length ?? 0) * (ctx.images === false ? 1 : 8);
+    total += lineLayout(l, ctx.iw).segs.length + (l.images?.length ?? 0) * imageRows(ctx);
   return total;
 };
 /** The wrapped rows `[from, to)` of the visible log — builds only the window's
@@ -1463,7 +1472,7 @@ export const windowRows = (ctx: LogContext, from: number, to: number): PhysicalR
   for (const l of ctx.lines) {
     n += 1;
     const { ts, indent, segs, spans } = lineLayout(l, ctx.iw);
-    const imageHeight = ctx.images === false ? 1 : 8;
+    const imageHeight = imageRows(ctx);
     const count = segs.length + (l.images?.length ?? 0) * imageHeight;
     const lineEnd = off + count;
     if (lineEnd > from) {
@@ -1511,8 +1520,12 @@ export const windowRows = (ctx: LogContext, from: number, to: number): PhysicalR
  * from what renders: one logical line wraps to several physical rows, and only
  * this count is the truth.
  */
-export const logRowCount = (lines: readonly LogLine[], width: number, images = true): number =>
-  totalRows(logContext(lines, width, images));
+export const logRowCount = (
+  lines: readonly LogLine[],
+  width: number,
+  images = true,
+  pageRows = 24,
+): number => totalRows(logContext(lines, width, images, pageRows));
 
 // ---------------------------------------------------------------------------
 // the handle
@@ -1629,7 +1642,7 @@ export const mkTranscript = (d: TranscriptDeps): TranscriptControl => {
    */
   const sync = (key: string): number => {
     const lines = d.shown(resource);
-    const rows = logRowCount(lines, d.paneWidth(), d.images);
+    const rows = logRowCount(lines, d.paneWidth(), d.images, d.pageRows());
     const max = Math.max(0, rows - d.pageRows());
     scroll = Math.min(scroll, max);
     anchor = {
