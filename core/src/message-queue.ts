@@ -1,5 +1,6 @@
 /** Persist messages before handover; add them to the transcript only after consumption. */
 import { z } from "zod";
+import { imageAttachmentsSchema, imageDataSchema, MAX_MESSAGE_IMAGES } from "./images.ts";
 import { loomMessageSchema } from "./loom-message.ts";
 
 /**
@@ -39,6 +40,7 @@ export interface QueueHoldCause {
 
 /** One entry in full — `session.queueEntry`'s result. */
 export const queueEntrySchema = z.object({
+  images: imageAttachmentsSchema.optional(),
   /** Client-chosen UUID: the idempotency key and the provider's input id. */
   id: z.string(),
   text: z.string(),
@@ -133,6 +135,7 @@ export class DeliveryUncertainError extends Error {
 
 /** Options for `AgentSession.send`. Both optional: Loom's own sends carry none. */
 export const sendOptionsSchema = z.object({
+  images: z.array(imageDataSchema).max(MAX_MESSAGE_IMAGES).optional(),
   /** The queue entry's id — the provider-side input id (Claude's uuid, Codex's
    *  `clientUserMessageId`) and the `inputId` of its `input_consumed`. */
   inputId: z.string().optional(),

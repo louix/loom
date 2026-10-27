@@ -92,6 +92,55 @@ const userMessages = (frames: PushFrame[]) =>
 const notices = (frames: PushFrame[]) =>
   frames.flatMap((f) => (f.type === "notice" ? [f.text] : []));
 
+test("tool images are stored separately from the broadcast event", async (env) => {
+  const { id, fs } = await idleSession(env);
+  const image = {
+    mimeType: "image/png",
+    data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aD1sAAAAASUVORK5CYII=",
+  };
+  fs.emit({
+    type: "tool_result",
+    id: "read-image",
+    ok: true,
+    output: [{ type: "image", ...image }],
+  });
+  await waitFor(() =>
+    env.frames.some(
+      (f) =>
+        f.type === "event" &&
+        f.event.sessionId === id &&
+        f.event.type === "tool_result" &&
+        f.event.id === "read-image",
+    ),
+  );
+  const frame = env.frames.find(
+    (f) => f.type === "event" && f.event.type === "tool_result" && f.event.id === "read-image",
+  );
+  assert.ok(frame?.type === "event" && frame.event.type === "tool_result");
+  assert.equal(frame.event.images?.length, 1);
+  assert.ok(!JSON.stringify(frame).includes(image.data));
+  assert.deepEqual(await env.c.request("image.get", { id: frame.event.images![0]!.id }), image);
+});
+
+test("image-only messages resolve uploaded bytes at provider dispatch", async (env) => {
+  const { id, fs } = await idleSession(env);
+  const image = {
+    mimeType: "image/png",
+    data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aD1sAAAAASUVORK5CYII=",
+  };
+  const attachment = await env.c.request("image.upload", { ...image, name: "clipboard.png" });
+  assert.deepEqual(await env.c.request("image.get", attachment), image);
+  await env.c.request("session.send", { id, text: "", images: [attachment] });
+  await waitFor(() => fs.sendOptions.some((opts) => Boolean(opts?.images?.length)));
+  assert.deepEqual(fs.sendOptions.find((opts) => opts?.images?.length)?.images, [image]);
+  await waitFor(() =>
+    env.frames.some(
+      (f) =>
+        f.type === "event" && f.event.type === "user_message" && Boolean(f.event.images?.length),
+    ),
+  );
+});
+
 describe("message queue", { concurrency: 4 }, () => {
   test(
     "with receipts, a message enters the log only when the agent takes it",

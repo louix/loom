@@ -490,4 +490,7 @@ export const MIGRATIONS: string[] = [
   // reminder) keeps its structure, JSON of `LoomMessage` (core/src/loom-message.ts),
   // so the `user_message` it becomes can say what it is. NULL for any other.
   `ALTER TABLE session_queue ADD COLUMN loom_message TEXT;`,
+  // 39 — durable image payloads, referenced by messages and transcript events.
+  `CREATE TABLE images (id TEXT PRIMARY KEY, mime_type TEXT NOT NULL, data BLOB NOT NULL);
+   ALTER TABLE session_queue ADD COLUMN images TEXT;`,
 ];

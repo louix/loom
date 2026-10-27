@@ -2580,6 +2580,20 @@ for (const first of [false, true]) {
     }));
 }
 
+test("Codex steers image-only input as a native data URL", () =>
+  withFakeCodex({ LOOM_TEST_HOLD_TURN: "1" }, async (requests) => {
+    const s = await startCodex("default", "go");
+    try {
+      await s.send("", { images: [{ mimeType: "image/png", data: "aGVsbG8=" }] });
+      const steers = await requests("turn/steer");
+      assert.deepEqual(steers[0]?.params.input, [
+        { type: "image", url: "data:image/png;base64,aGVsbG8=" },
+      ]);
+    } finally {
+      await s.close();
+    }
+  }));
+
 test("a mid-turn mode change applies to the next turn: pending until then, and never interrupting", () =>
   withFakeCodex(
     (dir) => ({ LOOM_TEST_HOLD_TURN: "1", LOOM_TEST_COMPLETE_TURN_FILE: join(dir, "complete") }),

@@ -78,6 +78,7 @@ export const logFilterTag = (f: LogFilter): string => {
 };
 
 export interface LogLine {
+  images?: import("@loom/core/images").ImageAttachment[];
   /**
    * The entry's durable {@link TranscriptId}: the id the daemon's live push and
    * its history pages both carry, so the two merge by identity rather than by
@@ -153,6 +154,9 @@ export const toLogLine = (
     id,
     sessionId: ev.sessionId,
     kind: ev.type,
+    ...((ev.type === "tool_result" || ev.type === "user_message") && ev.images?.length
+      ? { images: ev.images }
+      : {}),
     ...(ev.agentId ? { agentId: ev.agentId } : {}),
     ...(ev.type === "user_message" && ev.author ? { author: ev.author } : {}),
     ...(ev.type === "user_message" && ev.loomMessage ? { loomMessage: ev.loomMessage } : {}),
@@ -1151,6 +1155,12 @@ export const condenseLog = (lines: readonly LogLine[]): LogLine[] => {
         (lines[j]?.kind === "tool_call" || lines[j]?.kind === "tool_result")
       ) {
         const line = lines[j]!;
+        if (line.images?.length) {
+          flushPending();
+          out.push(line);
+          j += 1;
+          continue;
+        }
         if (line.kind === "tool_call") {
           if (line.toolDescription) {
             flushPending();
@@ -1190,7 +1200,7 @@ export const condenseToolResults = (lines: readonly LogLine[]): LogLine[] => {
   while (i < lines.length) {
     const l = lines[i];
     if (!l) break;
-    if (l.kind === "usage" || l.kind === "tool_result") {
+    if (l.kind === "usage" || (l.kind === "tool_result" && !l.images?.length)) {
       i += 1;
       continue;
     }
@@ -1299,6 +1309,12 @@ export const transcriptText = (lines: readonly LogLine[]): string => {
 /** One wrapped screen row of the event log. `first` rows carry the time + glyph
  *  gutter; continuation rows carry `indent` spaces and nothing else. */
 export interface PhysicalRow {
+  image?: {
+    attachment: import("@loom/core/images").ImageAttachment;
+    offset: number;
+    height: number;
+    width: number;
+  };
   readonly key: string;
   readonly first: boolean;
   readonly ts: string;
@@ -1407,11 +1423,17 @@ const lineLayout = (
 /** Everything the log renderers need for one set of lines + pane width: the
  *  lines the filter kept, and the pane's inner width. */
 export interface LogContext {
+  images?: boolean;
   lines: readonly LogLine[];
   iw: number;
 }
 
-export const logContext = (lines: readonly LogLine[], width: number): LogContext => ({
+export const logContext = (
+  lines: readonly LogLine[],
+  width: number,
+  images = true,
+): LogContext => ({
+  images,
   lines,
   iw: inside(width),
 });
@@ -1424,7 +1446,9 @@ export const logContext = (lines: readonly LogLine[], width: number): LogContext
  *  WeakMap hit + an add per line. */
 export const totalRows = (ctx: LogContext): number => {
   let total = 0;
-  for (const l of ctx.lines) total += lineLayout(l, ctx.iw).segs.length;
+  for (const l of ctx.lines)
+    total +=
+      lineLayout(l, ctx.iw).segs.length + (l.images?.length ?? 0) * (ctx.images === false ? 1 : 8);
   return total;
 };
 /** The wrapped rows `[from, to)` of the visible log — builds only the window's
@@ -1439,11 +1463,15 @@ export const windowRows = (ctx: LogContext, from: number, to: number): PhysicalR
   for (const l of ctx.lines) {
     n += 1;
     const { ts, indent, segs, spans } = lineLayout(l, ctx.iw);
-    const lineEnd = off + segs.length;
+    const imageHeight = ctx.images === false ? 1 : 8;
+    const count = segs.length + (l.images?.length ?? 0) * imageHeight;
+    const lineEnd = off + count;
     if (lineEnd > from) {
       const lo = Math.max(0, from - off);
-      const hi = Math.min(segs.length, to - off);
+      const hi = Math.min(count, to - off);
       for (let i = lo; i < hi; i++) {
+        const imageIndex = Math.floor((i - segs.length) / imageHeight);
+        const attachment = i >= segs.length ? l.images?.[imageIndex] : undefined;
         out.push({
           // The durable id is unique within a session and stable across daemon
           // restarts; a synthesised line has none, so it falls back to its
@@ -1455,8 +1483,18 @@ export const windowRows = (ctx: LogContext, from: number, to: number): PhysicalR
           glyph: l.glyph,
           tone: l.tone,
           kind: l.kind,
-          seg: segs[i]!,
-          ...(spans ? { spans: spans[i]! } : {}),
+          seg: attachment ? `[image: ${attachment.name}]` : segs[i]!,
+          ...(attachment
+            ? {
+                image: {
+                  attachment,
+                  offset: (i - segs.length) % imageHeight,
+                  height: imageHeight,
+                  width: Math.max(1, ctx.iw - indent),
+                },
+              }
+            : {}),
+          ...(spans && i < segs.length ? { spans: spans[i]! } : {}),
         });
       }
       if (lineEnd >= to) break;
@@ -1473,8 +1511,8 @@ export const windowRows = (ctx: LogContext, from: number, to: number): PhysicalR
  * from what renders: one logical line wraps to several physical rows, and only
  * this count is the truth.
  */
-export const logRowCount = (lines: readonly LogLine[], width: number): number =>
-  totalRows(logContext(lines, width));
+export const logRowCount = (lines: readonly LogLine[], width: number, images = true): number =>
+  totalRows(logContext(lines, width, images));
 
 // ---------------------------------------------------------------------------
 // the handle
@@ -1499,6 +1537,7 @@ export interface TranscriptView {
 }
 
 export interface TranscriptDeps {
+  images?: boolean;
   /** `session.events`. One page; a cursor continues into older history. */
   fetch: (sessionId: string, cursor: HistoryCursor | null) => Promise<HistoryPage>;
   /** Only fetch while the daemon is there. */
@@ -1590,7 +1629,7 @@ export const mkTranscript = (d: TranscriptDeps): TranscriptControl => {
    */
   const sync = (key: string): number => {
     const lines = d.shown(resource);
-    const rows = logRowCount(lines, d.paneWidth());
+    const rows = logRowCount(lines, d.paneWidth(), d.images);
     const max = Math.max(0, rows - d.pageRows());
     scroll = Math.min(scroll, max);
     anchor = {

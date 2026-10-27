@@ -374,6 +374,9 @@ export const createConfigSchema = (d: LoomConfig, events: readonly HookEvent[]) 
       idle_shutdown_minutes: deprecated("Replaced by daemon.idle_stop_minutes."),
     }),
     tui: section({
+      images: flag(d.tui.images).describe(
+        "Render image attachments inline when the terminal supports graphics. Disable to show labels only; image input remains available. Restart the TUI to apply.",
+      ),
       include_event_log_in_editor: flag(d.tui.includeEventLogInEditor).describe(
         "Open the event log alongside the input on Alt+E. Defaults to false; enabling this may require :wq! in Vim/Neovim.",
       ),

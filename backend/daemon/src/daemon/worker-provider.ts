@@ -61,7 +61,7 @@ class EventStream {
   push(event: HarnessEvent) {
     if (this.#ended) throw new Error("event after stream end");
     const bytes = new TextEncoder().encode(JSON.stringify(event)).length;
-    if (this.#bytes + bytes > 4 * MAX_FRAME_BYTES || this.#queue.length >= 10_000)
+    if (this.#bytes + bytes > MAX_FRAME_BYTES || this.#queue.length >= 10_000)
       throw new Error("worker event overflow");
     this.#queue.push({ event, bytes });
     this.#bytes += bytes;

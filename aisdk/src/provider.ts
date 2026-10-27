@@ -6,6 +6,7 @@
  * itself — see {@link TranscriptStore}.
  */
 import type { LanguageModel, ModelMessage } from "ai";
+import { userContent } from "./user-input.ts";
 import type { TranscriptStore } from "@loom/core/transcript";
 import type {
   AgentProvider,
@@ -123,7 +124,10 @@ export class AisdkProvider implements AgentProvider {
 
   async createSession(opts: CreateSessionOptions): Promise<AgentSession> {
     const modelId = opts.model || this.#defaultModel;
-    const messages: ModelMessage[] = opts.prompt ? [{ role: "user", content: opts.prompt }] : [];
+    const messages: ModelMessage[] =
+      opts.prompt || opts.images?.length
+        ? [{ role: "user", content: userContent(opts.prompt, opts.images) }]
+        : [];
 
     if (opts.oneShot) {
       const s = new AisdkSession({

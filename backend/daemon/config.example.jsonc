@@ -9,7 +9,8 @@
   // Signing settings and keys are never copied. Override per repo under repos[].git.
   // "git": { "committer": { "name": "Loom ({model})", "email": "loom+{modelSlug}@localhost" } },
   // Include the event log as a second file on Alt+E (Vim/Neovim may need :wq!).
-  "tui": { "include_event_log_in_editor": false },
+  // Disable inline graphics with images: false (attachment labels remain).
+  "tui": { "include_event_log_in_editor": false, "images": true },
   "providers": {
     // Show the local-only Echo provider in the TUI (no API calls or cost).
     // "echo": {},

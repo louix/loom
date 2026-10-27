@@ -164,6 +164,7 @@ export const logView = (
   scroll: number,
   /** The focused background task's output tail, drawn after its events. */
   tail: TaskTailView | null = null,
+  images = true,
 ): LogView => {
   const capacity = Math.max(1, height - 4);
   const lines = [...transcriptLines(transcript), ...queuedLines(sessionId ?? "", queue)];
@@ -173,6 +174,7 @@ export const logView = (
       ...(child?.source === "bg" ? taskTailLines(sessionId ?? "", tail) : []),
     ],
     width,
+    images,
   );
   const total = totalRows(ctx);
   const off = Math.min(scroll, Math.max(0, total - capacity));

@@ -80,7 +80,9 @@ export class CodeCells {
     const call = this.#calls.get(id);
     if (!call) return;
     const output = outputText(item.output);
-    const digest = createHash("sha256").update(output).digest("hex");
+    const digest = createHash("sha256")
+      .update(JSON.stringify(item.output) ?? "")
+      .digest("hex");
     if (this.#results.get(id) === digest) return;
     this.#results.set(id, digest);
     // Read only the runtime's first line, never user-script output further down.
@@ -93,7 +95,13 @@ export class CodeCells {
       ts,
       id,
       ok: ended !== "failed" && !/^Error\b/.test(header),
-      output,
+      output:
+        Array.isArray(item.output) &&
+        item.output.some((c) =>
+          ["input_image", "image", "image_url"].includes(String(record(c)?.type)),
+        )
+          ? item.output
+          : output,
     });
     const cellId = running ?? call.cell;
     if (!cellId) return;

@@ -1,6 +1,8 @@
 {
   "name": "@loom/core",
   "exports": {
+    "./images": "./src/images.ts",
+    "./image-file": "./src/image-file.ts",
     "./absurd": "./src/absurd.ts",
     "./agents": "./src/agents.ts",
     "./events": "./src/events.ts",

@@ -19,8 +19,8 @@ import {
   taskOutputSchema,
 } from "./types.ts";
 
-export const WORKER_VERSION = 8;
-export const MAX_FRAME_BYTES = 1024 * 1024;
+export const WORKER_VERSION = 9;
+export { MAX_FRAME_BYTES } from "./frame-limits.ts";
 export const MAX_PENDING = 128;
 
 const diagnostics = {

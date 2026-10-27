@@ -30,6 +30,13 @@ test("an empty config yields the defaults: claude default, no aisdk profiles", (
   assert.equal(c.providers.claude.claudeAiConnectors, false);
 });
 
+test("inline images default on and can be disabled independently of terminal compatibility", () => {
+  assert.equal(cfg("").tui.images, true);
+  assert.equal(cfg('{"tui":{"images":false}}').tui.images, false);
+  assert.equal(cfg('{"tui":{"images":false,"compat":true}}').tui.compat, true);
+  assert.throws(() => cfg('{"tui":{"images":"no"}}'));
+});
+
 test("claude.ai connectors can be enabled globally, per profile, and per repository", () => {
   assert.equal(
     cfg('{"providers":{"claude":{"claude_ai_connectors":true}}}').providers.claude

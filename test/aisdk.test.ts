@@ -813,6 +813,70 @@ test("runTurn breaks on an error part and stops consuming the stream (A4)", asyn
 
 // --- session via provider ------------------------------------------------
 
+test("AI SDK opening and follow-up images reach the model and persist in native history", async () => {
+  const { db, cleanup } = tmpDb();
+  const seen: unknown[] = [];
+  const mock = new MockLanguageModelV3({
+    doStream: async (options) => {
+      seen.push(
+        options.prompt.flatMap((message) =>
+          message.role === "user"
+            ? message.content
+                .filter((part) => part.type === "file")
+                .map(({ type, data, mediaType }) => ({ type, data, mediaType }))
+            : [],
+        ),
+      );
+      return {
+        stream: simulateReadableStream({
+          chunks: [
+            { type: "stream-start", warnings: [] },
+            {
+              type: "finish",
+              finishReason: { unified: "stop", raw: undefined },
+              usage: streamUsage({ noCache: 1, output: 0 }),
+            },
+          ],
+        }),
+      };
+    },
+  });
+  try {
+    const store = new ProviderMessageStore(db);
+    const image = { mimeType: "image/png" as const, data: "aGVsbG8=" };
+    const s = await provider(() => mock as unknown as LanguageModel, store).createSession({
+      sessionId: "s1",
+      cwd: "/tmp",
+      prompt: "",
+      images: [image],
+      mode: "default",
+      mcpServers: [],
+    });
+    try {
+      await drain(s.events(), (e) => e.type === "result");
+      await s.send("again", { images: [image] });
+      await drain(s.events(), (e) => e.type === "result");
+      const part = { type: "file", data: image.data, mediaType: "image/png" };
+      assert.deepEqual(seen, [[part], [part, part]]);
+      assert.equal(
+        store
+          .load("s1")
+          .filter(
+            (m) =>
+              m.role === "user" &&
+              Array.isArray(m.content) &&
+              m.content.some((p) => p.type === "image"),
+          ).length,
+        2,
+      );
+    } finally {
+      await s.close();
+    }
+  } finally {
+    cleanup();
+  }
+});
+
 test("createSession runs the first turn, emits result, and persists the transcript", async () => {
   const { db, cleanup } = tmpDb();
   try {

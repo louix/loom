@@ -2445,6 +2445,22 @@ test("editing a recalled history entry detaches it from the walk", () => {
   assert.equal(promptOf(s)?.buffer.text, "hello", "↓ returns to the detached edit");
 });
 
+test("history recall leaves draft attachments behind and restores them with the draft", () => {
+  let s = reduce(initialState(), { t: "pushHistory", text: "old text" });
+  const images = [
+    { id: "a".repeat(64), name: "clipboard.png", mimeType: "image/png" as const, bytes: 68 },
+  ];
+  s = reduce(
+    s,
+    open({ t: "prompt", prompt: { ...sessionPrompt("send", "a", "send", "live"), images } }),
+  );
+  s = reduce(s, { t: "promptHistoryNav", dir: -1 });
+  assert.deepEqual(promptOf(s)?.images, []);
+  s = reduce(s, { t: "promptHistoryNav", dir: 1 });
+  assert.deepEqual(promptOf(s)?.images, images);
+  assert.equal(promptOf(s)?.buffer.text, "live");
+});
+
 test("↓ at the live buffer never clobbers it with the stashed draft", () => {
   let s = initialState();
   s = reduce(s, { t: "pushHistory", text: "old" });

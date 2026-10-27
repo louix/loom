@@ -31,6 +31,7 @@ import { startMcpRelay } from "./mcp-relay.ts";
 import type { RelayDiagnostic } from "../../../core/src/relay-diagnostic.ts";
 import { startGitRelay } from "./git-relay.ts";
 import { readFrames } from "../framing.ts";
+import { MAX_BUFFERED_BYTES } from "../../../core/src/frame-limits.ts";
 import { readEnvironmentOutput, writeEnvironmentReady } from "./environment-protocol.ts";
 import { reportStartup, readStartupProgress, classifyStartupFailure } from "./progress.ts";
 import { seedRepoBase, pruneRepoBases } from "./repo-base.ts";
@@ -115,7 +116,7 @@ const parent = (async () => {
   try {
     for await (const frame of frames) {
       const chunk = new TextEncoder().encode(JSON.stringify(frame) + "\n");
-      if (!input || ended || (queued += chunk.length) > 8 * 1024 * 1024) break;
+      if (!input || ended || (queued += chunk.length) > MAX_BUFFERED_BYTES) break;
       const writer = input;
       pending = pending
         .then(() => writer.write(chunk))

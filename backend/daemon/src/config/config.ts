@@ -243,7 +243,7 @@ export interface LoomConfig {
     workspace: WorkspaceMode;
   };
   autoNix: boolean;
-  tui: { includeEventLogInEditor: boolean; compat: boolean };
+  tui: { includeEventLogInEditor: boolean; compat: boolean; images: boolean };
   /** `session.provider_access`, by provider id. */
   providerAccess: NameAccess;
   isolation: {
@@ -464,7 +464,7 @@ export const legacyBaseBranch = (config: Pick<LoomConfig, "baseBranch">): string
 
 export const DEFAULT_CONFIG: LoomConfig = {
   autoNix: false,
-  tui: { includeEventLogInEditor: false, compat: false },
+  tui: { includeEventLogInEditor: false, compat: false, images: true },
   worktreeDir: "",
   projectFilesDir: "",
   projectFilesInstructions: "",
@@ -873,6 +873,7 @@ export const normalizeConfig = (
     tui: {
       includeEventLogInEditor: settings.tui.include_event_log_in_editor,
       compat: settings.tui.compat,
+      images: settings.tui.images,
     },
     ...(settings.session.defaults.base_branch
       ? { baseBranch: settings.session.defaults.base_branch }

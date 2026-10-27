@@ -13,7 +13,7 @@ import { agentProfileInfoSchema } from "./agents.ts";
 export const PROTOCOL_VERSION = 8;
 
 /** Disconnect peers exceeding this frame/buffer bound, including streams with no newline. */
-export const MAX_FRAME_BYTES = 16 * 1024 * 1024;
+export { MAX_FRAME_BYTES } from "./frame-limits.ts";
 
 export const requestFrameSchema = z.object({
   kind: z.literal("req"),

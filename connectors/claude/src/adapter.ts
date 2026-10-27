@@ -424,13 +424,28 @@ const parseContextTag = (s: string): number => {
 const userMessage = (
   text: string,
   uuid: string,
-  sent: { now: boolean; human: boolean },
+  sent: { now: boolean; human: boolean; images?: import("@loom/core/images").ImageData[] },
 ): SDKUserMessage => {
   return {
     type: "user",
     // The interrupt receipt only lists UUID-stamped queued messages.
     uuid,
-    message: { role: "user", content: text },
+    message: {
+      role: "user",
+      content: sent.images?.length
+        ? [
+            ...(text ? [{ type: "text", text }] : []),
+            ...sent.images.map((image) => ({
+              type: "image",
+              source: {
+                type: "base64",
+                media_type: image.mimeType,
+                data: image.data,
+              },
+            })),
+          ]
+        : text,
+    },
     parent_tool_use_id: null,
     // The SDK asks hosts relaying keyboard input to say so: without an origin
     // a message is unattributed, and fails the CLI's isHuman() trust gates.
@@ -678,8 +693,11 @@ class ClaudeSession implements AgentSession {
     this.#queued.clear();
     this.#settledInputs.clear();
     this.#receipts.clear();
-    if (opts.prompt)
-      this.#enqueueInput(opts.prompt, "message", opts.promptByHuman ? { human: true } : {});
+    if (opts.prompt || opts.images?.length)
+      this.#enqueueInput(opts.prompt, "message", {
+        ...(opts.promptByHuman ? { human: true } : {}),
+        ...(opts.images?.length ? { images: opts.images } : {}),
+      });
 
     this.#approvedRetries = [];
     this.#approvalGeneration++;
@@ -1269,7 +1287,13 @@ class ClaudeSession implements AgentSession {
       calls.length > 0 &&
       calls.every((name) => MOVABLE_TOOLS.has(name));
     if (opts.now) this.#log.info("send now", { inputId: uuid, running: calls, now });
-    this.#inbox.push(userMessage(text, uuid, { now, human: now || opts.human === true }));
+    this.#inbox.push(
+      userMessage(text, uuid, {
+        now,
+        human: now || opts.human === true,
+        ...(opts.images?.length ? { images: opts.images } : {}),
+      }),
+    );
   }
 
   /** Follow the main loop's tool calls in flight — what a send-now would

@@ -49,6 +49,7 @@ export const runTui = async (
     includeEventLogInEditor?: boolean;
     /** The config's `tui.compat`; `LOOM_TUI_COMPAT=1` turns compat on too. */
     compat?: boolean;
+    images?: boolean;
     openShell?: (id: string) => Promise<number>;
     projectFiles?: () => string;
     prepareEnvironment?: () => Promise<number>;
@@ -74,6 +75,7 @@ export const runTui = async (
         client={client}
         includeEventLogInEditor={opts.includeEventLogInEditor ?? false}
         compat={compat}
+        images={opts.images ?? true}
         {...(opts.checkEnvironment ? { checkEnvironment: opts.checkEnvironment } : {})}
         {...(opts.logs ? { logs: opts.logs } : {})}
         {...(opts.themeState ? { themeState: opts.themeState } : {})}

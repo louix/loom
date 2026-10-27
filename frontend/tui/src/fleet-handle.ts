@@ -51,6 +51,8 @@ import type {
 import { LOOM_VERSION } from "@loom/core/version";
 import { spawnDirectoryEditor, spawnEditor, type EditorHandoff } from "./editor-handoff.ts";
 import { applyKey, buffer } from "./editor.ts";
+import { readClipboardImage } from "./clipboard.ts";
+import { MAX_MESSAGE_IMAGES, type ImageAttachment } from "@loom/core/images";
 import { mouseReport, terminalModes } from "./mouse.ts";
 import { setThemeMode, shortId, truncate, modeChipText } from "./theme.ts";
 import { loadPersistedTheme, persistTheme } from "./theme-store.ts";
@@ -314,6 +316,7 @@ export interface FleetView {
 }
 
 export interface FleetHandle {
+  readonly imagesEnabled: boolean;
   readonly subscribe: (onChange: () => void) => () => void;
   readonly getView: () => FleetView;
   /** This client's id — how a queued message's author reads as "you". */
@@ -355,6 +358,8 @@ export interface FleetClient {
 }
 
 export interface MkFleetHandleInput {
+  readonly images?: boolean;
+  readonly clipboardImage?: typeof import("./clipboard.ts").readClipboardImage;
   readonly client: FleetClient;
   readonly term: Term;
   /** Daemon + TUI log paths for the "view logs" command; absent in tests. */
@@ -607,6 +612,8 @@ export const mkFleetHandle = ({
   themeState,
   includeEventLogInEditor = false,
   compat = false,
+  images = true,
+  clipboardImage = readClipboardImage,
   openShell,
   projectFiles,
   prepareEnvironment,
@@ -704,12 +711,13 @@ export const mkFleetHandle = ({
   // Every message goes into the session's daemon-side queue; the composer only
   // remembers a send whose reply never came, so it is not queued twice.
   const composer = mkComposer({
-    send: (sessionId, { text, entryId, delivery }) =>
+    send: (sessionId, { text, entryId, delivery, images }) =>
       client.request<SendReply>("session.send", {
         id: sessionId,
         text,
         entryId,
         delivery,
+        ...(images?.length ? { images } : {}),
         by: client.clientId,
       }),
   });
@@ -729,6 +737,7 @@ export const mkFleetHandle = ({
    * than lost between the two sources.
    */
   const transcripts = mkTranscript({
+    images,
     fetch: async (id, cursor) => {
       const page = await client.request<HistoryPage>("session.events", {
         id,
@@ -1138,6 +1147,29 @@ export const mkFleetHandle = ({
   let historyRequest = 0;
   /** Put an overlay up, or take one down (`browse`). */
   const show = (overlay: Overlay): void => {
+    // A model/provider picker temporarily owns the whole draft, attachments included.
+    const prior = state.overlay;
+    if (
+      prior.t === "prompt" &&
+      prior.prompt.images?.length &&
+      overlay.t === "picker" &&
+      (overlay.picker.dest.t === "newSession" || overlay.picker.dest.t === "session")
+    ) {
+      overlay = {
+        ...overlay,
+        picker: {
+          ...overlay.picker,
+          dest: { ...overlay.picker.dest, images: prior.prompt.images },
+        },
+      };
+    } else if (
+      prior.t === "picker" &&
+      overlay.t === "prompt" &&
+      (prior.picker.dest.t === "newSession" || prior.picker.dest.t === "session") &&
+      prior.picker.dest.images?.length
+    ) {
+      overlay = { ...overlay, prompt: { ...overlay.prompt, images: prior.picker.dest.images } };
+    }
     const request = ++historyRequest;
     const p = openPrompt(overlay);
     if (
@@ -1501,7 +1533,10 @@ export const mkFleetHandle = ({
       case "new":
         show({
           t: "prompt",
-          prompt: newPrompt(newSettings(state, null, null, null), state.drafts.last),
+          prompt: {
+            ...newPrompt(newSettings(state, null, null, null), state.drafts.last),
+            ...(state.drafts.lastImages?.length ? { images: state.drafts.lastImages } : {}),
+          },
         });
         return loadBases();
       case "newWorkspace": {
@@ -1689,7 +1724,14 @@ export const mkFleetHandle = ({
         // it starts moving again.
         const held = release(outboxOf(composer.get(), s.id));
         const text = held?.text ?? state.drafts.last;
-        return void show({ t: "prompt", prompt: sessionPrompt("send", s.id, "send", text) });
+        const draftImages = held ? held.images : state.drafts.lastImages;
+        return void show({
+          t: "prompt",
+          prompt: {
+            ...sessionPrompt("send", s.id, "send", text),
+            ...(draftImages?.length ? { images: draftImages } : {}),
+          },
+        });
       }
       case "title":
         return void show({
@@ -2050,6 +2092,43 @@ export const mkFleetHandle = ({
    * compaction or a stop in progress no longer refuses it, the daemon queues
    * it. A send prompt editing a queued message saves the edit instead.
    */
+  const pasteImage = async (): Promise<void> => {
+    const p = openPrompt(state.overlay);
+    if (!p || !(p.t === "new" || (p.t === "session" && p.kind === "send"))) return;
+    if ((p.images?.length ?? 0) >= MAX_MESSAGE_IMAGES)
+      return note("A message can contain up to four images", "bad");
+    const pending: Prompt = { ...p, feedback: { pending: true, text: "Reading clipboard image…" } };
+    dispatch({ t: "overlay", overlay: { t: "prompt", prompt: pending } });
+    try {
+      const data = await clipboardImage();
+      const image = await client.request<ImageAttachment>("image.upload", {
+        ...data,
+        name: "clipboard.png",
+      });
+      if (openPrompt(state.overlay) !== pending) return;
+      const { feedback: _, ...rest } = p;
+      dispatch({
+        t: "overlay",
+        overlay: { t: "prompt", prompt: { ...rest, images: [...(p.images ?? []), image] } },
+      });
+    } catch (error) {
+      if (openPrompt(state.overlay) === pending)
+        dispatch({
+          t: "overlay",
+          overlay: {
+            t: "prompt",
+            prompt: {
+              ...p,
+              feedback: {
+                pending: false,
+                text: error instanceof Error ? error.message : String(error),
+              },
+            },
+          },
+        });
+    }
+  };
+
   const submitPrompt = (delivery: QueueDelivery = "next_boundary"): void => {
     const p = openPrompt(state.overlay);
     if (!p) return;
@@ -2059,7 +2138,8 @@ export const mkFleetHandle = ({
     // `deny` and `compact` both treat an empty submit as a valid choice
     // (no reason / best-effort compaction); `comment` empty clears the note.
     // Every other prompt needs text.
-    if (kind !== "deny" && kind !== "compact" && kind !== "comment" && !text) return;
+    if (kind !== "deny" && kind !== "compact" && kind !== "comment" && !text && !p.images?.length)
+      return;
 
     const edit = p.t === "session" ? p.edit : undefined;
     const sendTo = p.t === "session" && p.kind === "send" && !edit ? p.sessionId : null;
@@ -2073,7 +2153,11 @@ export const mkFleetHandle = ({
       if (stillOpen())
         show({ t: "prompt", prompt: { ...p, feedback: { pending: false, text: message } } });
       else {
-        dispatch({ t: "recoverDraft", text: p.buffer.text });
+        dispatch({
+          t: "recoverDraft",
+          text: p.buffer.text,
+          ...(p.images?.length ? { images: p.images } : {}),
+        });
         note(message + " — draft saved", "bad");
       }
     };
@@ -2096,6 +2180,7 @@ export const mkFleetHandle = ({
               revision: edit.revision,
               text,
               by,
+              images: p.images ?? [],
             });
             return "queued message saved";
           }
@@ -2103,7 +2188,7 @@ export const mkFleetHandle = ({
           // daemon emits its `user_message` once the agent has taken it. A
           // held send of the same text goes again under its own id, so one
           // that did arrive is answered rather than queued twice.
-          const r = await composer.send(sessionId, text, delivery);
+          const r = await composer.send(sessionId, text, delivery, p.images);
           // Quote a preview: queued sends are easy to fire twice in a row, and
           // "queued" alone does not say which message waits.
           const quoted = `“${truncate(text.replace(/\s+/g, " ").trim(), 40)}”`;
@@ -2149,6 +2234,7 @@ export const mkFleetHandle = ({
           const base = newBase(state.bases, p.settings);
           const r = await client.request<SessionSnapshot>("session.create", {
             prompt: text,
+            ...(p.images?.length ? { images: p.images } : {}),
             by,
             ...(p.settings.isolation ? { isolation: p.settings.isolation } : {}),
             ...(p.settings.workspace ? { workspace: p.settings.workspace } : {}),
@@ -2209,7 +2295,11 @@ export const mkFleetHandle = ({
         if (isAmbiguousFailure(e)) {
           const review = stillOpen() ? "Press Esc, check" : "Check";
           const message = `No confirmation — the action may still be running. ${review} the session before retrying. Your draft is saved.`;
-          dispatch({ t: "recoverDraft", text: p.buffer.text });
+          dispatch({
+            t: "recoverDraft",
+            text: p.buffer.text,
+            ...(p.images?.length ? { images: p.images } : {}),
+          });
           if (stillOpen())
             show({
               t: "prompt",
@@ -2260,18 +2350,19 @@ export const mkFleetHandle = ({
     switch (name) {
       case "queueEdit": {
         const full = state.overlay.t === "queue" ? state.overlay.full : null;
-        const open = (text: string): void =>
+        const open = (text: string, images?: ImageAttachment[]): void =>
           void show({
             t: "prompt",
             prompt: {
               ...sessionPrompt("send", sessionId, "edit queued message", text),
               edit: target,
+              ...(images?.length ? { images } : {}),
             },
           });
-        if (full?.id === e.id && full.revision === e.revision) return open(full.text);
+        if (full?.id === e.id && full.revision === e.revision) return open(full.text, full.images);
         void client
           .request<QueueText>("session.queueEntry", { id: sessionId, entryId: e.id })
-          .then((entry) => open(entry.text))
+          .then((entry) => open(entry.text, entry.images))
           .catch((err: unknown) => note(err instanceof Error ? err.message : String(err), "bad"));
         return;
       }
@@ -2672,6 +2763,14 @@ export const mkFleetHandle = ({
       // The live session a `send` prompt is composing at — the only prompt whose
       // ⌥ actions retarget an existing session rather than the one being made.
       const sendTo = p.t === "session" && p.kind === "send" ? p.sessionId : null;
+      if (p.t === "new" || sendTo) {
+        if ((key.meta || key.ctrl) && input === "v") return void pasteImage();
+        if (key.meta && input === "x")
+          return void show({
+            t: "prompt",
+            prompt: { ...p, images: (p.images ?? []).slice(0, -1) },
+          });
+      }
       // ⌥-prefixed prompt actions — "step out to a bigger tool" without losing
       // what's typed. Ctrl is reserved for readline motions (applyKey).
       if (key.meta && input === "e") return void editPrompt();
@@ -3236,6 +3335,7 @@ export const mkFleetHandle = ({
     subscribe: store.subscribe,
     getView: store.get,
     clientId: client.clientId,
+    imagesEnabled: images,
     handleKey,
     effectStart,
   };

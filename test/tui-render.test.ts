@@ -2520,6 +2520,31 @@ const queueFollowUp = (handle: FleetHandle, text: string): void => {
 };
 
 describe("tui fleet-handle effects", () => {
+  test("clipboard images upload once and travel with image-only sends", async () => {
+    const fake = mkFakeClient();
+    const data = { mimeType: "image/png" as const, data: "aGVsbG8=" };
+    const image = { id: "a".repeat(64), name: "clipboard.png", mimeType: "image/png", bytes: 5 };
+    const handle = mkFleetHandle({
+      client: fake.client,
+      term: fakeTerm,
+      clipboardImage: async () => data,
+    });
+    const teardown = handle.effectStart();
+    try {
+      fake.deliver(fleetOf(testSession({ id: "a", status: stateIdle })));
+      handle.handleKey("", { return: true } as Key);
+      handle.handleKey("v", { meta: true } as Key);
+      await delay(0);
+      assert.equal(fake.of("image.upload").length, 1);
+      fake.of("image.upload")[0]!.resolve(image);
+      await delay(0);
+      handle.handleKey("", { return: true } as Key);
+      assert.deepEqual(fake.of("session.send")[0]?.params.images, [image]);
+      assert.equal(fake.of("session.send")[0]?.params.text, "");
+    } finally {
+      teardown();
+    }
+  });
   test("⌥⏎ is a newline even while the target is working; ⌥q is the queue", () => {
     const fake = mkFakeClient();
     const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });

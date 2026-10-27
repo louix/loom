@@ -1,11 +1,12 @@
 import { InspectionPane, SESSION_TABS } from "./session-tabs.tsx";
+import { ImageEnvironment } from "./images.tsx";
 /**
  * Root Ink component. All logic — state, keymap, daemon round-trips — lives in
  * {@link mkFleetHandle}; this file gathers the terminal capabilities the handle
  * needs from Ink, starts it once, forwards key presses, and renders the view it
  * publishes. JSX with no bundler — `@oxc-node` transforms `.tsx` on the fly.
  */
-import { useEffect, useState, useSyncExternalStore, useMemo, type ReactNode } from "react";
+import { useEffect, useState, useSyncExternalStore, useMemo, useRef, type ReactNode } from "react";
 import { Box, Text, useApp, useInput, usePaste, useStdout } from "ink";
 import { terminalFocus, PASTE_KEY } from "./terminal-focus.ts";
 import { PaletteContext, useTheme } from "./ui.tsx";
@@ -54,6 +55,7 @@ export const App = ({
   themeState,
   includeEventLogInEditor = false,
   compat = false,
+  images = true,
   openShell,
   projectFiles,
   prepareEnvironment,
@@ -73,6 +75,7 @@ export const App = ({
   includeEventLogInEditor?: boolean;
   /** Compat mode (see `tuiCompat` in run.tsx): no any-motion tracking, no hover. */
   compat?: boolean;
+  images?: boolean;
   openShell?: (id: string) => Promise<number>;
   projectFiles?: () => string;
   prepareEnvironment?: () => Promise<number>;
@@ -85,6 +88,15 @@ export const App = ({
   historyPageSize?: number;
 }): ReactNode => {
   const { exit, suspendTerminal } = useApp();
+  const [imagesSuspended, setImagesSuspended] = useState(false);
+  const imagesUnmounted = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    if (imagesSuspended) {
+      imagesUnmounted.current?.();
+      imagesUnmounted.current = null;
+    }
+  }, [imagesSuspended]);
+  const imageRequest = useMemo(() => client.request.bind(client), [client]);
   const { stdout } = useStdout();
   const [focus] = useState(() => terminalFocus(client));
   useEffect(() => {
@@ -101,7 +113,18 @@ export const App = ({
       client,
       term: {
         exit,
-        suspendTerminal,
+        suspendTerminal: async (fn) => {
+          // Passive cleanup removes image placements before the editor takes over.
+          await new Promise<void>((resolve) => {
+            imagesUnmounted.current = resolve;
+            setImagesSuspended(true);
+          });
+          try {
+            await suspendTerminal(fn);
+          } finally {
+            setImagesSuspended(false);
+          }
+        },
         write: (s) => void stdout.write(s),
         isTTY: stdout.isTTY ?? false,
         getSize: () => ({ cols: stdout.columns || 100, rows: stdout.rows || 30 }),
@@ -111,6 +134,7 @@ export const App = ({
         },
       },
       includeEventLogInEditor,
+      images,
       compat,
       ...(logs ? { logs } : {}),
       ...(projectFiles ? { projectFiles } : {}),
@@ -140,9 +164,18 @@ export const App = ({
   const view = useSyncExternalStore(handle.subscribe, handle.getView);
 
   return (
-    <PaletteContext.Provider value={PALETTES[view.ui.theme]}>
-      <Layout view={view} handle={handle} />
-    </PaletteContext.Provider>
+    <ImageEnvironment
+      enabled={images}
+      visible={
+        !imagesSuspended &&
+        (view.ui.overlay.t === "browse" || promptOnPane(openPrompt(view.ui.overlay)))
+      }
+      request={imageRequest}
+    >
+      <PaletteContext.Provider value={PALETTES[view.ui.theme]}>
+        <Layout view={view} handle={handle} />
+      </PaletteContext.Provider>
+    </ImageEnvironment>
   );
 };
 
@@ -396,6 +429,7 @@ const LogArea = ({ view, handle, width }: PaneProps): ReactNode => {
         view.splitLogH,
         tr.scroll,
         tail,
+        handle.imagesEnabled,
       ),
     [tr, queue, id, logFilter, child, spinning, width, view.splitLogH, tail],
   );

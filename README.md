@@ -94,6 +94,14 @@ The [example config](backend/daemon/config.example.jsonc) covers providers,
 named accounts, repository overrides, hooks and MCP servers.
 Configuration is user-owned; repository-local config files are not read.
 
+Images returned by tools appear inline in the transcript. In a message prompt,
+press **Alt+V** (or Ctrl+V) to attach a clipboard image, and **Alt+X** to remove
+the last attachment. Linux clipboard access needs `wl-paste` (Wayland) or
+`xclip` (X11). Attachments support PNG, JPEG and GIF, up to four images of
+2 MiB each; GIF previews are static. Image input requires a vision-capable model.
+Set `"tui": { "images": false }` in your config and restart the TUI to show
+labels instead of graphics. Pasting attachments remains available.
+
 Agents see the repository's `AGENTS.md` once each: Codex and Claude Code read it
 themselves (Claude Code unless a `CLAUDE.md` takes precedence without importing
 it), and Loom adds it to the system prompt of every other session.

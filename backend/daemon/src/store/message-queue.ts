@@ -18,6 +18,7 @@ import type { Hold } from "../daemon/queue-machine.ts";
 import { absurd } from "@loom/core/absurd";
 import { loomMessageSchema, type LoomMessage } from "@loom/core/loom-message";
 import { createHash } from "node:crypto";
+import type { ImageAttachment } from "@loom/core/images";
 import { type Db, withTransaction } from "./db.ts";
 
 export type QueueFailureCode = "not_found" | "conflict" | "refused" | "queue_full";
@@ -57,6 +58,7 @@ export type Enqueued =
 export type QueueSlot = Pick<QueueEntry, "id" | "state" | "delivery" | "uncertain" | "author">;
 
 interface Row {
+  images: string | null;
   id: string;
   seq: number;
   text: string;
@@ -87,6 +89,7 @@ const toEntry = (r: Row): QueueEntry & { seq: number } => ({
   id: r.id,
   seq: r.seq,
   text: r.text,
+  ...(r.images ? { images: JSON.parse(r.images) as ImageAttachment[] } : {}),
   author: r.author,
   ...optionalLoomMessage(r.loom_message),
   delivery: r.delivery,
@@ -100,6 +103,8 @@ const toEntry = (r: Row): QueueEntry & { seq: number } => ({
 
 const bytesOf = (text: string): number => new TextEncoder().encode(text).length;
 const sha256 = (text: string): string => createHash("sha256").update(text).digest("hex");
+const messageHash = (text: string, images?: readonly ImageAttachment[]): string =>
+  sha256(images?.length ? JSON.stringify([text, images]) : text);
 
 const LIVE = "state IN ('queued', 'delivering')";
 const SETTLED = "state IN ('consumed', 'cancelled')";
@@ -212,19 +217,24 @@ export class MessageQueueStore {
       author: string;
       delivery: QueueDelivery;
       loomMessage?: LoomMessage;
+      images?: ImageAttachment[];
     },
     opts: { head?: boolean; at?: number } = {},
   ): QueueResult<Enqueued> {
     return withTransaction(this.#db, () => {
       const known = this.#row(sessionId, e.id);
       if (known) {
-        if (known.text !== e.text) return fail("conflict", REUSED);
+        if (
+          messageHash(known.text, known.images ? JSON.parse(known.images) : undefined) !==
+          messageHash(e.text, e.images)
+        )
+          return fail("conflict", REUSED);
         const entry = this.entry(sessionId, e.id)!;
         return ok({ created: false, entry, state: entry.state });
       }
       const seen = this.#seen(sessionId, e.id);
       if (seen) {
-        if (seen.text_sha256 !== sha256(e.text)) return fail("conflict", REUSED);
+        if (seen.text_sha256 !== messageHash(e.text, e.images)) return fail("conflict", REUSED);
         return ok({ created: false, entry: null, state: seen.state });
       }
       const bytes = bytesOf(e.text);
@@ -239,8 +249,8 @@ export class MessageQueueStore {
       const seq = opts.head ? this.#minSeq(sessionId) - 1 : this.#maxSeq(sessionId) + 1;
       this.#db
         .prepare(
-          "INSERT INTO session_queue (session_id, id, seq, text, author, loom_message, delivery, state, created_at) " +
-            "VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?)",
+          "INSERT INTO session_queue (session_id, id, seq, text, author, loom_message, delivery, state, created_at, images) " +
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
         )
         .run(
           sessionId,
@@ -251,6 +261,7 @@ export class MessageQueueStore {
           e.loomMessage ? JSON.stringify(e.loomMessage) : null,
           opts.head ? "next_boundary" : e.delivery,
           opts.at ?? Date.now(),
+          e.images?.length ? JSON.stringify(e.images) : null,
         );
       const entry = this.entry(sessionId, e.id)!;
       return ok({ created: true, entry, state: entry.state });
@@ -324,13 +335,24 @@ export class MessageQueueStore {
     this.#update(sessionId, id, `${set}, settled_seq = ?`, ...args, n);
   }
 
-  edit(sessionId: string, t: QueueTarget, text: string): QueueResult<QueueEntry> {
+  edit(
+    sessionId: string,
+    t: QueueTarget,
+    text: string,
+    images?: ImageAttachment[],
+  ): QueueResult<QueueEntry> {
     return withTransaction(this.#db, () => {
       const r = this.#queuedTarget(sessionId, t);
       if (!r.ok) return r;
       if (bytesOf(text) > QUEUE_LIMITS.entryBytes)
         return fail("queue_full", "The message is larger than the queue accepts (1 MiB).");
-      this.#update(sessionId, t.entryId, "text = ?", text);
+      this.#update(
+        sessionId,
+        t.entryId,
+        "text = ?, images = ?",
+        text,
+        images === undefined ? r.value.images : JSON.stringify(images),
+      );
       return ok(this.entry(sessionId, t.entryId)!);
     });
   }
@@ -508,11 +530,11 @@ export class MessageQueueStore {
   #prune(sessionId: string): void {
     const doomed = this.#db
       .prepare(
-        "SELECT id, text, state, settled_seq FROM session_queue " +
+        "SELECT id, text, images, state, settled_seq FROM session_queue " +
           `WHERE session_id = ? AND ${SETTLED} ORDER BY settled_seq DESC LIMIT -1 OFFSET ?`,
       )
       .all(sessionId, QUEUE_LIMITS.settled) as unknown as Array<
-      Pick<Row, "id" | "text" | "state" | "settled_seq">
+      Pick<Row, "id" | "text" | "images" | "state" | "settled_seq">
     >;
     if (doomed.length === 0) return;
     const trace = this.#db.prepare(
@@ -521,7 +543,13 @@ export class MessageQueueStore {
     );
     const drop = this.#db.prepare("DELETE FROM session_queue WHERE session_id = ? AND id = ?");
     for (const r of doomed) {
-      trace.run(sessionId, r.id, sha256(r.text), r.state, r.settled_seq ?? 0);
+      trace.run(
+        sessionId,
+        r.id,
+        messageHash(r.text, r.images ? JSON.parse(r.images) : undefined),
+        r.state,
+        r.settled_seq ?? 0,
+      );
       drop.run(sessionId, r.id);
     }
     this.#db

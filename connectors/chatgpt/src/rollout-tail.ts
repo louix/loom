@@ -98,7 +98,7 @@ export class RolloutTail {
     }
     // Large image/reasoning records are not tool telemetry. Do not accumulate
     // unbounded partial lines; discard through the next newline.
-    if (this.#pending.length > 2 * 1024 * 1024) {
+    if (this.#pending.length > 16 * 1024 * 1024) {
       this.#pending = "";
       this.#dropping = true;
     }

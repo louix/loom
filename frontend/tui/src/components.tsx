@@ -1,4 +1,5 @@
 import { SessionTabs } from "./session-tabs.tsx";
+import { ImageRows } from "./images.tsx";
 import type { SessionTab } from "../../../core/src/session-inspection.ts";
 /**
  * Ink components for the TUI. Written in JSX and run with no bundler — `@oxc-node`
@@ -851,24 +852,35 @@ export const EventLog = memo(
         {rows.length === 0 ? (
           <Text tone="faint">{empty}</Text>
         ) : (
-          rows.map((r) =>
-            r.first ? (
-              <Line key={r.key}>
-                <Text tone="faint">{r.ts}</Text>
-                <Text color={toneColor(r.tone, palette)}>{`${r.glyph} `}</Text>
-                <Text color={diffSegColor(r.kind, r.seg, toneColor(r.tone, palette), palette)}>
-                  {r.spans ? <StyledText spans={r.spans} subdued={r.kind === "thinking"} /> : r.seg}
-                </Text>
-              </Line>
-            ) : (
-              <Line key={r.key}>
-                <Text>{" ".repeat(r.indent)}</Text>
-                <Text color={diffSegColor(r.kind, r.seg, toneColor(r.tone, palette), palette)}>
-                  {r.spans ? <StyledText spans={r.spans} subdued={r.kind === "thinking"} /> : r.seg}
-                </Text>
-              </Line>
-            ),
-          )
+          <ImageRows
+            rows={rows}
+            renderText={(r) =>
+              r.first ? (
+                <Line key={r.key}>
+                  <Text tone="faint">{r.ts}</Text>
+                  <Text color={toneColor(r.tone, palette)}>{`${r.glyph} `}</Text>
+                  <Text color={diffSegColor(r.kind, r.seg, toneColor(r.tone, palette), palette)}>
+                    {r.spans ? (
+                      <StyledText spans={r.spans} subdued={r.kind === "thinking"} />
+                    ) : (
+                      r.seg
+                    )}
+                  </Text>
+                </Line>
+              ) : (
+                <Line key={r.key}>
+                  <Text>{" ".repeat(r.indent)}</Text>
+                  <Text color={diffSegColor(r.kind, r.seg, toneColor(r.tone, palette), palette)}>
+                    {r.spans ? (
+                      <StyledText spans={r.spans} subdued={r.kind === "thinking"} />
+                    ) : (
+                      r.seg
+                    )}
+                  </Text>
+                </Line>
+              )
+            }
+          />
         )}
         {view.spinning ? spinner : null}
       </Panel>
@@ -1037,6 +1049,7 @@ export const promptBar = (
     { keys: "⌥e", label: "editor" },
     { keys: "⌥o", label: "log" },
   ];
+  if (p.t === "session" && p.kind === "send") items.push({ keys: "⌥v", label: "paste image" });
   if (p.t === "session" && p.kind === "send" && !editing) {
     const sess = fleetSessions(ctx).find((x) => x.id === p.sessionId);
     for (const item of composerBar(ctx, p.sessionId)) {
@@ -1177,7 +1190,7 @@ export const newSessionLayout = (
     chrome + wrapped.rows.length + 1 + feedback.length > rows
       ? newSessionHeader(state, p.settings, inner, { compact, tight: true })
       : wrapped;
-  const fixed = chrome + header.rows.length;
+  const fixed = chrome + header.rows.length + (p.images?.length ? 1 : 0);
   const maxRows = Math.max(1, Math.min(MAX_EDITOR_ROWS, rows - fixed - feedback.length));
   const editorRows = Math.min(maxRows, layoutWrapped(p.buffer, room).rows.length);
   const height = Math.min(rows, fixed + editorRows + feedback.length);
@@ -1258,6 +1271,12 @@ export const NewSessionModal = ({
           maxRows={g.maxRows}
           placeholder={truncate(PROMPT_PLACEHOLDER.new, Math.max(1, g.room - 2))}
         />
+        {p.images?.length ? (
+          <Line tone="accent">
+            {p.images.length} image{p.images.length === 1 ? "" : "s"} attached · ⌥v paste · ⌥x
+            remove last
+          </Line>
+        ) : null}
         <PromptFeedback p={p} width={g.width - 2 - g.padding * 2} />
         {!g.compact && <Box height={1} flexShrink={0} />}
         {p.feedback?.pending || p.feedback?.uncertain ? (
@@ -1270,7 +1289,7 @@ export const NewSessionModal = ({
             ]}
           />
         )}
-        {!g.compact && <Line tone="faint">⌥⏎ newline · ⌥e editor · ↑↓ history</Line>}
+        {!g.compact && <Line tone="faint">⌥⏎ newline · ⌥e editor · ⌥v image · ↑↓ history</Line>}
       </Box>
     </FloatingLayer>
   );
@@ -1287,7 +1306,7 @@ export const promptPaneRows = (state: TuiState, width: number): number => {
   const p = openPrompt(state.overlay);
   if (!p || p.t === "new") return 0;
   const editor = Math.min(MAX_EDITOR_ROWS, layoutWrapped(p.buffer, paneRoom(width)).rows.length);
-  return 1 /* label */ + editor + feedbackLines(p, width - 4).length;
+  return 1 /* label */ + editor + feedbackLines(p, width - 4).length + (p.images?.length ? 1 : 0);
 };
 
 /** The input group for a session-targeted prompt — label + the session's mode
@@ -1324,6 +1343,12 @@ export const PromptPane = ({
         room={paneRoom(width)}
         placeholder={PROMPT_PLACEHOLDER[promptKind(p)]}
       />
+      {p.images?.length ? (
+        <Line tone="accent">
+          {p.images.length} image{p.images.length === 1 ? "" : "s"} attached · ⌥v paste · ⌥x remove
+          last
+        </Line>
+      ) : null}
       <PromptFeedback p={p} width={width - 4} />
     </Box>
   );

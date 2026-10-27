@@ -43,6 +43,28 @@ const add = (
 
 const order = (q: MessageQueueStore) => q.live("s").map((e) => e.id);
 
+test("queue retry identity includes attachments and edits preserve or explicitly clear them", () => {
+  withStore((q) => {
+    const images = [
+      { id: "a".repeat(64), name: "clipboard.png", mimeType: "image/png" as const, bytes: 68 },
+    ];
+    const input = { id: "pic", text: "", author: "c1", delivery: "next_boundary" as const, images };
+    const entry = value(q.enqueue("s", input)).entry!;
+    assert.deepEqual(q.entry("s", entry.id)?.images, images);
+    assert.equal(value(q.enqueue("s", input)).created, false);
+    assert.equal(
+      q.enqueue("s", { ...input, images: [{ ...images[0]!, id: "b".repeat(64) }] }).ok,
+      false,
+    );
+    const edited = value(q.edit("s", { entryId: entry.id, revision: entry.revision }, "caption"));
+    assert.deepEqual(edited.images, images);
+    const cleared = value(
+      q.edit("s", { entryId: entry.id, revision: edited.revision }, "caption", []),
+    );
+    assert.deepEqual(cleared.images ?? [], []);
+  });
+});
+
 test("live entries come back every next_boundary one first, each group in arrival order", () => {
   withStore((q) => {
     add(q, "e1", "end_of_turn");

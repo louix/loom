@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { imageAttachmentsSchema } from "./images.ts";
 import { vmTerminationSchema } from "./vm-termination.ts";
 import { opaqueSchema } from "./schema.ts";
 import { cacheCreationSchema } from "./cache.ts";
@@ -76,6 +77,7 @@ export type ToolCallEvent = z.infer<typeof toolCallEventSchema>;
 
 export const toolResultEventSchema = harnessEventBaseSchema.extend({
   type: z.literal("tool_result"),
+  images: imageAttachmentsSchema.optional(),
   id: z.string(),
   ok: z.boolean(),
   output: opaqueSchema,
@@ -398,6 +400,7 @@ export type ProviderChangedEvent = z.infer<typeof providerChangedEventSchema>;
  */
 export const userMessageEventSchema = harnessEventBaseSchema.extend({
   type: z.literal("user_message"),
+  images: imageAttachmentsSchema.optional(),
   text: z.string(),
   injected: z.boolean(),
   /** The queue entry this message was (`docs/message-queue.md`). */

@@ -10,6 +10,7 @@
  * delegates through `loom-agents` (docs/loom-agents.md).
  */
 import { randomUUID } from "node:crypto";
+import { userContent } from "./user-input.ts";
 import { streamText, tool } from "ai";
 import type { LanguageModel, ModelMessage, ToolSet } from "ai";
 import { z } from "zod";
@@ -169,7 +170,10 @@ export class AisdkSession implements AgentSession {
   #interrupted = false;
   /** User messages sent mid-turn, drained by the loop's `prepareStep`. A
    *  queued message carries its `inputId`, reported consumed as it drains. */
-  readonly #injections: Array<{ content: string; inputId?: string }> = [];
+  readonly #injections: Array<{
+    content: Extract<ModelMessage, { role: "user" }>["content"];
+    inputId?: string;
+  }> = [];
   #closing = false;
   #compacting = false;
   /** The in-flight `#doCompact`, tracked so `interrupt()` / `close()` can await
@@ -302,7 +306,7 @@ export class AisdkSession implements AgentSession {
     // land.
     if (this.#turnRunning) {
       this.#injections.push({
-        content: input,
+        content: userContent(input, opts.images),
         ...(opts.inputId !== undefined ? { inputId: opts.inputId } : {}),
       });
       return;
@@ -314,7 +318,7 @@ export class AisdkSession implements AgentSession {
     try {
       await this.#turn?.catch(() => {});
       await this.#compaction?.catch(() => {});
-      const msg: ModelMessage = { role: "user", content: input };
+      const msg: ModelMessage = { role: "user", content: userContent(input, opts.images) };
       this.#messages.push(msg);
       this.#store?.append(this.id, [msg]);
     } catch (err) {
@@ -364,7 +368,10 @@ export class AisdkSession implements AgentSession {
       ts: Date.now(),
       items: dropped.map(({ content, inputId }) => ({
         kind: "message" as const,
-        text: content,
+        text:
+          typeof content === "string"
+            ? content
+            : content.map((part) => (part.type === "text" ? part.text : "[image]")).join("\n"),
         ...(inputId !== undefined ? { ref: inputId } : {}),
       })),
     });

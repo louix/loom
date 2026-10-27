@@ -545,6 +545,19 @@ const setupPulled = async (t: TestContext, create?: { promptByHuman: boolean }) 
   return { s, q, receipt, pull, discarded, seen };
 };
 
+test("Claude sends clipboard images as native image blocks", async (t) => {
+  const { s, pull } = await setupPulled(t);
+  await pull();
+  const image = { mimeType: "image/png" as const, data: "aGVsbG8=" };
+  await s.send("describe", { images: [image] });
+  assert.deepEqual((await pull()).message.content, [
+    { type: "text", text: "describe" },
+    { type: "image", source: { type: "base64", media_type: "image/png", data: image.data } },
+  ]);
+  await s.send("", { images: [image] });
+  assert.equal(((await pull()).message.content as unknown[]).length, 1);
+});
+
 test("a Stop reports the queued input it cancelled that the agent never took up", async (t) => {
   const { s, q, receipt, pull, discarded } = await setupPulled(t);
   // The SDK takes the opening prompt and two mid-turn sends into the CLI's

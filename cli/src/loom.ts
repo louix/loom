@@ -429,6 +429,7 @@ const main = async (): Promise<void> => {
       repositories: availableRepositories,
       includeEventLogInEditor: tui.includeEventLogInEditor,
       compat: tui.compat,
+      images: tui.images,
       logs: { daemon: paths.log, tui: paths.tuiLog },
       themeState: paths.tuiState,
       projectFiles: () => {

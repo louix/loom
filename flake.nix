@@ -58,7 +58,7 @@
       guestSource = nixpkgs.lib.fileset.toSource {
         root = ./.;
         fileset = nixpkgs.lib.fileset.unions (
-          [ ./deno.json ./deno.lock ./flake.nix ./flake.lock ./packaging/runtimes ]
+          [ ./deno.json ./deno.lock ./package.json ./flake.nix ./flake.lock ./packaging/runtimes ]
           ++ map (member: ./. + "/${member}/deno.json")
             (builtins.fromJSON (builtins.readFile ./deno.json)).workspace
           ++ map (file: ./. + "/${file}")
@@ -185,6 +185,8 @@
               root = ./.;
               fileset = pkgs.lib.fileset.unions [
                 ./deno.lock
+                # ink-picture and its Node type override live in the npm manifest.
+                ./package.json
                 (pkgs.lib.fileset.fileFilter (f: f.name == "deno.json") ./.)
               ];
             };
@@ -233,9 +235,9 @@
             outputHashMode = "recursive";
             outputHashAlgo = "sha256";
             outputHash = {
-              x86_64-linux = "sha256-JeIYu9P/hvvJsejrwiVw1nGobF5d9ZtHXZZv96Gopz0=";
-              aarch64-linux = "sha256-x3tIH+zPXoL1hmzWZ+qU0WhBx/tUQULdq3Iduu4gC60=";
-              aarch64-darwin = "sha256-MnOiIETqzptsamM3jNAyFXmTmvmhKVVGNUFM2TZCVRA=";
+              x86_64-linux = "sha256-zLOEzHopneWfJckul7h8i5eChW5AAuX9nv+5U+Qk4go=";
+              aarch64-linux = "sha256-FEVMKVE1i7zDaRz+mjKSuWNY3jmHYdIuRZyPSY/nuE8=";
+              aarch64-darwin = "sha256-gnbSYmHdUNxpIM1ObxxsJSI43ZYhEzkVp5LArg667n8=";
             }.${hostSystem};
           };
 

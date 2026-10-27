@@ -252,7 +252,7 @@ export type Action =
   | { t: "promptHistoryNav"; dir: -1 | 1 }
   | { t: "pushHistory"; text: string }
   | { t: "restoreHistory"; sessionId: string; texts: readonly string[] }
-  | { t: "recoverDraft"; text: string }
+  | { t: "recoverDraft"; text: string; images?: import("@loom/core/images").ImageAttachment[] }
   /** Close an open prompt, stashing (or dropping) a `new` / `send` draft. */
   | { t: "closePrompt"; saveDraft?: boolean }
   | { t: "cyclePlanMode" }
@@ -408,15 +408,29 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
       // with the stashed draft.
       if (p.histIdx === 0 && a.dir === 1) return s;
       const draft = p.histIdx === 0 ? p.buffer.text : p.draft;
+      const draftImages = p.histIdx === 0 ? (p.images ?? []) : (p.draftImages ?? []);
       const idx = Math.max(0, Math.min(history.length, p.histIdx + (a.dir === -1 ? 1 : -1)));
       const text = idx === 0 ? draft : recalled({ ...s.drafts, history }, idx);
-      return withPrompt(s, { ...p, histIdx: idx, draft, buffer: buffer(text) });
+      return withPrompt(s, {
+        ...p,
+        histIdx: idx,
+        draft,
+        draftImages,
+        images: idx === 0 ? draftImages : [],
+        buffer: buffer(text),
+      });
     }
 
     case "recoverDraft":
       return {
         ...s,
-        drafts: { ...s.drafts, last: [s.drafts.last, a.text].filter(Boolean).join("\n\n") },
+        drafts: {
+          ...s.drafts,
+          last: [s.drafts.last, a.text].filter(Boolean).join("\n\n"),
+          ...(a.images?.length
+            ? { lastImages: [...(s.drafts.lastImages ?? []), ...a.images] }
+            : {}),
+        },
       };
 
     case "restoreHistory": {
@@ -437,7 +451,16 @@ export const reduce = (s: TuiState, a: Action): TuiState => {
       // Only the two free-text prompts leave a recoverable draft behind.
       const draftable = p?.t === "new" || (p?.t === "session" && p.kind === "send");
       if (!draftable) return { ...s, overlay };
-      return { ...s, overlay, drafts: { ...s.drafts, last: a.saveDraft ? p.buffer.text : "" } };
+      const { lastImages: _, ...drafts } = s.drafts;
+      return {
+        ...s,
+        overlay,
+        drafts: {
+          ...drafts,
+          last: a.saveDraft ? p.buffer.text : "",
+          ...(a.saveDraft && p.images?.length ? { lastImages: p.images } : {}),
+        },
+      };
     }
 
     case "cyclePlanMode": {

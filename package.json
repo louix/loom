@@ -1,0 +1,9 @@
+{
+  "private": true,
+  "dependencies": {
+    "ink-picture": "2.1.0"
+  },
+  "overrides": {
+    "@types/node": "24.19.2"
+  }
+}

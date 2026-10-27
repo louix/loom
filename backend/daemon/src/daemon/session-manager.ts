@@ -56,6 +56,7 @@ import { deriveStatus } from "./status-machine.ts";
 import { RpcError } from "./rpc.ts";
 import { dequeueHints } from "./message-queue.ts";
 import type { LoomMessage } from "@loom/core/loom-message";
+import type { ImageAttachment, ImageData } from "@loom/core/images";
 import {
   holdCause,
   holdTicket,
@@ -79,6 +80,7 @@ import type {
 } from "../store/message-queue.ts";
 
 export interface ManagerHooks {
+  resolveImages?(images: ImageAttachment[]): ImageData[];
   /** Forward a normalized event to the push stream + persistence. */
   emitEvent(ev: HarnessEvent): void;
   /**
@@ -1018,6 +1020,7 @@ export class SessionManager {
     this.#warmPings.delete(id);
     try {
       await run.session.send(entry.text, {
+        ...(entry.images?.length ? { images: this.#hooks.resolveImages!(entry.images) } : {}),
         inputId: entry.id,
         midTurn: e.midTurn,
         ...(e.now ? { now: true } : {}),
@@ -1072,6 +1075,7 @@ export class SessionManager {
       sessionId: id,
       ts: entry.consumedAt ?? Date.now(),
       text: entry.text,
+      ...(entry.images?.length ? { images: entry.images } : {}),
       injected: midTurn,
       queueEntryId: entry.id,
       author: entry.author,
@@ -1099,6 +1103,7 @@ export class SessionManager {
       author: string;
       delivery: QueueEntry["delivery"];
       loomMessage?: LoomMessage;
+      images?: ImageAttachment[];
     },
     opts: { sender?: Sender } = {},
   ): {
@@ -1122,6 +1127,7 @@ export class SessionManager {
         text: e.text,
         author: e.author,
         delivery: e.delivery,
+        ...(e.images?.length ? { images: e.images } : {}),
         ...(e.loomMessage ? { loomMessage: e.loomMessage } : {}),
       },
       { head: lifts },
@@ -1281,7 +1287,10 @@ export class SessionManager {
         state: e.state,
         uncertain: e.uncertain,
         revision: e.revision,
-        preview: e.text.slice(0, QUEUE_PREVIEW_CHARS),
+        preview: (
+          e.text +
+          (e.images?.length ? ` [${e.images.length} image${e.images.length === 1 ? "" : "s"}]` : "")
+        ).slice(0, QUEUE_PREVIEW_CHARS),
         bytes: new TextEncoder().encode(e.text).length,
         dequeue: hints.get(e.id) ?? { t: "handed_over" },
       })),

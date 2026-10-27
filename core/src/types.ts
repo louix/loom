@@ -13,6 +13,7 @@ import {
 } from "./events.ts";
 import { sessionStateSchema } from "./session-state.ts";
 import type { SendOptions } from "./message-queue.ts";
+import { imageDataSchema, MAX_MESSAGE_IMAGES } from "./images.ts";
 
 export const sessionModeSchema = z.enum(["default", "plan", "acceptEdits", "auto"]);
 export type SessionMode = z.infer<typeof sessionModeSchema>;
@@ -155,6 +156,7 @@ export const taskOutputSchema = z.discriminatedUnion("t", [
 export type TaskOutput = z.infer<typeof taskOutputSchema>;
 
 export const createSessionOptionsSchema = z.object({
+  images: z.array(imageDataSchema).max(MAX_MESSAGE_IMAGES).optional(),
   /** Trusted workspace_start commands, consumed once per worker start, including resume. */
   initHooks: z
     .object({

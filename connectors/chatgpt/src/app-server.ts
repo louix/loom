@@ -7,6 +7,8 @@
  */
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { readImageFile } from "@loom/core/image-file";
+import { imageDataUrl, type ImageData } from "@loom/core/images";
 import { AsyncChannel } from "@loom/core/channel";
 import type { HarnessEvent, TokenUsage } from "@loom/core/events";
 import { stateIdle, stateRunning } from "@loom/core/session-state";
@@ -501,7 +503,8 @@ export class CodexAppServerSession implements AgentSession {
       if (!s.#threadId) throw new Error("codex app-server did not return a thread id");
       if (!opts.oneShot) s.#followRollout((started as any)?.thread?.path);
       if (!opts.oneShot) await s.#establishMode(started, true);
-      if (opts.prompt) await s.#startTurn(opts.prompt);
+      if (opts.prompt || opts.images?.length)
+        await s.#startTurn(opts.prompt, undefined, opts.images);
       else s.#idle();
       return s;
     } catch (err) {
@@ -678,7 +681,7 @@ export class CodexAppServerSession implements AgentSession {
         await this.#rpc.request("turn/steer", {
           threadId: this.#threadId,
           expectedTurnId: this.#turnId,
-          input: [textInput(input)],
+          input: imageInputs(input, opts.images),
           ...(id !== undefined ? { clientUserMessageId: id } : {}),
         });
       } catch (err) {
@@ -687,7 +690,7 @@ export class CodexAppServerSession implements AgentSession {
       }
       return;
     }
-    await this.#startTurn(input, id);
+    await this.#startTurn(input, id, opts.images);
     // The turn runs on it: taken up now.
     if (id !== undefined) this.#consumed(id, false);
   }
@@ -1030,7 +1033,11 @@ export class CodexAppServerSession implements AgentSession {
     this.#events.close();
   }
 
-  async #startTurn(input: string, clientUserMessageId?: string): Promise<void> {
+  async #startTurn(
+    input: string,
+    clientUserMessageId?: string,
+    images?: ImageData[],
+  ): Promise<void> {
     // A turn runs under the settings Codex holds when it starts, so it never
     // overtakes a mode change still waiting for its observation.
     await this.#modeChange;
@@ -1051,7 +1058,7 @@ export class CodexAppServerSession implements AgentSession {
     try {
       result = await this.#rpc.request("turn/start", {
         threadId: this.#threadId,
-        input: [textInput(input)],
+        input: imageInputs(input, images),
         ...(clientUserMessageId !== undefined ? { clientUserMessageId } : {}),
         model: this.#model || undefined,
         effort: this.#effort ?? undefined,
@@ -1650,7 +1657,23 @@ export class CodexAppServerSession implements AgentSession {
           ...((item["content"] as string[] | undefined) ?? []),
         ].join("\n"),
       });
-    else if (type === "commandExecution") {
+    else if (type === "imageView" && typeof item["path"] === "string") {
+      this.#events.push({
+        type: "tool_call",
+        sessionId: this.id,
+        ts: startedAt,
+        id,
+        name: "view_image",
+        input: { path: item["path"] },
+      });
+      let output: unknown = "[image unavailable]";
+      try {
+        output = [{ type: "image", ...readImageFile(item["path"]) }];
+      } catch {
+        /* A failed preview must not interrupt the agent's turn. */
+      }
+      this.#events.push({ type: "tool_result", sessionId: this.id, ts, id, ok: true, output });
+    } else if (type === "commandExecution") {
       const call = this.#toolCallOf(item, startedAt);
       if (!this.#runningTools.delete(id) && call) this.#events.push(call);
       this.#events.push({
@@ -1699,10 +1722,13 @@ export class CodexAppServerSession implements AgentSession {
       )
         return;
       const contentItems = (item["contentItems"] as Array<Record<string, unknown>> | null) ?? [];
-      const output = contentItems
+      const textOutput = contentItems
         .map((c) => (c["type"] === "inputText" ? String(c["text"] ?? "") : ""))
         .filter(Boolean)
         .join("\n");
+      const output = contentItems.some((c) => c["type"] === "inputImage")
+        ? contentItems
+        : textOutput;
       this.#events.push({
         type: "tool_call",
         sessionId: this.id,
@@ -1755,6 +1781,13 @@ const textInput = (text: string): Record<string, unknown> => ({
   text,
   text_elements: [],
 });
+const imageInputs = (
+  text: string,
+  images: readonly ImageData[] = [],
+): Record<string, unknown>[] => [
+  ...(text ? [textInput(text)] : []),
+  ...images.map((image) => ({ type: "image", url: imageDataUrl(image) })),
+];
 
 const MODE_NAMES: Record<CodexAgentMode, string> = {
   auto: "Auto",

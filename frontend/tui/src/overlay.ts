@@ -15,6 +15,7 @@ import { buffer, type Buffer } from "./editor.ts";
 
 /** The editor fields every prompt shares — the text and its ↑/↓ history walk. */
 export interface PromptEditor {
+  images?: import("@loom/core/images").ImageAttachment[];
   /** Feedback for non-chat actions and failures before a request was accepted. */
   feedback?: { pending: boolean; uncertain?: boolean; text: string };
   /** Bold caption above the input ("send", "deny req-3", a question header). */
@@ -27,6 +28,7 @@ export interface PromptEditor {
   history?: readonly string[];
   /** Live buffer text, stashed while browsing history. */
   draft: string;
+  draftImages?: import("@loom/core/images").ImageAttachment[];
 }
 
 /** What a `new` prompt will create its session with. `mode` is always known
@@ -273,11 +275,21 @@ export type PickerStep =
  */
 export type PickerDest =
   /** Steps that fold into the `new`-session prompt waiting behind them. */
-  | { t: "newSession"; settings: NewSessionSettings; draft: string }
+  | {
+      t: "newSession";
+      settings: NewSessionSettings;
+      draft: string;
+      images?: import("@loom/core/images").ImageAttachment[];
+    }
   /** Steps applied to a live session. `back` is the send prompt's text when the
    *  wizard was opened mid-message (`⌥m` / `⌥p` / `⌥t` from a send prompt), so
    *  the half-typed message comes back with the switch; null otherwise. */
-  | { t: "session"; sessionId: string; back: string | null }
+  | {
+      t: "session";
+      sessionId: string;
+      back: string | null;
+      images?: import("@loom/core/images").ImageAttachment[];
+    }
   /** Steps staged onto an open plan review's `impl`, for `f` (implement fresh). */
   | { t: "planImpl"; plan: PlanReview }
   /** `u` — rewind to a turn on this session. */
@@ -400,6 +412,7 @@ export type Overlay =
 
 /** A queue entry's full text as `session.queueEntry` returned it. */
 export interface QueueText {
+  images?: import("@loom/core/images").ImageAttachment[];
   id: string;
   revision: number;
   text: string;
@@ -432,12 +445,24 @@ export const heldPlan = (o: Overlay): PlanReview | null => {
 const closeTo = (d: PickerDest): Overlay => {
   switch (d.t) {
     case "newSession":
-      return { t: "prompt", prompt: newPrompt(d.settings, d.draft) };
+      return {
+        t: "prompt",
+        prompt: {
+          ...newPrompt(d.settings, d.draft),
+          ...(d.images?.length ? { images: d.images } : {}),
+        },
+      };
     case "session":
       // `back` is the send prompt's text when the wizard interrupted one.
       return d.back === null
         ? browse
-        : { t: "prompt", prompt: sessionPrompt("send", d.sessionId, "send", d.back) };
+        : {
+            t: "prompt",
+            prompt: {
+              ...sessionPrompt("send", d.sessionId, "send", d.back),
+              ...(d.images?.length ? { images: d.images } : {}),
+            },
+          };
     case "planImpl":
       return { t: "plan", plan: d.plan };
     default:

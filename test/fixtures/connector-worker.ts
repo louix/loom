@@ -5,18 +5,22 @@ import type {
   PlanDecision,
 } from "../../core/src/types.ts";
 import { serveWorker } from "../../runtime/src/worker/serve.ts";
+import type { SendOptions } from "../../core/src/message-queue.ts";
 
 class ScriptedSession extends FakeSession {
   #release: (() => void) | undefined;
-  override async send(input: string) {
-    await super.send(input);
+  override async send(input: string, options?: SendOptions) {
+    await super.send(input, options);
     if (input === "crash") Deno.exit(17);
     if (input === "wrong-session") {
       // Deliberately bypass FakeSession's normal binding for an adversarial probe.
       const event = { type: "assistant_text" as const, text: "bad", sessionId: "peer" };
       this.emit(event);
     } else if (input === "flood") {
-      for (let i = 0; i < 12; i++) this.emit({ type: "assistant_text", text: "x".repeat(600_000) });
+      for (let i = 0; i < 40; i++) this.emit({ type: "assistant_text", text: "x".repeat(600_000) });
+    } else if (input === "image-size") {
+      this.emit({ type: "assistant_text", text: String(options?.images?.[0]?.data.length) });
+      this.finishTurn();
     } else if (input === "question") {
       this.emit({ type: "question", id: "q", question: "Continue?" });
     } else if (input === "permission") {

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { imageAttachmentSchema, imageAttachmentsSchema, imageDataSchema } from "./images.ts";
 import { harnessEventSchema } from "./events.ts";
 import { historyCursorSchema, helloParamsSchema, workspaceModeSchema } from "./wire.ts";
 import { sessionModeSchema, planDecisionSchema, permissionDecisionSchema } from "./types.ts";
@@ -44,6 +45,8 @@ const plan = planFields
 
 /** Public RPC input contracts. Domain checks (busy, capabilities, ownership) stay in handlers. */
 export const rpcParamsSchemas = {
+  "image.upload": imageDataSchema.extend({ name: z.string().min(1).max(160) }),
+  "image.get": z.object({ id: imageAttachmentSchema.shape.id }),
   hello: helloParamsSchema.partial(),
   "tui.focus": z.object({ focused: z.boolean().nullable() }),
   ping: z.object({ nonce: z.unknown().optional() }),
@@ -78,40 +81,55 @@ export const rpcParamsSchemas = {
     cursor: historyCursorSchema.nullish(),
   }),
   "session.search": z.object({ query: text }),
-  "session.create": z.object({
-    prompt: z.string().trim().min(1),
-    provider: optionalText,
-    model: optionalText,
-    effort: optionalText,
-    parentId: optionalText,
-    mode: mode.optional().catch(undefined),
-    worktree: z.boolean().optional(),
-    isolation: z.enum(["vm", "none"]).optional(),
-    /** Overrides the configured workspace; `clone` needs VM isolation. A
-     *  `worktree` flag given with it must agree. */
-    workspace: workspaceModeSchema.optional(),
-    /** What the session branches from, kept for its life: a branch or a
-     *  commit. Default: `base_branch` when configured and present, else the
-     *  checked-out branch (HEAD's commit when detached). */
-    base: optionalText,
-    /** An agent profile (`agents.profiles`): its prompt, MCP servers, skills
-     *  and tools apply, and it fills provider / model / effort / mode left out. */
-    profile: optionalText,
-    by,
-  }),
+  "session.create": z
+    .object({
+      prompt: z.string().trim(),
+      images: imageAttachmentsSchema.optional(),
+      provider: optionalText,
+      model: optionalText,
+      effort: optionalText,
+      parentId: optionalText,
+      mode: mode.optional().catch(undefined),
+      worktree: z.boolean().optional(),
+      isolation: z.enum(["vm", "none"]).optional(),
+      /** Overrides the configured workspace; `clone` needs VM isolation. A
+       *  `worktree` flag given with it must agree. */
+      workspace: workspaceModeSchema.optional(),
+      /** What the session branches from, kept for its life: a branch or a
+       *  commit. Default: `base_branch` when configured and present, else the
+       *  checked-out branch (HEAD's commit when detached). */
+      base: optionalText,
+      /** An agent profile (`agents.profiles`): its prompt, MCP servers, skills
+       *  and tools apply, and it fills provider / model / effort / mode left out. */
+      profile: optionalText,
+      by,
+    })
+    .refine((p) => Boolean(p.prompt || p.images?.length), {
+      path: ["prompt"],
+      message: "prompt is required",
+    }),
   "session.baseChoices": empty,
   "session.resume": session,
   /** Queue a message. `entryId` (a client UUID) makes a retry idempotent;
    *  `delivery` defaults to the next tool boundary. */
-  "session.send": session.extend({
-    text,
-    entryId: z.uuid().optional(),
-    delivery: queueDeliverySchema.optional(),
-  }),
+  "session.send": session
+    .extend({
+      text: z.string(),
+      images: imageAttachmentsSchema.optional(),
+      entryId: z.uuid().optional(),
+      delivery: queueDeliverySchema.optional(),
+    })
+    .refine((p) => Boolean(p.text.trim() || p.images?.length), {
+      path: ["text"],
+      message: "message is required",
+    }),
   "session.queueEntry": session.extend({ entryId: text }),
   /** The end of a running background task's output (`TaskOutput`). */
   "session.taskOutput": session.extend({ taskId: z.string().min(1).max(256) }),
-  "session.queueEdit": queueEntry.extend({ text }),
+  "session.queueEdit": queueEntry.extend({
+    text: z.string(),
+    images: imageAttachmentsSchema.optional(),
+  }),
   "session.queueMove": queueEntry.extend({ direction: z.enum(["up", "down"]) }),
   "session.queueSetDelivery": queueEntry.extend({ delivery: queueDeliverySchema }),
   /** `confirm`: send an uncertain entry again, knowing it may duplicate. */

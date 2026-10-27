@@ -100,6 +100,8 @@ import {
 } from "../store/sessions.ts";
 import { ProviderMessageStore } from "../store/provider-messages.ts";
 import { SessionEventStore } from "../store/session-events.ts";
+import { ImageStore } from "../store/images.ts";
+import { splitImageContent, type ImageAttachment } from "@loom/core/images";
 import { MessageQueueStore, type QueueResult } from "../store/message-queue.ts";
 import { SessionSearchStore } from "../store/session-search.ts";
 import { estimateTokens, knownContextLimit } from "@loom/core/tokens";
@@ -328,6 +330,7 @@ export class Daemon {
   #sessionEvents: SessionEventStore;
   /** Every session's message queue (`docs/message-queue.md`). */
   #messageQueue: MessageQueueStore;
+  #images: ImageStore;
   #search: SessionSearchStore;
   #providerDefaults: ProviderDefaultStore;
   /**
@@ -457,6 +460,7 @@ export class Daemon {
     this.#checkpoints = new CheckpointStore(this.#db);
     this.#pmsgs = new ProviderMessageStore(this.#db);
     this.#sessionEvents = new SessionEventStore(this.#db);
+    this.#images = new ImageStore(this.#db);
     this.#messageQueue = new MessageQueueStore(this.#db);
     this.#search = new SessionSearchStore(this.#db);
     this.#providerDefaults = new ProviderDefaultStore(this.#db);
@@ -689,6 +693,7 @@ export class Daemon {
         if (!this.#stopping) void this.#agents.call(id, call);
       },
       queue: this.#messageQueue,
+      resolveImages: (images) => this.#images.resolve(images),
       lifecycle: (id) => this.#lifecycles.has(id),
       log: this.#log.child("sessions"),
     });
@@ -1001,6 +1006,11 @@ export class Daemon {
 
   emitEvent(event: HarnessEvent): number {
     if (this.#stopping) return this.#eventSeq;
+    if (event.type === "tool_result") {
+      const content = splitImageContent(event.output);
+      const images = content.images.map((image) => this.#images.put(image));
+      event = { ...event, output: content.output, ...(images.length ? { images } : {}) };
+    }
     // Persist *before* the frame goes out. The push carries the row's durable
     // id, so a client that reacts to it — by paging, or by merging it against a
     // page already in flight — has to be able to read that row back the moment
@@ -2201,6 +2211,7 @@ export class Daemon {
    */
   async #startSession(o: {
     prompt: string;
+    images?: ImageAttachment[];
     providerId: string;
     model: string | null;
     effort: string | null;
@@ -2288,7 +2299,7 @@ export class Daemon {
         effort: o.effort,
         mode: o.mode,
         parentId: o.parentId,
-        title: (o.title ?? o.prompt).slice(0, 200),
+        title: (o.title ?? (o.prompt || "Image message")).slice(0, 200),
         worktree: null,
         branch: null,
         baseBranch: from ?? legacyBaseBranch(this.config),
@@ -2318,6 +2329,7 @@ export class Daemon {
         sessionId: id,
         ts: Date.now(),
         text: o.prompt,
+        ...(o.images?.length ? { images: o.images } : {}),
         injected: false,
         // An agent's task is its supervisor's message.
         ...(o.supervisorId ? { author: `supervisor:${o.supervisorId}` } : {}),
@@ -2404,6 +2416,7 @@ export class Daemon {
           sessionId: id,
           cwd,
           prompt: o.prompt,
+          ...(o.images?.length ? { images: this.#images.resolve(o.images) } : {}),
           ...(o.promptByHuman ? { promptByHuman: true } : {}),
           mode: o.mode,
           ...agent,
@@ -4157,7 +4170,7 @@ export class Daemon {
     author: string,
     delivery: QueueDelivery,
     requestedId?: string,
-    opts: { sender?: Sender; loomMessage?: LoomMessage } = {},
+    opts: { sender?: Sender; loomMessage?: LoomMessage; images?: ImageAttachment[] } = {},
   ): Promise<{ entryId: string; state: string; hold: QueueHoldCause | null; waited: boolean }> {
     const entryId = requestedId ?? randomUUID();
     this.#registry.mustGet(id);
@@ -4170,6 +4183,7 @@ export class Daemon {
         author,
         delivery,
         ...(opts.loomMessage ? { loomMessage: opts.loomMessage } : {}),
+        ...(opts.images?.length ? { images: opts.images } : {}),
       },
       opts,
     );
@@ -4426,6 +4440,8 @@ export class Daemon {
     const d = this.#dispatcher;
 
     d.register("hello", (params, ctx) => this.#hHello(params, ctx));
+    d.register("image.upload", (params) => this.#images.put(params, params.name));
+    d.register("image.get", (params) => this.#images.get(params.id));
     d.register("tui.focus", (params, ctx) => {
       ctx.conn.tuiFocused = params.focused;
       return { ok: true };
@@ -4695,6 +4711,9 @@ export class Daemon {
 
     d.register("session.create", async (params) => {
       const p = params;
+      if (!p.prompt.trim() && !p.images?.length)
+        throw new RpcError("bad_request", "prompt is required");
+      this.#images.resolve(p.images);
       const prompt = p.prompt;
       // A profile the user picked: what the client left out comes from it,
       // and its prompt and tools follow the session through `#agentPlan`.
@@ -4764,6 +4783,7 @@ export class Daemon {
 
       return this.#startSession({
         prompt,
+        ...(p.images?.length ? { images: p.images } : {}),
         providerId,
         model,
         effort,
@@ -4799,12 +4819,16 @@ export class Daemon {
     // `user_message` only once the agent has taken it, so nothing is emitted
     // here — a failure emits only the `error`.
     d.register("session.send", async (params) => {
+      if (!params.text.trim() && !params.images?.length)
+        throw new RpcError("bad_request", "message is required");
+      this.#images.resolve(params.images);
       const sent = await this.#enqueueMessage(
         params.id,
         params.text,
         params.by ?? "unknown",
         params.delivery ?? "next_boundary",
         params.entryId,
+        params.images?.length ? { images: params.images } : {},
       );
       return { ...this.#enrich(this.#registry.mustGet(params.id), false), ...sent };
     });
@@ -4844,7 +4868,14 @@ export class Daemon {
 
     d.register("session.queueEdit", (params) => {
       this.#registry.mustGet(params.id);
-      return queued(params.id, this.#messageQueue.edit(params.id, target(params), params.text));
+      const images = params.images ?? this.#messageQueue.entry(params.id, params.entryId)?.images;
+      if (!params.text.trim() && !images?.length)
+        throw new RpcError("bad_request", "message is required");
+      this.#images.resolve(images);
+      return queued(
+        params.id,
+        this.#messageQueue.edit(params.id, target(params), params.text, images),
+      );
     });
 
     d.register("session.queueMove", (params) => {

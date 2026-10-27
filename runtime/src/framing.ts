@@ -1,6 +1,6 @@
 /** Worker-independent NDJSON framing, shared by VM supervisors and the worker protocol. */
-// Equal to core/src/worker.ts's limit, which the worker protocol tests exercise through this module.
-export const MAX_FRAME_BYTES = 1024 * 1024;
+import { MAX_FRAME_BYTES, MAX_BUFFERED_BYTES } from "../../core/src/frame-limits.ts";
+export { MAX_FRAME_BYTES } from "../../core/src/frame-limits.ts";
 
 /**
  * Byte-bounded NDJSON. Partial/invalid UTF-8 and EOF in a frame fail closed.
@@ -61,7 +61,7 @@ export class FrameWriter {
   }
   send(frame: unknown): Promise<void> {
     const bytes = new TextEncoder().encode(JSON.stringify(frame) + "\n");
-    if (bytes.length > MAX_FRAME_BYTES || this.#bytes + bytes.length > 4 * MAX_FRAME_BYTES) {
+    if (bytes.length > MAX_FRAME_BYTES || this.#bytes + bytes.length > MAX_BUFFERED_BYTES) {
       return Promise.reject(new Error("worker output overflow"));
     }
     this.#bytes += bytes.length;

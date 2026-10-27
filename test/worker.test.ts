@@ -626,6 +626,24 @@ test(
   },
 );
 
+test("worker transport carries image input larger than the former text frame bound", async () => {
+  const provider = await WorkerProvider.create("fake", scripted);
+  const s = await provider.createSession(opts("image-input"));
+  const events = s.events();
+  try {
+    const data = "a".repeat(2 * 1024 * 1024);
+    await s.send("image-size", { images: [{ mimeType: "image/png", data }] });
+    for await (const event of events) {
+      if (event.type === "assistant_text") {
+        assert.equal(event.text, String(data.length));
+        break;
+      }
+    }
+  } finally {
+    await s.close();
+  }
+});
+
 test(
   "worker rejects cross-session creation and a second session on its connection",
   { timeout: 15_000 },
