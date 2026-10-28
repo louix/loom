@@ -189,12 +189,14 @@ failing `workspace_start` hook to the agent; the report notes this. Old
 providers map to no launch profile: their semantics (Loom workers, credentials,
 models) do not match a plain entrypoint.
 
-## Host TCP ports
+## TCP port forwarding
 
-The trusted `environment.jsonc` file supports `access.network.host_ports: [5037]`
-globally and under each `repos[]` entry. A repo list replaces the global list;
-an empty list disables inherited forwards. Project `loom.json` files cannot
-request or grant host ports.
+The trusted `environment.jsonc` file supports `access.network.host_ports` for
+guest-to-host access and `access.network.guest_ports` for host-to-guest access.
+Both accept port numbers or `{ "host": 8080, "guest": 3000 }` mappings, globally
+and under each `repos[]` entry. Each repo list replaces the corresponding global
+list; an empty list disables inherited forwards. Project `loom.json` files
+cannot request or grant either direction.
 
 ```json
 {
@@ -202,14 +204,16 @@ request or grant host ports.
   "repos": [
     {
       "path": "/absolute/path/to/android-project",
-      "access": { "network": { "host_ports": [5037] } }
+      "access": {
+        "network": { "host_ports": [5037], "guest_ports": [{ "host": 8080, "guest": 3000 }] }
+      }
     }
   ]
 }
 ```
 
-Each port forwards guest IPv4 loopback to the same port on host IPv4 loopback.
-This works for raw TCP clients such as ADB without an HTTP proxy adapter.
-See [host TCP forwarding](session-environments.md#forwarding-host-tcp-ports)
-for ADB setup, reserved ports and runtime requirements. `loom config convert`
-preserves these settings when converting from Loom's `config.jsonc`.
+Both endpoints use IPv4 loopback and carry raw TCP, including ADB and web
+servers. Numbers mean the same port on both sides; named fields remap ports.
+See [TCP forwarding](session-environments.md#forwarding-host-tcp-ports)
+for examples, reserved ports, conflicts and runtime requirements. `loom config convert`
+preserves both settings when converting from Loom's `config.jsonc`.

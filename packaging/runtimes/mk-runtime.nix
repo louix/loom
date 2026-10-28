@@ -40,7 +40,8 @@ in pkgs.runCommand "loom-${executable}-runtime" {} ''
     echo 7 > $out/session-environment-version
     # Guests can run without a connector worker (runtime/src/session-vm/environment-protocol.ts),
     # Since 2: connector executions (guest-worker.ts). Since 3: host TCP port listeners.
-    echo 3 > $out/standalone-environment-version
+    # Since 4: host/guest TCP forwards with port remapping.
+    echo 4 > $out/standalone-environment-version
   ''}
   ${pkgs.lib.optionalString (sessionVersion != null) "echo ${toString sessionVersion} > $out/claude-session-version"}
   cp ${manifest} $out/manifest.json

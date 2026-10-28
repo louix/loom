@@ -1,3 +1,4 @@
+import type { PortForwardInput } from "./host-ports.ts";
 import { z } from "zod";
 import type { VmTermination } from "./vm-termination.ts";
 import type { SessionEnvironment } from "./session-environment.ts";
@@ -87,7 +88,8 @@ export interface ConnectorConfig extends ConnectorWireConfig {
     smolvm: string;
     repoRoot: string;
     extraAllowedHosts?: string[];
-    hostPorts?: number[];
+    hostPorts?: PortForwardInput[];
+    guestPorts?: PortForwardInput[];
     environment?: SessionEnvironment;
   };
 }

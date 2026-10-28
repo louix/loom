@@ -11,7 +11,7 @@
  */
 import { isAbsolute } from "node:path";
 import { z } from "zod";
-import { hostPortsSchema } from "../../core/src/host-ports.ts";
+import { hostPortsSchema, guestPortsSchema } from "../../core/src/host-ports.ts";
 import { executionOptionsSchema } from "../../core/src/execution.ts";
 import {
   extraHostsSchema,
@@ -70,7 +70,12 @@ const network = z.strictObject({
 export type EnvironmentNetwork = z.output<typeof network>;
 const hostAccess = z
   .strictObject({
-    network: network.extend({ host_ports: hostPortsSchema.unwrap().optional() }).optional(),
+    network: network
+      .extend({
+        host_ports: hostPortsSchema.unwrap().optional(),
+        guest_ports: guestPortsSchema.unwrap().optional(),
+      })
+      .optional(),
   })
   .describe("Network the host applies directly, without a project request.");
 

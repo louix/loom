@@ -45,6 +45,7 @@ type InspectionStartOptions = Pick<
   providerHosts?: never;
   extraAllowedHosts?: never;
   hostPorts?: never;
+  guestPorts?: never;
   gitIdentity?: never;
   startHooks?: never;
 };
@@ -74,6 +75,7 @@ export const createVmEnvironmentLauncher =
       options.providerHosts?.length ||
       options.extraAllowedHosts?.length ||
       options.hostPorts?.length ||
+      options.guestPorts?.length ||
       startHooks.length ||
       environmentEnabled(options.environment);
     if (mode === "inspection" && (!options.clone || inspectionGrants))

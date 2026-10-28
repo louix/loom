@@ -2,7 +2,7 @@ import { z } from "zod";
 import { workerFailureSchema } from "./worker-failure.ts";
 
 export const relayDiagnosticSchema = z.object({
-  kind: z.enum(["egress", "mcp", "git", "host_port", "unknown"]),
+  kind: z.enum(["egress", "mcp", "git", "host_port", "guest_port", "unknown"]),
   index: z.int().min(0).max(65535),
   event: z.enum([
     "accept_error",

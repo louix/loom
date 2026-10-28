@@ -528,13 +528,66 @@
               "properties": {
                 "host_ports": {
                   "default": [],
-                  "description": "TCP ports forwarded from guest 127.0.0.1 to the same port on host 127.0.0.1. Repo lists replace global lists.",
+                  "description": "Guest-to-host loopback TCP forwards: a port number or { host, guest }. Repo lists replace global lists.",
                   "maxItems": 64,
                   "type": "array",
                   "items": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 65535
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 65535
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "host": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 65535
+                          },
+                          "guest": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 65535
+                          }
+                        },
+                        "required": ["host", "guest"],
+                        "additionalProperties": false
+                      }
+                    ]
+                  }
+                },
+                "guest_ports": {
+                  "default": [],
+                  "description": "Host-to-guest loopback TCP forwards: a port number or { host, guest }. Repo lists replace global lists.",
+                  "maxItems": 64,
+                  "type": "array",
+                  "items": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 65535
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "host": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 65535
+                          },
+                          "guest": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 65535
+                          }
+                        },
+                        "required": ["host", "guest"],
+                        "additionalProperties": false
+                      }
+                    ]
                   }
                 },
                 "allowed_hosts": {
@@ -2107,13 +2160,66 @@
                     "properties": {
                       "host_ports": {
                         "default": [],
-                        "description": "TCP ports forwarded from guest 127.0.0.1 to the same port on host 127.0.0.1. Repo lists replace global lists.",
+                        "description": "Guest-to-host loopback TCP forwards: a port number or { host, guest }. Repo lists replace global lists.",
                         "maxItems": 64,
                         "type": "array",
                         "items": {
-                          "type": "integer",
-                          "minimum": 1,
-                          "maximum": 65535
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 65535
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "host": {
+                                  "type": "integer",
+                                  "minimum": 1,
+                                  "maximum": 65535
+                                },
+                                "guest": {
+                                  "type": "integer",
+                                  "minimum": 1,
+                                  "maximum": 65535
+                                }
+                              },
+                              "required": ["host", "guest"],
+                              "additionalProperties": false
+                            }
+                          ]
+                        }
+                      },
+                      "guest_ports": {
+                        "default": [],
+                        "description": "Host-to-guest loopback TCP forwards: a port number or { host, guest }. Repo lists replace global lists.",
+                        "maxItems": 64,
+                        "type": "array",
+                        "items": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 65535
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "host": {
+                                  "type": "integer",
+                                  "minimum": 1,
+                                  "maximum": 65535
+                                },
+                                "guest": {
+                                  "type": "integer",
+                                  "minimum": 1,
+                                  "maximum": 65535
+                                }
+                              },
+                              "required": ["host", "guest"],
+                              "additionalProperties": false
+                            }
+                          ]
                         }
                       },
                       "allowed_hosts": {

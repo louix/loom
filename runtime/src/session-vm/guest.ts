@@ -1,3 +1,5 @@
+import type { PortForward } from "../../../core/src/host-ports.ts";
+import { startLoopbackRelay } from "./mcp-relay.ts";
 /** Guest-only bootstrap: local proxy adapter, isolated auth, then the normal worker. */
 import { runWorkspacePrepare } from "../../../core/src/workspace-prepare.ts";
 import { sessionAuth } from "./auth.ts";
@@ -102,19 +104,29 @@ const listener = Deno.listen({ hostname: "127.0.0.1", port: 3128 });
 void startGuestRelay(listener, "/run/loom/egress.sock", EGRESS_CONNECTION_LIMIT, {
   kind: "egress",
 }).finished;
-const hostPorts: number[] = JSON.parse(
+const hostPorts: Array<number | PortForward> = JSON.parse(
   await Deno.readTextFile("/run/loom/private/host-ports.json").catch((error) => {
     if (error instanceof Deno.errors.NotFound) return "[]";
     throw error;
   }),
 );
-for (const port of hostPorts) {
+for (const entry of hostPorts) {
+  // Older host launchers wrote same-port integers.
+  const port = typeof entry === "number" ? entry : entry.guest;
   const endpoint = Deno.listen({ hostname: "127.0.0.1", port });
   void startGuestRelay(endpoint, `/run/loom/host-port-${port}.sock`, MCP_CONNECTION_LIMIT, {
     kind: "host_port",
     index: port,
   }).finished;
 }
+const guestPorts: PortForward[] = JSON.parse(
+  await Deno.readTextFile("/run/loom/private/guest-ports.json").catch((error) => {
+    if (error instanceof Deno.errors.NotFound) return "[]";
+    throw error;
+  }),
+);
+for (const { host, guest } of guestPorts)
+  startLoopbackRelay(`/run/loom/guest-port-${host}.sock`, guest);
 const mcp: Array<{ guestPort: number }> = JSON.parse(
   await Deno.readTextFile("/run/loom/private/mcp.json"),
 );

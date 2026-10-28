@@ -1,4 +1,5 @@
-import { normalizeHostPorts } from "../../../core/src/host-ports.ts";
+import type { PortForwardInput } from "../../../core/src/host-ports.ts";
+import { normalizePortForwards } from "../../../core/src/host-ports.ts";
 import {
   environmentEnabled,
   type SessionEnvironment,
@@ -58,7 +59,8 @@ export interface SessionVmOptions {
     ): Promise<() => Promise<void>>;
   };
   extraAllowedHosts?: string[];
-  hostPorts?: number[];
+  hostPorts?: PortForwardInput[];
+  guestPorts?: PortForwardInput[];
   environment?: SessionEnvironment;
   providerHosts?: string[];
   sessionDirectory?: string;
@@ -94,6 +96,7 @@ export const defaultProviderHosts = ["api.anthropic.com"];
  * Standalone environment protocol of a session runtime; 0 when absent.
  * 1: environment guests report readiness. 2: they also run guest-worker.ts executions.
  * 3: guest loopback listeners for explicit host TCP port forwards.
+ * 4: bidirectional TCP forwards with explicit host/guest port mappings.
  */
 export const environmentRuntimeVersion = async (artifact: string): Promise<number> => {
   try {
@@ -117,8 +120,9 @@ const launchSessionVmOwned = async (
   }
 > => {
   const extraAllowedHosts = normalizeExtraHosts(options.extraAllowedHosts);
-  const hostPorts = normalizeHostPorts(
+  const { hostPorts, guestPorts } = normalizePortForwards(
     options.hostPorts,
+    options.guestPorts,
     options.mcpRelays?.map((r) => r.guestPort),
   );
   if (
@@ -135,10 +139,8 @@ const launchSessionVmOwned = async (
     throw new Error("Session VMs launch an environment or repo preparation");
   const artifact = await Deno.realPath(options.artifact);
   const smolvm = await Deno.realPath(options.smolvm);
-  if (hostPorts.length && (await environmentRuntimeVersion(artifact)) < 3)
-    throw new Error(
-      "Host port forwarding requires a rebuilt session runtime; run loom runtime update",
-    );
+  if ((hostPorts.length || guestPorts.length) && (await environmentRuntimeVersion(artifact)) < 4)
+    throw new Error("Port forwarding requires a rebuilt session runtime; run loom runtime update");
   const auth = sessionAuth(
     options.authOwner ? await options.authOwner.current() : (options.auth ?? {}),
   );
@@ -248,6 +250,7 @@ const launchSessionVmOwned = async (
     ...(sessionDirectory ? { sessionDirectory } : {}),
     ...(options.mcpRelays ? { mcpRelays: options.mcpRelays } : {}),
     ...(hostPorts.length ? { hostPorts } : {}),
+    ...(guestPorts.length ? { guestPorts } : {}),
     ...(git ? { git } : {}),
     ...(options.gitIdentity && !options.preparationOnly
       ? { gitIdentity: options.gitIdentity }

@@ -505,10 +505,38 @@ host loopback services inside session VMs. Each integer forwards guest
 }
 ```
 
-Put the same `session.isolation.network.host_ports` setting at the top level for all
-repositories. Repo lists replace the global list; `[]` disables inherited
-forwards. The default is empty. Ports must be integers from 1 to 65535; Loom's
-proxy (3128), Git relay (3129), and selected MCP listener ports cannot be forwarded.
+Both directions support remapping with named `host` and `guest` ports:
+
+```json
+{
+  "session": {
+    "isolation": {
+      "network": {
+        "host_ports": [5037, { "host": 5432, "guest": 15432 }],
+        "guest_ports": [{ "guest": 3000, "host": 8080 }]
+      }
+    }
+  }
+}
+```
+
+`host_ports` makes a host service reachable from the guest: guest
+`127.0.0.1:15432` connects to host `127.0.0.1:5432`.
+`guest_ports` publishes a VM service on the host: run a web server on guest
+`127.0.0.1:3000` and open `http://127.0.0.1:8080` on the host.
+An integer is shorthand for the same port on both sides.
+
+Put these settings at the top level for all repositories, or under a `repos[]`
+entry for one repository. Each repo list replaces its corresponding global list
+independently; `[]` disables inherited forwards. Both default to empty.
+Ports must be integers from 1 to 65535. Duplicate identical mappings are merged;
+different targets for one listener are rejected. The guest ends cannot use
+Loom's proxy (3128), Git relay (3129), or selected MCP listener ports. Opposite
+directions cannot target one another's listeners.
+
+A published host port must be free. Multiple VMs can each run a server on guest
+port 3000, but need different host ports, such as 8080 and 8081. If a host port
+is occupied or unavailable, startup fails and releases any listeners it opened.
 This is separate from `network.allowed_hosts`, which still grants exact HTTPS
 destinations on port 443.
 
@@ -530,6 +558,7 @@ Verify the transport in a real VM with a runtime built from this checkout:
 deno run -A scripts/test-host-ports-vm.ts /path/to/session-runtime /path/to/smolvm
 ```
 
-The test uses a temporary loopback server speaking ADB framing, checks an
-ungranted port is refused, then checks that a new VM without the grant cannot
-reach the forwarded port. It does not require an Android device or ADB server.
+The test exchanges ADB framing through a remapped host port, publishes a guest
+loopback web server on a different host port, checks port conflicts and denied
+access, and verifies shutdown releases the host listener. It does not require
+an Android device or ADB server.

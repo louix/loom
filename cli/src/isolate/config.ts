@@ -84,7 +84,8 @@ export const formatConfig = (config: IsolateConfig): string => {
       `  memory          ${environment.memoryMiB} MiB (${sources.memory_mib})`,
       config.network.length ? "network" : "network  denied",
       ...config.network.map((entry) => `  ${entry.host} (${entry.source})`),
-      `host ports      ${config.hostPorts.length ? config.hostPorts.join(", ") : "none"} (guest loopback → host loopback)`,
+      `host ports      ${config.hostPorts.length ? config.hostPorts.map((p) => `${p.guest} → ${p.host}`).join(", ") : "none"} (guest loopback → host loopback)`,
+      `guest ports     ${config.guestPorts.length ? config.guestPorts.map((p) => `${p.host} → ${p.guest}`).join(", ") : "none"} (host loopback → guest loopback)`,
       ...hooks("prepare"),
       ...hooks("start"),
       ...(config.unsupported.length

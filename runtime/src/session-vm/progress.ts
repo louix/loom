@@ -1,3 +1,4 @@
+import { GuestPortBindError } from "../../../core/src/host-ports.ts";
 /** Fixed startup messages shared by the host supervisor and guest bootstrap. */
 import { vmTerminationSchema, type VmTermination } from "../../../core/src/vm-termination.ts";
 import { workerFailureSchema, type WorkerFailure } from "../../../core/src/worker-failure.ts";
@@ -31,6 +32,8 @@ export const startupStages = {
 export type StartupStage = keyof typeof startupStages;
 export const startupFailures = {
   files: fileLimitDiagnostic,
+  guestPort:
+    "Could not bind a network.guest_ports host listener: a port is occupied or unavailable. Choose a different host port.",
   devices:
     "The VM backend ran out of virtual devices (IRQs). Use a worktree inside the repo to reduce filesystem mounts.",
   space: "The VM backend ran out of disk space. Free space on the host before retrying.",
@@ -48,6 +51,7 @@ export const classifyStartupFailure = (error: unknown): StartupFailure => {
   const diagnostic = environmentDiagnosticOf(error);
   if (diagnostic) return diagnostic;
   if (isFileLimitError(error)) return "files";
+  if (error instanceof GuestPortBindError) return "guestPort";
   if (/no more IRQs|too many.*devices/i.test(message)) return "devices";
   if (/no space left|ENOSPC/i.test(message)) return "space";
   if (/permission denied|EACCES|operation not permitted/i.test(message)) {

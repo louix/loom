@@ -292,6 +292,7 @@ const withEnvironment = async (
           activity: () => options.activity,
           environment: config.environment,
           hostPorts: config.hostPorts,
+          guestPorts: config.guestPorts,
           ...(options.startHooks && config.start.length ? { startHooks: config.start } : {}),
           ...(options.extraAllowedHosts?.length
             ? { extraAllowedHosts: options.extraAllowedHosts }

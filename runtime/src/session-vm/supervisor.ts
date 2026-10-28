@@ -1,3 +1,4 @@
+import { startPublishedPort } from "./publish-port.ts";
 import {
   sessionStartupTimeout,
   type SessionEnvironment,
@@ -28,7 +29,7 @@ import {
 } from "./persistence.ts";
 import type { RecoverableBinding } from "./recovery.ts";
 import { startMcpRelay, startLoopbackRelay } from "./mcp-relay.ts";
-import { normalizeHostPorts } from "../../../core/src/host-ports.ts";
+import { normalizePortForwards } from "../../../core/src/host-ports.ts";
 import type { RelayDiagnostic } from "../../../core/src/relay-diagnostic.ts";
 import { startGitRelay } from "./git-relay.ts";
 import { readFrames } from "../framing.ts";
@@ -260,15 +261,27 @@ try {
     );
   if (binding.privateWorkspace)
     await Deno.writeTextFile(join(binding.state, "private/workspace"), "/workspace");
-  const hostPorts = normalizeHostPorts(
+  const { hostPorts, guestPorts } = normalizePortForwards(
     binding.hostPorts,
+    binding.guestPorts,
     binding.mcpRelays?.map((r) => r.guestPort),
   );
-  for (const port of hostPorts) {
-    const socket = join(binding.state, `host-port-${port}.sock`);
-    relays.push(startLoopbackRelay(socket, port));
-    create.push("--mount-socket", `${socket}:/run/loom/host-port-${port}.sock`);
+  for (const { host, guest } of hostPorts) {
+    const socket = join(binding.state, `host-port-${guest}.sock`);
+    relays.push(startLoopbackRelay(socket, host));
+    create.push("--mount-socket", `${socket}:/run/loom/host-port-${guest}.sock`);
   }
+  for (const { host } of guestPorts) {
+    const socket = join(binding.state, `guest-port-${host}.sock`);
+    const relay = startPublishedPort(socket, host);
+    relays.push(relay);
+    void relay.finished.catch(() => stop("supervisor_error"));
+    create.push("--expose-socket", `/run/loom/guest-port-${host}.sock:${socket}`);
+  }
+  await Deno.writeTextFile(
+    join(binding.state, "private/guest-ports.json"),
+    JSON.stringify(guestPorts),
+  );
   await Deno.writeTextFile(
     join(binding.state, "private/host-ports.json"),
     JSON.stringify(hostPorts),

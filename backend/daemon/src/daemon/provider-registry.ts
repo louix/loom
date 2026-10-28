@@ -264,6 +264,7 @@ export class ProviderRegistry {
         repoRoot: this.#repoRoot,
         extraAllowedHosts: this.#config.isolation.extraAllowedHosts,
         hostPorts: this.#config.isolation.hostPorts ?? [],
+        guestPorts: this.#config.isolation.guestPorts ?? [],
         ...(this.#config.isolation.environment
           ? { environment: this.#config.isolation.environment }
           : {}),

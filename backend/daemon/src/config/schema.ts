@@ -1,6 +1,6 @@
 /** Config syntax and defaults. Filesystem and provider resolution belong in config.ts. */
 import { z } from "zod";
-import { hostPortsSchema } from "../../../../core/src/host-ports.ts";
+import { hostPortsSchema, guestPortsSchema } from "../../../../core/src/host-ports.ts";
 import {
   mcpSourceSchema,
   mcpGrantsSchema,
@@ -482,7 +482,10 @@ export const createConfigSchema = (d: LoomConfig, events: readonly HookEvent[]) 
           codex: deprecated("Replaced by session.isolation.runtimes.codex."),
           network: section({
             host_ports: hostPortsSchema.describe(
-              "TCP ports forwarded from guest 127.0.0.1 to the same port on host 127.0.0.1. Repo lists replace global lists.",
+              "Guest-to-host loopback TCP forwards: a port number or { host, guest }. Repo lists replace global lists.",
+            ),
+            guest_ports: guestPortsSchema.describe(
+              "Host-to-guest loopback TCP forwards: a port number or { host, guest }. Repo lists replace global lists.",
             ),
             allowed_hosts: extraHostsSchema.describe(
               "Exact DNS names VM sessions may reach over HTTPS (port 443); no URLs, IPs or wildcards.",

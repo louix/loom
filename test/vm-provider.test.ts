@@ -95,7 +95,8 @@ for (const kind of ["claude", "codex", "aisdk"] as const) {
             artifact: root,
             smolvm: Deno.execPath(),
             extraAllowedHosts: ["registry.npmjs.org"],
-            hostPorts: [5037],
+            hostPorts: [{ host: 5037, guest: 15037 }],
+            guestPorts: [{ host: 8080, guest: 3000 }],
           },
           cliPath: Deno.execPath(),
           codexCliPath: Deno.execPath(),
@@ -175,7 +176,8 @@ for (const kind of ["claude", "codex", "aisdk"] as const) {
       assert.equal(launches[0]!.projectDir, options.projectDir);
       assert.ok(!requests.join("").includes("committer@example.com"), "identity stays host-side");
       assert.deepEqual(launches[0]!.extraAllowedHosts, ["registry.npmjs.org"]);
-      assert.deepEqual(launches[0]!.hostPorts, [5037]);
+      assert.deepEqual(launches[0]!.hostPorts, [{ host: 5037, guest: 15037 }]);
+      assert.deepEqual(launches[0]!.guestPorts, [{ host: 8080, guest: 3000 }]);
       assert.equal(
         !!launches[0]!.authOwner,
         kind === "codex" ||
