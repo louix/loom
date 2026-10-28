@@ -11,6 +11,7 @@
 import type { HarnessEvent } from "@loom/core/events";
 import type { HistoryPage, TranscriptEntry, TranscriptId } from "@loom/core/wire";
 import type { Db } from "./db.ts";
+import { ImageStore } from "./images.ts";
 
 interface Row {
   id: number;
@@ -22,9 +23,18 @@ const DEFAULT_LIMIT = 500;
 
 export class SessionEventStore {
   #db: Db;
+  #images: ImageStore;
 
   constructor(db: Db) {
     this.#db = db;
+    this.#images = new ImageStore(db);
+  }
+
+  #entry(row: Row): TranscriptEntry {
+    const event = JSON.parse(row.payload) as HarnessEvent;
+    if ((event.type === "tool_result" || event.type === "user_message") && event.images?.length)
+      event.images = event.images.map((image) => this.#images.describe(image));
+    return { id: row.id, event };
   }
 
   /** Record one event and return the durable id the insert assigned it. */
@@ -43,7 +53,7 @@ export class SessionEventStore {
         "SELECT id, payload FROM session_events WHERE session_id = ? AND id > ? ORDER BY id LIMIT ?",
       )
       .all(sessionId, afterId, limit) as unknown as Row[];
-    return rows.map((r) => ({ id: r.id, event: JSON.parse(r.payload) as HarnessEvent }));
+    return rows.map((r) => this.#entry(r));
   }
 
   /** Message recall is independent of intervening tool traffic. Newest 50,
@@ -84,9 +94,7 @@ export class SessionEventStore {
           .all(sessionId, opts.olderThan, limit + 1)) as unknown as Row[];
     const hasOlder = rows.length > limit;
     const kept = hasOlder ? rows.slice(0, limit) : rows;
-    const items: TranscriptEntry[] = kept
-      .reverse()
-      .map((r) => ({ id: r.id, event: JSON.parse(r.payload) as HarnessEvent }));
+    const items: TranscriptEntry[] = kept.reverse().map((r) => this.#entry(r));
     const oldest = items[0];
     return {
       items,

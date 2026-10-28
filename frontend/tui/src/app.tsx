@@ -171,6 +171,7 @@ export const App = ({
         (view.ui.overlay.t === "browse" || promptOnPane(openPrompt(view.ui.overlay)))
       }
       request={imageRequest}
+      onCellRatio={handle.imageCellRatio.set}
     >
       <PaletteContext.Provider value={PALETTES[view.ui.theme]}>
         <Layout view={view} handle={handle} />
@@ -400,6 +401,10 @@ const Working = ({ handle, starting }: { handle: FleetHandle; starting: boolean 
 };
 
 const LogArea = ({ view, handle, width }: PaneProps): ReactNode => {
+  const cellRatio = useSyncExternalStore(
+    handle.imageCellRatio.subscribe,
+    handle.imageCellRatio.get,
+  );
   const tr = useSyncExternalStore(handle.transcript.subscribe, handle.transcript.get);
   const tail = useSyncExternalStore(handle.taskTail.subscribe, handle.taskTail.get);
   // The session's queue rides its snapshot: drawn after the log, every client
@@ -430,8 +435,9 @@ const LogArea = ({ view, handle, width }: PaneProps): ReactNode => {
         tr.scroll,
         tail,
         handle.imagesEnabled,
+        cellRatio,
       ),
-    [tr, queue, id, logFilter, child, spinning, width, view.splitLogH, tail],
+    [tr, queue, id, logFilter, child, spinning, width, view.splitLogH, tail, cellRatio],
   );
   const starting = !child && view.sel?.status.kind === "starting";
   const spinner = useMemo(

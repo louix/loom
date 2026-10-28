@@ -1011,6 +1011,8 @@ export class Daemon {
       const images = content.images.map((image) => this.#images.put(image));
       event = { ...event, output: content.output, ...(images.length ? { images } : {}) };
     }
+    if ((event.type === "tool_result" || event.type === "user_message") && event.images?.length)
+      event = { ...event, images: event.images.map((image) => this.#images.describe(image)) };
     // Persist *before* the frame goes out. The push carries the row's durable
     // id, so a client that reacts to it — by paging, or by merging it against a
     // page already in flight — has to be able to read that row back the moment

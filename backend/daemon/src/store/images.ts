@@ -1,11 +1,17 @@
 import { createHash } from "node:crypto";
 import { Buffer } from "node:buffer";
-import { imageBytes, type ImageAttachment, type ImageData } from "@loom/core/images";
+import {
+  imageBytes,
+  imageDimensions,
+  type ImageAttachment,
+  type ImageData,
+} from "@loom/core/images";
 import type { Db } from "./db.ts";
 
 /** Content-addressed, repository-local storage shared by uploads and tool results. */
 export class ImageStore {
   readonly db: Db;
+  readonly #dimensions = new Map<string, ImageAttachment["dimensions"]>();
   constructor(db: Db) {
     this.db = db;
   }
@@ -19,7 +25,32 @@ export class ImageStore {
     // Names are display labels, never paths or terminal control sequences.
     // eslint-disable-next-line no-control-regex -- Strip terminal controls from display labels.
     const label = name.replace(/[\x00-\x1f\x7f-\x9f]/g, "").slice(0, 160) || "image";
-    return { id, mimeType: image.mimeType, bytes: bytes.length, name: label };
+    return {
+      id,
+      mimeType: image.mimeType,
+      bytes: bytes.length,
+      name: label,
+      dimensions: imageDimensions(bytes, image.mimeType),
+    };
+  }
+
+  /** Enrich pre-dimensions transcript references without rewriting their history. */
+  describe(attachment: ImageAttachment): ImageAttachment {
+    if (attachment.dimensions) return attachment;
+    if (!this.#dimensions.has(attachment.id)) {
+      let dimensions: ImageAttachment["dimensions"];
+      try {
+        const data = this.get(attachment.id);
+        dimensions = imageDimensions(Buffer.from(data.data, "base64"), data.mimeType);
+      } catch {
+        /* Missing old payloads retain their label. */
+      }
+      if (this.#dimensions.size >= 256)
+        this.#dimensions.delete(this.#dimensions.keys().next().value!);
+      this.#dimensions.set(attachment.id, dimensions);
+    }
+    const dimensions = this.#dimensions.get(attachment.id);
+    return dimensions ? { ...attachment, dimensions } : attachment;
   }
 
   get(id: string): ImageData {

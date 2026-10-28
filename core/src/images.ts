@@ -27,6 +27,12 @@ export const imageAttachmentSchema = z.object({
     ),
   mimeType: imageMimeSchema,
   bytes: z.number().int().positive().max(MAX_IMAGE_BYTES),
+  dimensions: z
+    .object({
+      width: z.number().int().positive().max(16384),
+      height: z.number().int().positive().max(16384),
+    })
+    .optional(),
 });
 export type ImageAttachment = z.infer<typeof imageAttachmentSchema>;
 export const imageAttachmentsSchema = z.array(imageAttachmentSchema).max(MAX_MESSAGE_IMAGES);
@@ -38,23 +44,32 @@ export const imageBytes = (image: ImageData): Buffer => {
     throw new Error("Invalid image base64");
   const bytes = Buffer.from(image.data, "base64");
   if (!bytes.length || bytes.length > MAX_IMAGE_BYTES) throw new Error("Image exceeds 2 MiB");
+  imageDimensions(bytes, image.mimeType);
+  return bytes;
+};
+
+/** Header dimensions are sufficient for layout; no raster decoding is needed. */
+export const imageDimensions = (
+  bytes: Buffer,
+  mimeType: ImageData["mimeType"],
+): { width: number; height: number } => {
   let width = 0,
     height = 0;
   if (
-    image.mimeType === "image/png" &&
+    mimeType === "image/png" &&
     bytes.length >= 24 &&
     bytes.subarray(0, 8).equals(Buffer.from("89504e470d0a1a0a", "hex"))
   ) {
     width = bytes.readUInt32BE(16);
     height = bytes.readUInt32BE(20);
   } else if (
-    image.mimeType === "image/gif" &&
+    mimeType === "image/gif" &&
     bytes.length >= 10 &&
     /^GIF8[79]a$/.test(bytes.toString("ascii", 0, 6))
   ) {
     width = bytes.readUInt16LE(6);
     height = bytes.readUInt16LE(8);
-  } else if (image.mimeType === "image/jpeg" && bytes[0] === 255 && bytes[1] === 216) {
+  } else if (mimeType === "image/jpeg" && bytes[0] === 255 && bytes[1] === 216) {
     for (let off = 2; off + 4 < bytes.length;) {
       if (bytes[off++] !== 255) break;
       while (bytes[off] === 255) off++;
@@ -77,7 +92,7 @@ export const imageBytes = (image: ImageData): Buffer => {
   }
   if (!width || !height || width > 16384 || height > 16384 || width * height > 16_000_000)
     throw new Error("Invalid image or image exceeds 16 megapixels");
-  return bytes;
+  return { width, height };
 };
 
 export const imageDataUrl = (image: ImageData): string =>

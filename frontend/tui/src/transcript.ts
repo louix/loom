@@ -1425,6 +1425,7 @@ const lineLayout = (
 export interface LogContext {
   images?: boolean;
   pageRows?: number;
+  cellRatio?: number;
   lines: readonly LogLine[];
   iw: number;
 }
@@ -1434,18 +1435,29 @@ export const logContext = (
   width: number,
   images = true,
   pageRows = 24,
+  cellRatio = 0.5,
 ): LogContext => ({
   images,
   pageRows,
+  cellRatio,
   lines,
   iw: inside(width),
 });
 
 /** Leave room for a caption and surrounding chat, even in a short pane. */
-const imageRows = (ctx: LogContext): number => {
-  if (ctx.images === false) return 1;
+const imageLayout = (
+  attachment: import("@loom/core/images").ImageAttachment,
+  ctx: LogContext,
+  indent: number,
+): { width: number; height: number } => {
+  const width = Math.max(1, ctx.iw - indent);
+  if (ctx.images === false || !attachment.dimensions) return { width, height: 1 };
   const available = Math.max(1, ctx.pageRows ?? 24);
-  return Math.max(1, Math.min(available - 1, Math.max(8, Math.floor(available * 0.75))));
+  const maxHeight = Math.max(1, Math.min(available - 1, Math.max(8, Math.floor(available * 0.75))));
+  const ratio = ctx.cellRatio ?? 0.5;
+  const aspect = attachment.dimensions.width / attachment.dimensions.height;
+  const height = Math.min(maxHeight, Math.max(1, Math.ceil((width * ratio) / aspect)));
+  return { width: Math.min(width, Math.max(1, Math.ceil((height * aspect) / ratio))), height };
 };
 
 /** Wrapped-row total for the visible log — O(lines) per call, with per-line
@@ -1456,8 +1468,11 @@ const imageRows = (ctx: LogContext): number => {
  *  WeakMap hit + an add per line. */
 export const totalRows = (ctx: LogContext): number => {
   let total = 0;
-  for (const l of ctx.lines)
-    total += lineLayout(l, ctx.iw).segs.length + (l.images?.length ?? 0) * imageRows(ctx);
+  for (const l of ctx.lines) {
+    const layout = lineLayout(l, ctx.iw);
+    total += layout.segs.length;
+    for (const image of l.images ?? []) total += imageLayout(image, ctx, layout.indent).height;
+  }
   return total;
 };
 /** The wrapped rows `[from, to)` of the visible log — builds only the window's
@@ -1472,15 +1487,20 @@ export const windowRows = (ctx: LogContext, from: number, to: number): PhysicalR
   for (const l of ctx.lines) {
     n += 1;
     const { ts, indent, segs, spans } = lineLayout(l, ctx.iw);
-    const imageHeight = imageRows(ctx);
-    const count = segs.length + (l.images?.length ?? 0) * imageHeight;
+    let count = segs.length;
+    const images = (l.images ?? []).map((attachment) => {
+      const layout = imageLayout(attachment, ctx, indent);
+      const start = count;
+      count += layout.height;
+      return { attachment, start, ...layout };
+    });
     const lineEnd = off + count;
     if (lineEnd > from) {
       const lo = Math.max(0, from - off);
       const hi = Math.min(count, to - off);
       for (let i = lo; i < hi; i++) {
-        const imageIndex = Math.floor((i - segs.length) / imageHeight);
-        const attachment = i >= segs.length ? l.images?.[imageIndex] : undefined;
+        const image = images.find((image) => i >= image.start && i < image.start + image.height);
+        const attachment = image?.attachment;
         out.push({
           // The durable id is unique within a session and stable across daemon
           // restarts; a synthesised line has none, so it falls back to its
@@ -1493,13 +1513,13 @@ export const windowRows = (ctx: LogContext, from: number, to: number): PhysicalR
           tone: l.tone,
           kind: l.kind,
           seg: attachment ? `[image: ${attachment.name}]` : segs[i]!,
-          ...(attachment
+          ...(image
             ? {
                 image: {
-                  attachment,
-                  offset: (i - segs.length) % imageHeight,
-                  height: imageHeight,
-                  width: Math.max(1, ctx.iw - indent),
+                  attachment: image.attachment,
+                  offset: i - image.start,
+                  height: image.height,
+                  width: image.width,
                 },
               }
             : {}),
@@ -1525,7 +1545,8 @@ export const logRowCount = (
   width: number,
   images = true,
   pageRows = 24,
-): number => totalRows(logContext(lines, width, images, pageRows));
+  cellRatio = 0.5,
+): number => totalRows(logContext(lines, width, images, pageRows, cellRatio));
 
 // ---------------------------------------------------------------------------
 // the handle
@@ -1551,6 +1572,7 @@ export interface TranscriptView {
 
 export interface TranscriptDeps {
   images?: boolean;
+  cellRatio?: () => number;
   /** `session.events`. One page; a cursor continues into older history. */
   fetch: (sessionId: string, cursor: HistoryCursor | null) => Promise<HistoryPage>;
   /** Only fetch while the daemon is there. */
@@ -1642,7 +1664,7 @@ export const mkTranscript = (d: TranscriptDeps): TranscriptControl => {
    */
   const sync = (key: string): number => {
     const lines = d.shown(resource);
-    const rows = logRowCount(lines, d.paneWidth(), d.images, d.pageRows());
+    const rows = logRowCount(lines, d.paneWidth(), d.images, d.pageRows(), d.cellRatio?.());
     const max = Math.max(0, rows - d.pageRows());
     scroll = Math.min(scroll, max);
     anchor = {

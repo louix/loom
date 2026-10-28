@@ -65,7 +65,7 @@ import {
   promptRows,
   requestPanelRows,
 } from "./components.tsx";
-import { mkStore } from "./store.ts";
+import { mkStore, type Store } from "./store.ts";
 import { waitingAgentsIn } from "./fleet-status.ts";
 import { AGE_MS, mkClock, mkDeadline, type Beat } from "./clock.ts";
 import { mkComposer, outboxOf, release, type SendReply } from "./composer.ts";
@@ -317,6 +317,7 @@ export interface FleetView {
 
 export interface FleetHandle {
   readonly imagesEnabled: boolean;
+  readonly imageCellRatio: Store<number>;
   readonly subscribe: (onChange: () => void) => () => void;
   readonly getView: () => FleetView;
   /** This client's id — how a queued message's author reads as "you". */
@@ -638,6 +639,7 @@ export const mkFleetHandle = ({
    *  for "is this UI connected" — see {@link connectionOf}. */
   const connected = (): boolean => state.fleet.tag === "data";
   const animation = mkStore({ tick: 0, now: Date.now() });
+  const imageCellRatio = mkStore(0.5);
   let planScroll = 0;
   // Where the mouse pointer was last reported, while it is over the UI. Any
   // key clears it: the feedback belongs to the mouse, not to the keyboard.
@@ -761,6 +763,7 @@ export const mkFleetHandle = ({
       return v.body.t === "split" ? v.rightW : v.cols;
     },
     pageRows: () => store.get().logPage,
+    cellRatio: imageCellRatio.get,
   });
 
   // A background task's output is read only while its row is focused and the
@@ -3336,6 +3339,14 @@ export const mkFleetHandle = ({
     getView: store.get,
     clientId: client.clientId,
     imagesEnabled: images,
+    imageCellRatio: {
+      ...imageCellRatio,
+      set: (ratio) => {
+        if (!Number.isFinite(ratio) || ratio <= 0 || ratio === imageCellRatio.get()) return;
+        imageCellRatio.set(ratio);
+        transcripts.contentChanged();
+      },
+    },
     handleKey,
     effectStart,
   };

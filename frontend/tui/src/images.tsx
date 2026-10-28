@@ -1,7 +1,7 @@
 import { Buffer } from "node:buffer";
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Box, Text, useStdout } from "ink";
-import Image, { InkPictureProvider } from "ink-picture";
+import Image, { InkPictureProvider, useTerminalInfo } from "ink-picture";
 import { imageBytes, type ImageAttachment, type ImageData } from "@loom/core/images";
 import type { PhysicalRow } from "./transcript.ts";
 
@@ -16,17 +16,27 @@ const Images = createContext<{
 });
 const initialTerminalInfo = {};
 
+const TerminalMetrics = ({ onCellRatio }: { onCellRatio?: (ratio: number) => void }): null => {
+  const { cellWidth, cellHeight } = useTerminalInfo();
+  useEffect(() => {
+    if (cellWidth > 0 && cellHeight > 0) onCellRatio?.(cellWidth / cellHeight);
+  }, [cellWidth, cellHeight, onCellRatio]);
+  return null;
+};
+
 /** One terminal probe and bounded payload cache per UI, independent of transcript pages. */
 export const ImageEnvironment = ({
   enabled,
   visible,
   request,
   children,
+  onCellRatio,
 }: {
   enabled: boolean;
   visible: boolean;
   request: <T>(method: string, params: unknown) => Promise<T>;
   children: ReactNode;
+  onCellRatio?: (ratio: number) => void;
 }): ReactNode => {
   const { stdout } = useStdout();
   const active = enabled && stdout.isTTY === true;
@@ -49,7 +59,10 @@ export const ImageEnvironment = ({
   );
   // Overrides let the text UI appear while terminal capability detection runs.
   return active ? (
-    <InkPictureProvider terminalInfo={initialTerminalInfo}>{content}</InkPictureProvider>
+    <InkPictureProvider terminalInfo={initialTerminalInfo}>
+      <TerminalMetrics {...(onCellRatio ? { onCellRatio } : {})} />
+      {content}
+    </InkPictureProvider>
   ) : (
     content
   );
@@ -111,7 +124,7 @@ export const ImageRows = ({
     if (
       context.enabled &&
       context.visible &&
-      image.height > 1 &&
+      image.attachment.dimensions &&
       image.offset === 0 &&
       last?.attachment.id === image.attachment.id &&
       last.offset === image.height - 1
