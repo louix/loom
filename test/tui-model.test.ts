@@ -2018,16 +2018,22 @@ test("compact is offered on any live session; the footer slot waits for half", (
 
 test("groupsOf only emits non-empty groups, in fleet-view order", () => {
   const g = groupsOf(
-    [snap({ status: "idle" }), snap({ status: "awaiting_input" }), snap({ status: "idle" })],
+    [
+      snap({ status: "idle" }),
+      snap({ status: "working_background" }),
+      snap({ status: "awaiting_input" }),
+      snap({ status: "running" }),
+      snap({ status: "idle" }),
+    ],
     (s) => s.status.kind,
   );
   assert.deepEqual(
     g.map((x) => x.status),
-    ["awaiting_input", "idle"],
+    ["awaiting_input", "running", "idle"],
   );
   assert.deepEqual(
     g.map((x) => x.sessions.length),
-    [1, 2],
+    [1, 2, 2],
   );
 });
 

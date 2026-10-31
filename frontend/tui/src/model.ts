@@ -1429,7 +1429,11 @@ export const groupsOf = (
   const roots = sessions.filter((s) => !nested(s));
   const out: Group[] = [];
   for (const status of STATUS_ORDER) {
-    const inGroup = roots.filter((x) => shown(x) === status);
+    if (status === "working_background") continue;
+    const inGroup = roots.filter((x) => {
+      const kind = shown(x);
+      return (kind === "working_background" ? "running" : kind) === status;
+    });
     if (inGroup.length > 0)
       out.push({ status, label: statusLook(status).label, sessions: inGroup });
   }
