@@ -11,6 +11,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { READ_ONLY_GIT_OPTIONS } from "./git-read.ts";
+import { showGuestPort, type PublishedPort } from "./host-ports.ts";
 
 export interface StatusResult {
   ok: boolean;
@@ -23,6 +24,8 @@ export interface StatusOptions {
   base?: string;
   /** Include the working diff against HEAD (clamped; untracked files are not in the diff). */
   patch?: boolean;
+  /** Resolved `guest_ports`, one `ports:` line each. */
+  guestPorts?: PublishedPort[];
 }
 
 /** Cap on the inline patch — head + tail, so early and late hunks both survive. */
@@ -61,7 +64,12 @@ export const statusInWorktree = (cwd: string, opts: StatusOptions = {}): StatusR
   const changed = stat.ok ? compactStat(stat.out.trim()) : "";
   const clean = entries.length === 0 && changed === "";
 
-  const parts = [`## ${branchLine}`, `worktree: ${cwd}`, ...entries];
+  const parts = [
+    `## ${branchLine}`,
+    `worktree: ${cwd}`,
+    ...(opts.guestPorts ?? []).map((p) => `ports: ${showGuestPort(p)}`),
+    ...entries,
+  ];
   if (clean) parts.push("worktree clean");
   else if (changed) parts.push(changed);
   if (!clean && opts.patch) {

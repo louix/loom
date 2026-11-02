@@ -32,6 +32,7 @@ import { rowLayout, type LayoutRow } from "./layout.ts";
 import { composerBar, footerHints, type BarItem, type CommandContext } from "./commands.ts";
 import { absurd } from "@loom/core/absurd";
 import { cacheHitRate } from "@loom/core/cache";
+import { showHostAddress } from "@loom/core/host-ports";
 import type { DoctorReport, SessionSnapshot } from "@loom/core/wire";
 import type { SessionMode } from "@loom/core/types";
 import type { SessionStateKind } from "@loom/core/events";
@@ -624,6 +625,8 @@ export const detailLayout = (
       </Box>,
     );
     if (account) addLine(account);
+    for (const port of s.guestPorts ?? [])
+      addLine(truncate(`${showHostAddress(port)} → guest:${port.guest}`, w), "text");
     addLine(truncate(titleLine(s.title), w), "text");
     if (s.parentId && s.forkTurn != null) {
       const how = s.forkKind ? FORK_KIND[s.forkKind] : "";

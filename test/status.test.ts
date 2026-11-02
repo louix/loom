@@ -29,6 +29,31 @@ test("statusInWorktree reports a clean worktree without counts when in sync", ()
   }
 });
 
+test("statusInWorktree reports each published guest port under the worktree line", () => {
+  const { root, git, cleanup } = repo();
+  try {
+    git("commit", "-q", "--allow-empty", "-m", "base");
+    const res = statusInWorktree(root, {
+      guestPorts: [
+        { guest: 8081, host: 41234 },
+        { guest: 3000, host: 8080 },
+      ],
+    });
+    assert.equal(
+      res.text,
+      [
+        "## main",
+        `worktree: ${root}`,
+        "ports: guest 127.0.0.1:8081 → host 127.0.0.1:41234",
+        "ports: guest 127.0.0.1:3000 → host 127.0.0.1:8080",
+        "worktree clean",
+      ].join("\n"),
+    );
+  } finally {
+    cleanup();
+  }
+});
+
 test("statusInWorktree lists staged, unstaged and untracked entries with a diffstat", () => {
   const { root, git, cleanup } = repo();
   try {

@@ -67,6 +67,7 @@ export type IsolatedLaunchOptions = SessionVmOptions & {
 };
 export type IsolatedWorker = WorkerProcess & {
   binding: EnvironmentVm["binding"];
+  guestPorts: import("../../../../core/src/host-ports.ts").PublishedPort[];
   /** Resolves once the execution is reaped and its lease released. */
   settled: Promise<void>;
 };
@@ -158,6 +159,7 @@ interface Generation {
   id: string;
   onStop?: SessionVmOptions["onStop"];
   environment?: EnvironmentVm;
+  guestPorts?: import("../../../../core/src/host-ports.ts").PublishedPort[];
   worker?: IsolatedWorker;
   /** This adapter asked the coordinator to stop the environment. */
   stopping?: boolean;
@@ -354,6 +356,7 @@ export const createIsolatedWorkerLauncher = (
     void exited.then(cleanup, cleanup).catch(() => {});
     const worker: IsolatedWorker = {
       binding: environment.binding,
+      guestPorts: generation.guestPorts ?? [],
       input: child.stdin,
       output: child.stdout,
       pid: child.pid,
@@ -389,6 +392,7 @@ export const createIsolatedWorkerLauncher = (
     };
     const executions: SessionExecutions = {
       workspace: environment.binding.workspace,
+      guestPorts: generation.guestPorts ?? [],
       async command(command, timeoutMs, signal, env) {
         live();
         return await coordinator.command(id, command, timeoutMs, { signal }, env);
@@ -442,6 +446,9 @@ export const createIsolatedWorkerLauncher = (
           // Unlike plain environments, agent sessions keep their provider egress.
           providerHosts: configuration.providerHosts ?? defaultProviderHosts,
         });
+        signal?.throwIfAborted();
+        if (closed) throw new Error("Session VM provider is shutting down");
+        generation.guestPorts = (await generation.environment!.status()).guestPorts ?? [];
         signal?.throwIfAborted();
         if (closed) throw new Error("Session VM provider is shutting down");
         return startWorker(generation, argv, configuration.onProgress, executions);

@@ -3,6 +3,7 @@ import { mcpGrantsSchema } from "./mcp-config.ts";
 import { z } from "zod";
 import { opaqueSchema } from "./schema.ts";
 import { initHookSchema } from "./init-hook.ts";
+import { resolvedPortsSchema } from "./host-ports.ts";
 const effortLevelSchema = z.string();
 /** Provider adapters normalize vendor SDKs to these interfaces and HarnessEvent. */
 import {
@@ -128,6 +129,8 @@ const agentSessionFields = {
   allowTools: z.array(z.string()).optional(),
   /** Built-in tools withheld from the agent. */
   denyTools: z.array(z.string()).optional(),
+  /** This VM run's resolved `guest_ports`, reported by the `status` tool. */
+  guestPorts: resolvedPortsSchema.optional(),
 };
 
 /** The daemon's answer to an `agent_call`: the tool's text result. */

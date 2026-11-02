@@ -29,6 +29,7 @@ import { RemoteWorkerSession } from "./worker-provider.ts";
 import { mockLaunchSpec, type WorkerProcess } from "./worker-launch.ts";
 import { createIsolatedWorkerLauncher, type IsolatedLaunchOptions } from "./isolated-worker.ts";
 import { sessionGitIdentity, type SessionGitIdentity } from "../config/git-identity.ts";
+import { showHostAddress } from "@loom/core/host-ports";
 
 /** Where Claude Code sends every claude.ai connector call (`MCP_PROXY_URL` in the CLI). */
 const CLAUDE_AI_CONNECTOR_PROXY_HOST = "mcp-proxy.anthropic.com";
@@ -73,7 +74,12 @@ export const profileSkills = async (
 
 /** A provider's VM launches: one isolation coordinator, injected by tests. */
 export type SessionVmLauncher = {
-  launch(options: IsolatedLaunchOptions): Promise<WorkerProcess & { binding: { state: string } }>;
+  launch(options: IsolatedLaunchOptions): Promise<
+    WorkerProcess & {
+      binding: { state: string };
+      guestPorts?: import("../../../../core/src/host-ports.ts").PublishedPort[];
+    }
+  >;
   close(): Promise<void>;
 };
 
@@ -275,6 +281,24 @@ export const withVmSessions = async <T extends AgentProvider>(
         }),
       );
       try {
+        const ports = worker.guestPorts ?? [];
+        const portContext = [
+          "Current session TCP port forwards (supersede addresses from earlier runs):",
+          ...ports.map(
+            (p) => `Guest 127.0.0.1:${p.guest} is available on the host at ${showHostAddress(p)}.`,
+          ),
+          ...(ports.length
+            ? [
+                "Bind services to their guest port. Give the user the host address; for HTTP services use http://<host-address>:<host-port>.",
+                "The Loom `status` tool reports these mappings, and `agent_status` reports each sub-agent's.",
+              ]
+            : ["No guest ports are published on the host."]),
+        ].join("\n");
+        for (const p of ports)
+          ctx.onStartupProgress?.(
+            input.sessionId,
+            `Host ${showHostAddress(p)} → guest 127.0.0.1:${p.guest}`,
+          );
         const { session } = await RemoteWorkerSession.connect(
           input.sessionId,
           ctx.id,
@@ -290,6 +314,8 @@ export const withVmSessions = async <T extends AgentProvider>(
         if (kind === "aisdk") await session.attachTranscript(ctx.transcript!);
         const options = {
           ...input,
+          agentPrompt: [input.agentPrompt, portContext].filter(Boolean).join("\n\n"),
+          ...(ports.length ? { guestPorts: ports } : {}),
           cwd: guestCwd,
           ...(input.workspaceRoot ? { workspaceRoot: guestCwd } : {}),
           ...(clone && input.initHooks

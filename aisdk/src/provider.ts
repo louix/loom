@@ -64,13 +64,14 @@ export interface AisdkProviderOptions {
 const withAgentPrompt = (system: string | undefined, prompt: string | undefined) =>
   [system, prompt].filter(Boolean).join("\n\n") || undefined;
 
-/** What a session's agent profile and supervision tree give it (`loom-agents`). */
+/** What a session's agent profile, supervision tree (`loom-agents`) and VM give it. */
 const agentOptions = (
-  o: Pick<CreateSessionOptions, "agentTools" | "allowTools" | "denyTools">,
-): Pick<AisdkSessionOptions, "agentTools" | "allowTools" | "denyTools"> => ({
+  o: Pick<CreateSessionOptions, "agentTools" | "allowTools" | "denyTools" | "guestPorts">,
+): Pick<AisdkSessionOptions, "agentTools" | "allowTools" | "denyTools" | "guestPorts"> => ({
   ...(o.agentTools ? { agentTools: true } : {}),
   ...(o.allowTools ? { allowTools: o.allowTools } : {}),
   ...(o.denyTools ? { denyTools: o.denyTools } : {}),
+  ...(o.guestPorts ? { guestPorts: o.guestPorts } : {}),
 });
 
 export class AisdkProvider implements AgentProvider {

@@ -7,6 +7,7 @@ import { sessionModeSchema } from "./types.ts";
 import { modelChoiceSchema } from "./model-catalogue.ts";
 import { sessionQueueSchema } from "./message-queue.ts";
 import { agentProfileInfoSchema } from "./agents.ts";
+import { resolvedPortsSchema } from "./host-ports.ts";
 
 /** NDJSON over a Unix socket: requests correlate by id; event seq is diagnostic only. */
 
@@ -202,6 +203,8 @@ export const daemonSnapshotSchema = z.object({
 export type DaemonSnapshot = z.infer<typeof daemonSnapshotSchema>;
 
 export const sessionSnapshotSchema = z.object({
+  /** Live host forwards; absent once the VM stops. */
+  guestPorts: resolvedPortsSchema.optional(),
   id: z.string(),
   parentId: z.union([z.string(), z.null()]),
   /** For a hard fork: the parent turn it branched at. null for a root session. */

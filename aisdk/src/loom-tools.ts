@@ -77,6 +77,7 @@ export const buildLoomTools = (deps: LoomToolDeps): ToolSet => {
       execute: async ({ patch }) => {
         const res = statusInWorktree(deps.cwd, {
           ...(deps.base ? { base: deps.base } : {}),
+          ...(deps.guestPorts ? { guestPorts: deps.guestPorts } : {}),
           ...(patch ? { patch: true } : {}),
         });
         return res.text;

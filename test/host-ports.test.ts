@@ -205,7 +205,7 @@ Deno.test("port mappings validate direction, deduplicate pairs and reject ambigu
 Deno.test("guest port mappings inherit, override and convert independently from host ports", async () => {
   const root = await Deno.makeTempDir();
   const path = join(root, "config.jsonc");
-  const mapping = { host: 8080, guest: 3000 };
+  const mapping = { guest: 3000 };
   const raw = {
     session: {
       isolation: {

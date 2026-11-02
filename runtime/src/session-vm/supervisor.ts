@@ -1,4 +1,4 @@
-import { startPublishedPort } from "./publish-port.ts";
+import { readPublishedPorts, startPublishedPorts } from "./publish-port.ts";
 import {
   sessionStartupTimeout,
   type SessionEnvironment,
@@ -97,6 +97,7 @@ const deadline = setTimeout(
 );
 const network: Array<{ host: string; allowed: boolean }> = [];
 const blockedHosts = new Set<string>();
+let publishedPorts: import("../../../core/src/host-ports.ts").PublishedPort[] = [];
 const status = () => {
   Deno.writeTextFileSync(
     join(binding.state, "status.json.tmp"),
@@ -105,6 +106,7 @@ const status = () => {
       backendDirectory: machineDirectory ?? null,
       execPid: phase === "running" ? child?.pid : undefined,
       network,
+      guestPorts: publishedPorts,
     }),
     { mode: 0o600 },
   );
@@ -271,16 +273,27 @@ try {
     relays.push(startLoopbackRelay(socket, host));
     create.push("--mount-socket", `${socket}:/run/loom/host-port-${guest}.sock`);
   }
-  for (const { host } of guestPorts) {
-    const socket = join(binding.state, `guest-port-${host}.sock`);
-    const relay = startPublishedPort(socket, host);
+  const published = await startPublishedPorts(
+    binding.state,
+    guestPorts,
+    binding.sessionDirectory ? await readPublishedPorts(binding.sessionDirectory) : [],
+    hostPorts.map((p) => p.host),
+  );
+  publishedPorts = published.map((p) => p.mapping);
+  for (const {
+    mapping: { host },
+    relay,
+  } of published) {
     relays.push(relay);
     void relay.finished.catch(() => stop("supervisor_error"));
-    create.push("--expose-socket", `/run/loom/guest-port-${host}.sock:${socket}`);
+    create.push("--expose-socket", `/run/loom/guest-port-${host}.sock:${relay.socket}`);
   }
+  if (binding.sessionDirectory)
+    await writeRecoveryFile(binding.sessionDirectory, "guest-ports.json", publishedPorts);
+  status();
   await Deno.writeTextFile(
     join(binding.state, "private/guest-ports.json"),
-    JSON.stringify(guestPorts),
+    JSON.stringify(publishedPorts),
   );
   await Deno.writeTextFile(
     join(binding.state, "private/host-ports.json"),

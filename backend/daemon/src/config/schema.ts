@@ -485,7 +485,7 @@ export const createConfigSchema = (d: LoomConfig, events: readonly HookEvent[]) 
               "Guest-to-host loopback TCP forwards: a port number or { host, guest }. Repo lists replace global lists.",
             ),
             guest_ports: guestPortsSchema.describe(
-              "Host-to-guest loopback TCP forwards: a port number or { host, guest }. Repo lists replace global lists.",
+              "Host-to-guest loopback TCP forwards: a port number or { host, guest }. Omit host to allocate a free port per session. Repo lists replace global lists.",
             ),
             allowed_hosts: extraHostsSchema.describe(
               "Exact DNS names VM sessions may reach over HTTPS (port 443); no URLs, IPs or wildcards.",

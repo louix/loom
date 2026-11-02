@@ -868,6 +868,7 @@ class ClaudeSession implements AgentSession {
       this.#loomDeps = {
         cwd: opts.cwd,
         ...(extra.base ? { base: extra.base } : {}),
+        ...(opts.guestPorts ? { guestPorts: opts.guestPorts } : {}),
         askUser: (question, context) => this.#askUser(question, context),
       };
       mcpServers["loom"] = buildLoomMcpServer(this.#loomDeps);
@@ -2178,6 +2179,7 @@ export class ClaudeProvider implements AgentProvider {
       ...(ref.skills ? { skills: ref.skills } : {}),
       ...(ref.allowTools ? { allowTools: ref.allowTools } : {}),
       ...(ref.denyTools ? { denyTools: ref.denyTools } : {}),
+      ...(ref.guestPorts ? { guestPorts: ref.guestPorts } : {}),
     };
     // A native history fork resumes a full copy of the source session. The
     // source's observed totals describe the source, never the copy, and the

@@ -57,6 +57,7 @@ export const buildLoomMcpServer = (deps: LoomToolDeps): McpSdkServerConfigWithIn
   const status = tool("status", STATUS_DESC, statusShape, async (args) => {
     const res = statusInWorktree(deps.cwd, {
       ...(deps.base ? { base: deps.base } : {}),
+      ...(deps.guestPorts ? { guestPorts: deps.guestPorts } : {}),
       ...(args.patch ? { patch: true } : {}),
     });
     return res.ok

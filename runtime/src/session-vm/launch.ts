@@ -1,4 +1,4 @@
-import type { PortForwardInput } from "../../../core/src/host-ports.ts";
+import type { GuestPortForwardInput, PortForwardInput } from "../../../core/src/host-ports.ts";
 import { normalizePortForwards } from "../../../core/src/host-ports.ts";
 import {
   environmentEnabled,
@@ -60,7 +60,7 @@ export interface SessionVmOptions {
   };
   extraAllowedHosts?: string[];
   hostPorts?: PortForwardInput[];
-  guestPorts?: PortForwardInput[];
+  guestPorts?: GuestPortForwardInput[];
   environment?: SessionEnvironment;
   providerHosts?: string[];
   sessionDirectory?: string;
@@ -78,6 +78,7 @@ export interface SessionVmOptions {
 }
 export interface SessionVmStatus {
   phase: string;
+  guestPorts?: import("../../../core/src/host-ports.ts").PublishedPort[];
   backendDirectory?: string | null;
   execPid?: number;
   network: Array<{ host: string; allowed: boolean }>;

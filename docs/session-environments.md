@@ -513,7 +513,7 @@ Both directions support remapping with named `host` and `guest` ports:
     "isolation": {
       "network": {
         "host_ports": [5037, { "host": 5432, "guest": 15432 }],
-        "guest_ports": [{ "guest": 3000, "host": 8080 }]
+        "guest_ports": [{ "guest": 3000 }]
       }
     }
   }
@@ -523,8 +523,24 @@ Both directions support remapping with named `host` and `guest` ports:
 `host_ports` makes a host service reachable from the guest: guest
 `127.0.0.1:15432` connects to host `127.0.0.1:5432`.
 `guest_ports` publishes a VM service on the host: run a web server on guest
-`127.0.0.1:3000` and open `http://127.0.0.1:8080` on the host.
-An integer is shorthand for the same port on both sides.
+`127.0.0.1:3000`. Omitting `host` allocates a free host port from 32768–60999
+for each session. The agent receives the resolved mapping on every start/resume
+and can look it up with the Loom `status` tool (`agent_status` for its
+sub-agents); the TUI session details and startup log show the same host address. For an HTTP service, open
+`http://127.0.0.1:<allocated-port>` on the host. The application still listens on
+its configured guest port. Session details remove the mapping when the VM stops.
+
+Use `{ "guest": 3000, "host": 8080 }` for a fixed host address.
+An integer is shorthand for the same fixed port on both sides.
+
+The host listener binds `127.0.0.1` unless an entry sets `address` to an IPv4
+address: `{ "guest": 8081, "address": "0.0.0.0" }` publishes on every host
+interface, so a phone on the same network can reach the guest's Metro server, and
+`"address": "192.168.88.111"` publishes on that interface only. `address` works
+with or without a fixed `host`. A wildcard mapping also reports the host's LAN
+addresses at bind time. Anything that can reach that address can reach the guest
+service, with no authentication and outside `allowed_hosts`, so grant it per
+repository and only on networks you trust.
 
 Put these settings at the top level for all repositories, or under a `repos[]`
 entry for one repository. Each repo list replaces its corresponding global list
@@ -534,9 +550,11 @@ different targets for one listener are rejected. The guest ends cannot use
 Loom's proxy (3128), Git relay (3129), or selected MCP listener ports. Opposite
 directions cannot target one another's listeners.
 
-A published host port must be free. Multiple VMs can each run a server on guest
-port 3000, but need different host ports, such as 8080 and 8081. If a host port
-is occupied or unavailable, startup fails and releases any listeners it opened.
+Automatic mappings allow multiple VMs to serve the same guest port concurrently.
+On resume, Loom tries the session's previous host port and allocates another if
+it is unavailable; the current context supersedes old addresses in the conversation.
+An explicitly configured host port must be free: if occupied or unavailable,
+startup fails and releases any listeners it opened.
 This is separate from `network.allowed_hosts`, which still grants exact HTTPS
 destinations on port 443.
 
@@ -548,7 +566,8 @@ forward ports. Do not run `adb kill-server` unless you intend to stop the host
 server.
 
 Forwards are available during preparation, setup and session commands, and close
-when the VM stops. They bind only IPv4 loopback on both sides and are TCP-only.
+when the VM stops. They are IPv4 and TCP-only, and bind loopback on both sides
+unless a `guest_ports` entry sets `address`.
 After changing configuration, start a new VM. A runtime built with this feature
 is required; rebuild with `loom runtime update` if Loom reports an older runtime.
 

@@ -20,6 +20,7 @@
     "./logger": "./src/logger.ts",
     "./commit": "./src/commit.ts",
     "./status": "./src/status.ts",
+    "./host-ports": "./src/host-ports.ts",
     "./git-read": "./src/git-read.ts",
     "./process-group": "./src/process-group.ts",
     "./git-lock": "./src/git-lock.ts",

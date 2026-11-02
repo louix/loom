@@ -344,6 +344,17 @@ test("a child is found by an unambiguous prefix of its id, and only among one's 
   assert.doesNotMatch(all.text, /xyz999/);
 });
 
+test("agent_status reports where each of a child's guest ports is reachable on the host", async () => {
+  const s = stub([
+    row({ id: "lead" }),
+    row({ id: "kid111", supervisorId: "lead", guestPorts: [{ guest: 8081, host: 41234 }] }),
+    row({ id: "kid222", supervisorId: "lead" }),
+  ]);
+  const all = (await s.call("lead", "agent_status")).text;
+  assert.match(all, /kid111[^]*\n  ports: guest 127\.0\.0\.1:8081 → host 127\.0\.0\.1:41234/);
+  assert.doesNotMatch((await s.call("lead", "agent_status", { id: "kid222" })).text, /ports:/);
+});
+
 test("a session's plan: loom-agents below the depth limit, and its profile's servers, prompt and tools", () => {
   const handles: McpServerHandle[] = [
     { name: "tilth", spec: { transport: "stdio", command: "tilth" } },

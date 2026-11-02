@@ -1,4 +1,4 @@
-import type { PortForwardInput } from "../../../core/src/host-ports.ts";
+import type { GuestPortForwardInput, PortForwardInput } from "../../../core/src/host-ports.ts";
 import { mcpGrantsSchema, type McpGrants } from "../../../core/src/mcp-config.ts";
 /** Fixed-policy VM launch and reaping, shared by supervisor and daemon fallback. */
 import { isAbsolute, join } from "node:path";
@@ -34,7 +34,7 @@ export interface VmBinding {
   sessionDirectory?: string;
   mcpRelays?: Array<{ port: number; guestPort: number }>;
   hostPorts?: PortForwardInput[];
-  guestPorts?: PortForwardInput[];
+  guestPorts?: GuestPortForwardInput[];
   /** Clone sessions: the guest's only Git remote and the clone it prepares. */
   git?: {
     /** The host repository's common Git directory. Never mounted. */

@@ -21,6 +21,16 @@ import type { ProviderInfo } from "@loom/core/wire";
 import type { PickerDest } from "@loom/tui/overlay";
 import { fleet, snap } from "./tui-fixtures.ts";
 
+test("session details show resolved host ports and remove withdrawn mappings", () => {
+  const session = { ...snap({}), guestPorts: [{ guest: 3000, host: 49152 }] };
+  const render = (s: typeof session | ReturnType<typeof snap>) =>
+    stripVTControlCharacters(
+      renderToString(detailLayout(s, { width: 80 }).render(0), { columns: 80 }),
+    );
+  assert.match(render(session), /127\.0\.0\.1:49152 → guest:3000/);
+  assert(!render({ ...session, guestPorts: undefined }).includes("49152"));
+});
+
 test("an unknown context limit is not rendered as zero capacity or zero percent", () => {
   const layout = detailLayout(snap({ contextUsed: 44_400, contextLimit: 0 }), { width: 80 });
   const plain = stripVTControlCharacters(renderToString(layout.render(0), { columns: 80 }));

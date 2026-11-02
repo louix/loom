@@ -531,8 +531,12 @@ export class Daemon {
         },
         executions: (id, executions) => {
           this.#vmExecutions.set(id, executions);
+          this.#publishState(id);
           return () => {
-            if (this.#vmExecutions.get(id) === executions) this.#vmExecutions.delete(id);
+            if (this.#vmExecutions.get(id) === executions) {
+              this.#vmExecutions.delete(id);
+              this.#publishState(id);
+            }
           };
         },
       },
@@ -1241,6 +1245,8 @@ export class Daemon {
    */
   #enrich(s: SessionSnapshot, withGit = true): SessionSnapshot {
     let out = s;
+    const guestPorts = this.#vmExecutions.get(s.id)?.guestPorts;
+    out = { ...out, guestPorts: guestPorts?.length ? guestPorts : undefined };
     const pendingMode = this.#sessions.snapshot(s.id)?.pendingMode;
     if (pendingMode !== undefined) out = { ...out, pendingMode };
     if (this.#sessions.isStopping(s.id)) out = { ...out, stopping: true };

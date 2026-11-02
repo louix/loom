@@ -14,12 +14,15 @@
  * object without adapting it.
  */
 import { z } from "zod";
+import type { PublishedPort } from "@loom/core/host-ports";
 
 export interface LoomToolDeps {
   /** The session's worktree — `commit` runs here. */
   cwd: string;
   /** The repo's base branch — feeds the `status` tool's ahead/behind counts. */
   base?: string;
+  /** This VM run's resolved `guest_ports`, for the `status` tool. */
+  guestPorts?: PublishedPort[];
   /** Round-trip a question to the user; resolves with their answer text. */
   askUser(question: string, context: string | undefined): Promise<string>;
 }
@@ -41,8 +44,9 @@ export const COMMIT_DESC =
 export const STATUS_DESC =
   "Show the current state of this session's git worktree: the branch (with " +
   "ahead/behind counts vs the base branch when known), the changed files, a " +
-  "diffstat, and the worktree's absolute path — pass it as `root` to tools " +
-  "that want one. Read-only and cheap — prefer it over shelling out to git.";
+  "diffstat, the worktree's absolute path — pass it as `root` to tools " +
+  "that want one — and, in a VM, which host port each published guest port " +
+  "is reachable on. Read-only and cheap — prefer it over shelling out to git.";
 
 export const askUserShape = {
   question: z.string().describe("The question to put to the user. Be specific and self-contained."),

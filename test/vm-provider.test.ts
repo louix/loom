@@ -27,6 +27,7 @@ for (const kind of ["claude", "codex", "aisdk"] as const) {
     const previous = Deno.env.get("XDG_STATE_HOME");
     Deno.env.set("XDG_STATE_HOME", root);
     const launches: SessionVmOptions[] = [];
+    const guestPorts = [{ guest: 3000 }];
     const requests: string[] = [];
     const stopReasons: string[] = [];
     let cleaned = 0;
@@ -56,6 +57,9 @@ for (const kind of ["claude", "codex", "aisdk"] as const) {
             close: () => writer.close(),
           }),
           binding: { state: root },
+          guestPorts: options.guestPorts?.length
+            ? [{ guest: 3000, host: 40000 + launches.length }]
+            : [],
           exitCode: proc.exited.then(() => 0),
           status: async () => ({ phase: "ready", network: [] }),
           async cleanup() {
@@ -96,7 +100,7 @@ for (const kind of ["claude", "codex", "aisdk"] as const) {
             smolvm: Deno.execPath(),
             extraAllowedHosts: ["registry.npmjs.org"],
             hostPorts: [{ host: 5037, guest: 15037 }],
-            guestPorts: [{ host: 8080, guest: 3000 }],
+            guestPorts,
           },
           cliPath: Deno.execPath(),
           codexCliPath: Deno.execPath(),
@@ -134,6 +138,7 @@ for (const kind of ["claude", "codex", "aisdk"] as const) {
       cwd: join(root, "workspace/checkout"),
       workspaceRoot: join(root, "workspace/checkout"),
       systemPromptAppend: "Work in " + join(root, "workspace/checkout"),
+      agentPrompt: "Keep the original agent instructions.",
       initHooks: {
         hooks: [],
         env: { LOOM_REPO_ROOT: root, LOOM_WORKTREE: join(root, "workspace/checkout") },
@@ -177,7 +182,7 @@ for (const kind of ["claude", "codex", "aisdk"] as const) {
       assert.ok(!requests.join("").includes("committer@example.com"), "identity stays host-side");
       assert.deepEqual(launches[0]!.extraAllowedHosts, ["registry.npmjs.org"]);
       assert.deepEqual(launches[0]!.hostPorts, [{ host: 5037, guest: 15037 }]);
-      assert.deepEqual(launches[0]!.guestPorts, [{ host: 8080, guest: 3000 }]);
+      assert.deepEqual(launches[0]!.guestPorts, [{ guest: 3000 }]);
       assert.equal(
         !!launches[0]!.authOwner,
         kind === "codex" ||
@@ -213,6 +218,10 @@ for (const kind of ["claude", "codex", "aisdk"] as const) {
       assert.equal(guestOptions.initHooks.env.LOOM_WORKTREE, "/workspace/checkout");
       assert.equal(guestOptions.initHooks.env.LOOM_REPO_ROOT, "/workspace/checkout");
       assert.equal(guestOptions.systemPromptAppend, "Work in /workspace/checkout");
+      assert.match(guestOptions.agentPrompt, /Keep the original agent instructions/);
+      assert.match(guestOptions.agentPrompt, /Guest 127\.0\.0\.1:3000.*host at 127\.0\.0\.1:40001/);
+      assert.deepEqual(guestOptions.guestPorts, [{ guest: 3000, host: 40001 }]);
+      assert(progress.some((p) => p.includes("127.0.0.1:40001")));
       assert.equal(launches[0]!.workspace, options.cwd);
       assert(progress.includes("booting fixture") && progress.includes("Session ready."));
       assert.deepEqual(generations, ["generation-1"]);
@@ -237,7 +246,31 @@ for (const kind of ["claude", "codex", "aisdk"] as const) {
       }
       const resumed = await provider.resumeSession({ ...options, providerRef: ref });
       await resumed.close();
+      const resumedOptions = requests
+        .join("")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line))
+        .find((frame) => frame.method === "resume").args[0];
+      assert.match(resumedOptions.agentPrompt, /host at 127\.0\.0\.1:40002/);
+      assert(!resumedOptions.agentPrompt.includes("40001"));
+      assert.deepEqual(resumedOptions.guestPorts, [{ guest: 3000, host: 40002 }]);
       assert.equal(launches.length, 2);
+      guestPorts.length = 0;
+      // The generic fixture returns a mock provider ref; restore the native Codex fixture.
+      if (kind === "codex") await Deno.writeTextFile(join(dir, "codex-ref"), ref);
+      const revoked = await provider.resumeSession({ ...options, providerRef: ref });
+      await revoked.close();
+      const revokedOptions = requests
+        .join("")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line))
+        .filter((frame) => frame.method === "resume")
+        .at(-1).args[0];
+      assert.match(revokedOptions.agentPrompt, /No guest ports are published on the host/);
+      assert(!revokedOptions.agentPrompt.includes("40002"));
+      assert.equal(revokedOptions.guestPorts, undefined);
       const before = cleaned;
       await assert.rejects(
         provider.createSession({ ...options, prompt: "fail-create" }),
@@ -253,7 +286,7 @@ for (const kind of ["claude", "codex", "aisdk"] as const) {
         }),
         /loopback/,
       );
-      assert.equal(launches.length, 3);
+      assert.equal(launches.length, 4);
     } finally {
       await provider.close?.();
       if (previous === undefined) Deno.env.delete("XDG_STATE_HOME");

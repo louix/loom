@@ -1,4 +1,8 @@
-import { normalizePortForwards, type PortForwardInput } from "../../../../core/src/host-ports.ts";
+import {
+  normalizePortForwards,
+  type GuestPortForwardInput,
+  type PortForwardInput,
+} from "../../../../core/src/host-ports.ts";
 import type { McpGrants } from "../../../../core/src/mcp-config.ts";
 import type { z } from "zod";
 import type { agentProfileSchema, mcpDefinitionSchema } from "./schema.ts";
@@ -255,7 +259,7 @@ export interface LoomConfig {
     codex?: { artifact: string; smolvm: string };
     extraAllowedHosts: string[];
     hostPorts?: PortForwardInput[];
-    guestPorts?: PortForwardInput[];
+    guestPorts?: GuestPortForwardInput[];
     idleStopMinutes?: number;
     environment?: SessionEnvironment;
   };

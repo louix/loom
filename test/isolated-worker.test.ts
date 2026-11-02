@@ -75,7 +75,11 @@ class FakeEnvironment implements VmEnvironment {
     this.#exited.resolve();
     void this.teardown?.();
   }
-  status = async () => ({ phase: "running", network: [] });
+  status = async () => ({
+    phase: "running",
+    network: [],
+    guestPorts: [{ host: 45000, guest: 3000 }],
+  });
   /** Like the supervisor, the first recorded reason wins. */
   setStopReason(reason: HostStopReason) {
     if (!this.reasons.length) this.reasons.push(reason);
@@ -572,6 +576,8 @@ Deno.test("shells and hooks are independent executions beside the worker, each u
   const [executions] = publish.published;
   assert(executions, "the running environment is published");
   assert.equal(executions.workspace, environment!.binding.workspace);
+  assert.deepEqual(executions.guestPorts, [{ host: 45000, guest: 3000 }]);
+  assert.deepEqual(worker.guestPorts, executions.guestPorts);
   // A shell is a client-run terminal execution in the same environment.
   const client = new AbortController();
   const shell = executions.open(shellRequest, client);

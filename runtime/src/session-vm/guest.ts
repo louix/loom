@@ -119,7 +119,7 @@ for (const entry of hostPorts) {
     index: port,
   }).finished;
 }
-const guestPorts: PortForward[] = JSON.parse(
+const guestPorts: Array<{ host: number; guest: number }> = JSON.parse(
   await Deno.readTextFile("/run/loom/private/guest-ports.json").catch((error) => {
     if (error instanceof Deno.errors.NotFound) return "[]";
     throw error;

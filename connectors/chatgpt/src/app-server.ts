@@ -33,6 +33,7 @@ import type {
   SessionRef,
 } from "@loom/core/types";
 import type { SendOptions } from "@loom/core/message-queue";
+import type { PublishedPort } from "@loom/core/host-ports";
 import { CodexRpcClient } from "./rpc.ts";
 import {
   CodexNativeModes,
@@ -367,6 +368,7 @@ export class CodexAppServerSession implements AgentSession {
   #cwd: string;
   #projectDir: string | undefined;
   #base: string | undefined;
+  readonly #guestPorts: PublishedPort[] | undefined;
   readonly #dispatch: ToolDispatcher;
   #closing = false;
   #status = stateRunning;
@@ -399,6 +401,7 @@ export class CodexAppServerSession implements AgentSession {
     this.#cwd = opts.cwd;
     this.#projectDir = opts.oneShot ? undefined : opts.projectDir;
     this.#base = base;
+    this.#guestPorts = opts.guestPorts;
     this.#dispatch = dispatch;
     this.#rpc = new CodexRpcClient(proc);
     this.#rpc.onServerRequest((method, params, id) => this.#serverRequest(method, params, id));
@@ -537,6 +540,7 @@ export class CodexAppServerSession implements AgentSession {
       loomServer: true,
       ...(ref.model ? { model: ref.model } : {}),
       ...(ref.effort ? { effort: ref.effort } : {}),
+      ...(ref.guestPorts ? { guestPorts: ref.guestPorts } : {}),
     };
     const built = launchOptions(opts.mcpServers, builtinWebSearch, codexHome);
     const proc = launch({ cliPath, args: built.args, cwd: opts.cwd, env: built.env, codexHome });
@@ -1331,6 +1335,7 @@ export class CodexAppServerSession implements AgentSession {
       mode: this.#turnMode ?? this.#currentMode(),
       cwd: this.#cwd,
       ...(this.#base ? { base: this.#base } : {}),
+      ...(this.#guestPorts ? { guestPorts: this.#guestPorts } : {}),
       ...(signal ? { signal } : {}),
       askUser: (q, c) => this.#askUser(q, c, callId, signal),
       requestApproval: (t, a) => this.#requestApproval(t, a, callId, signal),

@@ -205,15 +205,19 @@ cannot request or grant either direction.
     {
       "path": "/absolute/path/to/android-project",
       "access": {
-        "network": { "host_ports": [5037], "guest_ports": [{ "host": 8080, "guest": 3000 }] }
+        "network": { "host_ports": [5037], "guest_ports": [{ "guest": 3000 }] }
       }
     }
   ]
 }
 ```
 
-Both endpoints use IPv4 loopback and carry raw TCP, including ADB and web
-servers. Numbers mean the same port on both sides; named fields remap ports.
+Both endpoints use IPv4 loopback unless a `guest_ports` entry sets `address`
+(for example `"0.0.0.0"` for every host interface), and carry raw TCP, including
+ADB and web servers. Numbers mean the same fixed port on both sides; named fields remap ports.
+For `guest_ports`, omit `host` to allocate a free port per environment. Loom agent
+sessions report resolved mappings in agent context and session details. A resumed
+session tries its previous automatic port first, falling back if it is occupied.
 See [TCP forwarding](session-environments.md#forwarding-host-tcp-ports)
 for examples, reserved ports, conflicts and runtime requirements. `loom config convert`
 preserves both settings when converting from Loom's `config.jsonc`.

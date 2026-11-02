@@ -46,6 +46,7 @@ import { AgentCalls } from "@loom/runtime/agent-tools";
 import { BuiltinTools } from "./tools/builtins.ts";
 import { isReadonly, wrapToolSet } from "./gate.ts";
 import type { TranscriptStore } from "@loom/core/transcript";
+import type { PublishedPort } from "@loom/core/host-ports";
 import { contextLimitFor, estimateTokens } from "@loom/core/tokens";
 import { PendingInteractions } from "@loom/runtime/pending";
 
@@ -117,6 +118,8 @@ export interface AisdkSessionOptions {
   denyTools?: string[];
   /** The repo's base branch, for the `status` tool's ahead/behind counts. */
   base?: string;
+  /** This VM run's resolved `guest_ports`, for the `status` tool. */
+  guestPorts?: PublishedPort[];
   /** null for a throwaway one-shot. */
   store: TranscriptStore | null;
   /** A one-shot ends its stream after the first turn (titling). */
@@ -144,6 +147,7 @@ export class AisdkSession implements AgentSession {
   #mode: SessionMode;
   readonly #cwd: string;
   #base: string | undefined;
+  readonly #guestPorts: PublishedPort[] | undefined;
   readonly #mcpHandles: McpServerHandle[];
   readonly #loomServer: boolean;
   readonly #store: TranscriptStore | null;
@@ -220,6 +224,7 @@ export class AisdkSession implements AgentSession {
     this.#mode = opts.mode;
     this.#cwd = opts.cwd;
     this.#base = opts.base;
+    this.#guestPorts = opts.guestPorts;
     this.#mcpHandles = opts.mcpHandles;
     this.#loomServer = opts.loomServer;
     this.#store = opts.store;
@@ -611,6 +616,7 @@ export class AisdkSession implements AgentSession {
           this.#loomDeps = {
             cwd: this.#cwd,
             ...(this.#base ? { base: this.#base } : {}),
+            ...(this.#guestPorts ? { guestPorts: this.#guestPorts } : {}),
             askUser: (q, c) => this.#askUser(q, c),
           };
           Object.assign(base, buildLoomTools(this.#loomDeps));

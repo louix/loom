@@ -1,4 +1,4 @@
-import type { PortForwardInput } from "./host-ports.ts";
+import type { GuestPortForwardInput, PortForwardInput } from "./host-ports.ts";
 import { z } from "zod";
 import type { VmTermination } from "./vm-termination.ts";
 import type { SessionEnvironment } from "./session-environment.ts";
@@ -89,7 +89,7 @@ export interface ConnectorConfig extends ConnectorWireConfig {
     repoRoot: string;
     extraAllowedHosts?: string[];
     hostPorts?: PortForwardInput[];
-    guestPorts?: PortForwardInput[];
+    guestPorts?: GuestPortForwardInput[];
     environment?: SessionEnvironment;
   };
 }
@@ -101,6 +101,8 @@ export interface ConnectorConfig extends ConnectorWireConfig {
 export interface SessionExecutions {
   /** The host workspace the environment was started for. */
   readonly workspace: string;
+  /** Live host loopback listeners; withdrawn with the environment. */
+  readonly guestPorts?: import("./host-ports.ts").PublishedPort[];
   /** A bounded guest shell command; its lease is held until the process settles. */
   command(
     command: string,

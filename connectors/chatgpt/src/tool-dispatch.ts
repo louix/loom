@@ -11,11 +11,13 @@ import { statusInWorktree } from "@loom/core/status";
 import { policy } from "@loom/runtime/policy";
 import { isAgentTool } from "@loom/runtime/agent-tools";
 import type { AgentCallResult, PermissionDecision, SessionMode } from "@loom/core/types";
+import type { PublishedPort } from "@loom/core/host-ports";
 
 export interface ToolDispatchContext {
   mode: SessionMode;
   cwd: string;
   base?: string;
+  guestPorts?: PublishedPort[];
   /** The admitting turn's abort signal — set once its turn ends (via
    *  `interrupt()`/`close()`), which can happen at any point during this
    *  dispatch's own execution, not just before it starts. A dispatcher
@@ -132,6 +134,7 @@ export const localToolDispatcher: ToolDispatcher = async (tool, args, ctx) => {
   if (tool === "status") {
     const res = statusInWorktree(ctx.cwd, {
       ...(ctx.base ? { base: ctx.base } : {}),
+      ...(ctx.guestPorts ? { guestPorts: ctx.guestPorts } : {}),
       ...(args["patch"] === true ? { patch: true } : {}),
     });
     return { text: res.text, ok: res.ok };

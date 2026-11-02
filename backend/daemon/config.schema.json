@@ -560,7 +560,7 @@
                 },
                 "guest_ports": {
                   "default": [],
-                  "description": "Host-to-guest loopback TCP forwards: a port number or { host, guest }. Repo lists replace global lists.",
+                  "description": "Host-to-guest loopback TCP forwards: a port number or { host, guest }. Omit host to allocate a free port per session. Repo lists replace global lists.",
                   "maxItems": 64,
                   "type": "array",
                   "items": {
@@ -582,9 +582,14 @@
                             "type": "integer",
                             "minimum": 1,
                             "maximum": 65535
+                          },
+                          "address": {
+                            "type": "string",
+                            "format": "ipv4",
+                            "pattern": "^(?:(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])\\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])$"
                           }
                         },
-                        "required": ["host", "guest"],
+                        "required": ["guest"],
                         "additionalProperties": false
                       }
                     ]
@@ -2192,7 +2197,7 @@
                       },
                       "guest_ports": {
                         "default": [],
-                        "description": "Host-to-guest loopback TCP forwards: a port number or { host, guest }. Repo lists replace global lists.",
+                        "description": "Host-to-guest loopback TCP forwards: a port number or { host, guest }. Omit host to allocate a free port per session. Repo lists replace global lists.",
                         "maxItems": 64,
                         "type": "array",
                         "items": {
@@ -2214,9 +2219,14 @@
                                   "type": "integer",
                                   "minimum": 1,
                                   "maximum": 65535
+                                },
+                                "address": {
+                                  "type": "string",
+                                  "format": "ipv4",
+                                  "pattern": "^(?:(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])\\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])$"
                                 }
                               },
-                              "required": ["host", "guest"],
+                              "required": ["guest"],
                               "additionalProperties": false
                             }
                           ]

@@ -33,7 +33,7 @@ export type StartupStage = keyof typeof startupStages;
 export const startupFailures = {
   files: fileLimitDiagnostic,
   guestPort:
-    "Could not bind a network.guest_ports host listener: a port is occupied or unavailable. Choose a different host port.",
+    "Could not bind a network.guest_ports host listener: a port is occupied or unavailable. Use { guest: PORT } for automatic allocation, or choose a different host port.",
   devices:
     "The VM backend ran out of virtual devices (IRQs). Use a worktree inside the repo to reduce filesystem mounts.",
   space: "The VM backend ran out of disk space. Free space on the host before retrying.",

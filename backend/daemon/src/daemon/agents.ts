@@ -16,6 +16,7 @@ import type { QueueDelivery, QueueHoldCause } from "@loom/core/message-queue";
 import type { SessionState, StopCause } from "@loom/core/session-state";
 import type { GitFacts, SessionSnapshot, TranscriptEntry } from "@loom/core/wire";
 import type { Logger } from "@loom/core/logger";
+import { showGuestPort } from "@loom/core/host-ports";
 import { showLoomMessage, type AgentReportEvent, type LoomMessage } from "@loom/core/loom-message";
 import {
   agentAuthor,
@@ -683,6 +684,7 @@ export class AgentSupervision {
       `${s.id} "${s.title ?? ""}" · profile ${s.agentProfile ?? SELF_PROFILE}${s.taskId ? ` · task ${s.taskId}` : ""}`,
       `  state: ${state} · ${s.turns} turn${s.turns === 1 ? "" : "s"} · ${cost}`,
       ...(s.branch ? [`  branch: ${s.branch}${diff ? ` · ${diff}` : ""}`] : []),
+      ...(s.guestPorts ?? []).map((p) => `  ports: ${showGuestPort(p)}`),
       ...(final ? [`  last message: ${oneLine(final, 300)}`] : []),
     ].join("\n");
   }
