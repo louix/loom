@@ -62,3 +62,59 @@ test("session.taskOutput asks the live adapter, or says why it cannot", async ()
     await h.cleanup();
   }
 });
+
+test("session.stopTask stops only its background task and preserves failures for retry", async () => {
+  const h = await makeHarness();
+  const c = await LoomClient.connect({
+    repoRoot: h.repoRoot,
+    sockPath: h.sockPath,
+    autospawn: false,
+  });
+  try {
+    const provider = (await h.daemon.providers.get("fake")) as FakeProvider;
+    const snap = await c.request<SessionSnapshot>("session.create", {
+      prompt: "start",
+      provider: "fake",
+    });
+    await waitFor(() => provider.session(snap.id) !== undefined);
+    const fs = provider.session(snap.id)!;
+    const tasks = [
+      { id: "one", kind: "shell" as const, title: "watch" },
+      { id: "two", kind: "shell" as const, title: "server" },
+    ];
+    fs.emit({ type: "background_tasks", tasks });
+    // Round-trip snapshots until the background task event has been folded.
+    const deadline = Date.now() + 2_000;
+    while (
+      !(await c.request<SessionSnapshot>("session.get", { id: snap.id })).backgroundTasks.length
+    ) {
+      assert.ok(Date.now() < deadline, "background tasks should reach the manager");
+      await delay(5);
+    }
+    const stop = (taskId: string) => c.request("session.stopTask", { id: snap.id, taskId });
+    await assert.rejects(stop("one"), /does not support/);
+    let fail = true;
+    const stopped: string[] = [];
+    Object.assign(fs, {
+      stopTask: async (taskId: string) => {
+        if (fail) throw new Error("stop refused");
+        stopped.push(taskId);
+        fs.emit({ type: "background_tasks", tasks: tasks.filter((task) => task.id !== taskId) });
+      },
+    });
+    await assert.rejects(stop("one"), /stop refused/);
+    await assert.rejects(stop("missing"), /no longer running/);
+    fail = false;
+    await stop("one");
+    assert.deepEqual(stopped, ["one"]);
+    const after = await c.request<SessionSnapshot>("session.get", { id: snap.id });
+    assert.notEqual(after.status.kind, "interrupted");
+    assert.deepEqual(
+      after.backgroundTasks.map((task) => task.id),
+      ["two"],
+    );
+  } finally {
+    await c.close();
+    await h.cleanup();
+  }
+});

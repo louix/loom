@@ -405,6 +405,10 @@ test(
       assert.deepEqual(await s.readTaskOutput!("agent-1"), { t: "unreadable" });
       await assert.rejects(s.readTaskOutput!("boom"));
       assert.deepEqual(await s.readTaskOutput!("bash-1").then((r) => r.t), "output");
+      const beforeStop = s.snapshot().status.kind;
+      await assert.rejects(s.stopTask!("boom"), /worker stopTask failed/);
+      await s.stopTask!("bash-1");
+      assert.equal(s.snapshot().status.kind, beforeStop, "stopping a task preserves the turn");
     } finally {
       await s.close();
     }

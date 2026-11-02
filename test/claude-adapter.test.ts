@@ -1914,3 +1914,49 @@ test("Claude continues an approved classifier-stopped turn once and expires unus
     await reader;
   }
 });
+
+test("stopping one background task leaves its sibling and the parent turn running", async (t) => {
+  const stopped: string[] = [];
+  let interrupts = 0;
+  let fail = true;
+  const { s, q, seen } = await setupLive(t, (q) => {
+    q.interrupt = async () => {
+      interrupts++;
+      return { still_queued: [] };
+    };
+    Object.assign(q, {
+      stopTask: async (id: string) => {
+        if (fail) throw new Error("stop rejected");
+        stopped.push(id);
+      },
+    });
+  });
+  for (const id of ["one", "two"])
+    q.push({
+      type: "system",
+      subtype: "task_started",
+      task_id: id,
+      task_type: "local_bash",
+      description: id,
+    });
+  q.push({
+    type: "system",
+    subtype: "background_tasks_changed",
+    tasks: ["one", "two"].map((id) => ({ task_id: id, task_type: "local_bash", description: id })),
+  });
+  await delay(30);
+  await assert.rejects(s.stopTask!("one"), /stop rejected/);
+  assert.ok(!seen.some((e) => e.type === "background_task_ended"));
+  fail = false;
+  await s.stopTask!("one");
+  await delay(20);
+  assert.deepEqual(stopped, ["one"]);
+  assert.equal(interrupts, 0);
+  assert.ok(
+    seen.some(
+      (e) => e.type === "background_task_ended" && e.taskId === "one" && e.status === "stopped",
+    ),
+  );
+  assert.ok(!seen.some((e) => e.type === "background_task_ended" && e.taskId === "two"));
+  await s.send("continue");
+});

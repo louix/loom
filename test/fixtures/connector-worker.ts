@@ -64,6 +64,10 @@ class ScriptedSession extends FakeSession {
   async refreshPlanUsage() {
     this.emit({ type: "rate_limit", status: "allowed", window: "five_hour", utilization: 7 });
   }
+  async stopTask(taskId: string) {
+    if (taskId === "boom") throw new Error("fixture stop failure");
+    this.emit({ type: "assistant_text", text: `stopped ${taskId}` });
+  }
   async readTaskOutput(taskId: string) {
     if (taskId === "boom") throw new Error("fixture read failure");
     return taskId === "bash-1"

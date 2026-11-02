@@ -957,6 +957,8 @@ export const mkFleetHandle = ({
     if (offset !== nav.offset) dispatch({ t: "qnavSet", nav: { ...nav, offset } });
   };
 
+  // Keep a task palette bound to the child it opened on as task rows drain.
+  let paletteTaskKey: string | null = null;
   /** The Space palette's rows: every relevant command for `target`. */
   const paletteItems = (target: string | null, s: TuiState = state): PickItem[] =>
     paletteActions(commandCtx(s), target).map((a) => ({
@@ -965,6 +967,14 @@ export const mkFleetHandle = ({
       ...(a.keys ? { hint: a.keys } : {}),
       description: a.description,
       ...(a.disabled ? { disabled: a.disabled } : {}),
+      ...(a.id === "interrupt" &&
+      paletteTaskKey !== null &&
+      (s.selectedId !== target || s.selectedChild !== paletteTaskKey)
+        ? {
+            label: "interrupt task",
+            disabled: "The selected background task is no longer running.",
+          }
+        : {}),
     }));
 
   /** An open palette keeps describing its target as the fleet changes, so a
@@ -982,7 +992,8 @@ export const mkFleetHandle = ({
     return { ...s, overlay: { t: "picker", picker: { ...next, index: Math.max(0, index) } } };
   };
 
-  const openPalette = (): void =>
+  const openPalette = (): void => {
+    paletteTaskKey = focusedChildOf(state)?.source === "bg" ? state.selectedChild : null;
     show({
       t: "picker",
       picker: makePicker({
@@ -992,6 +1003,7 @@ export const mkFleetHandle = ({
         dest: { t: "command", target: state.selectedId },
       }),
     });
+  };
 
   /** The latest Refresh models request per provider. Only that request's
    *  reply speaks: a superseded or cancelled one stays quiet. Neither can touch
@@ -1751,11 +1763,17 @@ export const mkFleetHandle = ({
         if (!plan) return note("no plan pending", "dim");
         return void show({ t: "plan", plan });
       }
-      case "interrupt":
+      case "interrupt": {
+        const task = s.id === state.selectedId ? focusedChildOf(state) : null;
         return perform(async () => {
+          if (task?.source === "bg") {
+            await client.request("session.stopTask", { id: s.id, taskId: task.id });
+            return "task interrupted";
+          }
           await client.request("session.interrupt", { id: s.id });
           return "interrupted";
         });
+      }
       case "compact":
         return void show({
           t: "prompt",

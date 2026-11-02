@@ -3445,7 +3445,6 @@ test("shell access follows workspace availability and stays available while an a
 // are withheld (they would act on the parent); request decisions and the
 // verbs that name the session's workspace / branch / id stay.
 const CHILD_WITHHELD = [
-  "interrupt",
   "send",
   "compact",
   "keepwarm",
@@ -3499,9 +3498,9 @@ test("a focused child row withholds the session verbs that would act on its pare
     assert.doesNotMatch(after.find((x) => x.id === id)?.disabled ?? "", /session row/, id);
 });
 
-test("a focused child keeps send and interrupt off the bars and their keys idle", () => {
-  let s = reduce(ctxFor(fanout), { t: "childEnter" });
-  assert.equal(s.selectedChild, "bg:task1");
+test("a foreground sub-agent keeps send and interrupt off the bars and their keys idle", () => {
+  let s = reduce(ctxFor(fanout), { t: "selectChild", sessionId: "fan", key: "sub:t1" });
+  assert.equal(s.selectedChild, "sub:t1");
   const bar = browseBar(s).map((b) => b.command?.id);
   assert.ok(!bar.includes("send") && !bar.includes("interrupt"), bar.join(" "));
   assert.equal(bar[0], "childExit", "← leads the bar while drilled in");
@@ -3525,7 +3524,7 @@ test("a focused child keeps send and interrupt off the bars and their keys idle"
   // Another session's palette is unaffected by this one's drill-down.
   const other = snap({ id: "other", status: "running" });
   s = reduce(s, fleet([fanout, other], [ACTIONS_PROVIDER]));
-  assert.equal(s.selectedChild, "bg:task1");
+  assert.equal(s.selectedChild, "sub:t1");
   assert.equal(describeCommand(s, "interrupt", "other")?.disabled, undefined);
   // Stepping back to the parent row restores them.
   s = reduce(s, { t: "childExit" });

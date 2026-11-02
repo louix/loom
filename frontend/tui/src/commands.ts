@@ -32,6 +32,7 @@ import {
   defaultProviderId,
   fleetProviders,
   fleetSessions,
+  focusedChildOf,
   modelPickItems,
   modelSupportsEffort,
   providerInfo,
@@ -567,12 +568,9 @@ const sessionAvailability = (
       ? (s.resumeBlockedReason ?? "This session is read-only; fork to continue.")
       : undefined;
   const settled = first(stopping, request);
-  // Drilled into one of the target's child rows, the verbs that read as acting
-  // on that child — talking, stopping, steering, renaming, removing — are
-  // withheld: children carry no actions of their own, and these would quietly
-  // act on the parent instead. The session's pending request (drawn for the
-  // whole session, and often a sub-agent's own ask) and the workspace / branch
-  // / id verbs, which name the session outright, stay.
+  // Child rows withhold verbs that would quietly act on their parent.
+  // Background tasks have their own interrupt action; the other session
+  // verbs still require selecting the session row.
   const child = ctx.selectedChild != null && s.id === ctx.selectedId;
   const onChild = (what: string): string | undefined =>
     child ? `Select the session row (←) to ${what}.` : undefined;
@@ -596,6 +594,9 @@ const sessionAvailability = (
         bar: true,
       };
     case "interrupt": {
+      const task = child ? focusedChildOf(ctx) : null;
+      if (task?.source === "bg")
+        return { label: "interrupt task", disabled: s.stopping ? stopping : undefined, bar: true };
       let label = "interrupt";
       if (s.stopping) label = "stopping…";
       else if (s.stopFailed) label = "retry interrupt";

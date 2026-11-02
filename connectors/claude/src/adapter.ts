@@ -1798,6 +1798,12 @@ class ClaudeSession implements AgentSession {
       this.#outbox.push({ type: "input_discarded", sessionId: this.id, ts: Date.now(), items });
   }
 
+  stopTask(id: string): Promise<void> {
+    if (this.#closing || !this.#taskIds.has(id))
+      return Promise.reject(new Error("The background task is no longer running."));
+    return this.#stopTask(id);
+  }
+
   #stopTask(id: string): Promise<void> {
     const pending = this.#taskStops.get(id);
     if (pending) return pending;

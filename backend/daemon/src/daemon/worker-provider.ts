@@ -289,6 +289,9 @@ export class RemoteWorkerSession implements AgentSession {
     if (frame.kind !== "taskOutput") throw new Error("invalid task output response");
     return frame.output;
   }
+  async stopTask(taskId: string): Promise<void> {
+    await this.#request({ method: "stopTask", args: [taskId] });
+  }
   async interrupt(): Promise<void> {
     await this.#request({ method: "interrupt", args: [] });
   }

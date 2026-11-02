@@ -386,6 +386,9 @@ export interface AgentSession {
    * turn. Absent on adapters that cannot read task output.
    */
   readTaskOutput?(taskId: string): Promise<TaskOutput>;
+  /** Stop one background task without interrupting the session's turn.
+   * Resolve after cancellation is confirmed; reject if unsupported or failed. */
+  stopTask?(taskId: string): Promise<void>;
   /**
    * Stop the current turn. Together with {@link close}, this MUST cancel any
    * in-flight long-running operation — a turn, a compaction, a sub-agent, a

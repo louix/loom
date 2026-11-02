@@ -240,6 +240,11 @@ export const serveWorker = async (
         if (!closing) await writer.send({ kind: "taskOutput", id: r.id, output });
         return;
       }
+      case "stopTask":
+        if (!session.stopTask)
+          throw new Error("This provider does not support stopping individual tasks.");
+        await session.stopTask(...r.args);
+        break;
       case "interrupt":
         await session.interrupt();
         break;

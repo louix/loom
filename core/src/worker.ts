@@ -96,6 +96,7 @@ export const workerCommandSchema = z.discriminatedUnion("method", [
   command("setBase", z.tuple([z.string()])),
   command("refreshPlanUsage", z.tuple([])),
   command("readTaskOutput", z.tuple([z.string().min(1).max(256)])),
+  command("stopTask", z.tuple([z.string().min(1).max(256)])),
   command("interrupt", z.tuple([])),
   command("close", z.tuple([])),
   command("listModels", z.tuple([])),

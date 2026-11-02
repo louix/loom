@@ -1651,6 +1651,17 @@ export class SessionManager {
     return true;
   }
 
+  /** Stop just the named background task; the provider's events update its row. */
+  async stopTask(id: string, taskId: string): Promise<void> {
+    const run = this.#require(id);
+    if (run.ended) throw new Error("The session is not running.");
+    if (!run.backgroundTasks.some((task) => task.id === taskId))
+      throw new Error("The background task is no longer running.");
+    if (!run.session.stopTask)
+      throw new Error("This provider does not support stopping individual tasks.");
+    await run.session.stopTask(taskId);
+  }
+
   /**
    * The end of a background task's output, from the live adapter. Null when
    * the session is not running: its tasks went with it.

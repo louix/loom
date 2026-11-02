@@ -6158,3 +6158,64 @@ test("Notes folders collapse, reveal search and link targets, and create nested 
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("i on a background task stops that task; i on its session interrupts the session", async () => {
+  const fake = mkFakeClient();
+  fake.deliver(
+    fleetOf(
+      snap({
+        id: "a",
+        status: "working_background",
+        backgroundTasks: [
+          { id: "one", kind: "shell", title: "watch" },
+          { id: "two", kind: "shell", title: "server" },
+        ],
+      }),
+    ),
+  );
+  const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+  const stop = handle.effectStart();
+  try {
+    handle.handleKey("", { rightArrow: true } as Key);
+    const action = handle.getView().bar.find((b) => b.command?.id === "interrupt");
+    assert.equal(action?.label, "interrupt task");
+    handle.handleKey("i", {} as Key);
+    await delay(0);
+    assert.deepEqual(
+      fake.of("session.stopTask").map((r) => r.params),
+      [{ id: "a", taskId: "one" }],
+    );
+    assert.equal(fake.of("session.interrupt").length, 0);
+    handle.handleKey("", { leftArrow: true } as Key);
+    handle.handleKey("i", {} as Key);
+    assert.equal(fake.of("session.interrupt")[0]?.params["id"], "a");
+  } finally {
+    stop();
+  }
+});
+
+test("a task ending under an open palette cannot turn its stop into a parent interrupt", () => {
+  const fake = mkFakeClient();
+  fake.deliver(
+    fleetOf(
+      snap({
+        id: "a",
+        status: "running",
+        backgroundTasks: [{ id: "one", kind: "shell", title: "watch" }],
+      }),
+    ),
+  );
+  const handle = mkFleetHandle({ client: fake.client, term: fakeTerm });
+  const stop = handle.effectStart();
+  try {
+    handle.handleKey("", { rightArrow: true } as Key);
+    handle.handleKey(" ", {} as Key);
+    handle.handleKey("interrupt", {} as Key);
+    fake.deliver(fleetOf(snap({ id: "a", status: "running", backgroundTasks: [] })));
+    handle.handleKey("", { return: true } as Key);
+    assert.equal(fake.of("session.interrupt").length, 0);
+    assert.equal(fake.of("session.stopTask").length, 0);
+  } finally {
+    stop();
+  }
+});

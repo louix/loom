@@ -96,13 +96,18 @@ session pane; `Esc` snaps back. `→` / `←` are unchanged — they still only 
 into a session's children. Replying to a session jumps to the session pane so
 you can see what you type.
 
-Provider tasks have no session verbs of their own. Loom sub-agents are full sessions. While one is selected, the session verbs
-that would look like they act on the child — compose (`⏎`), interrupt (`i`),
-compact, mode / model / effort / provider, undo, fork, rename, comment, the
-queue (`q`, release, clear), archive, delete — are off the key bar and do nothing on their keys; the
-palette lists them as unavailable until you step back to the session row with
-`←`. Approving or answering the session's pending request, opening a shell and
-copying its branch or id still work.
+On a background-task row, `i` (or **interrupt task** in the palette) stops only
+that task, leaving the session and its other tasks running. The provider must
+support stopping individual tasks; a failed stop shows an error and can be retried.
+On the session row, `i` interrupts all of the session's work.
+
+Loom sub-agents are full sessions. Other provider child rows have no session
+verbs of their own. While a provider child is selected, compose (`⏎`), compact,
+mode / model / effort / provider, undo, fork, rename, comment, queue
+(`q`, release, clear), archive and delete are unavailable until you return to
+the session row with `←`. Foreground provider sub-agents also require returning
+to the session row to interrupt. Approving or answering the session's pending
+request, opening a shell and copying its branch or id still work.
 
 ### Acting on the selected session (footer verbs)
 

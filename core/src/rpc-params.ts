@@ -126,6 +126,7 @@ export const rpcParamsSchemas = {
   "session.queueEntry": session.extend({ entryId: text }),
   /** The end of a running background task's output (`TaskOutput`). */
   "session.taskOutput": session.extend({ taskId: z.string().min(1).max(256) }),
+  "session.stopTask": session.extend({ taskId: z.string().min(1).max(256) }),
   "session.queueEdit": queueEntry.extend({
     text: z.string(),
     images: imageAttachmentsSchema.optional(),

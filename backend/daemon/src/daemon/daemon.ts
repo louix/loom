@@ -4847,6 +4847,18 @@ export class Daemon {
       return { ...this.#enrich(this.#registry.mustGet(params.id), false), ...sent };
     });
 
+    d.register("session.stopTask", async (params) => {
+      this.#registry.mustGet(params.id);
+      try {
+        await this.#sessions.stopTask(params.id, params.taskId);
+      } catch (err) {
+        throw new RpcError("provider_error", err instanceof Error ? err.message : String(err), {
+          sessionId: params.id,
+        });
+      }
+      return { ok: true };
+    });
+
     d.register("session.taskOutput", async (params) => {
       this.#registry.mustGet(params.id);
       let output;
