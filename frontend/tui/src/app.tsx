@@ -1,3 +1,7 @@
+import { mouseReport, terminalModes } from "./mouse.ts";
+import { useProgramTabs } from "./program-tabs.ts";
+import { Notes } from "./notes-view.tsx";
+import { spawnDirectoryEditor } from "./editor-handoff.ts";
 import { InspectionPane, SESSION_TABS } from "./session-tabs.tsx";
 import { ImageEnvironment } from "./images.tsx";
 /**
@@ -65,6 +69,7 @@ export const App = ({
   checkEnvironment,
   /** Test seam: override the real `$EDITOR` handoff. */
   openEditor: openEditorOverride,
+  openNoteEditor,
   historyPageSize,
 }: {
   client: FleetClient;
@@ -84,10 +89,13 @@ export const App = ({
   environmentWarning?: string | null;
   checkEnvironment?: () => Promise<string | null>;
   openEditor?: EditorHandoff;
+  /** Override the persistent-file editor handoff. */
+  openNoteEditor?: (path: string) => Promise<void>;
   /** Test seam: rows per durable-history page (see {@link mkFleetHandle}). */
   historyPageSize?: number;
 }): ReactNode => {
   const { exit, suspendTerminal } = useApp();
+  const [tab, setTab] = useProgramTabs();
   const [imagesSuspended, setImagesSuspended] = useState(false);
   const imagesUnmounted = useRef<(() => void) | null>(null);
   useEffect(() => {
@@ -157,16 +165,27 @@ export const App = ({
       focus.set(input === "[I");
       return;
     }
-    handle.handleKey(input, key);
+    const mouse = mouseReport(input);
+    if (mouse?.y === 1 && mouse.kind === "button" && mouse.pressed && mouse.button === 0) {
+      const cols = stdout.columns || 100;
+      if (mouse.x >= cols - 20 && mouse.x < cols) {
+        setTab(mouse.x < cols - 9 ? "fleet" : "notes");
+        return;
+      }
+    }
+    if (tab === "fleet") handle.handleKey(input, key);
   });
   // Bracketed pastes bypass focus decoding, even for literal "[I" / "[O".
-  usePaste((input) => handle.handleKey(input, PASTE_KEY));
+  usePaste((input) => {
+    if (tab === "fleet") handle.handleKey(input, PASTE_KEY);
+  });
   const view = useSyncExternalStore(handle.subscribe, handle.getView);
 
   return (
     <ImageEnvironment
       enabled={images}
       visible={
+        tab === "fleet" &&
         !imagesSuspended &&
         (view.ui.overlay.t === "browse" || promptOnPane(openPrompt(view.ui.overlay)))
       }
@@ -174,7 +193,28 @@ export const App = ({
       onCellRatio={handle.imageCellRatio.set}
     >
       <PaletteContext.Provider value={PALETTES[view.ui.theme]}>
-        <Layout view={view} handle={handle} />
+        {tab === "fleet" && <Layout view={view} handle={handle} />}
+        <Notes
+          active={tab === "notes"}
+          root={projectFiles?.() ?? null}
+          width={view.cols}
+          height={view.rows}
+          header={headerView(view.ui.fleet)}
+          quit={exit}
+          edit={
+            openNoteEditor ??
+            (async (path) => {
+              if (stdout.isTTY) stdout.write(terminalModes(compat).off);
+              try {
+                await suspendTerminal(() => {
+                  spawnDirectoryEditor(path);
+                });
+              } finally {
+                if (stdout.isTTY) stdout.write(terminalModes(compat).on);
+              }
+            })
+          }
+        />
       </PaletteContext.Provider>
     </ImageEnvironment>
   );

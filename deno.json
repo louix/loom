@@ -27,6 +27,8 @@
     "react": "npm:react@19.3.0",
     "@types/react": "npm:@types/react@19.3.0",
     "marked": "npm:marked@18.0.14",
+    "micromark": "npm:micromark@4.0.3",
+    "micromark-util-decode-string": "npm:micromark-util-decode-string@2.0.1",
     "entities": "npm:entities@8.1.0",
     "lowlight": "npm:lowlight@3.3.0",
     "string-width": "npm:string-width@8.3.0",

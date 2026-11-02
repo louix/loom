@@ -27,6 +27,45 @@ when you launch `loom` outside a Git repository. Open a repository once with
 
 `⇧⇥`, `⌥m` and `⌥t` change mode, model and effort in both browse and prompt views.
 
+## Program tabs and notes
+
+`F1` opens Fleet; `F4` opens Notes. Click their header labels to switch, too.
+Selections and scroll positions survive switching tabs. Config is reserved for a
+later release.
+
+Notes browse Markdown files in the repository's shared project-files directory,
+with expandable folders on the left and rendered content and modification time on the right.
+Notes sort newest modified first within each folder; folders sort by their newest note.
+Search reveals matching notes even in collapsed folders.
+Edits use `$VISUAL`, then `$EDITOR`, falling back to `vi`; save and exit the editor
+to return. Notes refresh after editing and while visible.
+
+| Key                          | Action in Notes                                                         |
+| ---------------------------- | ----------------------------------------------------------------------- |
+| `↑` / `↓`, `k` / `j`         | Select a note or folder                                                 |
+| `n`                          | Create and edit a note; path starts in the selected folder              |
+| `Alt+e`                      | Edit the selected note                                                  |
+| `x`                          | Archive the note, or restore an archived note                           |
+| `X`                          | Delete the selected note, with Enter to confirm and Escape to cancel    |
+| `/`                          | Find by path or content                                                 |
+| `Space`                      | Show/hide archived notes (Enter selects)                                |
+| `Tab`                        | Toggle the list and full-width content                                  |
+| `PgUp` / `PgDn`, mouse wheel | Scroll content                                                          |
+| `Home` / `End`               | Jump to the beginning/end                                               |
+| `→` / `l` / `Enter`          | Open a folder, or choose a Markdown link on a note                      |
+| `←` / `h`                    | Collapse a folder, select its parent, or go back after following a link |
+| `Escape`                     | Back to the previous note and scroll position                           |
+
+Relative Markdown links and heading fragments navigate within the project notes.
+Links to archived notes open them with an Archived indicator. Archive/restore moves
+notes into/out of `archive/`, retaining subdirectories and adjusting local Markdown
+links. Existing destinations are never overwritten.
+
+Archived notes are hidden initially. Agent instructions ask agents to exclude
+`archive/` from normal browsing/search, consult it explicitly for historical
+context, and archive clearly superseded or resolved notes while maintaining links.
+This is a context convention, not a filesystem access restriction.
+
 ## Browse (the fleet view)
 
 ### Navigation

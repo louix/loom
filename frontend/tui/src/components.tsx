@@ -169,32 +169,48 @@ const gitLineText = (s: SessionSnapshot): string => {
 // header
 // ---------------------------------------------------------------------------
 
-export const Header = memo(({ view, width }: { view: HeaderView; width: number }): ReactNode => {
-  const lamp = lampFor(view.connection);
-  return (
-    <Box width={width} justifyContent="space-between" paddingX={1}>
-      <Box gap={1}>
-        <Line tone="accent" bold>
-          {"▍ loom"}
+export const Header = memo(
+  ({
+    view,
+    width,
+    active = "fleet",
+  }: {
+    view: HeaderView;
+    width: number;
+    active?: "fleet" | "notes";
+  }): ReactNode => {
+    const lamp = lampFor(view.connection);
+    return (
+      <Box width={width} height={1} overflow="hidden" justifyContent="space-between" paddingX={1}>
+        <Box gap={1}>
+          <Line tone="accent" bold>
+            {"▍ " + view.repo}
+          </Line>
+          {view.waiting || view.running || view.background || view.restartPending.length ? (
+            <Text tone="faint">{"·"}</Text>
+          ) : null}
+          {view.restartPending.length ? (
+            <Line tone="warn">{`R restart to apply ${view.restartPending.join(", ")}`}</Line>
+          ) : null}
+          {view.waiting ? <Text tone="await_">{`◆ ${view.waiting}`}</Text> : null}
+          {view.running ? <Text tone="accent">{`● ${view.running}`}</Text> : null}
+          {view.background ? <Text tone="accentDim">{`◐ ${view.background}`}</Text> : null}
+          <Text tone="faint">{"·"}</Text>
+          <Line tone={lamp.tone}>{lamp.text}</Line>
+        </Box>
+        <Line>
+          {(["fleet", "notes"] as const).map((tab) => (
+            <Text key={tab} tone={active === tab ? "accent" : "dim"} bold={active === tab}>
+              {active === tab ? "[" : " "}
+              {tab === "fleet" ? "F1 FLEET" : "F4 NOTES"}
+              {active === tab ? "]" : " "}
+            </Text>
+          ))}
         </Line>
-        <Line tone="dim">{`v${view.version}`}</Line>
-        <Text tone="faint">{"·"}</Text>
-        <Line tone="text">{view.repo}</Line>
       </Box>
-      <Box gap={1}>
-        {view.restartPending.length ? (
-          <Line tone="warn">{`R restart to apply ${view.restartPending.join(", ")}`}</Line>
-        ) : null}
-        <Line tone="dim">{`${view.sessions} sessions`}</Line>
-        {view.waiting ? <Text tone="await_">{`◆ ${view.waiting}`}</Text> : null}
-        {view.running ? <Text tone="accent">{`● ${view.running}`}</Text> : null}
-        {view.background ? <Text tone="accentDim">{`◐ ${view.background}`}</Text> : null}
-        <Text tone="faint">{"·"}</Text>
-        <Line tone={lamp.tone}>{lamp.text}</Line>
-      </Box>
-    </Box>
-  );
-});
+    );
+  },
+);
 
 // ---------------------------------------------------------------------------
 // fleet list (left column)

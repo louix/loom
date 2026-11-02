@@ -4,7 +4,7 @@ import { outboxOf } from "@loom/tui/composer";
 import { describe, test as nodeTest } from "node:test";
 import { EventEmitter } from "node:events";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -196,7 +196,7 @@ describe("tui-render", { concurrency: 4 }, () => {
     ]);
     try {
       await settle();
-      assert.match(stdout.last, /▍ loom/);
+      assert.match(stdout.last, /F1 FLEET/);
       assert.match(stdout.last, /AWAITING INPUT/);
       assert.match(stdout.last, /write the release notes/);
       assert.match(stdout.last, /approve/);
@@ -258,7 +258,7 @@ describe("tui-render", { concurrency: 4 }, () => {
       // no changed frame to await; let it resolve before feeding the next key.
       await delay(60);
       await settle();
-      assert.match(stdout.last, /▍ loom/, "still rendering after esc — the UI did not exit");
+      assert.match(stdout.last, /F1 FLEET/, "still rendering after esc — the UI did not exit");
 
       stdin.feed("n");
       await settle();
@@ -274,7 +274,7 @@ describe("tui-render", { concurrency: 4 }, () => {
 
       stdin.feed("\x05"); // ⌃e outside the prompt: Ctrl is editing-only, inert here
       await settle();
-      assert.match(stdout.last, /▍ loom/, "still rendering — ⌃e did nothing in browse");
+      assert.match(stdout.last, /F1 FLEET/, "still rendering — ⌃e did nothing in browse");
       assert.doesNotMatch(stdout.last, /new session/);
     } finally {
       app.unmount();
@@ -1258,7 +1258,7 @@ describe("tui-render", { concurrency: 4 }, () => {
         stdout,
         (text) =>
           fs?.planResponses.at(-1)?.decision.action === "handoff" &&
-          text.includes(`${before + 1} sessions`),
+          text.includes("engine oai / m1"),
       );
       assert.deepEqual(fs?.planResponses.at(-1)?.decision, { action: "handoff" });
       const after = await client.request<SessionSnapshot[]>("session.list");
@@ -1414,18 +1414,18 @@ describe("tui-render", { concurrency: 4 }, () => {
     ]);
     try {
       await settle();
-      await waitFor(stdout, /FLEET/);
+      await waitFor(stdout, /│ FLEET/);
 
       stdin.feed("\t"); // overview → session: detail + events, no fleet column
-      await waitFor(stdout, (t) => /engine fake/.test(t) && !/FLEET/.test(t));
+      await waitFor(stdout, (t) => /engine fake/.test(t) && !/│ FLEET/.test(t));
 
       stdin.feed("\t"); // …and back: the fleet list returns
-      await waitFor(stdout, (t) => /FLEET/.test(t) && /engine fake/.test(t));
+      await waitFor(stdout, (t) => /│ FLEET/.test(t) && /engine fake/.test(t));
 
       stdin.feed("\t"); // into session again…
-      await waitFor(stdout, (t) => /engine fake/.test(t) && !/FLEET/.test(t));
+      await waitFor(stdout, (t) => /engine fake/.test(t) && !/│ FLEET/.test(t));
       stdin.feed("\x1b"); // …and esc snaps straight back to overview
-      await waitFor(stdout, /FLEET/);
+      await waitFor(stdout, /│ FLEET/);
     } finally {
       app.unmount();
     }
@@ -1444,17 +1444,17 @@ describe("tui-render", { concurrency: 4 }, () => {
     );
     try {
       // overview: the fleet list alone — no detail, no events, no switcher bar.
-      await waitFor(stdout, /FLEET/);
+      await waitFor(stdout, /│ FLEET/);
       assert.doesNotMatch(stdout.last, /Chat/);
       assert.doesNotMatch(stdout.last, /engine fake/);
       assert.doesNotMatch(stdout.last, /⇥ next/);
 
       stdin.feed("\t"); // → the session pane: detail + events, full width
       await waitFor(stdout, (t) => /Chat/.test(t) && /one column now/.test(t));
-      assert.doesNotMatch(stdout.last, /FLEET/);
+      assert.doesNotMatch(stdout.last, /│ FLEET/);
 
       stdin.feed("\t"); // → back to the fleet list
-      await waitFor(stdout, (t) => /FLEET/.test(t) && !/Chat/.test(t));
+      await waitFor(stdout, (t) => /│ FLEET/.test(t) && !/Chat/.test(t));
     } finally {
       app.unmount();
     }
@@ -1466,16 +1466,16 @@ describe("tui-render", { concurrency: 4 }, () => {
       { columns: 120 },
     );
     try {
-      await waitFor(stdout, (s) => /FLEET/.test(s) && /Chat/.test(s));
+      await waitFor(stdout, (s) => /│ FLEET/.test(s) && /Chat/.test(s));
       stdin.feed("\r");
       await waitFor(stdout, /send \[manual\]/);
       stdin.feed("draft survives");
       await waitFor(stdout, /draft survives/);
-      assert.match(stdout.last, /FLEET/);
+      assert.match(stdout.last, /│ FLEET/);
 
       stdout.columns = 60;
       stdout.emit("resize");
-      await waitFor(stdout, (s) => /Chat/.test(s) && !/FLEET/.test(s));
+      await waitFor(stdout, (s) => /Chat/.test(s) && !/│ FLEET/.test(s));
       assert.match(stdout.last, /draft survives/);
       stdin.feed(" resizing");
       await waitFor(stdout, /draft survives resizing/);
@@ -1483,7 +1483,7 @@ describe("tui-render", { concurrency: 4 }, () => {
       stdin.feed(ESC);
       await waitFor(stdout, (s) => !/send \[manual\]/.test(s));
       stdin.feed("\t");
-      await waitFor(stdout, (s) => /FLEET/.test(s) && !/Chat/.test(s));
+      await waitFor(stdout, (s) => /│ FLEET/.test(s) && !/Chat/.test(s));
     } finally {
       app.unmount();
     }
@@ -1508,13 +1508,13 @@ describe("tui-render", { concurrency: 4 }, () => {
       // change the layout view.
       stdin.feed("\x1b[C");
       await waitFor(stdout, /▸ ⑂ reviewer/);
-      assert.match(stdout.last, /FLEET/);
+      assert.match(stdout.last, /│ FLEET/);
       assert.doesNotMatch(stdout.last, /Chat/);
 
       // ← backs out of the drill-down, still on the fleet list.
       stdin.feed("\x1b[D");
       await waitFor(stdout, (t) => !/▸ ⑂ reviewer/.test(t));
-      assert.match(stdout.last, /FLEET/);
+      assert.match(stdout.last, /│ FLEET/);
     } finally {
       app.unmount();
     }
@@ -1741,7 +1741,7 @@ describe("tui-render", { concurrency: 4 }, () => {
 
       stdin.feed(ESC); // esc clears + closes the filter
       await waitFor(stdout, (s) => !/type to filter/.test(s));
-      assert.match(stdout.last, /▍ loom/);
+      assert.match(stdout.last, /F1 FLEET/);
     } finally {
       app.unmount();
       await client.close();
@@ -1878,8 +1878,8 @@ describe("tui-render", { concurrency: 4 }, () => {
       assert.match(stdout.last, /turn 3 · one more/);
 
       stdin.feed(ESC);
-      await waitFor(stdout, /▍ loom/);
-      assert.match(stdout.last, /▍ loom/);
+      await waitFor(stdout, /F1 FLEET/);
+      assert.match(stdout.last, /F1 FLEET/);
     } finally {
       app.unmount();
       await client.close();
@@ -5962,3 +5962,172 @@ for (const failure of [false, true]) {
     }
   });
 }
+
+test("program tabs preserve Fleet and Notes state; note actions never target sessions", async () => {
+  const root = mkdtempSync(join(tmpdir(), "loom-notes-ui-"));
+  writeFileSync(join(root, "a.md"), "# Alpha\n\n[Beta](b.md#target)\n");
+  writeFileSync(join(root, "b.md"), "# Beta\n\n## Target\n\nThe destination\n");
+  const { utimesSync } = await import("node:fs");
+  utimesSync(join(root, "a.md"), 20, 20);
+  utimesSync(join(root, "b.md"), 10, 10);
+  const fake = mkFakeClient();
+  fake.deliver(fleetOf(testSession({ title: "Fleet selection" })));
+  const edited: string[] = [];
+  const { stdin, stdout, app } = mount(fake.client, {
+    projectFiles: () => root,
+    openNoteEditor: async (path) => {
+      edited.push(path);
+      writeFileSync(path, "# Edited note\n\nSaved from editor\n");
+    },
+  });
+  const send = async (s: string) => {
+    stdin.emit("data", s); // FakeIn emulates read(), but does not emit ReadStream's data event.
+    stdin.feed(s);
+    await delay(50);
+    await app.waitUntilRenderFlush();
+  };
+  try {
+    await waitFor(stdout, /Fleet selection/);
+    await send(ESC + "OS");
+    await waitFor(stdout, /Alpha/);
+    assert.match(stdout.last, /\[F4 NOTES\]/);
+    await send(ESC + "[C");
+    await waitFor(stdout, /Links ·/);
+    await send("\r");
+    await waitFor(stdout, /The destination/);
+    await send(ESC + "[D");
+    await waitFor(stdout, /Alpha/);
+    await send("x");
+    assert.ok(existsSync(join(root, "archive/a.md")));
+    assert.match(readFileSync(join(root, "archive/a.md"), "utf8"), /\.\.\/b.md#target/);
+    assert.equal(fake.of("session.archive").length, 0);
+    await send(" ");
+    await send("\r");
+    await waitFor(stdout, /including archive/);
+    await send("/");
+    await send("archive/a.md");
+    await send("\r");
+    await send("X");
+    await waitFor(stdout, /Delete archive\/a.md/);
+    await send(ESC);
+    await delay(100);
+    assert.ok(existsSync(join(root, "archive/a.md")));
+    await send("x");
+    assert.ok(existsSync(join(root, "a.md")));
+    await send(ESC); // Clear the archive search after restoring.
+    await delay(100);
+    await send(ESC + "OP");
+    await waitFor(stdout, /Fleet selection/);
+    await send(ESC + "[14~");
+    await waitFor(stdout, /Alpha/);
+    await send("n");
+    await send("new-note");
+    await send("\r");
+    await waitFor(stdout, /Saved from editor/);
+    assert.equal(edited.at(-1), join(root, "new-note.md"));
+    await send(ESC + "e");
+    assert.equal(edited.length, 2);
+    await send("X");
+    await send("\r");
+    assert.equal(existsSync(join(root, "new-note.md")), false);
+  } finally {
+    app.unmount();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("program function keys work through a real readable stream", async () => {
+  const { PassThrough } = await import("node:stream");
+  const stdin = Object.assign(new PassThrough(), {
+    isTTY: true,
+    setRawMode() {},
+    ref() {},
+    unref() {},
+  });
+  const stdout = new FakeOut();
+  const fake = mkFakeClient();
+  fake.deliver(fleetOf(testSession({ title: "Real input stream" })));
+  const app = render(createElement(App, { client: fake.client }), {
+    stdin: stdin as unknown as NodeJS.ReadStream,
+    stdout: stdout as unknown as NodeJS.WriteStream,
+    debug: true,
+    exitOnCtrlC: false,
+    patchConsole: false,
+  });
+  try {
+    await waitFor(stdout, /Real input stream/);
+    stdin.write(ESC + "OS");
+    await waitFor(stdout, /\[F4 NOTES\]/);
+    stdin.write(ESC + "[200~" + ESC + "OP" + ESC + "[201~");
+    await delay(30);
+    assert.match(stdout.last, /\[F4 NOTES\]/);
+    stdin.write(ESC + "OP");
+    await waitFor(stdout, /Real input stream/);
+  } finally {
+    app.unmount();
+    stdin.destroy();
+  }
+});
+
+test("Notes folders collapse, reveal search and link targets, and create nested notes", async () => {
+  const { mkdirSync, utimesSync } = await import("node:fs");
+  const root = mkdtempSync(join(tmpdir(), "loom-notes-folders-"));
+  mkdirSync(join(root, "ideas/deep"), { recursive: true });
+  writeFileSync(join(root, "home.md"), "# Home\n\n[Target](ideas/deep/target.md)\n");
+  writeFileSync(join(root, "ideas/deep/target.md"), "# Nested target\n");
+  utimesSync(join(root, "home.md"), 20, 20);
+  utimesSync(join(root, "ideas/deep/target.md"), 10, 10);
+  const fake = mkFakeClient();
+  fake.deliver(fleetOf(testSession()));
+  const { stdin, stdout, app } = mount(fake.client, {
+    projectFiles: () => root,
+    openNoteEditor: async (path) => {
+      writeFileSync(path, "# Newly nested\n");
+    },
+  });
+  const send = async (s: string) => {
+    stdin.emit("data", s);
+    stdin.feed(s);
+    await delay(50);
+    await app.waitUntilRenderFlush();
+  };
+  try {
+    await send(ESC + "OS");
+    await waitFor(stdout, /Home/);
+    await send("j"); // ideas folder
+    await send(ESC + "[D"); // collapse
+    assert.doesNotMatch(stdout.last, /target.md/);
+    await send("x");
+    await send("X");
+    assert.ok(existsSync(join(root, "ideas/deep/target.md")));
+    assert.doesNotMatch(stdout.last, /Delete /);
+    await send("k");
+    await send(ESC + "[C");
+    await send("\r"); // link reveals collapsed ancestors
+    await waitFor(stdout, /Nested target/);
+    assert.match(stdout.last, /target.md/);
+    await send(ESC + "[D"); // link history returns home
+    await waitFor(stdout, /Home/);
+    await send("j");
+    await send(ESC + "[D"); // collapse ideas again
+    await send("/");
+    await send("Nested target");
+    await send("\r");
+    await waitFor(stdout, /Nested target/);
+    await send(ESC); // clear search
+    await delay(100);
+    await send("k"); // home
+    await send("j"); // ideas
+    await send("n");
+    await waitFor(stdout, /New note path: ideas\//);
+    await send("deep/new-note");
+    await send("\r");
+    await waitFor(stdout, /Newly nested/);
+    assert.ok(existsSync(join(root, "ideas/deep/new-note.md")));
+    await send("x");
+    assert.ok(existsSync(join(root, "archive/ideas/deep/new-note.md")));
+  } finally {
+    app.unmount();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
