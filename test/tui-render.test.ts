@@ -2386,6 +2386,33 @@ const fakeTerm: Term = {
   onResize: () => () => {},
 };
 
+for (const [name, status, restart] of [
+  ["idle adapters", { connections: 1, runningSessions: 1, restartBlockingSessions: 0 }, true],
+  ["active work", { connections: 1, runningSessions: 1, restartBlockingSessions: 1 }, false],
+  ["another client", { connections: 2, runningSessions: 1, restartBlockingSessions: 0 }, false],
+  ["legacy daemon", { connections: 1, runningSessions: 1 }, false],
+] as const) {
+  test(`version mismatch restart decision protects ${name}`, async () => {
+    const fake = mkFakeClient();
+    fake.deliver(fleetOf());
+    const { stdout, app } = mount({
+      ...fake.client,
+      daemonInfo: { pid: 1, version: "old-build", startedAt: 0, repoRoot: "/repo", epoch: "old" },
+    });
+    try {
+      await waitFor(stdout, () => fake.of("daemon.status").length === 1);
+      fake.of("daemon.status")[0]!.resolve(status);
+      if (restart) {
+        await waitFor(stdout, () => fake.of("daemon.shutdown").length === 1);
+      } else {
+        await waitFor(stdout, /restarting interrupts/);
+        assert.equal(fake.of("daemon.shutdown").length, 0);
+      }
+    } finally {
+      app.unmount();
+    }
+  });
+}
 // Bracketed paste + mouse reporting, spelled out byte for byte. Since hover
 // (stage A2) any-motion `?1003` rides along; compat mode keeps the pre-A2 set,
 // because mosh forwards only the last tracking mode and Termux lacks 1003.

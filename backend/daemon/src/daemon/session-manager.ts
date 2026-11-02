@@ -1810,22 +1810,27 @@ export class SessionManager {
 
   // --- teardown ------------------------------------------------------
 
-  /** Only an entirely settled session can have its VM replaced. */
-  canRefresh(id: string): boolean {
+  /** Work or resources a daemon restart would interrupt, even on a settled turn. */
+  blocksRestart(id: string): boolean {
     const run = this.#running.get(id);
     return (
       !!run &&
-      !run.ended &&
-      run.state.kind === "idle" &&
-      run.operations === 0 &&
-      !run.restructuring &&
-      !run.compaction &&
-      run.pending.size === 0 &&
-      run.backgroundTasks.length === 0 &&
-      ![...run.subagents.values()].some((s) => s.active) &&
-      // Input handed over and not yet taken would go with the adapter.
-      !this.queueDelivering(id)
+      (isLiveState(run.state) ||
+        run.closing ||
+        run.operations > 0 ||
+        !!run.restructuring ||
+        !!run.compaction ||
+        run.pending.size > 0 ||
+        run.backgroundTasks.length > 0 ||
+        [...run.subagents.values()].some((s) => s.active) ||
+        this.queueDelivering(id))
     );
+  }
+
+  /** Only an entirely settled session can have its VM replaced. */
+  canRefresh(id: string): boolean {
+    const run = this.#running.get(id);
+    return !!run && !run.ended && run.state.kind === "idle" && !this.blocksRestart(id);
   }
 
   async suspendIdle(id: string): Promise<boolean> {

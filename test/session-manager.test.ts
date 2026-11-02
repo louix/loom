@@ -1237,6 +1237,52 @@ describe("session-manager", { concurrency: 4 }, () => {
     await c.close();
   });
 
+  test("daemon.status protects work but permits restart with retained idle adapters", async () => {
+    const c = await client();
+    const blockers = async () =>
+      (await c.request<{ restartBlockingSessions: number }>("daemon.status"))
+        .restartBlockingSessions;
+    assert.equal(await blockers(), 0);
+    const { id, fs } = await createFake(c);
+    assert.equal(await blockers(), 1, "startup blocks restart before any output");
+    fs.emit({ type: "assistant_text", text: "working" });
+    await waitFor(async () => (await statusOf(c, id)) === "running");
+    assert.equal(await blockers(), 1);
+
+    fs.emit({ type: "permission_request", id: "p1", tool: "Bash", input: { command: "ls" } });
+    await waitFor(async () => (await statusOf(c, id)) === "awaiting_input");
+    assert.equal(await blockers(), 1);
+    await c.request("session.respondPermission", { id, requestId: "p1", decision: "allow" });
+    fs.finishTurn({});
+    await waitFor(async () => (await blockers()) === 0);
+    assert.equal(
+      (await c.request<{ runningSessions: number }>("daemon.status")).runningSessions,
+      1,
+    );
+
+    fs.emit({ type: "background_tasks", tasks: [{ id: "b1", kind: "subagent", title: "audit" }] });
+    await waitFor(async () => (await statusOf(c, id)) === "working_background");
+    assert.equal(await blockers(), 1);
+    fs.emit({ type: "background_tasks", tasks: [] });
+    await waitFor(async () => (await blockers()) === 0);
+
+    const release = fs.blockCompact();
+    const compacting = c.request("session.compact", { id });
+    try {
+      await waitFor(() => fs.compacts.length === 1);
+      assert.equal(await blockers(), 1, "compacting an idle session still blocks restart");
+    } finally {
+      release();
+      await compacting;
+    }
+    await waitFor(async () => (await blockers()) === 0);
+
+    const shell = await c.request<{ token: string }>("session.openShell", { id });
+    assert.equal(await blockers(), 1, "an idle session's open shell blocks restart");
+    await c.request("session.closeShell", { token: shell.token });
+    await waitFor(async () => (await blockers()) === 0);
+    await c.close();
+  });
   test("a checkpoint is recorded per completed turn; session.checkpoints lists them", async () => {
     const c = await client();
     const { id, fs } = await createFake(c);

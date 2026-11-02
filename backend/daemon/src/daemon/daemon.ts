@@ -4468,6 +4468,18 @@ export class Daemon {
       repoRoot: this.repoRoot,
       sessions: this.#registry.list().length,
       runningSessions: this.#sessions.count,
+      // Retained idle adapters are resumable, not work that needs protecting.
+      restartBlockingSessions: this.#registry
+        .list()
+        .filter(
+          (s) =>
+            isLiveState(s.status) ||
+            this.#sessions.blocksRestart(s.id) ||
+            this.#shells.has(s.id) ||
+            this.#hooks.isRunning(s.id) ||
+            this.#lifecycles.has(s.id) ||
+            this.#queue.activeKeys.includes(s.id),
+        ).length,
       providers: this.#providers.live().map((p) => p.id),
       loomTools: ["ask_user", "commit"],
       mcpMounts: [...this.config.mcp, ...this.config.httpMcp].map((m) => m.name),

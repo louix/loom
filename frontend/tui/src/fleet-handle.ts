@@ -3259,11 +3259,14 @@ export const mkFleetHandle = ({
     let otherClients = 0;
     let liveSessions = 0;
     try {
-      const st = await client.request<{ connections?: number; runningSessions?: number }>(
-        "daemon.status",
-      );
+      const st = await client.request<{
+        connections?: number;
+        runningSessions?: number;
+        restartBlockingSessions?: number;
+      }>("daemon.status");
       otherClients = Math.max(0, (st.connections ?? 1) - 1); // minus this UI's own socket
-      liveSessions = st.runningSessions ?? 0;
+      // Older daemons cannot distinguish retained adapters from active work.
+      liveSessions = st.restartBlockingSessions ?? st.runningSessions ?? 0;
     } catch {
       /* old daemon without these fields → treat as safe to bounce */
     }
