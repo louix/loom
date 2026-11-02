@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import type { SessionStateKind } from "@loom/core/events";
 import type { SessionSnapshot } from "@loom/core/wire";
-import { STATUS_ORDER } from "@loom/core/session-order";
+import { SESSION_STATE_KINDS } from "@loom/core/session-order";
 import { describeCommands } from "@loom/tui/commands";
 import { stripVTControlCharacters } from "node:util";
 import { createElement } from "react";
@@ -53,7 +53,7 @@ const OWN_WINS: readonly SessionStateKind[] = [
 
 describe("shownStatus", () => {
   test("quiet agents leave every state as it is", () => {
-    for (const kind of STATUS_ORDER) assert.equal(shownStatus(kind, "agents_quiet"), kind);
+    for (const kind of SESSION_STATE_KINDS) assert.equal(shownStatus(kind, "agents_quiet"), kind);
   });
 
   test("busy agents turn an ended turn into background work, and nothing else", () => {

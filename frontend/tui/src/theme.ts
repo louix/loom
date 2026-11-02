@@ -179,8 +179,6 @@ export interface StatusLook {
   label: string;
 }
 
-export { STATUS_ORDER } from "@loom/core/session-order";
-
 /** Glyph + label per status — unlike the colour, these don't depend on the theme. */
 const STATUS_TEXT: Record<SessionStateKind, { glyph: string; label: string }> = {
   awaiting_input: { glyph: "◆", label: "awaiting input" },

@@ -51,6 +51,7 @@ import {
   type TuiState,
   connectionOf,
   fleetDaemon,
+  fleetEntries,
   fleetSessions,
 } from "@loom/tui/model";
 import {
@@ -238,6 +239,23 @@ test("sortSessions: starting never outranks running, even when more recent", () 
     sortSessions([starting, running]).map((x) => x.id),
     ["run", "start"],
     "flat nav order must match the rendered section order (running above starting)",
+  );
+});
+
+test("navigation order is draw order: background work is listed with running, above starting", () => {
+  const s = reduce(
+    initialState(),
+    fleet([
+      snap({ id: "start", status: "starting", createdAt: 30 }),
+      snap({ id: "bg", status: "working_background", createdAt: 20 }),
+      snap({ id: "run", status: "running", createdAt: 10 }),
+    ]),
+  );
+  const drawn = fleetEntries(s).flatMap((e) => (e.kind === "session" ? [e.s.id] : []));
+  assert.deepEqual(drawn, ["bg", "run", "start"]);
+  assert.deepEqual(
+    fleetSessions(s).map((x) => x.id),
+    drawn,
   );
 });
 

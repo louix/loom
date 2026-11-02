@@ -5,7 +5,13 @@
  * a set of selectors, all unit-tested without React or a live daemon.
  */
 import { absurd } from "@loom/core/absurd";
-import { sortSessions, sortSessionsBy } from "@loom/core/session-order";
+import {
+  GROUP_ORDER,
+  groupOf,
+  sortSessions,
+  sortSessionsBy,
+  type FleetGroup,
+} from "@loom/core/session-order";
 export { sortSessions };
 import type { BackgroundTaskKind, HarnessEvent, SessionStateKind } from "@loom/core/events";
 import { isClaudeId } from "@loom/core/provider-id";
@@ -59,7 +65,6 @@ import {
   type LogLine,
 } from "./transcript.ts";
 import {
-  STATUS_ORDER,
   clock,
   humanTokens,
   nextThemeMode,
@@ -1406,7 +1411,7 @@ export const startNewSessionPicker = (
 };
 
 export interface Group {
-  status: SessionStateKind;
+  status: FleetGroup;
   label: string;
   sessions: SessionSnapshot[];
 }
@@ -1428,12 +1433,8 @@ export const groupsOf = (
   const nested = nestedIn(sessions);
   const roots = sessions.filter((s) => !nested(s));
   const out: Group[] = [];
-  for (const status of STATUS_ORDER) {
-    if (status === "working_background") continue;
-    const inGroup = roots.filter((x) => {
-      const kind = shown(x);
-      return (kind === "working_background" ? "running" : kind) === status;
-    });
+  for (const status of GROUP_ORDER) {
+    const inGroup = roots.filter((x) => groupOf(shown(x)) === status);
     if (inGroup.length > 0)
       out.push({ status, label: statusLook(status).label, sessions: inGroup });
   }

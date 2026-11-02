@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { STATUS_ORDER, sortSessions } from "@loom/core/session-order";
+import { SESSION_STATE_KINDS, sortSessions } from "@loom/core/session-order";
 import { sortSnapshots } from "../backend/daemon/src/daemon/registry.ts";
 import { fleetSessions, initialState, reduce } from "@loom/tui/model";
 import { fleet, snap } from "./tui-fixtures.ts";
@@ -10,7 +10,7 @@ const ids = (state: Parameters<typeof fleetSessions>[0]): string[] =>
 
 test("every group retains its order through activity, reversed snapshots and reconnects", () => {
   assert.equal(sortSnapshots, sortSessions, "daemon and UI share the ordering policy");
-  for (const status of STATUS_ORDER) {
+  for (const status of SESSION_STATE_KINDS) {
     const rows = [
       snap({ id: "old", status, createdAt: 1, updatedAt: 100 }),
       snap({ id: "b", status, createdAt: 2, updatedAt: 2 }),

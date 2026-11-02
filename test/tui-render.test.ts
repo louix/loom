@@ -5556,7 +5556,7 @@ test("a Loom agent is entered like a child row, and keeps its session verbs ther
   const fake = mkFakeClient();
   fake.deliver(
     fleetOf(
-      snap({ id: "other", status: "running", createdAt: 1 }),
+      snap({ id: "other", status: "running", createdAt: 4 }),
       snap({
         id: "lead",
         status: "idle",
