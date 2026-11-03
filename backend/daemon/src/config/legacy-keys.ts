@@ -162,6 +162,7 @@ const LAYER: Scope = {
     ),
     rename("base_branch", "session.defaults.base_branch"),
     rename("worktree_dir", "session.worktree_dir"),
+    rename("session.project_files_dir", "session.projects_root"),
   ],
 };
 

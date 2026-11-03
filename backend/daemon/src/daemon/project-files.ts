@@ -1,9 +1,12 @@
 import { mkdirSync, realpathSync } from "node:fs";
 import { dirname } from "node:path";
-import { projectDirectory } from "@loom/core/paths";
+import { projectDirectory, type ProjectDirectoryConfig } from "@loom/core/paths";
 
 /** Resolve on the host; sessions mount/grant only this repository's directory. */
-export const ensureProjectDirectory = (repo: string, configured = ""): string => {
+export const ensureProjectDirectory = (
+  repo: string,
+  configured: ProjectDirectoryConfig = {},
+): string => {
   const path = projectDirectory(repo, configured);
   if (path === repo || path.startsWith(repo + "/") || repo.startsWith(path + "/"))
     throw new Error("Project files must be outside the repository checkout");

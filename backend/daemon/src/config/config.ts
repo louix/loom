@@ -274,7 +274,10 @@ export interface LoomConfig {
    */
   baseBranch?: string;
   worktreeDir: string;
-  projectFilesDir: string;
+  /** `session.projects_root`: storage root holding one directory per repository key. */
+  projectsRoot: string;
+  /** A `repos[]` entry's `session.project_dir`: that repository's exact directory. */
+  projectDir: string;
   projectFilesInstructions: string;
   /** `session.branch_prefix`: what new sessions' branches are named under. */
   branchPrefix: BranchPrefix;
@@ -473,7 +476,8 @@ export const DEFAULT_CONFIG: LoomConfig = {
   autoNix: false,
   tui: { includeEventLogInEditor: false, compat: false, images: true },
   worktreeDir: "",
-  projectFilesDir: "",
+  projectsRoot: "",
+  projectDir: "",
   projectFilesInstructions: "",
   branchPrefix: ["loom"],
   providerAccess: { deny: [] },
@@ -886,7 +890,8 @@ export const normalizeConfig = (
       ? { baseBranch: settings.session.defaults.base_branch }
       : {}),
     worktreeDir: settings.session.worktree_dir ?? "",
-    projectFilesDir: settings.session.project_files_dir ?? "",
+    projectsRoot: settings.session.projects_root ?? "",
+    projectDir: settings.session.project_dir ?? "",
     projectFilesInstructions: settings.session.project_files_instructions ?? "",
     branchPrefix: settings.session.branch_prefix,
     providerAccess,
@@ -1142,6 +1147,11 @@ export const loadConfig = (repoRoot: string, configFile = userConfigPath()): Loo
   const at = `repos[${selectedPath}].`;
   const global = migrateConfigLayer(defaults);
   const repo = migrateConfigLayer(selected, at);
+  // Every repository would otherwise share one exact directory.
+  if (asRecord(global.layer.session).project_dir !== undefined)
+    throw new Error(
+      "session.project_dir is one repository's exact directory: set it in that repos[] entry, or use session.projects_root",
+    );
   return {
     ...normalizeConfig(mergeRepoOverride(global.layer, repo.layer), new Set(repoProviders)),
     // Per layer, so a key is reported where it is written.

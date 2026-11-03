@@ -1,9 +1,9 @@
 # Project files
 
 Project files are persistent plain files shared by all Loom sessions of one repository.
-They live outside the checkout at `$XDG_DATA_HOME/loom/projects/<repo-key>/` (default
-`~/.local/share/loom/projects/<repo-key>/`). Loom reuses its existing repository key:
-sessions created by the same repository daemon share files, including host sessions,
+By default they live outside the checkout at `$XDG_DATA_HOME/loom/projects/<repo-key>/`
+(default `~/.local/share/loom/projects/<repo-key>/`). Loom reuses its existing repository
+key: sessions created by the same repository daemon share files, including host sessions,
 worktrees, and private clones. Separately registered checkouts keep separate directories.
 
 Run `loom project-files` to print the path, or use
@@ -32,13 +32,14 @@ Use the existing global and per-repository configuration inheritance:
 ```jsonc
 {
   "session": {
-    "project_files_dir": "~/loom-project-files",
+    "projects_root": "~/loom-projects",
     "project_files_instructions": "Record the tested commit and exact reproduction steps.",
   },
   "repos": [
     {
       "path": "/path/to/repository",
       "session": {
+        "project_dir": "~/notes/repository",
         "project_files_instructions": "Group reports by issue number and include reproduction steps.",
       },
     },
@@ -46,20 +47,26 @@ Use the existing global and per-repository configuration inheritance:
 }
 ```
 
-Both fields are optional. A matching repository's instruction replaces the global
-instruction; it is one freeform string. The configured directory is a **storage base**:
-Loom appends the repository key even for overrides, keeping a global override separated
-by repository. Absolute paths, `~/`, and paths relative to the repository are accepted,
-but the resulting directory must be outside the checkout. Restart the daemon after changes.
+All fields are optional. `session.projects_root` is a **storage root** holding one
+directory per repository: Loom appends the repository key, here giving
+`~/loom-projects/<repo-key>/` for every repository without its own directory.
+`session.project_dir` names one repository's **exact** directory, used as is, and is only
+accepted in a `repos[]` entry; it takes precedence over `projects_root`. A matching
+repository's instruction replaces the global instruction; it is one freeform string.
+
+Absolute paths, `~/`, and paths relative to the repository are accepted, but the
+resulting directory must be outside the checkout. Restart the daemon after changes.
 Changing the location does not move existing files. Project directories must not contain
-symlinks in their resolved path.
+symlinks in their resolved path. `session.project_files_dir`, the former name of
+`projects_root`, still works and is reported as renamed.
 
 After moving a checkout, stop its daemon and VMs and run
 `loom repo move <old> <new>`. This migrates default project files to the new key.
 An occupied destination is refused before any migration; existing project files are
-never merged or overwritten. Custom storage locations must be moved manually to the
-new key, along with any configuration changes. File contents and embedded absolute
-paths are not rewritten.
+never merged or overwritten. Directories under a custom `projects_root` must be moved
+manually to the new key; a `project_dir` stays put, but its `repos[]` entry's `path`
+needs updating, as does any other configuration naming the old path. File contents and
+embedded absolute paths are not rewritten.
 
 ## Running scripts
 

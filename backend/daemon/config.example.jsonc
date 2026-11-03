@@ -53,8 +53,8 @@
     // },
   },
   "session": {
-    // Persistent shared files outside the checkout; Loom appends the repository key.
-    // "project_files_dir": "~/loom-project-files",
+    // Persistent shared files outside the checkout, one directory per repository key.
+    // "projects_root": "~/loom-projects",
     // "project_files_instructions": "Record the tested commit and reproduction steps.",
     // Allow project shell activation (devenv, flake.nix, shell.nix, default.nix).
     "environment": { "auto_nix": false }, // opt in globally or for individual repos
@@ -138,9 +138,9 @@
     //   "path": "~/dev/my-project",
     //   "git": { "author": { "email": "me@work.example" } },
     //   "session": {
-    // Persistent shared files outside the checkout; Loom appends the repository key.
-    // "project_files_dir": "~/loom-project-files",
-    // "project_files_instructions": "Record the tested commit and reproduction steps.",
+    //     // This repository's exact project files directory (no key appended).
+    //     "project_dir": "~/notes/my-project",
+    //     "project_files_instructions": "Record the tested commit and reproduction steps.",
     //     "worktree_dir": "/mnt/fast-drive/loom/my-project",
     //     "environment": { "auto_nix": true },
     //     "defaults": { "isolation": "vm" },

@@ -77,8 +77,8 @@ const USAGE: Record<string, string> = {
 
   Loom keeps a repository's state under keys derived from its path: the database,
   logs and session hooks in $XDG_STATE_HOME/loom/repos/, the VM package cache in
-  $XDG_CACHE_HOME/loom/, session VM state, prepared environments, and default project
-  files in $XDG_DATA_HOME/loom/projects/. This moves
+  $XDG_CACHE_HOME/loom/, session VM state, prepared environments, and project files
+  under the default or session.projects_root storage root. This moves
   them to <new>'s keys, updates session paths that named <old>, repairs Git's
   worktree links and repoints every session worktree's hooks. Stop the daemon
   for both paths first. Session worktrees stay where they are.`,
@@ -335,7 +335,7 @@ const main = async (): Promise<void> => {
     const { loadConfig } = await import("@loom/daemon/config/config");
     const { ensureProjectDirectory } =
       await import("../../backend/daemon/src/daemon/project-files.ts");
-    const path = ensureProjectDirectory(repoRoot, loadConfig(repoRoot).projectFilesDir);
+    const path = ensureProjectDirectory(repoRoot, loadConfig(repoRoot));
     ensureLoomDirectories(loomPaths(repoRoot));
     writeOut(values.json ? JSON.stringify({ path }) + "\n" : path + "\n");
     return;
@@ -432,10 +432,7 @@ const main = async (): Promise<void> => {
       images: tui.images,
       logs: { daemon: paths.log, tui: paths.tuiLog },
       themeState: paths.tuiState,
-      projectFiles: () => {
-        const { projectFilesDir } = loadConfig(logRoot);
-        return ensureProjectFiles(logRoot, projectFilesDir);
-      },
+      projectFiles: () => ensureProjectFiles(logRoot, loadConfig(logRoot)),
       openShell: async (id) => {
         const { openSessionShell } = await import("./shell.ts");
         const { stdin } = await import("node:process");

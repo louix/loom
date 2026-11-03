@@ -88,7 +88,7 @@ export class ProviderRegistry {
     return {
       set: {
         ...environment?.set,
-        LOOM_PROJECT_DIR: ensureProjectDirectory(this.#repoRoot, this.#config.projectFilesDir),
+        LOOM_PROJECT_DIR: ensureProjectDirectory(this.#repoRoot, this.#config),
       },
       unset: (environment?.unset ?? []).filter((key) => key !== "LOOM_PROJECT_DIR"),
     };
@@ -330,7 +330,7 @@ export class ProviderRegistry {
             const workerEnvironment = environment;
             const projectDir = oneShot
               ? undefined
-              : ensureProjectDirectory(this.#repoRoot, this.#config.projectFilesDir);
+              : ensureProjectDirectory(this.#repoRoot, this.#config);
             if (projectDir) {
               environment = {
                 set: { ...environment?.set, LOOM_PROJECT_DIR: projectDir },

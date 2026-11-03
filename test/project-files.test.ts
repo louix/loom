@@ -4,8 +4,8 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
   existsSync,
-  mkdtempSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   rmSync,
   symlinkSync,
@@ -13,7 +13,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { projectDirectory, repoKey, loomPaths, loomPathsOfState } from "@loom/core/paths";
+import { loomPaths, loomPathsOfState, projectDirectory, repoKey } from "@loom/core/paths";
 import { loadConfig } from "@loom/daemon/config/config";
 import {
   ensureProjectDirectory,
@@ -23,17 +23,24 @@ import {
 test("project files use the existing repository key under default or configured storage", () => {
   const env = { HOME: "/home/test", XDG_DATA_HOME: "/data" };
   const key = repoKey("/repos/app");
-  assert.equal(projectDirectory("/repos/app", "", env), "/data/loom/projects/" + key);
-  assert.equal(projectDirectory("/repos/app", "~/notes", env), "/home/test/notes/" + key);
+  const root = { projectsRoot: "~/notes" };
+  assert.equal(projectDirectory("/repos/app", {}, env), "/data/loom/projects/" + key);
+  assert.equal(projectDirectory("/repos/app", root, env), "/home/test/notes/" + key);
   assert.notEqual(
-    projectDirectory("/repos/other", "~/notes", env),
-    projectDirectory("/repos/app", "~/notes", env),
+    projectDirectory("/repos/other", root, env),
+    projectDirectory("/repos/app", root, env),
   );
   assert.equal(
-    projectDirectory("/repos/app", "", { HOME: "/home/test" }),
+    projectDirectory("/repos/app", {}, { HOME: "/home/test" }),
     "/home/test/.local/share/loom/projects/" + key,
   );
-  assert.equal(loomPaths("/repos/app", "", env).projects, projectDirectory("/repos/app", "", env));
+  // An exact directory takes no key and wins over the root.
+  assert.equal(
+    projectDirectory("/repos/app", { ...root, projectDir: "~/app-notes" }, env),
+    "/home/test/app-notes",
+  );
+  assert.equal(projectDirectory("/repos/app", { projectDir: "../notes" }, env), "/repos/notes");
+  assert.equal(loomPaths("/repos/app", "", env).projects, projectDirectory("/repos/app", {}, env));
   assert.equal(
     loomPathsOfState("/repos/moved", "/state/original-key", env).projects,
     "/data/loom/projects/original-key",
@@ -50,20 +57,28 @@ test("project files inherit settings, preserve content, and are read only on dem
     writeFileSync(
       configFile,
       JSON.stringify({
-        session: { project_files_dir: storage, project_files_instructions: "Global instruction" },
-        repos: [{ path: repo, session: { project_files_instructions: "Record reproductions" } }],
+        session: {
+          projects_root: storage,
+          project_files_instructions: "Global instruction",
+        },
+        repos: [
+          {
+            path: repo,
+            session: { project_files_instructions: "Record reproductions" },
+          },
+        ],
       }),
     );
     const config = loadConfig(repo, configFile);
-    assert.equal(config.projectFilesDir, storage);
+    assert.equal(config.projectsRoot, storage);
     assert.equal(config.projectFilesInstructions, "Record reproductions");
     assert.equal(
       loadConfig(join(root, "other"), configFile).projectFilesInstructions,
       "Global instruction",
     );
-    const dir = ensureProjectDirectory(repo, config.projectFilesDir);
+    const dir = ensureProjectDirectory(repo, config);
     writeFileSync(join(dir, "report.md"), "FILE CONTENT MUST NOT ENTER PROMPT");
-    assert.equal(ensureProjectDirectory(repo, storage), dir);
+    assert.equal(ensureProjectDirectory(repo, { projectsRoot: storage }), dir);
     const instructions = projectFilesInstructions(dir, config.projectFilesInstructions);
     assert.match(instructions, /Record reproductions/);
     assert.match(instructions, /private clones/);
@@ -73,14 +88,69 @@ test("project files inherit settings, preserve content, and are read only on dem
       readFileSync(join(dir, "report.md"), "utf8"),
       "FILE CONTENT MUST NOT ENTER PROMPT",
     );
-    assert.throws(() => ensureProjectDirectory(repo, join(repo, "files")), /outside/);
+    assert.throws(
+      () => ensureProjectDirectory(repo, { projectsRoot: join(repo, "files") }),
+      /outside/,
+    );
+    assert.throws(
+      () => ensureProjectDirectory(repo, { projectDir: join(repo, "notes") }),
+      /outside/,
+    );
     rmSync(dir, { recursive: true });
     symlinkSync(repo, dir);
-    assert.throws(() => ensureProjectDirectory(repo, storage), /symlink/);
+    assert.throws(() => ensureProjectDirectory(repo, { projectsRoot: storage }), /symlink/);
     const alias = join(root, "alias");
     symlinkSync(repo, alias);
-    assert.throws(() => ensureProjectDirectory(repo, alias), /symlink/);
+    assert.throws(() => ensureProjectDirectory(repo, { projectsRoot: alias }), /symlink/);
+    assert.throws(() => ensureProjectDirectory(repo, { projectDir: alias }), /symlink/);
     assert.equal(existsSync(join(repo, repoKey(repo))), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a repository's project_dir is exact, and only a repos entry may set it", () => {
+  const root = mkdtempSync(join(tmpdir(), "loom-project-dir-"));
+  try {
+    const repo = join(root, "repo");
+    const other = join(root, "other");
+    mkdirSync(repo);
+    mkdirSync(other);
+    const notes = join(root, "notes");
+    const configFile = join(root, "config.json");
+    writeFileSync(
+      configFile,
+      JSON.stringify({
+        session: { projects_root: join(root, "storage") },
+        repos: [{ path: repo, session: { project_dir: notes } }],
+      }),
+    );
+    const config = loadConfig(repo, configFile);
+    assert.equal(config.projectDir, notes);
+    assert.equal(ensureProjectDirectory(repo, config), notes);
+    assert.equal(
+      ensureProjectDirectory(other, loadConfig(other, configFile)),
+      join(root, "storage", repoKey(other)),
+    );
+
+    writeFileSync(configFile, JSON.stringify({ session: { project_dir: notes } }));
+    assert.throws(() => loadConfig(repo, configFile), /repos\[\] entry/);
+
+    // The former name keeps its storage-root meaning in either layer.
+    writeFileSync(
+      configFile,
+      JSON.stringify({
+        session: { project_files_dir: join(root, "old") },
+        repos: [
+          {
+            path: other,
+            session: { project_files_dir: join(root, "older") },
+          },
+        ],
+      }),
+    );
+    assert.equal(loadConfig(repo, configFile).projectsRoot, join(root, "old"));
+    assert.equal(loadConfig(other, configFile).projectsRoot, join(root, "older"));
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -101,7 +171,7 @@ test("project-files CLI prints its configured path without starting a daemon or 
     mkdirSync(join(root, "config/loom"), { recursive: true });
     writeFileSync(
       join(root, "config/loom/config.jsonc"),
-      JSON.stringify({ session: { project_files_dir: join(root, "custom") } }),
+      JSON.stringify({ session: { projects_root: join(root, "custom") } }),
     );
     const result = await new Deno.Command(Deno.execPath(), {
       args: [
@@ -119,9 +189,11 @@ test("project-files CLI prints its configured path without starting a daemon or 
     }).output();
     assert.equal(result.code, 0, new TextDecoder().decode(result.stderr));
     const path = JSON.parse(new TextDecoder().decode(result.stdout)).path;
-    assert.equal(path, projectDirectory(repo, join(root, "custom"), env));
+    assert.equal(path, projectDirectory(repo, { projectsRoot: join(root, "custom") }, env));
     assert.equal(
-      execFileSync("git", ["-C", repo, "status", "--porcelain"], { encoding: "utf8" }),
+      execFileSync("git", ["-C", repo, "status", "--porcelain"], {
+        encoding: "utf8",
+      }),
       "",
     );
     assert.throws(() => readFileSync(loomPaths(repo, "", env).sock));

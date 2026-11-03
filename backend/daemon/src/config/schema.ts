@@ -421,8 +421,12 @@ export const createConfigSchema = (d: LoomConfig, events: readonly HookEvent[]) 
             "The repository's default branch for new sessions: the alternative the new-session prompt's base toggle (Alt+B) offers to the checked-out branch, and the base of sessions created without one (loom run). Unset: the toggle offers the remote's default branch, else init.defaultBranch, else main, and a session created without a base starts from the checked-out branch (HEAD's commit when detached). Each session keeps the base it was created with. Restart to apply.",
           ),
         }),
-        project_files_dir: optionalText().describe(
-          "Storage base for shared project files; Loom appends the repository key. Absolute, ~/ or relative to the repository. Omitted: $XDG_DATA_HOME/loom/projects. Restart to apply; changing this does not move existing files.",
+        project_files_dir: deprecated("Replaced by session.projects_root."),
+        projects_root: optionalText().describe(
+          "Storage root for shared project files, holding one directory per repository: Loom appends the repository key. Absolute, ~/ or relative to the repository. Omitted: $XDG_DATA_HOME/loom/projects. A repos entry's session.project_dir takes precedence. Restart to apply; changing this does not move existing files.",
+        ),
+        project_dir: optionalText().describe(
+          "This repository's exact project files directory, used as is (no repository key appended); only valid in a repos entry. Absolute, ~/ or relative to the repository, and outside the checkout. Overrides session.projects_root. Restart to apply; changing this does not move existing files.",
         ),
         project_files_instructions: optionalText().describe(
           "Optional freeform instructions for using project files. Inherited globally and overridden by matching repos entries. File contents are never automatically loaded.",
@@ -714,6 +718,9 @@ export const configEditorSchema = (d: LoomConfig, events: readonly HookEvent[]) 
     ...repo.properties,
   };
   repo.required = ["path"];
+  // One repository's exact directory; loadConfig rejects it outside repos entries.
+  const session = settings.properties?.session as z.core.JSONSchema.BaseSchema | undefined;
+  delete session?.properties?.project_dir;
   return {
     ...settings,
     title: "Loom configuration",

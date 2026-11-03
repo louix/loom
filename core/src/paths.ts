@@ -145,14 +145,21 @@ export const worktreeDirectory = (
   return join(userDirectory("data", env), "loom", "worktrees", repoKey(repoRoot));
 };
 
-/** Configured storage base always contains a repository key, including global overrides. */
+/** `session.projects_root` and a repository's own `session.project_dir`. */
+export interface ProjectDirectoryConfig {
+  readonly projectsRoot?: string;
+  readonly projectDir?: string;
+}
+
+/** An exact repository directory, else the repository key under the configured or XDG root. */
 export const projectDirectory = (
   repoRoot: string,
-  configured = "",
+  { projectsRoot = "", projectDir = "" }: ProjectDirectoryConfig = {},
   env: Record<string, string | undefined> = Deno.env.toObject(),
 ): string => {
-  const base = configured
-    ? worktreeDirectory(repoRoot, configured, env)
+  if (projectDir) return worktreeDirectory(repoRoot, projectDir, env);
+  const base = projectsRoot
+    ? worktreeDirectory(repoRoot, projectsRoot, env)
     : join(userDirectory("data", env), "loom", "projects");
   return join(base, repoKey(repoRoot));
 };
