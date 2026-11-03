@@ -625,10 +625,6 @@ export const detailLayout = (
       </Box>,
     );
     if (account) addLine(account);
-    for (const port of s.guestPorts ?? [])
-      addLine(truncate(`${showHostAddress(port)} → guest:${port.guest}`, w), "text");
-    for (const port of s.hostPorts ?? [])
-      addLine(truncate(`guest:${port.guest} → 127.0.0.1:${port.host}`, w), "text");
     addLine(truncate(titleLine(s.title), w), "text");
     if (s.parentId && s.forkTurn != null) {
       const how = s.forkKind ? FORK_KIND[s.forkKind] : "";
@@ -708,12 +704,13 @@ export const detailLayout = (
         tone="faint"
         suffix={
           <Line>
-            <Text tone={s.costUsd ? "good" : "faint"}>{` ${sessionCost(s)}`}</Text>
+            <Text tone="faint">{" · "}</Text>
+            <Text tone={s.costUsd ? "good" : "faint"}>{sessionCost(s)}</Text>
             <Text tone="faint">{` ${costScope(s.costSource)}`}</Text>
           </Line>
         }
       >
-        {`${humanTokens(s.usage.input)} in · ${humanTokens(s.usage.output)} out · ${humanTokens(s.usage.cacheRead)} cr · ${humanTokens(s.usage.cacheWrite)} cw` +
+        {`${humanTokens(s.usage.input)} in · ${humanTokens(s.usage.output)} out` +
           (hitRate == null ? "" : ` · ${Math.round(hitRate * 100)}% cached`)}
       </Field>,
     );
@@ -746,6 +743,34 @@ export const detailLayout = (
           )}
         </Field>
       ));
+    // Live forwards while the VM runs, in columns: each in its connection's
+    // direction with the host end bright, then the config key it came from.
+    const ports = [
+      ...(s.guestPorts ?? []).map((p) => ({
+        from: showHostAddress(p),
+        to: `guest:${p.guest}`,
+        host: "from" as const,
+        key: "guest_ports",
+      })),
+      ...(s.hostPorts ?? []).map((p) => ({
+        from: `guest:${p.guest}`,
+        to: `127.0.0.1:${p.host}`,
+        host: "to" as const,
+        key: "host_ports",
+      })),
+    ];
+    const fromWidth = Math.max(0, ...ports.map((p) => p.from.length));
+    const toWidth = Math.max(0, ...ports.map((p) => p.to.length));
+    if (ports.length) space();
+    for (const [i, p] of ports.entries())
+      add(
+        <Field label={i === 0 ? "ports" : ""}>
+          <Text tone={p.host === "from" ? "text" : "dim"}>{p.from.padEnd(fromWidth)}</Text>
+          <Text tone="faint">{" → "}</Text>
+          <Text tone={p.host === "to" ? "text" : "dim"}>{p.to.padEnd(toWidth)}</Text>
+          <Text tone="faint">{`  ${p.key}`}</Text>
+        </Field>,
+      );
     space();
     add(
       <Box>

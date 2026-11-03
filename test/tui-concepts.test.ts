@@ -27,7 +27,7 @@ test("session details show resolved host ports and remove withdrawn mappings", (
     stripVTControlCharacters(
       renderToString(detailLayout(s, { width: 80 }).render(0), { columns: 80 }),
     );
-  assert.match(render(session), /127\.0\.0\.1:49152 → guest:3000/);
+  assert.match(render(session), /ports +127\.0\.0\.1:49152 → guest:3000 +guest_ports/);
   assert(!render({ ...session, guestPorts: undefined }).includes("49152"));
 });
 
@@ -37,7 +37,7 @@ test("session details show forwards from guest loopback to host services", () =>
     stripVTControlCharacters(
       renderToString(detailLayout(s, { width: 80 }).render(0), { columns: 80 }),
     );
-  assert.match(render(session), /guest:15432 → 127\.0\.0\.1:5432/);
+  assert.match(render(session), /ports +guest:15432 → 127\.0\.0\.1:5432 +host_ports/);
   assert(!render({ ...session, hostPorts: undefined }).includes("15432"));
 });
 
