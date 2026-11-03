@@ -79,6 +79,7 @@ export interface SessionVmOptions {
 export interface SessionVmStatus {
   phase: string;
   guestPorts?: import("../../../core/src/host-ports.ts").PublishedPort[];
+  hostPorts?: import("../../../core/src/host-ports.ts").PortForward[];
   backendDirectory?: string | null;
   execPid?: number;
   network: Array<{ host: string; allowed: boolean }>;

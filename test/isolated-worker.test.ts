@@ -79,6 +79,7 @@ class FakeEnvironment implements VmEnvironment {
     phase: "running",
     network: [],
     guestPorts: [{ host: 45000, guest: 3000 }],
+    hostPorts: [{ host: 5432, guest: 15432 }],
   });
   /** Like the supervisor, the first recorded reason wins. */
   setStopReason(reason: HostStopReason) {
@@ -578,6 +579,7 @@ Deno.test("shells and hooks are independent executions beside the worker, each u
   assert.equal(executions.workspace, environment!.binding.workspace);
   assert.deepEqual(executions.guestPorts, [{ host: 45000, guest: 3000 }]);
   assert.deepEqual(worker.guestPorts, executions.guestPorts);
+  assert.deepEqual(executions.hostPorts, [{ host: 5432, guest: 15432 }]);
   // A shell is a client-run terminal execution in the same environment.
   const client = new AbortController();
   const shell = executions.open(shellRequest, client);

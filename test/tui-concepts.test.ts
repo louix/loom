@@ -31,6 +31,16 @@ test("session details show resolved host ports and remove withdrawn mappings", (
   assert(!render({ ...session, guestPorts: undefined }).includes("49152"));
 });
 
+test("session details show forwards from guest loopback to host services", () => {
+  const session = { ...snap({}), hostPorts: [{ guest: 15432, host: 5432 }] };
+  const render = (s: typeof session | ReturnType<typeof snap>) =>
+    stripVTControlCharacters(
+      renderToString(detailLayout(s, { width: 80 }).render(0), { columns: 80 }),
+    );
+  assert.match(render(session), /guest:15432 → 127\.0\.0\.1:5432/);
+  assert(!render({ ...session, hostPorts: undefined }).includes("15432"));
+});
+
 test("an unknown context limit is not rendered as zero capacity or zero percent", () => {
   const layout = detailLayout(snap({ contextUsed: 44_400, contextLimit: 0 }), { width: 80 });
   const plain = stripVTControlCharacters(renderToString(layout.render(0), { columns: 80 }));

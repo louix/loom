@@ -160,6 +160,7 @@ interface Generation {
   onStop?: SessionVmOptions["onStop"];
   environment?: EnvironmentVm;
   guestPorts?: import("../../../../core/src/host-ports.ts").PublishedPort[];
+  hostPorts?: import("../../../../core/src/host-ports.ts").PortForward[];
   worker?: IsolatedWorker;
   /** This adapter asked the coordinator to stop the environment. */
   stopping?: boolean;
@@ -393,6 +394,7 @@ export const createIsolatedWorkerLauncher = (
     const executions: SessionExecutions = {
       workspace: environment.binding.workspace,
       guestPorts: generation.guestPorts ?? [],
+      hostPorts: generation.hostPorts ?? [],
       async command(command, timeoutMs, signal, env) {
         live();
         return await coordinator.command(id, command, timeoutMs, { signal }, env);
@@ -448,7 +450,9 @@ export const createIsolatedWorkerLauncher = (
         });
         signal?.throwIfAborted();
         if (closed) throw new Error("Session VM provider is shutting down");
-        generation.guestPorts = (await generation.environment!.status()).guestPorts ?? [];
+        const ports = await generation.environment!.status();
+        generation.guestPorts = ports.guestPorts ?? [];
+        generation.hostPorts = ports.hostPorts ?? [];
         signal?.throwIfAborted();
         if (closed) throw new Error("Session VM provider is shutting down");
         return startWorker(generation, argv, configuration.onProgress, executions);

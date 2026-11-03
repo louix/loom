@@ -98,6 +98,7 @@ const deadline = setTimeout(
 const network: Array<{ host: string; allowed: boolean }> = [];
 const blockedHosts = new Set<string>();
 let publishedPorts: import("../../../core/src/host-ports.ts").PublishedPort[] = [];
+let forwardedPorts: import("../../../core/src/host-ports.ts").PortForward[] = [];
 const status = () => {
   Deno.writeTextFileSync(
     join(binding.state, "status.json.tmp"),
@@ -107,6 +108,7 @@ const status = () => {
       execPid: phase === "running" ? child?.pid : undefined,
       network,
       guestPorts: publishedPorts,
+      hostPorts: forwardedPorts,
     }),
     { mode: 0o600 },
   );
@@ -280,6 +282,7 @@ try {
     hostPorts.map((p) => p.host),
   );
   publishedPorts = published.map((p) => p.mapping);
+  forwardedPorts = hostPorts;
   for (const {
     mapping: { host },
     relay,

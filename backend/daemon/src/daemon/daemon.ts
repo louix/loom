@@ -1245,8 +1245,12 @@ export class Daemon {
    */
   #enrich(s: SessionSnapshot, withGit = true): SessionSnapshot {
     let out = s;
-    const guestPorts = this.#vmExecutions.get(s.id)?.guestPorts;
-    out = { ...out, guestPorts: guestPorts?.length ? guestPorts : undefined };
+    const { guestPorts, hostPorts } = this.#vmExecutions.get(s.id) ?? {};
+    out = {
+      ...out,
+      guestPorts: guestPorts?.length ? guestPorts : undefined,
+      hostPorts: hostPorts?.length ? hostPorts : undefined,
+    };
     const pendingMode = this.#sessions.snapshot(s.id)?.pendingMode;
     if (pendingMode !== undefined) out = { ...out, pendingMode };
     if (this.#sessions.isStopping(s.id)) out = { ...out, stopping: true };

@@ -23,6 +23,8 @@ const published = z.object({
   lan: z.array(address).max(16).optional(),
 });
 export const resolvedPortsSchema = z.array(published).max(64);
+/** A VM run's normalized `host_ports`: guest loopback `guest` reaches host loopback `host`. */
+export const resolvedHostPortsSchema = z.array(z.object({ host: port, guest: port })).max(64);
 export type PortForward = z.output<typeof mapping>;
 export type PublishedPort = z.output<typeof published>;
 export const showHostAddress = (p: PublishedPort) => {

@@ -526,7 +526,8 @@ Both directions support remapping with named `host` and `guest` ports:
 `127.0.0.1:3000`. Omitting `host` allocates a free host port from 32768–60999
 for each session. The agent receives the resolved mapping on every start/resume
 and can look it up with the Loom `status` tool (`agent_status` for its
-sub-agents); the TUI session details and startup log show the same host address. For an HTTP service, open
+sub-agents); the TUI session details and startup log show the same host address,
+and the session details also list each `host_ports` forward (`guest:15432 → 127.0.0.1:5432`). For an HTTP service, open
 `http://127.0.0.1:<allocated-port>` on the host. The application still listens on
 its configured guest port. Session details remove the mapping when the VM stops.
 

@@ -627,6 +627,8 @@ export const detailLayout = (
     if (account) addLine(account);
     for (const port of s.guestPorts ?? [])
       addLine(truncate(`${showHostAddress(port)} → guest:${port.guest}`, w), "text");
+    for (const port of s.hostPorts ?? [])
+      addLine(truncate(`guest:${port.guest} → 127.0.0.1:${port.host}`, w), "text");
     addLine(truncate(titleLine(s.title), w), "text");
     if (s.parentId && s.forkTurn != null) {
       const how = s.forkKind ? FORK_KIND[s.forkKind] : "";

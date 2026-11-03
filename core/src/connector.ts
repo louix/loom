@@ -103,6 +103,8 @@ export interface SessionExecutions {
   readonly workspace: string;
   /** Live host loopback listeners; withdrawn with the environment. */
   readonly guestPorts?: import("./host-ports.ts").PublishedPort[];
+  /** Guest loopback listeners forwarding to host services. */
+  readonly hostPorts?: import("./host-ports.ts").PortForward[];
   /** A bounded guest shell command; its lease is held until the process settles. */
   command(
     command: string,
