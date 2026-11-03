@@ -44,6 +44,9 @@ export const mcpCommand = async (
     const child = new Deno.Command(Deno.execPath(), {
       args: [
         "run",
+        "--cached-only",
+        "--frozen",
+        "--node-modules-dir=manual",
         "--allow-read",
         "--allow-write",
         "--allow-env",

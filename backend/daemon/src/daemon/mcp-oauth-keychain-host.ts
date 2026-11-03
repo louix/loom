@@ -12,6 +12,8 @@ export const oauthKeychain = async (
     args: [
       "run",
       "--cached-only",
+      "--frozen",
+      "--node-modules-dir=manual",
       "--no-prompt",
       "--deny-net",
       "--deny-read",
