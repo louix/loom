@@ -1,6 +1,8 @@
 #!/bin/sh
 set -eu
 
-# Keep commits consistently formatted and lint-clean.
+# Keep commits consistently formatted and lint-clean, and keep the Nix
+# denoDeps hashes in step with deno.lock.
 deno task format:check
 deno task lint
+deno run -A scripts/check-deno-deps-hashes.ts

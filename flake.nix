@@ -236,7 +236,7 @@
             outputHashAlgo = "sha256";
             outputHash = {
               x86_64-linux = "sha256-KGjawNdm/jnxmNdC/3S3wgFi7IeL+IiXaAja+kk83Rs=";
-              aarch64-linux = "sha256-FEVMKVE1i7zDaRz+mjKSuWNY3jmHYdIuRZyPSY/nuE8=";
+              aarch64-linux = "sha256-HH3VTMklKA73jb1bK1vimCqa//ra3FvqTLCOV660g/8=";
               aarch64-darwin = "sha256-oXCnHnjT4arN+nD4WHtaFJ0vbBFV1/0AKG8sDGOZerE=";
             }.${hostSystem};
           };
