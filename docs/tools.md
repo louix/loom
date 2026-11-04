@@ -116,7 +116,9 @@ plaintext fallback. Native Keychain behavior still needs validation on macOS.
 Only the access token reaches Loom's host relay; the guest receives a separate
 session capability. Status reads local state without contacting the server.
 
-Missing credentials fail preflight with a login command. A changed URL or OAuth
+Missing, expired or unrefreshable credentials do not stop a session: it starts or
+resumes without that server and shows a notice with the login command; resume it
+after `loom mcp login` to get the server back. A changed URL or OAuth
 configuration requires a new login. Refresh preserves live streams; logout clears
 authorization and aborts upstream requests. Requests are never replayed.
 Logout reports local deletion separately from remote revocation and exits nonzero
@@ -337,7 +339,8 @@ server aliases; Tilth and Kagi are ordinary configured servers.
 
 ## Selection and lifetime
 
-All selected servers are required. Missing artifacts or credentials fail
+All selected servers are required, except that an OAuth server without a usable
+login is left out with a notice. Missing artifacts or other credentials fail
 preflight; connection failures fail launch. Definitions are syntax-validated even
 when unselected. Duplicate selections, unknown names and competing
 `default_for` preferences fail validation.

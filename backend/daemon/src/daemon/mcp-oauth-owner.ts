@@ -16,6 +16,11 @@ import { registerOAuthOwner } from "./mcp-oauth-lease.ts";
 import { mcpOAuthDiagnostic } from "./mcp-oauth-status.ts";
 import { startMcpWorker, type ManagedMcp } from "./mcp-worker.ts";
 
+/** `unavailable`: no usable credential; the session starts without this server. */
+export type OAuthMcpMount =
+  | { readonly kind: "mounted"; readonly worker: ManagedMcp }
+  | { readonly kind: "unavailable"; readonly message: string };
+
 const owners = new Map<string, OAuthOwner>();
 class OAuthOwner {
   readonly store: McpOAuthStore;
@@ -101,7 +106,7 @@ class OAuthOwner {
     start: typeof startMcpWorker,
     notice: (message: string) => void,
     requestTimeoutMs: number | undefined,
-  ): Promise<ManagedMcp> {
+  ): Promise<OAuthMcpMount> {
     return await this.serial(async () => {
       if (!this.lease) {
         await this.store.transact(async (state) => {
@@ -113,8 +118,11 @@ class OAuthOwner {
       let mounting: ManagedMcp | undefined;
       try {
         await this.sync();
-        if (!this.relay(this.state).accessToken)
-          throw new Error(mcpOAuthDiagnostic(this.name, this.lastNotice));
+        if (!this.relay(this.state).accessToken) {
+          const message = mcpOAuthDiagnostic(this.name, this.lastNotice);
+          await this.release();
+          return { kind: "unavailable", message };
+        }
         const spec = {
           transport: "http" as const,
           url: this.url,
@@ -141,35 +149,36 @@ class OAuthOwner {
         this.schedule();
         let closed: Promise<void> | undefined;
         return {
-          ...worker,
-          close: () =>
-            (closed ??= this.serial(async () => {
-              await worker.close();
-              this.workers.delete(worker);
-              await this.lease?.setWorkers([...this.workers.keys()].map((w) => w.pid));
-              if (!this.workers.size) {
-                clearTimeout(this.timer);
-                await this.lease?.close();
-                this.lease = undefined;
-                this.state = { version: 1, generation: 0 };
-                this.lastNotice = "";
-              }
-            })),
+          kind: "mounted",
+          worker: {
+            ...worker,
+            close: () =>
+              (closed ??= this.serial(async () => {
+                await worker.close();
+                this.workers.delete(worker);
+                await this.lease?.setWorkers([...this.workers.keys()].map((w) => w.pid));
+                if (!this.workers.size) clearTimeout(this.timer);
+                await this.release();
+              })),
+          },
         };
       } catch (error) {
         if (mounting) {
           await mounting.close();
           this.workers.delete(mounting);
         }
-        if (!this.workers.size) {
-          await this.lease?.close();
-          this.lease = undefined;
-          this.state = { version: 1, generation: 0 };
-          this.lastNotice = "";
-        }
+        await this.release();
         throw error;
       }
     });
+  }
+  /** Drops the lease once no worker is left on it. */
+  async release() {
+    if (this.workers.size) return;
+    await this.lease?.close();
+    this.lease = undefined;
+    this.state = { version: 1, generation: 0 };
+    this.lastNotice = "";
   }
 }
 export const startOAuthMcp = (
@@ -179,7 +188,7 @@ export const startOAuthMcp = (
   start = startMcpWorker,
   notice: (message: string) => void = () => {},
   requestTimeoutMs?: number,
-): Promise<ManagedMcp> => {
+): Promise<OAuthMcpMount> => {
   const identity = mcpOAuthIdentity(name, url, config);
   const key = JSON.stringify([createMcpOAuthStore(name).directory, identity]);
   let owner = owners.get(key);

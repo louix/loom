@@ -15,8 +15,8 @@ import {
   acceptMcpOAuth,
   oauthUsable,
 } from "../backend/daemon/src/daemon/mcp-oauth-tokens.ts";
-import { startMcpWorker } from "../backend/daemon/src/daemon/mcp-worker.ts";
-import { startOAuthMcp } from "../backend/daemon/src/daemon/mcp-oauth-owner.ts";
+import { startMcpWorker, type ManagedMcp } from "../backend/daemon/src/daemon/mcp-worker.ts";
+import { startOAuthMcp, type OAuthMcpMount } from "../backend/daemon/src/daemon/mcp-oauth-owner.ts";
 import { logoutMcpOAuth } from "../backend/daemon/src/daemon/mcp-oauth-logout.ts";
 import {
   registerOAuthOwner,
@@ -25,7 +25,15 @@ import {
 import { mcpOAuthStatus } from "../backend/daemon/src/daemon/mcp-oauth-status.ts";
 import { normalizeConfig } from "@loom/daemon/config/config";
 import { preflightTools } from "../backend/daemon/src/daemon/tool-preflight.ts";
+import { withExternalMcp } from "../backend/daemon/src/daemon/mcp-provider.ts";
+import { FakeProvider } from "../connectors/mock/src/fake.ts";
+import { makeLogger } from "@loom/core/logger";
+import type { CreateSessionOptions, McpServerHandle } from "@loom/core/types";
 const linux = { skip: Deno.build.os !== "linux" };
+const mountedWorker = (mount: OAuthMcpMount): ManagedMcp => {
+  if (mount.kind === "unavailable") throw new Error(mount.message);
+  return mount.worker;
+};
 const credential = (url: string): McpOAuthCredential => ({
   identity: mcpOAuthIdentity("work", url + "/mcp", {}),
   issuer: url,
@@ -290,16 +298,18 @@ test(
     const f = await fixture();
     const old = Deno.env.get("XDG_STATE_HOME");
     Deno.env.set("XDG_STATE_HOME", f.root);
-    const workers: Awaited<ReturnType<typeof startOAuthMcp>>[] = [];
+    const workers: ManagedMcp[] = [];
     try {
       const store = createMcpOAuthStore("work");
       const c = credential(f.origin);
       await store.commit(0, c);
       const notices: string[] = [];
       workers.push(
-        await startOAuthMcp("work", c.identity.resource, {}, undefined, (m) => notices.push(m)),
+        mountedWorker(
+          await startOAuthMcp("work", c.identity.resource, {}, undefined, (m) => notices.push(m)),
+        ),
       );
-      workers.push(await startOAuthMcp("work", c.identity.resource, {}));
+      workers.push(mountedWorker(await startOAuthMcp("work", c.identity.resource, {})));
       assert.equal(f.requests.length, 1);
       const request = async (w: (typeof workers)[number]) => {
         if (w.handle.spec.transport !== "http") throw new Error();
@@ -323,7 +333,7 @@ test(
   },
 );
 test(
-  "OAuth config is HTTP-only, mutually exclusive with bearer, and preflight requires login",
+  "OAuth config is HTTP-only, mutually exclusive with bearer, and a missing login leaves the server out",
   linux,
   async () => {
     const definition = {
@@ -349,7 +359,10 @@ test(
     const old = Deno.env.get("XDG_STATE_HOME");
     Deno.env.set("XDG_STATE_HOME", root);
     try {
-      await assert.rejects(preflightTools(config, "claude"), /loom mcp login work/);
+      await preflightTools(config, "claude");
+      const missing = await startOAuthMcp("work", "https://example.com/mcp", {});
+      assert.equal(missing.kind, "unavailable");
+      assert.match(missing.kind === "unavailable" ? missing.message : "", /loom mcp login work/);
       const store = createMcpOAuthStore("work");
       const c = credential("https://example.com");
       await store.commit(0, c); // expired but refreshable is allowed into runtime refresh
@@ -459,3 +472,66 @@ test("rotation leaves active streams open while logout aborts them", async () =>
     await server.shutdown();
   }
 });
+
+test(
+  "a session whose OAuth server has no login starts without it and is told why",
+  linux,
+  async () => {
+    // given
+    const root = await Deno.makeTempDir();
+    const old = Deno.env.get("XDG_STATE_HOME");
+    Deno.env.set("XDG_STATE_HOME", root);
+    const seen: CreateSessionOptions[] = [];
+    const fake = new FakeProvider();
+    const work: McpServerHandle = {
+      name: "work",
+      spec: { transport: "http", url: "https://example.com/mcp" },
+    };
+    const provider = await withExternalMcp(
+      async () => ({
+        id: fake.id,
+        capabilities: fake.capabilities,
+        createSession: (options) => {
+          seen.push(options);
+          return fake.createSession(options);
+        },
+        resumeSession: (ref) => fake.resumeSession(ref),
+        listPersistedSessions: () => fake.listPersistedSessions(),
+      }),
+      { id: "claude", logger: makeLogger("test"), config: {} },
+      undefined,
+      undefined,
+      "/repo",
+      () => [
+        {
+          name: "work",
+          url: "https://example.com/mcp",
+          bearerTokenEnv: "",
+          oauth: {},
+          defaultFor: [],
+        },
+      ],
+    );
+    try {
+      // when
+      const session = await provider.createSession({
+        sessionId: "s",
+        cwd: "/nowhere",
+        prompt: "",
+        mode: "default",
+        mcpServers: [work],
+      });
+      const first = await session.events()[Symbol.asyncIterator]().next();
+      await session.close();
+      // then
+      assert.deepEqual(seen[0]?.mcpServers, []);
+      assert.equal(first.value?.type, "error");
+      assert(first.value?.type === "error" && !first.value.fatal);
+      assert.match(first.value.message, /loom mcp login work.*started without work/);
+    } finally {
+      if (old === undefined) Deno.env.delete("XDG_STATE_HOME");
+      else Deno.env.set("XDG_STATE_HOME", old);
+      await Deno.remove(root, { recursive: true });
+    }
+  },
+);

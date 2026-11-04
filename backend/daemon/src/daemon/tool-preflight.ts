@@ -1,4 +1,3 @@
-import { mcpOAuthStatus, mcpOAuthDiagnostic } from "./mcp-oauth-status.ts";
 import type { LoomConfig } from "../config/config.ts";
 import { toolExecutionError } from "../config/tool-selection.ts";
 export { toolExecutionError } from "../config/tool-selection.ts";
@@ -23,12 +22,8 @@ export const preflightTools = async (
       for (const name of m.passEnv ?? [])
         if (!Deno.env.get(name)) throw new Error(`MCP server ${m.name}: ${name} is not set`);
   }
+  // OAuth state is not checked: lapsed credentials start the session without that server.
   for (const m of config.httpMcp) {
-    if (m.oauth) {
-      const auth = await mcpOAuthStatus(m.name, m.url, m.oauth);
-      if (!["ready", "refresh_required"].includes(auth.state))
-        throw new Error(mcpOAuthDiagnostic(m.name, auth.state));
-    }
     if (!m.bearerToken && m.bearerTokenEnv && !Deno.env.get(m.bearerTokenEnv))
       throw new Error(`Remote tool ${m.name}: ${m.bearerTokenEnv} is not set`);
   }

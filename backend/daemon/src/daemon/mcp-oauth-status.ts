@@ -34,7 +34,8 @@ export const mcpOAuthStatus = async (
   }
 };
 export const mcpOAuthDiagnostic = (name: string, state: string): string => {
-  if (state === "refresh_failed") return name + ": OAuth refresh failed; retry later";
+  if (state === "refresh_failed")
+    return name + ": OAuth refresh failed; Loom keeps retrying, or run loom mcp login " + name;
   if (state === "storage_unavailable") return name + ": OAuth credential storage unavailable";
   return (
     name +

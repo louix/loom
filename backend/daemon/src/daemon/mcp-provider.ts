@@ -57,7 +57,8 @@ export const withExternalMcp = async (
         );
     };
     try {
-      const mount = async (handle: McpServerHandle): Promise<McpServerHandle> => {
+      /** `undefined`: the server is unavailable and the session starts without it. */
+      const mount = async (handle: McpServerHandle): Promise<McpServerHandle | undefined> => {
         const repo = repoRoot ?? context.config.sessionVm?.repoRoot;
         if (handle.spec.transport === "stdio") {
           const spec = {
@@ -89,8 +90,9 @@ export const withExternalMcp = async (
             ...(handle.spec.grants ? { grants: handle.spec.grants } : {}),
             ...(handle.requestTimeoutMs ? { requestTimeoutMs: handle.requestTimeoutMs } : {}),
           });
-        else if (definition?.oauth)
-          worker = await startOAuthMcp(
+        else if (definition?.oauth) {
+          // Lapsed credentials cost the session this one server, never the session itself.
+          const mounted = await startOAuthMcp(
             handle.name,
             handle.spec.url,
             definition.oauth,
@@ -98,7 +100,14 @@ export const withExternalMcp = async (
             notice,
             handle.requestTimeoutMs,
           );
-        else
+          if (mounted.kind === "unavailable") {
+            notice(
+              `${mounted.message}. This session started without ${handle.name}; resume it after signing in to use ${handle.name}.`,
+            );
+            return undefined;
+          }
+          worker = mounted.worker;
+        } else
           worker = await start(handle.name, {
             ...handle.spec,
             ...(handle.requestTimeoutMs ? { requestTimeoutMs: handle.requestTimeoutMs } : {}),
@@ -108,7 +117,11 @@ export const withExternalMcp = async (
       };
       const servers: McpServerHandle[] = [];
       const oneShot = "oneShot" in input && input.oneShot;
-      if (!oneShot) for (const handle of input.mcpServers ?? []) servers.push(await mount(handle));
+      if (!oneShot)
+        for (const handle of input.mcpServers ?? []) {
+          const server = await mount(handle);
+          if (server) servers.push(server);
+        }
       const provider = base;
       const options = {
         ...input,
@@ -120,7 +133,7 @@ export const withExternalMcp = async (
       const session = resume
         ? await provider.resumeSession(options as SessionRef)
         : await provider.createSession(options as CreateSessionOptions);
-      if (workers.length === 0) return session;
+      if (workers.length === 0 && notices.length === 0) return session;
       let closing: Promise<void> | undefined;
       let failed = false;
       const close = (reason?: HostStopReason): Promise<void> =>
