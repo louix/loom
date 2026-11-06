@@ -311,7 +311,7 @@ test(
       assert.notEqual(details.cwd, f.workspace);
       assert.equal(details.profile, f.profile);
       assert.equal(JSON.stringify(details.initialization).includes('"loom"'), false);
-      assert.ok(details.argv.includes("--tools"));
+      assert.ok(details.argv.includes("--tools="));
       await s.close();
       await r.done;
       await assert.rejects(Deno.stat(details.cwd), Deno.errors.NotFound);

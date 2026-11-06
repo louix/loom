@@ -5,13 +5,13 @@ let
   images = {
     x86_64-linux = {
       arch = "amd64";
-      imageDigest = "sha256:5ae3c39ebd15e229dcedd5cee596b2497182493d41ff162e824ba13fc1b2b867";
-      hash = "sha256-psItnZ31Gxg04bQMXo/RW5AecbENfyACZCv7Dt+f0CM=";
+      imageDigest = "sha256:c67e92c8099ba22853ab4cfda7cfb494d253d6012ca82dee98ba8976772af018";
+      hash = "sha256-w7nZ4JVH7FvxtJWjzVMXGh0fIJlg/VlEx4HieWKPD9c=";
     };
     aarch64-linux = {
       arch = "arm64";
-      imageDigest = "sha256:6bd27d44e6c32a66bbd72d7cb2b76a8ae3497ec2e5274a81abd1b37f6013fa1f";
-      hash = "sha256-fbgD/9vKMaxORPIebpgzJkXuk6lq1wpmC2jZwT8CZoA=";
+      imageDigest = "sha256:ec8534cda2cb30f29f44f23e135297af7a1496f2990fd8e4e84aa36b081a757a";
+      hash = "sha256-RvBF+Vjbx93ZObNZkzKfElRfCopimSm6946w7GrV3yQ=";
     };
   };
 in pkgs.dockerTools.pullImage ({

@@ -111,7 +111,7 @@ test("temporary", () => {
     );
     // No LOOM_TEST_HOME: what `deno test <file>` gives a developer.
     const result = await new Deno.Command(Deno.execPath(), {
-      args: ["test", "--no-check", "--no-lock", "-A", probe],
+      args: ["test", "--no-check", "--no-config", "--no-lock", "-A", probe],
       clearEnv: true,
       env: Object.fromEntries(
         ["PATH", "DENO_DIR"].flatMap((name) => {

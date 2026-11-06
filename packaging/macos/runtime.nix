@@ -3,8 +3,8 @@
 { pkgs, smolvm, source, runtime, hash }:
 let
   bootstrap = pkgs.fetchurl {
-    url = "https://releases.nixos.org/nix/nix-2.28.1/nix-2.28.1-aarch64-linux.tar.xz";
-    hash = "sha256-T6ND4cCcBehg5Tsfr7ri1lcBNgKGgaczDX00aU6ukPo=";
+    url = "https://releases.nixos.org/nix/nix-2.34.9/nix-2.34.9-aarch64-linux.tar.xz";
+    hash = "sha256-8LslGNtsnbP5Jb4+23b24NoXy3L7oylJP1EMoI5REac=";
   };
   guestScript = pkgs.writeText "loom-build-runtime.sh" ''
     set -eu
@@ -13,7 +13,7 @@ let
     tar -xJf /input/bootstrap.tar.xz
     cd nix-*-aarch64-linux
     cp -a store/* /nix/store/
-    nix_bin=$(echo /nix/store/*-nix-2.28.1/bin)
+    nix_bin=$(echo /nix/store/*-nix-2.34.9/bin)
     export PATH="$nix_bin:/usr/bin:/bin"
     export HOME=/root
     export NIX_CONFIG='build-users-group =

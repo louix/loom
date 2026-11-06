@@ -2,8 +2,8 @@
   description = "loom — per-repo agent-fleet daemon (dev shell + package)";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-  # SmolVM 1.23.0; its Nix recipe still needs the release override below.
-  inputs.smolvm.url = "github:smol-machines/smolvm/6aae73101065ce22bfcff17ec0f57371b3a90e11";
+  # SmolVM 1.33.0; its Nix recipe still needs the release override below.
+  inputs.smolvm.url = "github:smol-machines/smolvm/03a5c2270d287b09e4aab52e28d384ab66dd5818";
 
   outputs =
     { self, nixpkgs, smolvm }:
@@ -20,15 +20,17 @@
         let
           upstream = smolvm.packages.${system};
           pkgs = smolvm.inputs.nixpkgs.legacyPackages.${system};
-          # The release tags' Nix recipe lags the published tarballs.
-          # Keep upstream's packaging, but use the published 1.23.0 assets.
+          # The release tag's Nix recipe has stale tarball checksums.
+          # Keep upstream's packaging, but use the published 1.33.0 assets.
           release = {
-            x86_64-linux = { platform = "linux-x86_64"; hash = "sha256-4kMxACuO962Q+9/n53fm9rLlWFUrLRWcK7WuJKJ1glA="; };
-            aarch64-linux = { platform = "linux-arm64"; hash = "sha256-NimL47iXath/wxu7A/CwwQWk3dMFoegzBTm3Szubqvk="; };
-            aarch64-darwin = { platform = "darwin-arm64"; hash = "sha256-J2PouFE/kC0CNQZrVgWkkVKAKbZ4RBY9jYS5pgeqY6Q="; };
+            x86_64-linux = { platform = "linux-x86_64"; hash = "sha256-l+DGTVCrxAdJmALapshJrAEO8p1E4dl2ZNingGeScnQ="; };
+            aarch64-linux = { platform = "linux-arm64"; hash = "sha256-yoAILDmbcbj0r+QF8TJeAfrWyixIF8iXI+3pK+6PJzc="; };
+            aarch64-darwin = { platform = "darwin-arm64"; hash = "sha256-L3dyIw4cU6J9tYn9PGUZCkPrAUvBB7L5y9aoX1Xnw/U="; };
           }.${system};
         in upstream.default.overrideAttrs (_: rec {
-          version = "1.23.0";
+          version = "1.33.0";
+          # The guest rootfs has /etc/mtab -> /proc/mounts, resolved only at boot.
+          dontCheckForBrokenSymlinks = true;
           sourceRoot = "smolvm-${version}-${release.platform}";
           src = pkgs.fetchurl {
             url = "https://github.com/smol-machines/smolvm/releases/download/v${version}/${sourceRoot}.tar.gz";
@@ -235,9 +237,9 @@
             outputHashMode = "recursive";
             outputHashAlgo = "sha256";
             outputHash = {
-              x86_64-linux = "sha256-KGjawNdm/jnxmNdC/3S3wgFi7IeL+IiXaAja+kk83Rs=";
-              aarch64-linux = "sha256-HH3VTMklKA73jb1bK1vimCqa//ra3FvqTLCOV660g/8=";
-              aarch64-darwin = "sha256-oXCnHnjT4arN+nD4WHtaFJ0vbBFV1/0AKG8sDGOZerE=";
+              x86_64-linux = "sha256-Jg1jRpu9A2ycQC0zO4iIoTK0kbdsjTMcyummDKRsxJY=";
+              aarch64-linux = "sha256-NT4gJj9p0YCnOSfiec/EAmBoyF2lgCPR1EnEDtD5PCI=";
+              aarch64-darwin = "sha256-ek61c7vD1pp60QPVA6uTXQ6ke1NrAagZRP1vaQxOVMo=";
             }.${hostSystem};
           };
 
