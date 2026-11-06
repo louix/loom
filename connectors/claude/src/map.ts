@@ -71,6 +71,10 @@ interface SdkMsgLite {
   parent_tool_use_id?: string | null;
   error?: string;
   message?: { role?: string; model?: string; content?: unknown; usage?: RawUsage };
+  /** CLI wire metadata: frame-local thinking blocks containing user-facing
+   *  narration. Older CLIs omit it; unlisted blocks remain ordinary thinking.
+   *  Keep signatures opaque — the CLI supplies this classification. */
+  narration_block_indexes?: number[];
   // result
   result?: string;
   is_error?: boolean;
@@ -614,12 +618,17 @@ export class ClaudeEventMapper {
       const ttl = writtenTtlMinutes(u);
       if (ttl > 0) this.#cacheTtlMinutes = ttl;
     }
-    for (const b of blocks(m.message?.content)) {
+    const narration = Array.isArray(m.narration_block_indexes) ? m.narration_block_indexes : [];
+    for (const [index, b] of blocks(m.message?.content).entries()) {
       if (b.type === "text" && typeof b.text === "string" && b.text.length > 0) {
         out.push({ type: "assistant_text", ...base, text: b.text });
       } else if (b.type === "thinking" || b.type === "redacted_thinking") {
         const text = b.thinking ?? b.text ?? "";
-        if (text.length > 0) out.push({ type: "thinking", ...base, text });
+        if (text.length > 0) {
+          const type =
+            b.type === "thinking" && narration.includes(index) ? "assistant_text" : "thinking";
+          out.push({ type, ...base, text });
+        }
       } else if (b.type === "tool_use") {
         const id = b.id ?? "";
         out.push({ type: "tool_call", ...base, id, name: b.name ?? "", input: b.input ?? {} });

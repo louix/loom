@@ -3,6 +3,7 @@ import { describe, test } from "node:test";
 import { createElement } from "react";
 import { Box, renderToString, Text } from "ink";
 import { EventLog } from "@loom/tui/components";
+import { ClaudeEventMapper } from "@loom/connector-claude/map";
 import { agentAuthor } from "@loom/core/agents";
 import { showLoomMessage, type AgentReportEvent, type LoomMessage } from "@loom/core/loom-message";
 import {
@@ -247,4 +248,34 @@ describe("fuller verbosity keeps the whole message", () => {
       assert.match(rows, /\[loom\] You have 1 sub-agent that has finished/);
     });
   }
+});
+
+test("Claude's tagged narration answers remain visible in chat and chat+tools", () => {
+  // Claude Code 2.1.287 sends one assistant frame per content block. The
+  // narration index is zero within this frame even when apiBlockIndex is one.
+  const answer =
+    "requireFullScreen opts the iPad app out of multitasking so it can lock orientations.";
+  const mapper = new ClaudeEventMapper("s");
+  const events = [
+    ...mapper.map({
+      type: "assistant",
+      message: { content: [{ type: "thinking", thinking: "ordinary reasoning" }] },
+    }),
+    ...mapper.map({
+      type: "assistant",
+      apiBlockIndex: 1,
+      narration_block_indexes: [0],
+      message: { content: [{ type: "thinking", thinking: answer + "\n\n" }] },
+    }),
+    ...mapper.map({
+      type: "assistant",
+      message: { content: [{ type: "text", text: "Now the change." }] },
+    }),
+  ];
+  const lines = events.map((event, i) => toLogLine(i + 1, event));
+  for (const filter of ["chat", "chat_and_tools"] as const) {
+    const rendered = renderedAt(lines, filter, 140);
+    assert.deepEqual(rendered, ["thought a moment", answer, "Now the change."]);
+  }
+  assert.match(renderedAt(lines, "everything", 140).join("\n"), /ordinary reasoning/);
 });

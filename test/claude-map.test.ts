@@ -1005,3 +1005,56 @@ test("partial cumulative reports cannot double-count tokens or cost", () => {
   assert.equal(m.state.usage.input, 150);
   assert.equal(m.state.costUsd, 0.15);
 });
+
+test("narration indexes refer to the original frame and preserve event order and agent identity", () => {
+  const m = new ClaudeEventMapper(SID);
+  const out = m.map({
+    type: "assistant",
+    parent_tool_use_id: "task-7",
+    narration_block_indexes: [2, 3],
+    message: {
+      content: [
+        { type: "thinking", thinking: "" },
+        { type: "thinking", thinking: "ordinary reasoning" },
+        { type: "thinking", thinking: "Here is the explanation." },
+        { type: "thinking", thinking: "" },
+        { type: "text", text: "Continuing." },
+        { type: "tool_use", id: "tu-1", name: "Bash", input: {} },
+      ],
+    },
+  });
+  assert.deepEqual(
+    out.map((e) => e.type),
+    ["thinking", "assistant_text", "assistant_text", "tool_call"],
+  );
+  assert.deepEqual(
+    byType(out, "assistant_text").map((e) => e.text),
+    ["Here is the explanation.", "Continuing."],
+  );
+  assert.ok(out.every((e) => e.agentId === "task-7" && e.sessionId === SID));
+  // The indexes belong to this frame, not the next block or whole API turn.
+  assert.equal(
+    m.map({
+      type: "assistant",
+      message: { content: [{ type: "thinking", thinking: "still reasoning" }] },
+    })[0]?.type,
+    "thinking",
+  );
+});
+
+test("only explicitly indexed thinking becomes narration", () => {
+  for (const indexes of [undefined, [], [-1, 0.5, 99], ["0"], "0", null]) {
+    const out = new ClaudeEventMapper(SID).map({
+      type: "assistant",
+      narration_block_indexes: indexes,
+      message: { content: [{ type: "thinking", thinking: "Here is an answer-like summary." }] },
+    });
+    assert.equal(out[0]?.type, "thinking");
+  }
+  const out = new ClaudeEventMapper(SID).map({
+    type: "assistant",
+    narration_block_indexes: [0],
+    message: { content: [{ type: "redacted_thinking", data: "opaque" }] },
+  });
+  assert.deepEqual(out, []);
+});
