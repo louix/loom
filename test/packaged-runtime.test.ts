@@ -166,10 +166,12 @@ test("manifest cannot grant authority; VM mount and environment policies are fix
   assert.deepEqual(Object.keys(vmEnvironment(b.state)).sort(), [
     "HOME",
     "PATH",
+    "SMOLVM_IMAGE_SEEDS",
     "XDG_CACHE_HOME",
     "XDG_CONFIG_HOME",
     "XDG_DATA_HOME",
   ]);
+  assert.equal(vmEnvironment(b.state).SMOLVM_IMAGE_SEEDS, "0");
   for (const workspace of ["/", "/nix/store", "/tmp/a:b", "/tmp/a,b", "/proc/self", "/etc"]) {
     assert.throws(() => vmArguments({ ...b, workspace }));
   }

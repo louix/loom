@@ -140,6 +140,8 @@ export const vmEnvironment = (state: string) => {
     XDG_DATA_HOME: join(state, "data"),
     XDG_CONFIG_HOME: join(state, "config"),
     PATH: "/usr/bin:/bin",
+    // Loom owns disk templates; SmolVM seeds add an unowned VM to private state.
+    SMOLVM_IMAGE_SEEDS: "0",
   };
 };
 export const guestWorkingDirectory = (
