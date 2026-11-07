@@ -274,7 +274,7 @@ export const agentProfileSchema = z.strictObject({
       `The session MCP servers it gets, plus ${LOOM_AGENTS_SERVER} to start sub-agents of its own (still subject to agents.max_depth). Omitted: all of them.`,
     ),
   skills: names("skills").describe(
-    "Claude or Codex skills to load from the provider's <config_dir>/skills/<name>/SKILL.md, by name; omitted keeps the CLI's own.",
+    "Skills from $XDG_CONFIG_HOME/loom/skills/<name>/SKILL.md (default ~/.config/loom/skills), for every provider; omitted discovers all, [] disables skills.",
   ),
   tools: z
     .strictObject({

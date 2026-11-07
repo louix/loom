@@ -37,7 +37,6 @@ import { stateRunning } from "@loom/core/session-state";
 import { makeLogger, type Logger } from "@loom/core/logger";
 import { AsyncChannel } from "@loom/core/channel";
 import { WorkerDiagnostic } from "@loom/core/worker";
-import { copyClaudeSkills } from "@loom/core/claude-skills";
 import {
   ClaudeEventMapper,
   baselineOf,
@@ -385,35 +384,6 @@ const queryEnv = (opts: {
   return env;
 };
 
-/**
- * A local plugin holding copies of the named skills from the profile's config
- * dir. User skills load only with the `user` setting source, which brings the
- * rest of the user settings along; a plugin loads under any setting sources.
- * The Skill tool resolves a bare `coding-style` to `loom:coding-style`.
- */
-const skillsPlugin = (
-  configDir: string | undefined,
-  names: readonly string[],
-  log: Logger,
-): string => {
-  const profile = configDir
-    ? expandTilde(configDir)
-    : (Deno.env.get("CLAUDE_CONFIG_DIR") ?? join(homedir(), ".claude"));
-  const root = Deno.makeTempDirSync({ prefix: "loom-skills-" });
-  const copy = copyClaudeSkills(profile, names, join(root, "skills"));
-  if (copy.kind === "invalid") {
-    Deno.removeSync(root, { recursive: true });
-    throw new Error(copy.message);
-  }
-  for (const skipped of copy.skipped) log.warn("skill symlink not copied", { skipped });
-  Deno.mkdirSync(join(root, ".claude-plugin"));
-  Deno.writeTextFileSync(
-    join(root, ".claude-plugin", "plugin.json"),
-    JSON.stringify({ name: "loom" }),
-  );
-  return root;
-};
-
 /** Pull a context-window size out of a `[1m]` / `[200k]` style tag; 0 if none. */
 const parseContextTag = (s: string): number => {
   const m = /\[(\d+(?:\.\d+)?)\s*([mk])\]/i.exec(s);
@@ -654,13 +624,9 @@ class ClaudeSession implements AgentSession {
   }
 
   #initDirectory: string | undefined;
-  /** The local plugin carrying the profile's skills; kept across restarts. */
-  #skillsPlugin: string | undefined;
 
   /** Build the `query()` and start pumping its messages into the outbox. */
   start(opts: CreateSessionOptions, extra: StartExtra = {}): void {
-    if (opts.skills?.length && !opts.oneShot && !this.#skillsPlugin)
-      this.#skillsPlugin = skillsPlugin(extra.configDir, opts.skills, this.#log);
     let init: ReturnType<typeof claudeInitHooks> | undefined;
     if (opts.initHooks?.hooks.length && !opts.oneShot) {
       this.#initDirectory = Deno.makeTempDirSync({ prefix: "loom-init-" });
@@ -928,10 +894,8 @@ class ClaudeSession implements AgentSession {
       ],
       // An agent profile's allow list narrows the built-in tools; MCP stays.
       ...(opts.allowTools && !opts.oneShot ? { tools: opts.allowTools } : {}),
-      ...(opts.skills && !opts.oneShot ? { skills: opts.skills } : {}),
-      ...(this.#skillsPlugin
-        ? { plugins: [{ type: "local", path: this.#skillsPlugin, skipMcpDiscovery: true }] }
-        : {}),
+      // Loom supplies the shared catalog; never discover provider-specific skills.
+      skills: [],
       ...(opts.settingSources && !opts.oneShot
         ? { settingSources: opts.settingSources as NonNullable<Options["settingSources"]> }
         : {}),
@@ -976,10 +940,6 @@ class ClaudeSession implements AgentSession {
       if (init && this.#initDirectory) {
         Deno.removeSync(this.#initDirectory, { recursive: true });
         this.#initDirectory = undefined;
-      }
-      if (this.#skillsPlugin && !this.#query) {
-        Deno.removeSync(this.#skillsPlugin, { recursive: true });
-        this.#skillsPlugin = undefined;
       }
       throw error;
     }
@@ -2071,8 +2031,6 @@ class ClaudeSession implements AgentSession {
     await this.#pump?.catch(() => {});
     if (this.#initDirectory)
       await Deno.remove(this.#initDirectory, { recursive: true }).catch(() => {});
-    if (this.#skillsPlugin)
-      await Deno.remove(this.#skillsPlugin, { recursive: true }).catch(() => {});
   }
 }
 

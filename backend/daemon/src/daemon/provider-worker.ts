@@ -1,3 +1,4 @@
+import { loomSkillsDirectory } from "@loom/core/skills";
 /** Host connector processes for non-VM sessions and short-lived utilities. */
 import { homedir } from "node:os";
 import { join, delimiter, isAbsolute, resolve } from "node:path";
@@ -36,6 +37,7 @@ export const createProviderWorker = (
       };
       for (const key of [
         "PATH",
+        "XDG_CONFIG_HOME",
         "LANG",
         "TZ",
         "SSL_CERT_FILE",
@@ -48,7 +50,7 @@ export const createProviderWorker = (
       const read = [...base.permissions.read, scratch];
       const write = [scratch];
       if (role === "session") {
-        read.push(cwd);
+        read.push(cwd, loomSkillsDirectory());
         write.push(cwd);
       }
       if (native) {

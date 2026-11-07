@@ -1,3 +1,5 @@
+import { loomSkillsDirectory } from "../core/src/skills.ts";
+import { copySkills } from "../core/src/skill-files.ts";
 /**
  * Live daemon acceptance against real provider logins, through the daemon's own
  * RPC surface (what the TUI drives). Each check runs an embedded daemon in a
@@ -39,9 +41,8 @@
  *                                       stamp Loom's calls and results, the account's plan
  *                                       is named, a user stop stays the user's
  *   skills-claude                       a profile's `skills: ["coding-style"]` loads that
- *                                       skill from the profile's config dir with user
- *                                       settings off (Claude only; the profile must have
- *                                       skills/coding-style/SKILL.md)
+ *                                       skill from Loom's shared directory (Claude only;
+ *                                       ~/.config/loom/skills/coding-style/SKILL.md)
  */
 import assert from "node:assert/strict";
 import { join } from "node:path";
@@ -77,6 +78,7 @@ setLogLevel("warn");
 
 const CLAUDE = "claude:personal";
 const CODEX = "codex";
+const sharedSkills = loomSkillsDirectory();
 const f = await gitFixture();
 for (const [variable, dir] of [
   ["XDG_CONFIG_HOME", "config"],
@@ -1335,6 +1337,8 @@ const codexTurnFacts = async () => {
 };
 
 const skills = async () => {
+  const copied = copySkills(sharedSkills, ["coding-style"], join(f.root, "config/loom/skills"));
+  assert.equal(copied.kind, "copied");
   await writeConfig({
     profiles: { styled: { description: "Writes in the user's style", skills: ["coding-style"] } },
   });
@@ -1343,22 +1347,13 @@ const skills = async () => {
   const model = await cheapModel(CLAUDE);
   const s = await create(
     CLAUDE,
-    "Use the Skill tool to load the skill coding-style. Then reply with only the first markdown heading in its text.",
+    "Read the coding-style skill from the Loom skill catalog. Then reply with only the first markdown heading in its text.",
     { model, isolation: "none", profile: "styled" },
   );
   const mine = events.filter((e) => e.id === s.id);
-  const call = mine.find(
-    (e) => e.type === "tool_call" && (e.detail as { name?: string }).name === "Skill",
-  );
-  const result = mine.find(
-    (e) =>
-      e.type === "tool_result" &&
-      (e.detail as { id?: string }).id === (call?.detail as { id?: string } | undefined)?.id,
-  );
-  log("skill", { model, call: call?.detail, result: result?.detail, reply: texts.get(s.id) });
-  assert(call, "the Skill tool was called");
-  assert(result, "the Skill tool answered");
-  assert.doesNotMatch(String((result.detail as { output?: string }).output), /Unknown skill/);
+  const reads = mine.filter((e) => e.type === "tool_call");
+  log("skill", { model, reads: reads.map((e) => e.detail), reply: texts.get(s.id) });
+  assert(reads.length > 0, "the skill file was read");
   assert.match(texts.get(s.id) ?? "", /Style/);
 };
 

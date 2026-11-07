@@ -25,6 +25,8 @@ export const MAX_PENDING = 128;
 
 const diagnostics = {
   ...environmentDiagnostics,
+  skills:
+    "Loom could not load its skills. Check the selected names and SKILL.md metadata in $XDG_CONFIG_HOME/loom/skills (default ~/.config/loom/skills). Provider-specific skill directories are not used.",
   claudeCliPath:
     "providers.claude.cli_path is not an executable file. Set it to an installed Claude executable and restart the daemon.",
   claudeBundledCli:

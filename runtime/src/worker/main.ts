@@ -1,3 +1,5 @@
+import { withSkillInstructions, loomSkillsDirectory } from "../../../core/src/skills.ts";
+import { WorkerDiagnostic } from "../../../core/src/worker.ts";
 import type { ConnectorContext } from "../../../core/src/connector.ts";
 import { makeLogger } from "../../../core/src/logger.ts";
 import { serveWorker } from "./serve.ts";
@@ -37,6 +39,15 @@ export const runWorker = async (
     },
     armWorkerShutdown,
     beforeEvent,
+    (input) => {
+      try {
+        return withSkillInstructions(input, loomSkillsDirectory());
+      } catch (error) {
+        if (error instanceof Error && error.message.startsWith("skills:"))
+          throw new WorkerDiagnostic("skills");
+        throw error;
+      }
+    },
   ).catch(async (error) => {
     reportWorkerFailure(error, "worker_loop");
     await exitWorker(1);

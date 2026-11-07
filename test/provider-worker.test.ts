@@ -10,7 +10,12 @@ Deno.test("a network-denied host runs provider turns in a worker with host trans
   const server = Deno.serve({ hostname: "127.0.0.1", port: 0, onListen() {} }, async (request) => {
     if (new URL(request.url).pathname.endsWith("/models"))
       return Response.json({ data: [{ id: "fixture" }] });
-    await request.json();
+    const body = await request.json();
+    if (requests === 0) {
+      assert.match(JSON.stringify(body.messages), /Shared worker skill/);
+      assert.match(JSON.stringify(body.messages), /worker-fixture\/SKILL.md/);
+      assert.ok(!JSON.stringify(body.messages).includes("Read this body only when needed"));
+    }
     requests++;
     const chunks = [
       {

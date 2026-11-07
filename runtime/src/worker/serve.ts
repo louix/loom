@@ -9,7 +9,12 @@ import {
   type WorkerBinding,
   type WorkerRequest,
 } from "../../../core/src/worker.ts";
-import type { AgentProvider, AgentSession } from "../../../core/src/types.ts";
+import type {
+  AgentProvider,
+  AgentSession,
+  CreateSessionOptions,
+  SessionRef,
+} from "../../../core/src/types.ts";
 import type { HarnessEvent } from "../../../core/src/events.ts";
 import { FrameWriter, readFrames } from "./transport.ts";
 
@@ -21,6 +26,7 @@ export const serveWorker = async (
   onShutdown: () => void = () => {},
   /** Runs before an event is forwarded; the guest publishes its branch before a turn ends. */
   beforeEvent: (event: HarnessEvent) => Promise<HarnessEvent | void> = async () => {},
+  prepare: <T extends CreateSessionOptions | SessionRef>(input: T) => T = (input) => input,
 ): Promise<void> => {
   const writer = new FrameWriter(output);
   const stop = new AbortController();
@@ -134,7 +140,7 @@ export const serveWorker = async (
         r.method === "create"
           ? await provider.createSession(
               await runSessionInit(
-                r.args[0],
+                prepare(r.args[0]),
                 initProgress,
                 stop.signal,
                 undefined,
@@ -143,7 +149,7 @@ export const serveWorker = async (
             )
           : await provider.resumeSession(
               await runSessionInit(
-                r.args[0],
+                prepare(r.args[0]),
                 initProgress,
                 stop.signal,
                 undefined,

@@ -38,17 +38,30 @@ An allow list must name `loom-agents` to permit spawning; deny wins.
 `tools` filters built-ins; `skills` selects skills. Providers that cannot honor
 these restrictions reject the profile.
 
-Claude skills load from `<config_dir>/skills/<name>/SKILL.md`, even when
-`setting_sources` excludes user settings. Loom copies only selected skills
-into a session plugin (`loom:<name>`); missing skills fail startup.
+Skills are shared by every provider and live at
+`$XDG_CONFIG_HOME/loom/skills/<name>/SKILL.md`, defaulting to
+`~/.config/loom/skills/<name>/SKILL.md`. Provider-specific skill directories
+are not used. Move existing skills and their supporting files into this directory.
 
-Codex profiles also accept `skills: ["name"]`, resolved from the provider's
-`<config_dir>/skills/<name>/SKILL.md` (`CODEX_HOME` or `~/.codex` by default).
-Loom selects these through native Codex per-thread settings on start, resume,
-and fork, without modifying the shared Codex config. An empty list disables
-all discovered skills; omitting `skills` preserves native discovery. Missing
-or invalid selected skills fail startup. VM sessions copy selected skills and
-their supporting files into the guest profile before launching Codex.
+Each `SKILL.md` starts with YAML metadata:
+
+```yaml
+---
+name: coding-style
+description: Conventions to follow when writing or reviewing code.
+---
+Your skill instructions go here.
+```
+
+The name must match its directory. Omit `skills` to discover all Loom skills,
+use `skills: ["coding-style"]` to select named skills, or `skills: []` to
+disable skills. Missing or invalid selected skills fail startup. Loom adds a
+catalog of names, descriptions and paths to each provider's instructions; the
+agent reads a skill's full instructions when needed. The catalog refreshes on
+start, resume and fork. VM sessions receive copies of the selected skills and
+supporting files in the guest's Loom skill directory, mounted read-only.
+Native provider skill discovery is disabled without changing shared provider
+configuration.
 
 Profiles whose providers are excluded by repository `session.provider_access`
 are unavailable, including on resume. A repository-local profile naming a

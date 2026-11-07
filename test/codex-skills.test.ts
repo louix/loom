@@ -5,12 +5,10 @@ import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CodexAppServerSession } from "@loom/connector-chatgpt/app-server";
-import { CodexRpcClient } from "@loom/connector-chatgpt/rpc";
-import { skillConfig } from "../connectors/chatgpt/src/skills.ts";
 
 const fake = fileURLToPath(new URL("./fixtures/fake-codex-app-server.mjs", import.meta.url));
 
-test("Codex skill selection reaches start, resume and fork without changing shared config", async () => {
+test("Codex disables provider skills on start, resume and fork without changing shared config", async () => {
   const dir = Deno.makeTempDirSync();
   const home = { dir, authJsonPath: join(dir, "auth.json") };
   const skills = ["pdf", "docx"].map((name) => {
@@ -69,31 +67,14 @@ test("Codex skill selection reaches start, resume and fork without changing shar
         assert.ok(request);
         assert.deepEqual(
           request.params.config["skills.config"],
-          selection === undefined
-            ? undefined
-            : skills.map((s, i) => ({
-                path: s.path,
-                enabled: selection.length > 0 && i === 0,
-              })),
+          skills.map((s) => ({ path: s.path, enabled: false })),
         );
         assert.equal(
           requests.some((r) => r.method === "skills/list"),
-          selection !== undefined,
+          true,
         );
         assert.equal(Deno.readTextFileSync(config), "# keep me\n");
       }
-    }
-    const rpc = new CodexRpcClient(
-      spawn(fake, ["app-server"], { stdio: ["pipe", "pipe", "pipe"] }),
-    );
-    try {
-      await assert.rejects(skillConfig(rpc, dir, dir, ["../pdf"]), /not a skill directory name/);
-      await assert.rejects(skillConfig(rpc, dir, dir, ["missing"]), /missing.*not found/);
-      Deno.mkdirSync(join(dir, "skills/invalid"), { recursive: true });
-      Deno.writeTextFileSync(join(dir, "skills/invalid/SKILL.md"), "bad frontmatter");
-      await assert.rejects(skillConfig(rpc, dir, dir, ["invalid"]), /Codex could not load/);
-    } finally {
-      rpc.close();
     }
   } finally {
     Deno.env.delete("LOOM_TEST_SKILLS");

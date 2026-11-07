@@ -3,7 +3,7 @@ import { join, relative, sep } from "node:path";
 const COPY_CHUNK_BYTES = 64 * 1024;
 
 /** `skipped`: one line per symlink left out of the copy, for the caller to log. */
-export type ClaudeSkillsCopy =
+export type SkillsCopy =
   | { kind: "copied"; skipped: string[] }
   | { kind: "invalid"; message: string };
 
@@ -38,34 +38,34 @@ interface PendingDir {
 type Ancestry = { readonly dir: string; readonly parent: Ancestry | null };
 
 /**
- * Copy each named `<configDir>/skills/<name>` into `<dest>/<name>`, replacing
+ * Copy each named `<skillsDir>/<name>` into `<dest>/<name>`, replacing
  * what is there. Checks every name, and every symlink in every skill, before
  * copying any.
  */
-export const copyClaudeSkills = (
-  configDir: string,
+export const copySkills = (
+  skillsDir: string,
   names: readonly string[],
   dest: string,
-): ClaudeSkillsCopy => {
-  const plan = planClaudeSkills(configDir, names);
-  return plan.kind === "invalid" ? plan : writeClaudeSkills(plan, names, dest);
+): SkillsCopy => {
+  const plan = planSkills(skillsDir, names);
+  return plan.kind === "invalid" ? plan : writeSkills(plan, names, dest);
 };
 
 /** The copy of each named skill, into `<dest>/<name>` once `dest` is joined on. */
-export const planClaudeSkills = (configDir: string, names: readonly string[]): SkillPlan => {
+export const planSkills = (skillsDir: string, names: readonly string[]): SkillPlan => {
   const bad = names.find((name) => !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(name));
   if (bad !== undefined)
     return { kind: "invalid", message: `skills: "${bad}" is not a skill directory name` };
-  const missing = names.filter((name) => !isFile(join(configDir, "skills", name, "SKILL.md")));
+  const missing = names.filter((name) => !isFile(join(skillsDir, name, "SKILL.md")));
   if (missing.length > 0)
     return {
       kind: "invalid",
-      message: `skills: ${missing.map((name) => `"${name}"`).join(", ")} not found in ${configDir} (expected ${join(configDir, "skills", missing[0] ?? "", "SKILL.md")})`,
+      message: `skills: ${missing.map((name) => `"${name}"`).join(", ")} not found in ${skillsDir} (expected ${join(skillsDir, missing[0] ?? "", "SKILL.md")})`,
     };
   const plans = names.map((name) =>
     // The skill directory itself may be a link (into a dotfiles checkout, say);
     // what it contains may only link within it.
-    planSkill(Deno.realPathSync(join(configDir, "skills", name)), name),
+    planSkill(Deno.realPathSync(join(skillsDir, name)), name),
   );
   const invalid = plans.find((plan) => plan.kind === "invalid");
   if (invalid !== undefined) return invalid;
@@ -80,11 +80,11 @@ export const planClaudeSkills = (configDir: string, names: readonly string[]): S
  * Write `plan` under `dest`, replacing each named skill there. A file that is
  * no longer the one planned fails the copy and leaves none of the skills.
  */
-export const writeClaudeSkills = (
+export const writeSkills = (
   plan: Extract<SkillPlan, { kind: "planned" }>,
   names: readonly string[],
   dest: string,
-): ClaudeSkillsCopy => {
+): SkillsCopy => {
   Deno.mkdirSync(dest, { recursive: true });
   const removeSkills = () => {
     for (const name of names) {

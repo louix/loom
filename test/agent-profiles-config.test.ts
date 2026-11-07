@@ -87,10 +87,6 @@ test("profiles are validated against the configured providers, MCP servers and s
     ],
     [{ implementer: { description: "x", mcp: [] } }, /Unknown setting.*mcp/],
     [
-      { implementer: { description: "x", provider: "fake", skills: ["pdf"] } },
-      /agents\.profiles\.implementer\.skills: skills are only supported for Claude and Codex providers/,
-    ],
-    [
       { implementer: { description: "x", provider: "codex", tools: { deny: ["shell"] } } },
       /agents\.profiles\.implementer\.tools: tool allow\/deny lists are not supported for Codex/,
     ],
@@ -251,12 +247,13 @@ test("a repository's profiles merge over the global ones", () => {
   }
 });
 
-test("Codex profiles accept explicit skill selections, including an empty list", () => {
-  for (const skills of [[], ["pdf"]]) {
-    const c = cfg({
-      providers: { codex: {} },
-      agents: { profiles: { coder: { description: "Codex", provider: "codex", skills } } },
-    });
-    assert.deepEqual(c.agents.profiles["coder"]?.skills, skills);
-  }
+test("Every provider accepts explicit skill selections, including an empty list", () => {
+  for (const provider of ["claude", "codex", "fake"])
+    for (const skills of [[], ["pdf"]]) {
+      const c = cfg({
+        providers: { codex: {} },
+        agents: { profiles: { coder: { description: "Shared skills", provider, skills } } },
+      });
+      assert.deepEqual(c.agents.profiles["coder"]?.skills, skills);
+    }
 });

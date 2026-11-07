@@ -3,10 +3,18 @@ import assert from "node:assert/strict";
 import { createProviderWorker } from "../backend/daemon/src/daemon/provider-worker.ts";
 import { WorkerTranscript } from "../runtime/src/worker/transcript.ts";
 import { makeLogger } from "../core/src/logger.ts";
+import { join } from "node:path";
 const [endpoint] = Deno.args;
 assert(endpoint);
 await assert.rejects(fetch(endpoint), Deno.errors.NotCapable);
 const workspace = await Deno.makeTempDir();
+const skill = join(workspace, "config/loom/skills/worker-fixture");
+await Deno.mkdir(skill, { recursive: true });
+await Deno.writeTextFile(
+  join(skill, "SKILL.md"),
+  "---\nname: worker-fixture\ndescription: Shared worker skill\n---\nRead this body only when needed.",
+);
+Deno.env.set("XDG_CONFIG_HOME", join(workspace, "config"));
 const transcript = new WorkerTranscript("smoke", () => {});
 const provider = await createProviderWorker("@loom/connector-generic", {
   id: "fixture",

@@ -18,7 +18,8 @@ import type {
 import { CodexAuthOwner } from "./codex-auth.ts";
 import type { ConnectorConfig } from "@loom/core/connector";
 import { ClaudeAuthOwner } from "./claude-auth.ts";
-import { copyClaudeSkills } from "@loom/core/claude-skills";
+import { copySkills } from "@loom/core/skill-files";
+import { loadSkills, loomSkillsDirectory } from "@loom/core/skills";
 import {
   defaultProviderHosts,
   sessionVmGeneration,
@@ -48,26 +49,19 @@ const executable = async (name: string) => {
     }
   throw new Error(`Executable not found: ${name}`);
 };
-/**
- * The guest's config dir is the session's `profile` directory, so its adapter
- * finds the profile's skills there as it would on the host. The guest writes
- * there too: what it left is replaced, never written through. Returns the
- * symlinks left out of the copy.
- */
-export const profileSkills = async (
+/** Refresh the guest's Loom skills, replacing guest-created symlinks before copying. */
+export const stageSkills = async (
   sessionDirectory: string,
-  providerProfile: string,
+  skillsDirectory: string,
   input: CreateSessionOptions | SessionRef,
 ): Promise<string[]> => {
-  const profile = join(sessionDirectory, "profile");
-  await Deno.mkdir(profile, { recursive: true, mode: 0o700 });
-  if ((await Deno.lstat(profile)).isSymlink)
-    throw new Error("Session profile must not be a symlink");
-  await Deno.remove(join(profile, "skills"), { recursive: true }).catch((error) => {
+  const destination = join(sessionDirectory, "skills");
+  await Deno.remove(destination, { recursive: true }).catch((error) => {
     if (!(error instanceof Deno.errors.NotFound)) throw error;
   });
-  if (!input.skills?.length) return [];
-  const copy = copyClaudeSkills(providerProfile, input.skills, join(profile, "skills"));
+  await Deno.mkdir(destination, { recursive: true, mode: 0o700 });
+  const names = loadSkills(skillsDirectory, input.skills).map((skill) => skill.name);
+  const copy = copySkills(skillsDirectory, names, destination);
   if (copy.kind === "invalid") throw new Error(copy.message);
   return copy.skipped;
 };
@@ -97,7 +91,6 @@ export const withVmSessions = async <T extends AgentProvider>(
   let providerHosts: string[] | undefined;
   let config: ConnectorConfig;
   let connector: WorkerProfile["connector"];
-  let skillsProfile: string | undefined;
   if (kind === "aisdk") {
     const sdk = ctx.config.sdk;
     const defaultEndpoint = {
@@ -131,7 +124,6 @@ export const withVmSessions = async <T extends AgentProvider>(
   } else if (kind === "codex") {
     const cli = await executable(ctx.config.codexCliPath || "codex");
     const profile = ctx.config.configDir || Deno.env.get("CODEX_HOME") || join(homedir(), ".codex");
-    skillsProfile = profile;
     owner = new CodexAuthOwner({
       profile,
       cli,
@@ -150,7 +142,6 @@ export const withVmSessions = async <T extends AgentProvider>(
   } else {
     const profile =
       ctx.config.configDir || Deno.env.get("CLAUDE_CONFIG_DIR") || join(homedir(), ".claude");
-    skillsProfile = profile;
     const apiKey = Deno.env.get("ANTHROPIC_API_KEY");
     const oauth = Deno.env.get("CLAUDE_CODE_OAUTH_TOKEN");
     owner =
@@ -184,9 +175,8 @@ export const withVmSessions = async <T extends AgentProvider>(
       });
       const sessionDirectory = sessionVmDirectory(vm.repoRoot, input.sessionId);
       await stoppedSessionVm(vm.repoRoot, input.sessionId);
-      if (skillsProfile !== undefined)
-        for (const skipped of await profileSkills(sessionDirectory, skillsProfile, input))
-          ctx.logger.warn("skill symlink not copied", { sessionId: input.sessionId, skipped });
+      for (const skipped of await stageSkills(sessionDirectory, loomSkillsDirectory(), input))
+        ctx.logger.warn("skill symlink not copied", { sessionId: input.sessionId, skipped });
       if (resume && kind !== "aisdk") {
         const ref = (input as SessionRef).providerRef;
         if (!/^[0-9a-f-]{36}$/i.test(ref)) throw new Error(`Invalid ${kind} resume reference`);

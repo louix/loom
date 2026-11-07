@@ -1,10 +1,9 @@
 // test-run: own-process — points XDG_STATE_HOME at its fixture for daemon code that reads Deno.env.
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import {
-  profileSkills,
+  stageSkills,
   withVmSessions,
   type SessionVmLauncher,
 } from "../backend/daemon/src/daemon/vm-provider.ts";
@@ -26,6 +25,8 @@ for (const kind of ["claude", "codex", "aisdk"] as const) {
     const root = await Deno.makeTempDir();
     const previous = Deno.env.get("XDG_STATE_HOME");
     Deno.env.set("XDG_STATE_HOME", root);
+    const previousConfig = Deno.env.get("XDG_CONFIG_HOME");
+    Deno.env.set("XDG_CONFIG_HOME", root);
     const launches: SessionVmOptions[] = [];
     const guestPorts = [{ guest: 3000 }];
     const requests: string[] = [];
@@ -125,16 +126,15 @@ for (const kind of ["claude", "codex", "aisdk"] as const) {
       GIT_COMMITTER_NAME: "Committer",
       GIT_COMMITTER_EMAIL: "committer@example.com",
     };
-    if (kind !== "aisdk") {
-      await Deno.mkdir(join(root, "skills/pdf/references"), { recursive: true });
-      await Deno.writeTextFile(join(root, "skills/pdf/SKILL.md"), "pdf");
-      await Deno.writeTextFile(join(root, "skills/pdf/references/notes.md"), "notes");
-    }
+    const skill = "---\nname: pdf\ndescription: PDF tools\n---\npdf";
+    await Deno.mkdir(join(root, "loom/skills/pdf/references"), { recursive: true });
+    await Deno.writeTextFile(join(root, "loom/skills/pdf/SKILL.md"), skill);
+    await Deno.writeTextFile(join(root, "loom/skills/pdf/references/notes.md"), "notes");
     const options: CreateSessionOptions & SessionGitIdentity = {
       projectDir: join(root, "shared-project-files"),
       [sessionGitIdentity]: gitIdentity,
       sessionId: "session",
-      ...(kind !== "aisdk" ? { skills: ["pdf"] } : {}),
+      skills: ["pdf"],
       cwd: join(root, "workspace/checkout"),
       workspaceRoot: join(root, "workspace/checkout"),
       systemPromptAppend: "Work in " + join(root, "workspace/checkout"),
@@ -166,11 +166,9 @@ for (const kind of ["claude", "codex", "aisdk"] as const) {
       assert.equal(launches.length, 0);
       const created = await provider.createSession(options);
       await created.close("idle_suspension");
-      if (kind !== "aisdk") {
-        const profile = join(sessionVmDirectory(root, "session"), "profile/skills/pdf");
-        assert.equal(await Deno.readTextFile(join(profile, "SKILL.md")), "pdf");
-        assert.equal(await Deno.readTextFile(join(profile, "references/notes.md")), "notes");
-      }
+      const skillDirectory = join(sessionVmDirectory(root, "session"), "skills/pdf");
+      assert.equal(await Deno.readTextFile(join(skillDirectory, "SKILL.md")), skill);
+      assert.equal(await Deno.readTextFile(join(skillDirectory, "references/notes.md")), "notes");
       assert.deepEqual(stopReasons, ["idle_suspension"]);
       assert.deepEqual(launches[0]!.mcpRelays, [{ port: 4567, guestPort: 3130 }]);
       assert.deepEqual(launches[0]!.clone, {
@@ -289,6 +287,8 @@ for (const kind of ["claude", "codex", "aisdk"] as const) {
       assert.equal(launches.length, 4);
     } finally {
       await provider.close?.();
+      if (previousConfig === undefined) Deno.env.delete("XDG_CONFIG_HOME");
+      else Deno.env.set("XDG_CONFIG_HOME", previousConfig);
       if (previous === undefined) Deno.env.delete("XDG_STATE_HOME");
       else Deno.env.set("XDG_STATE_HOME", previous);
       await Deno.remove(root, { recursive: true });
@@ -341,19 +341,22 @@ Deno.test("a Claude VM session with claude.ai connectors enabled may reach Anthr
   }
 });
 
-Deno.test("profileSkills copies only the named skills into the guest's profile, never through a guest symlink", async () => {
+Deno.test("stageSkills copies shared skills without following a guest symlink", async () => {
   // given
   const root = await Deno.makeTempDir();
   const host = join(root, "host");
   const outside = join(root, "outside");
   const session = join(root, "session");
   for (const name of ["pdf", "docx"]) {
-    await Deno.mkdir(join(host, "skills", name), { recursive: true });
-    await Deno.writeTextFile(join(host, "skills", name, "SKILL.md"), name);
+    await Deno.mkdir(join(host, name), { recursive: true });
+    await Deno.writeTextFile(
+      join(host, name, "SKILL.md"),
+      `---\nname: ${name}\ndescription: test\n---\n${name}`,
+    );
   }
   await Deno.mkdir(outside);
-  await Deno.mkdir(join(session, "profile"), { recursive: true });
-  await Deno.symlink(outside, join(session, "profile", "skills"));
+  await Deno.mkdir(session, { recursive: true });
+  await Deno.symlink(outside, join(session, "skills"));
   const input: CreateSessionOptions = {
     sessionId: "s",
     cwd: root,
@@ -363,18 +366,26 @@ Deno.test("profileSkills copies only the named skills into the guest's profile, 
   };
   try {
     // when
-    await profileSkills(session, host, { ...input, skills: ["pdf"] });
+    await stageSkills(session, host, { ...input, skills: ["pdf"] });
     // then
-    assert.equal(await Deno.readTextFile(join(session, "profile/skills/pdf/SKILL.md")), "pdf");
-    assert.equal((await Deno.lstat(join(session, "profile/skills"))).isDirectory, true);
-    assert.deepEqual([...Deno.readDirSync(join(session, "profile/skills"))].length, 1);
+    assert.equal(
+      await Deno.readTextFile(join(session, "skills/pdf/SKILL.md")),
+      "---\nname: pdf\ndescription: test\n---\npdf",
+    );
+    assert.equal((await Deno.lstat(join(session, "skills"))).isDirectory, true);
+    assert.deepEqual([...Deno.readDirSync(join(session, "skills"))].length, 1);
     assert.deepEqual([...Deno.readDirSync(outside)], []);
+    await stageSkills(session, host, input);
+    assert.deepEqual(
+      [...Deno.readDirSync(join(session, "skills"))].map((entry) => entry.name).sort(),
+      ["docx", "pdf"],
+    );
     await assert.rejects(
-      profileSkills(session, host, { ...input, skills: ["coding-style"] }),
+      stageSkills(session, host, { ...input, skills: ["coding-style"] }),
       /"coding-style" not found/,
     );
-    await profileSkills(session, host, input);
-    assert.equal(existsSync(join(session, "profile/skills")), false);
+    await stageSkills(session, host, { ...input, skills: [] });
+    assert.deepEqual([...Deno.readDirSync(join(session, "skills"))], []);
   } finally {
     await Deno.remove(root, { recursive: true });
   }

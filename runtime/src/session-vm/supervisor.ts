@@ -179,6 +179,10 @@ try {
     if (!binding.preparationOnly) await discardSessionDisks(binding.sessionDirectory);
     const profile = join(binding.sessionDirectory, "profile");
     await Deno.mkdir(profile, { recursive: true, mode: 0o700 });
+    const skills = join(binding.sessionDirectory, "skills");
+    await Deno.mkdir(skills, { recursive: true, mode: 0o700 });
+    if ((await Deno.lstat(skills)).isSymlink)
+      throw new Error("Session skills must not be a symlink");
     if ((await Deno.lstat(profile)).isSymlink)
       throw new Error("Session profile must not be a symlink");
     binding.recovery = { version: 3, ready: false, reaped: false };
@@ -257,6 +261,8 @@ try {
     create.push(
       "-v",
       `${binding.sessionDirectory}/profile:/tmp/loom-home/${auth.codexOauth ? ".codex" : ".claude"}`,
+      "-v",
+      `${binding.sessionDirectory}/skills:/tmp/loom-home/.config/loom/skills:ro`,
     );
   if (binding.packageCache || binding.privateWorkspace)
     await Deno.writeTextFile(

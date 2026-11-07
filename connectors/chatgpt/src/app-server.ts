@@ -453,7 +453,7 @@ export class CodexAppServerSession implements AgentSession {
     const s = new CodexAppServerSession(opts, proc, base, dispatch, networkAccess);
     try {
       await s.#initialize();
-      const skills = await skillConfig(s.#rpc, opts.cwd, codexHome.dir, opts.skills);
+      const skills = await skillConfig(s.#rpc, opts.cwd);
       // A fresh Plan session has no earlier reviewer to keep; it exits to Manual.
       const target = s.#requestedMode;
       const started = await s.#rpc.requestStartup("thread/start", {
@@ -472,6 +472,7 @@ export class CodexAppServerSession implements AgentSession {
               baseInstructions: opts.systemPromptAppend ?? "",
               developerInstructions: "",
               config: {
+                ...skills,
                 "sandbox_workspace_write.network_access": false,
                 project_doc_max_bytes: 0,
                 features: {
@@ -547,7 +548,7 @@ export class CodexAppServerSession implements AgentSession {
     const s = new CodexAppServerSession(opts, proc, base, dispatch, networkAccess);
     try {
       await s.#initialize();
-      const skills = await skillConfig(s.#rpc, ref.cwd, codexHome.dir, ref.skills);
+      const skills = await skillConfig(s.#rpc, ref.cwd);
       // A forked thread replays its copied cumulative usage like a resumed
       // one, so both seed the baseline from that replay rather than charge it.
       s.#usageBaseline = null;

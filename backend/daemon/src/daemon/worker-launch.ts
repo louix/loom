@@ -2,6 +2,8 @@ import type { ManagedProcess } from "../../../../runtime/src/process.ts";
 import { escalateProcessGroup } from "@loom/core/process-group";
 import { fileURLToPath } from "node:url";
 import { claimWorkerScratch } from "./worker-scratch.ts";
+import { userDirectory } from "@loom/core/user-dirs";
+import { loomSkillsDirectory } from "@loom/core/skills";
 
 export interface WorkerLaunchSpec {
   executable: string;
@@ -145,7 +147,13 @@ export const mockLaunchSpec = (cwd: string): WorkerLaunchSpec => {
     entrypoint: fileURLToPath(new URL("runtime/src/worker/main.ts", root)),
     configPath: fileURLToPath(new URL("deno.json", root)),
     cwd,
-    env: {},
-    permissions: { read: [fileURLToPath(root)], write: [], net: [], env: [], run: [] },
+    env: { XDG_CONFIG_HOME: userDirectory("config") },
+    permissions: {
+      read: [fileURLToPath(root), loomSkillsDirectory()],
+      write: [],
+      net: [],
+      env: ["HOME", "XDG_CONFIG_HOME", "LOOM_TEST_HOME"],
+      run: [],
+    },
   };
 };

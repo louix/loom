@@ -1594,7 +1594,7 @@
                 "additionalProperties": false
               },
               "skills": {
-                "description": "Claude or Codex skills to load from the provider's <config_dir>/skills/<name>/SKILL.md, by name; omitted keeps the CLI's own.",
+                "description": "Skills from $XDG_CONFIG_HOME/loom/skills/<name>/SKILL.md (default ~/.config/loom/skills), for every provider; omitted discovers all, [] disables skills.",
                 "type": "array",
                 "items": {
                   "type": "string"
@@ -3239,7 +3239,7 @@
                       "additionalProperties": false
                     },
                     "skills": {
-                      "description": "Claude or Codex skills to load from the provider's <config_dir>/skills/<name>/SKILL.md, by name; omitted keeps the CLI's own.",
+                      "description": "Skills from $XDG_CONFIG_HOME/loom/skills/<name>/SKILL.md (default ~/.config/loom/skills), for every provider; omitted discovers all, [] disables skills.",
                       "type": "array",
                       "items": {
                         "type": "string"

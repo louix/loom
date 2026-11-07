@@ -1,3 +1,4 @@
+import { loomSkillsDirectory } from "@loom/core/skills";
 import { homedir } from "node:os";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 import type { ConnectorContext } from "../../../../core/src/connector.ts";
@@ -18,6 +19,7 @@ export const CLAUDE_WORKER_HOSTS = [
 ];
 const ENV = [
   "HOME",
+  "XDG_CONFIG_HOME",
   "PATH",
   "USER",
   "LOGNAME",
@@ -80,7 +82,7 @@ export const claudeWorkerSpec = (
   if (cliPath) read.push(cliPath);
   const write = [profile, profileConfig, scratch];
   if (role === "session") {
-    read.push(cwd);
+    read.push(cwd, loomSkillsDirectory());
     write.push(cwd);
   }
   for (const key of ["SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS"])

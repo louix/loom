@@ -1,10 +1,10 @@
-// A skill is copied into a session VM's profile or a plugin directory. A symlink
+// A skill is copied into a session VM's shared Loom skill directory. A symlink
 // in it must not carry a host file from outside the skill along, nor loop.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { copyClaudeSkills, planClaudeSkills, writeClaudeSkills } from "@loom/core/claude-skills";
+import { copySkills, planSkills, writeSkills } from "@loom/core/skill-files";
 
 interface SkillFixture {
   root: string;
@@ -34,7 +34,7 @@ const mkSkillFixture = (): SkillFixture => {
   return fixture;
 };
 
-test("copyClaudeSkills follows links within the skill only and never loops", () => {
+test("copySkills follows links within the skill only and never loops", () => {
   // given
   const f = mkSkillFixture();
   try {
@@ -44,7 +44,7 @@ test("copyClaudeSkills follows links within the skill only and never loops", () 
     Deno.symlinkSync("ref", join(f.skill, "reference"));
 
     // when
-    const copy = copyClaudeSkills(f.profile, ["pdf"], f.dest);
+    const copy = copySkills(join(f.profile, "skills"), ["pdf"], f.dest);
 
     // then
     assert.equal(copy.kind, "copied");
@@ -60,7 +60,7 @@ test("copyClaudeSkills follows links within the skill only and never loops", () 
   }
 });
 
-test("copyClaudeSkills refuses a skill with a link out of it, and copies nothing", () => {
+test("copySkills refuses a skill with a link out of it, and copies nothing", () => {
   // given
   const f = mkSkillFixture();
   try {
@@ -70,7 +70,7 @@ test("copyClaudeSkills refuses a skill with a link out of it, and copies nothing
     Deno.writeTextFileSync(join(f.dest, "pdf", "SKILL.md"), "previous");
 
     // when
-    const copy = copyClaudeSkills(f.profile, ["pdf"], f.dest);
+    const copy = copySkills(join(f.profile, "skills"), ["pdf"], f.dest);
 
     // then
     assert.equal(copy.kind, "invalid");
@@ -84,7 +84,7 @@ test("copyClaudeSkills refuses a skill with a link out of it, and copies nothing
   }
 });
 
-test("copyClaudeSkills refuses a SKILL.md that links out of the skill", () => {
+test("copySkills refuses a SKILL.md that links out of the skill", () => {
   // given
   const f = mkSkillFixture();
   try {
@@ -92,7 +92,7 @@ test("copyClaudeSkills refuses a SKILL.md that links out of the skill", () => {
     Deno.symlinkSync(join(f.secrets, "SKILL.md"), join(f.skill, "SKILL.md"));
 
     // when
-    const copy = copyClaudeSkills(f.profile, ["pdf"], f.dest);
+    const copy = copySkills(join(f.profile, "skills"), ["pdf"], f.dest);
 
     // then
     assert.equal(copy.kind, "invalid");
@@ -103,18 +103,18 @@ test("copyClaudeSkills refuses a SKILL.md that links out of the skill", () => {
   }
 });
 
-test("writeClaudeSkills refuses a file swapped for a link out of the skill after planning", () => {
+test("writeSkills refuses a file swapped for a link out of the skill after planning", () => {
   // given: planned while ref/forms.md was a plain file, then swapped for a link to a key
   const f = mkSkillFixture();
   try {
     Deno.writeTextFileSync(join(f.skill, "SKILL.md"), "pdf");
-    const plan = planClaudeSkills(f.profile, ["pdf"]);
+    const plan = planSkills(join(f.profile, "skills"), ["pdf"]);
     assert.equal(plan.kind, "planned");
     Deno.removeSync(join(f.skill, "ref", "forms.md"));
     Deno.symlinkSync(join(f.secrets, "id_ed25519"), join(f.skill, "ref", "forms.md"));
 
     // when
-    const copy = plan.kind === "planned" ? writeClaudeSkills(plan, ["pdf"], f.dest) : plan;
+    const copy = plan.kind === "planned" ? writeSkills(plan, ["pdf"], f.dest) : plan;
 
     // then
     assert.equal(copy.kind, "invalid");
@@ -125,7 +125,7 @@ test("writeClaudeSkills refuses a file swapped for a link out of the skill after
   }
 });
 
-test("copyClaudeSkills keeps a script executable", () => {
+test("copySkills keeps a script executable", () => {
   // given
   const f = mkSkillFixture();
   try {
@@ -134,7 +134,7 @@ test("copyClaudeSkills keeps a script executable", () => {
     Deno.chmodSync(join(f.skill, "run.sh"), 0o755);
 
     // when
-    const copy = copyClaudeSkills(f.profile, ["pdf"], f.dest);
+    const copy = copySkills(join(f.profile, "skills"), ["pdf"], f.dest);
 
     // then
     assert.equal(copy.kind, "copied");
