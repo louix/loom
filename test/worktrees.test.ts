@@ -1183,3 +1183,96 @@ for (const bare of [false, true]) {
     }
   });
 }
+
+for (const asyncRemoval of [false, true]) {
+  test(`${asyncRemoval ? "async" : "sync"} forced removal recovers a missing .git link from interrupted deletion`, async () => {
+    const { root, cleanup } = repo();
+    try {
+      const m = mgr(root);
+      const wt = m.create(fakeId("partial1"), LOOM);
+      const remove = (force: boolean) =>
+        asyncRemoval
+          ? m.removeAsync(wt.path, { force })
+          : Promise.resolve().then(() => m.remove(wt.path, { force }));
+      const dotGit = join(wt.path, ".git");
+      // The admin directory need not share the worktree's basename.
+      const admin = readFileSync(dotGit, "utf8").trim().slice("gitdir: ".length);
+      renameSync(admin, admin + "-renamed");
+      writeFileSync(join(wt.path, "remaining.txt"), "partly deleted tree");
+      rmSync(dotGit);
+      await assert.rejects(remove(false), /git worktree remove failed/);
+      assert.equal(existsSync(dotGit), false, "non-forced removal must not repair a tree");
+
+      await remove(true);
+      assert.equal(existsSync(wt.path), false);
+      assert.equal(
+        m.list().some((w) => w.path === wt.path),
+        false,
+      );
+      execFileSync("git", ["-C", root, "rev-parse", "--verify", wt.branch]);
+    } finally {
+      cleanup();
+    }
+  });
+}
+
+test("forced removal leaves a missing link with a user's lock, and an existing broken link, alone", async () => {
+  const { root, cleanup } = repo();
+  try {
+    const m = mgr(root);
+    const wt = m.create(fakeId("partial2"), LOOM);
+    const dotGit = join(wt.path, ".git");
+    rmSync(dotGit);
+    execFileSync("git", ["-C", root, "worktree", "unlock", wt.path]);
+    execFileSync("git", ["-C", root, "worktree", "lock", "--reason", "user lock", wt.path]);
+    await assert.rejects(m.removeAsync(wt.path, { force: true }), /git worktree remove failed/);
+    assert.equal(existsSync(dotGit), false);
+    assert.equal(m.list().find((w) => w.path === wt.path)?.locked, "user lock");
+
+    execFileSync("git", ["-C", root, "worktree", "unlock", wt.path]);
+    m.lock([{ id: fakeId("partial2"), path: wt.path }]);
+    writeFileSync(dotGit, "broken link\n");
+    await assert.rejects(m.removeAsync(wt.path, { force: true }), /git worktree remove failed/);
+    assert.equal(readFileSync(dotGit, "utf8"), "broken link\n");
+    assert.equal(
+      m.list().find((w) => w.path === wt.path)?.locked,
+      `loom session ${fakeId("partial2")}`,
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test("async removal can take longer than 15 seconds while the event loop stays responsive", async () => {
+  const { root, cleanup } = repo();
+  const previousPath = Deno.env.get("PATH")!;
+  try {
+    const m = mgr(root);
+    const wt = m.create(fakeId("slowtree"), LOOM);
+    const realGit = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+    const bin = join(root, "bin");
+    mkdirSync(bin);
+    const quote = (s: string) => "'" + s.replaceAll("'", "'\\''") + "'";
+    writeExecutableSync(
+      join(bin, "git"),
+      `#!/bin/sh
+if [ "$3" = worktree ] && [ "$4" = remove ]; then sleep 16; fi
+exec ${quote(realGit)} "$@"
+`,
+      0o755,
+    );
+    Deno.env.set("PATH", `${bin}:${previousPath}`);
+    let completed = false;
+    const removing = m.removeAsync(wt.path).then(() => {
+      completed = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(completed, false, "removal yields while Git runs");
+    await removing;
+    assert.equal(existsSync(wt.path), false);
+    execFileSync(realGit, ["-C", root, "rev-parse", "--verify", wt.branch]);
+  } finally {
+    Deno.env.set("PATH", previousPath);
+    cleanup();
+  }
+});

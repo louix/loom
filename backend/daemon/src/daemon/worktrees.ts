@@ -580,17 +580,21 @@ export class WorktreeManager {
     return branch;
   }
 
-  /** `git worktree remove` — used by gc for sessions marked done. */
+  /** `git worktree remove` — used by gc for sessions marked done.
+   * Deletion has no deadline: killing Git mid-delete can remove `.git` before
+   * the rest of a large tree, leaving subsequent removals unable to validate it. */
   remove(path: string, opts: { force?: boolean } = {}): void {
     const args = ["worktree", "remove"];
     if (opts.force) args.push("--force");
     args.push(this.#hostOnly(path));
-    const relock = this.#unlockOwn(path);
-    const res = this.#git(args);
+    const relock = this.#unlockOwn(path, opts.force);
+    const res = this.#git(args, undefined, { timeoutMs: 0 });
     this.invalidateFacts(path);
     if (!res.ok) {
       relock();
-      throw new Error(`git worktree remove failed: ${res.stderr.trim() || res.stdout.trim()}`);
+      throw new Error(
+        `git worktree remove failed: ${res.stderr.trim() || res.stdout.trim() || res.error}`,
+      );
     }
     this.#log.info("worktree removed", { path });
   }
@@ -600,24 +604,19 @@ export class WorktreeManager {
     const args = ["-C", this.#repoRoot, "worktree", "remove"];
     if (opts.force) args.push("--force");
     args.push(this.#hostOnly(path));
-    const relock = this.#unlockOwn(path);
+    const relock = this.#unlockOwn(path, opts.force);
     try {
       await new Promise<void>((resolve, reject) => {
-        execFile(
-          "git",
-          args,
-          { timeout: 15_000, maxBuffer: GIT_MAX_BUFFER },
-          (error, stdout, stderr) => {
-            if (error) {
-              relock();
-              reject(
-                new Error(
-                  `git worktree remove failed: ${stderr.trim() || stdout.trim() || error.message}`,
-                ),
-              );
-            } else resolve();
-          },
-        );
+        execFile("git", args, { maxBuffer: GIT_MAX_BUFFER }, (error, stdout, stderr) => {
+          if (error) {
+            relock();
+            reject(
+              new Error(
+                `git worktree remove failed: ${stderr.trim() || stdout.trim() || (error.signal ? `terminated by ${error.signal}` : error.message)}`,
+              ),
+            );
+          } else resolve();
+        });
       });
       this.#log.info("worktree removed", { path });
     } finally {
@@ -1126,13 +1125,47 @@ export class WorktreeManager {
 
   /** Lift Loom's own lock on the tree at `path` for its removal. Returns what
    *  puts it back should the removal fail; another lock stays, and Git refuses. */
-  #unlockOwn(path: string): () => void {
+  #unlockOwn(path: string, repairForRemoval = false): () => void {
     const at = treeKey(path);
     const entry = this.list().find((w) => treeKey(w.path) === at);
     const reason = entry?.locked;
     if (!entry || !reason?.startsWith(LOCK_REASON)) return () => {};
+    if (repairForRemoval) this.#restoreRemovalLink(entry.path);
     this.#git(["worktree", "unlock", entry.path]);
     return () => void this.#git(["worktree", "lock", "--reason", reason, entry.path]);
+  }
+
+  /** Recover a forced removal interrupted after Git deleted the tree's .git file.
+   * Only a Loom-locked tree directly under our trees directory qualifies. Match
+   * the admin directory's backlink, never guess it from the tree's basename. */
+  #restoreRemovalLink(path: string): void {
+    if (treeKey(dirname(path)) !== treeKey(this.#treesDir)) return;
+    const dotGit = join(path, ".git");
+    try {
+      lstatSync(dotGit);
+      return; // An existing file, directory or symlink is Git's to validate.
+    } catch (error) {
+      if ((error as { code?: string }).code !== "ENOENT") throw error;
+    }
+    if (!existsSync(path) || !lstatSync(path).isDirectory()) return;
+    const common = this.#gitRead(["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+    if (!common) return;
+    const admins = join(common, "worktrees");
+    for (const entry of readdirSync(admins, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const admin = join(admins, entry.name);
+      let back: string;
+      try {
+        back = resolve(admin, readFileSync(join(admin, "gitdir"), "utf8").trim());
+      } catch (error) {
+        if ((error as { code?: string }).code === "ENOENT") continue;
+        throw error;
+      }
+      if (treeKey(back) !== treeKey(dotGit)) continue;
+      writeFileSync(dotGit, `gitdir: ${admin}\n`, { flag: "wx" });
+      this.#log.info("worktree link restored for removal", { path });
+      return;
+    }
   }
 
   /** The name of a git operation currently in progress in `path`
